@@ -8,7 +8,7 @@ class_name HighpolyUpdater
 # updated (deploy assets for your level first).
 
 const SETTING := "highpoly/manifest_url"
-const DEFAULT_MANIFEST := ""   # e.g. https://<models-host>/plugin-manifest.json
+const DEFAULT_MANIFEST := "https://pub-45114dae448e4a059f488662e3d47b19.r2.dev/plugin-manifest.json"
 
 static func manifest_url() -> String:
 	if ProjectSettings.has_setting(SETTING):
