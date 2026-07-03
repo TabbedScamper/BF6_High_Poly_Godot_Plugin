@@ -148,6 +148,19 @@ static func _set_proxy_visible(node: Node3D, vis: bool) -> void:
 		for c in n.get_children():
 			stack.append(c)
 
+static func purge_all() -> int:
+	# delete every downloaded preview asset under res://highpoly
+	var removed := 0
+	var da := DirAccess.open(HP_DIR)
+	if da == null: return 0
+	for sub in da.get_directories():
+		var dir := "%s/%s" % [HP_DIR, sub]
+		for f in DirAccess.get_files_at(dir):
+			DirAccess.remove_absolute("%s/%s" % [dir, f])
+		if DirAccess.remove_absolute(dir) == OK:
+			removed += 1
+	return removed
+
 static func in_overlay(node: Node) -> bool:
 	var n := node
 	while n != null:

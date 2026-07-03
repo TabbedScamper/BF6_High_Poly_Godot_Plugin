@@ -95,6 +95,11 @@ func _enter_tree() -> void:
 		turbo.apply_shadows())
 	dock.add_child(shad)
 
+	var purge := Button.new(); purge.text = "Purge Local Models"
+	purge.tooltip_text = "Delete all downloaded preview models (res://highpoly). Proxies and your scene are unaffected; re-deploy or Update Models to get previews back."
+	purge.pressed.connect(_confirm_purge)
+	dock.add_child(purge)
+
 	lbl = Label.new()
 	lbl.text = "%d high-poly assets available" % HighpolyLib.keys().size()
 	lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -141,6 +146,24 @@ func _apply_selected(tier: int) -> void:
 	for s in sel:
 		n += HighpolyLib.apply(s, tier, _textured())
 	lbl.text = "Selected -> %d piece(s)" % n
+
+func _confirm_purge() -> void:
+	var dlg := ConfirmationDialog.new()
+	dlg.dialog_text = "Delete ALL downloaded preview models from res://highpoly?
+Your scene and the low-poly proxies are not affected."
+	dlg.ok_button_text = "Purge"
+	dlg.confirmed.connect(func():
+		# drop overlays first so nothing references the files
+		var r := EditorInterface.get_edited_scene_root()
+		if r != null:
+			HighpolyLib.apply(r, HighpolyLib.Tier.LOW, true)
+		mode_btn.select(mode_btn.get_item_index(HighpolyLib.Tier.LOW))
+		previews.tier = HighpolyLib.Tier.LOW
+		var n := HighpolyLib.purge_all()
+		EditorInterface.get_resource_filesystem().scan()
+		lbl.text = "Purged %d model folder(s)" % n)
+	dlg.canceled.connect(dlg.queue_free)
+	EditorInterface.popup_dialog_centered(dlg)
 
 func _on_node_added(node: Node) -> void:
 	if _mode() == HighpolyLib.Tier.LOW: return
