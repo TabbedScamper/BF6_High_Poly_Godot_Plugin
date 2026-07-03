@@ -15,9 +15,6 @@ const TurboScript = preload("res://addons/highpoly_toggle/highpoly_turbo.gd")
 var previews: Node
 var turbo: Node
 
-const META_MODE := "highpoly_mode"
-const META_TEX := "highpoly_textured"
-
 func _mode() -> int:
 	return mode_btn.get_selected_id() if mode_btn else HighpolyLib.Tier.LOW
 
@@ -111,13 +108,9 @@ func _enter_tree() -> void:
 	dock.add_child(turbo)
 	turbo.refresh.call_deferred()
 
-	# restore per-project mode
-	var es := EditorInterface.get_editor_settings()
-	var m: Variant = es.get_project_metadata("highpoly", "mode", HighpolyLib.Tier.LOW)
-	var t: Variant = es.get_project_metadata("highpoly", "textured", true)
-	mode_btn.select(mode_btn.get_item_index(int(m)))
-	tex_chk.button_pressed = bool(t)
-	previews.tier = int(m)
+	# every session starts safe: Low-Poly until a mode is chosen
+	mode_btn.select(mode_btn.get_item_index(HighpolyLib.Tier.LOW))
+	previews.tier = HighpolyLib.Tier.LOW
 
 	# auto-overlay for pieces placed while a detail mode is active
 	get_tree().node_added.connect(_on_node_added)
@@ -130,9 +123,6 @@ func _exit_tree() -> void:
 		dock.queue_free()
 
 func _mode_changed() -> void:
-	var es := EditorInterface.get_editor_settings()
-	es.set_project_metadata("highpoly", "mode", _mode())
-	es.set_project_metadata("highpoly", "textured", _textured())
 	previews.tier = _mode()
 	_apply_scene()
 
