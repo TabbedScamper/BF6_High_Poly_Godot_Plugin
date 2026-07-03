@@ -129,6 +129,42 @@ func _exit_tree() -> void:
 
 func _mode_changed() -> void:
 	previews.tier = _mode()
+	if _mode() == HighpolyLib.Tier.LOW:
+		_apply_scene()
+		return
+	var r := EditorInterface.get_edited_scene_root()
+	if r == null:
+		_apply_scene()
+		return
+	# do we have everything this scene needs for the chosen tier?
+	lbl.text = "Checking models…"
+	HighpolyUpdater.scene_available(r, dock, func(n: int):
+		if n <= 0:
+			_apply_scene()                 # all present (or nothing downloadable) -> just apply
+		else:
+			_prompt_download(n))
+
+func _prompt_download(n: int) -> void:
+	var dlg := ConfirmationDialog.new()
+	dlg.dialog_text = "%d model(s) for this scene aren't downloaded yet.\nDownload them now to preview at this detail level?" % n
+	dlg.ok_button_text = "Download"
+	dlg.cancel_button_text = "Stay Low-Poly"
+	dlg.confirmed.connect(func():
+		lbl.text = "Downloading…"
+		var got: bool = await HighpolyUpdater.download_for_scene(dock, EditorInterface.get_edited_scene_root(),
+			func(msg: String): lbl.text = msg)
+		if got:
+			_apply_scene()
+		else:
+			_revert_low())
+	dlg.canceled.connect(func():
+		_revert_low()
+		dlg.queue_free())
+	EditorInterface.popup_dialog_centered(dlg)
+
+func _revert_low() -> void:
+	mode_btn.select(mode_btn.get_item_index(HighpolyLib.Tier.LOW))
+	previews.tier = HighpolyLib.Tier.LOW
 	_apply_scene()
 
 func _apply_scene() -> void:
