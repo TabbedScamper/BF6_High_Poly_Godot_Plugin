@@ -187,9 +187,14 @@ static func _perm_bases() -> Array:
 	return out
 
 static func _fit_eval(pd: Vector3, rd: Vector3) -> Array:
+	# ignore dimensions that are tiny in absolute terms OR relative to the
+	# object (a door's thickness measuring 0.17 vs 0.26 must not veto the
+	# match when width/height agree perfectly)
+	var pmax: float = max(pd.x, max(pd.y, pd.z))
+	var thin: float = max(0.05, 0.12 * pmax)
 	var ratios: Array = []
 	for i in range(3):
-		if pd[i] > 0.05 and rd[i] > 0.05:
+		if pd[i] > thin and rd[i] > thin:
 			ratios.append(pd[i] / rd[i])
 	if ratios.is_empty(): return [1.0, 1.0]
 	var s := 0.0
