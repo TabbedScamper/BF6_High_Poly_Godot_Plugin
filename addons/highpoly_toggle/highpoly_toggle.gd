@@ -60,7 +60,9 @@ func _enter_tree() -> void:
 
 	var upd := Button.new(); upd.text = "Update Models"
 	upd.tooltip_text = "Pull corrected models from the community registry (only props deployed locally)"
-	upd.pressed.connect(func(): HighpolyUpdater.run(dock, func(msg: String): lbl.text = msg))
+	upd.pressed.connect(func():
+		previews.clear_cache()
+		HighpolyUpdater.run(dock, func(msg: String): lbl.text = msg))
 	dock.add_child(upd)
 
 	var sep3 := HSeparator.new(); dock.add_child(sep3)
@@ -153,6 +155,7 @@ func _prompt_download(n: int) -> void:
 		lbl.text = "Downloading…"
 		var got: bool = await HighpolyUpdater.download_for_scene(dock, EditorInterface.get_edited_scene_root(),
 			func(msg: String): lbl.text = msg)
+		previews.clear_cache()
 		if got:
 			_apply_scene()
 		else:
@@ -195,6 +198,7 @@ Your scene and the low-poly proxies are not affected."
 			HighpolyLib.apply(r, HighpolyLib.Tier.LOW, true)
 		mode_btn.select(mode_btn.get_item_index(HighpolyLib.Tier.LOW))
 		previews.tier = HighpolyLib.Tier.LOW
+		previews.clear_cache()
 		var n := HighpolyLib.purge_all()
 		EditorInterface.get_resource_filesystem().scan()
 		lbl.text = "Purged %d model folder(s)" % n)
