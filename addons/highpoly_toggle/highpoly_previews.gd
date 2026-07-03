@@ -20,10 +20,14 @@ func _ready() -> void:
 func _find_lists() -> Array:
 	var out: Array = []
 	for il in get_tree().root.find_children("*", "ItemList", true, false):
-		if il.item_count > 0:
-			var md = il.get_item_metadata(0)
+		if il.item_count == 0:
+			continue
+		# folder rows (FX/SFX) sit first, so scan a few items for a real asset
+		for i in range(mini(il.item_count, 6)):
+			var md = il.get_item_metadata(i)
 			if md is Dictionary and md.has("path"):
 				out.append(il)
+				break
 	return out
 
 func _refresh() -> void:
