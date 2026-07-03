@@ -11,7 +11,9 @@ var lbl: Label
 var mode_btn: OptionButton
 var tex_chk: CheckBox
 const PreviewsScript = preload("res://addons/highpoly_toggle/highpoly_previews.gd")
+const TurboScript = preload("res://addons/highpoly_toggle/highpoly_turbo.gd")
 var previews: Node
+var turbo: Node
 
 const META_MODE := "highpoly_mode"
 const META_TEX := "highpoly_textured"
@@ -64,6 +66,38 @@ func _enter_tree() -> void:
 	upd.pressed.connect(func(): HighpolyUpdater.run(dock, func(msg: String): lbl.text = msg))
 	dock.add_child(upd)
 
+	var sep3 := HSeparator.new(); dock.add_child(sep3)
+	var turbo_title := Label.new(); turbo_title.text = "Turbo"
+	dock.add_child(turbo_title)
+
+	var dist_row := HBoxContainer.new(); dock.add_child(dist_row)
+	var dist_lbl := Label.new(); dist_lbl.text = "Cull dist"
+	dist_row.add_child(dist_lbl)
+	var dist := HSlider.new()
+	dist.min_value = 0; dist.max_value = 500; dist.step = 10
+	dist.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	dist.tooltip_text = "Hide geometry beyond this distance (0 = off). Renderer-native, never saved."
+	dist_row.add_child(dist)
+	var dist_val := Label.new(); dist_val.text = "off"
+	dist_row.add_child(dist_val)
+	dist.value_changed.connect(func(v: float):
+		dist_val.text = "off" if v <= 0 else "%dm" % int(v)
+		turbo.cull_distance = v
+		turbo.apply_distance())
+
+	var frus := CheckBox.new(); frus.text = "Cull behind camera (static map)"
+	frus.tooltip_text = "Aggressively hides static map geometry outside your view so it skips shadow passes too"
+	frus.toggled.connect(func(v: bool): turbo.set_frustum(v))
+	dock.add_child(frus)
+
+	var shad := CheckBox.new(); shad.text = "Static map shadows"
+	shad.button_pressed = true
+	shad.tooltip_text = "Uncheck to stop static scenery casting shadows (large editor FPS win)"
+	shad.toggled.connect(func(v: bool):
+		turbo.static_shadows = v
+		turbo.apply_shadows())
+	dock.add_child(shad)
+
 	lbl = Label.new()
 	lbl.text = "%d high-poly assets available" % HighpolyLib.keys().size()
 	lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -73,6 +107,9 @@ func _enter_tree() -> void:
 
 	previews = PreviewsScript.new()
 	dock.add_child(previews)
+	turbo = TurboScript.new()
+	dock.add_child(turbo)
+	turbo.refresh.call_deferred()
 
 	# restore per-project mode
 	var es := EditorInterface.get_editor_settings()
