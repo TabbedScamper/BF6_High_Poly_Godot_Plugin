@@ -40,21 +40,23 @@ static func run(host: Node, status: Callable) -> void:
 		status.call("Manifest unreadable"); http.queue_free(); return
 	var base := url.get_base_dir() + "/"
 	var props: Dictionary = man["props"]
-	var to_update: Array = []
+	var to_update: Array = []   # [prox, remote_glb, hash, local_file, sidecar_key]
 	for prox in props.keys():
 		var dir := "res://highpoly/%s" % prox
 		if not DirAccess.dir_exists_absolute(dir):
 			continue                                   # not deployed locally
 		var remote: Dictionary = props[prox]
-		var rhash := str(remote.get("hash", ""))
-		if rhash == "": continue
 		var side := "%s/%s.json" % [dir, prox]
-		var lhash := ""
+		var sj: Dictionary = {}
 		if FileAccess.file_exists(side):
 			var j: Variant = JSON.parse_string(FileAccess.get_file_as_string(side))
-			if j is Dictionary: lhash = str(j.get("hash", ""))
-		if lhash != rhash:
-			to_update.append([prox, str(remote.get("glb", "")), rhash])
+			if j is Dictionary: sj = j
+		var rhash := str(remote.get("hash", ""))
+		if rhash != "" and str(sj.get("hash", "")) != rhash:
+			to_update.append([prox, str(remote.get("glb", "")), rhash, "%s/%s.glb" % [dir, prox], "hash"])
+		var mhash := str(remote.get("med_hash", ""))
+		if mhash != "" and mhash != "null" and str(sj.get("med_hash", "")) != mhash:
+			to_update.append([prox, str(remote.get("med_glb", "")), mhash, "%s/%s_med.glb" % [dir, prox], "med_hash"])
 	if to_update.is_empty():
 		status.call("All models up to date"); http.queue_free(); return
 	var done := 0
@@ -64,13 +66,18 @@ static func run(host: Node, status: Callable) -> void:
 		var data := await _fetch(http, base + item[1])
 		if data.is_empty():
 			failed += 1; continue
-		var glb := "res://highpoly/%s/%s.glb" % [item[0], item[0]]
-		var f := FileAccess.open(glb, FileAccess.WRITE)
+		var f := FileAccess.open(item[3], FileAccess.WRITE)
 		if f == null: failed += 1; continue
 		f.store_buffer(data); f.close()
-		var s := FileAccess.open("res://highpoly/%s/%s.json" % [item[0], item[0]], FileAccess.WRITE)
+		var side := "res://highpoly/%s/%s.json" % [item[0], item[0]]
+		var sj: Dictionary = {}
+		if FileAccess.file_exists(side):
+			var j: Variant = JSON.parse_string(FileAccess.get_file_as_string(side))
+			if j is Dictionary: sj = j
+		sj[item[4]] = item[2]
+		var s := FileAccess.open(side, FileAccess.WRITE)
 		if s:
-			s.store_string(JSON.stringify({"hash": item[2]})); s.close()
+			s.store_string(JSON.stringify(sj)); s.close()
 		done += 1
 	http.queue_free()
 	EditorInterface.get_resource_filesystem().scan()
