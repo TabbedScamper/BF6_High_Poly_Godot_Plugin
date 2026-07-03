@@ -23,7 +23,7 @@ from build_site import fix_normal_z
 
 PIPE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA = os.path.join(PIPE, "data")
-DEFAULT_GP = r"C:\Users\mwalt\Dropbox\Personal-Files\Portal\PortalSDK\GodotProject"
+DEFAULT_GP = os.environ.get("PORTAL_GODOT_PROJECT", "")
 
 # multi-part assemblies that need several game meshes merged into one GLB
 ASSEMBLIES = {
@@ -107,10 +107,7 @@ def deploy_one(prox, game, hpdir, msidx):
         return None                            # up to date
     os.makedirs(d, exist_ok=True)
     build_mesh(game).export(dest)
-    med_src = os.path.join(os.environ.get("PIPELINE_MED", ""), game + ".glb") if os.environ.get("PIPELINE_MED") else ""
-    if os.path.exists(med_src):
-        import shutil
-        shutil.copy(med_src, os.path.join(d, prox + "_med.glb"))
+    build_mesh(game, texcap=256).export(os.path.join(d, prox + "_med.glb"))
     return None
 
 def main():
