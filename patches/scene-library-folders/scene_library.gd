@@ -128,6 +128,29 @@ var _hp_folder: Array = []   # active folder's source collections; empty = root
 static func _hp_hidden(cname: String) -> bool:
 	return cname.ends_with(" FX") or cname.ends_with(" SFX") 		or cname.begins_with("FX - All") or cname.begins_with("SFX - All")
 
+static var _hp_thumb_cache: Dictionary = {}
+
+func _hp_icon(icon_name: StringName) -> Texture2D:
+	var key := String(icon_name)
+	if _hp_thumb_cache.has(key):
+		return _hp_thumb_cache[key]
+	var src: Texture2D = get_theme_icon(icon_name, &"EditorIcons")
+	var img: Image = src.get_image()
+	if img == null:
+		return src
+	img = img.duplicate()
+	if img.is_compressed():
+		img.decompress()
+	img.convert(Image.FORMAT_RGBA8)
+	var side: int = int(THUMB_GRID_SIZE * 0.62)
+	img.resize(side, side, Image.INTERPOLATE_NEAREST)
+	var canvas := Image.create(THUMB_GRID_SIZE, THUMB_GRID_SIZE, false, Image.FORMAT_RGBA8)
+	canvas.blit_rect(img, Rect2i(0, 0, side, side),
+		Vector2i((THUMB_GRID_SIZE - side) / 2, (THUMB_GRID_SIZE - side) / 2))
+	var tex := ImageTexture.create_from_image(canvas)
+	_hp_thumb_cache[key] = tex
+	return tex
+
 func _hp_find(cname: String) -> Dictionary:
 	for c in _curr_lib:
 		if String(c.name) == cname:
@@ -755,8 +778,8 @@ func update_item_list() -> void:
 	var queries: PackedStringArray = _asset_filter_line.get_text().split(" ", false)
 
 	var index: int = 0
-	var _hp_fold_icon: Texture2D = get_theme_icon(&"Folder", &"EditorIcons")
-	var _hp_back_icon: Texture2D = get_theme_icon(&"Back", &"EditorIcons")
+	var _hp_fold_icon: Texture2D = _hp_icon(&"Folder")
+	var _hp_back_icon: Texture2D = _hp_icon(&"Back")
 	for fmeta: Dictionary in folders:
 		var flabel: String = "Back" if fmeta.has("__hp_back") else String(fmeta["__hp_label"])
 		_item_list.set_item_text(index, flabel)
@@ -782,6 +805,7 @@ func update_item_list() -> void:
 		index += 1
 
 	_item_list.set_item_count(index)
+	_update_thumb_icon_size(_asset_display_mode)
 
 
 func set_asset_display_mode(display_mode: DisplayMode) -> void:
