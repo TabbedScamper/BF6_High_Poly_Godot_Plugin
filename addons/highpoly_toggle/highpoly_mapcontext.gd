@@ -247,6 +247,111 @@ func _apply_maptile(root: Node, map: String) -> int:
 	root.add_child(dec); dec.owner = null
 	return 1
 
+# ---------- near-exact detail terrain (real game ground-layer textures) ----------
+# The maptile gives the real large-scale colour; the game's own tiling ground
+# layers (albedo + normal, extracted from the terrainmaterials palette) add crisp
+# close-up detail. Layer selected by surface slope (flat = ground, steep = cliff).
+# Normal is applied in view space (no mesh tangents needed).
+const LAYER_DIR := "res://addons/highpoly_toggle/terrain_layers/"
+const TERRAIN_SHADER := """
+shader_type spatial;
+render_mode cull_disabled;
+uniform sampler2D maptile : source_color, filter_linear_mipmap;
+uniform vec4 map_bounds;                 // xmin, zmin, sizeX, sizeZ (world)
+uniform sampler2D ground_alb : source_color, filter_linear_mipmap;
+uniform sampler2D ground_nrm : filter_linear_mipmap;
+uniform sampler2D cliff_alb : source_color, filter_linear_mipmap;
+uniform sampler2D cliff_nrm : filter_linear_mipmap;
+uniform float tile_scale = 4.0;          // world metres per detail-texture repeat
+uniform float detail_strength = 0.6;
+uniform float normal_strength = 0.8;
+uniform float slope_lo = 0.35;
+uniform float slope_hi = 0.70;
+uniform vec3 fallback_col : source_color = vec3(0.41, 0.43, 0.33);
+varying vec3 wpos;
+varying vec3 wnorm;
+void vertex() {
+	wpos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+	wnorm = normalize((MODEL_MATRIX * vec4(NORMAL, 0.0)).xyz);
+}
+void fragment() {
+	vec2 muv = vec2((wpos.x - map_bounds.x) / map_bounds.z, (wpos.z - map_bounds.y) / map_bounds.w);
+	float inmap = step(0.0, muv.x) * step(muv.x, 1.0) * step(0.0, muv.y) * step(muv.y, 1.0);
+	vec3 base = mix(fallback_col, texture(maptile, muv).rgb, inmap);
+	float slope = clamp(1.0 - wnorm.y, 0.0, 1.0);
+	float b = smoothstep(slope_lo, slope_hi, slope);
+	vec2 tuv = wpos.xz / tile_scale;
+	vec3 det = mix(texture(ground_alb, tuv).rgb, texture(cliff_alb, tuv).rgb, b);
+	float dl = dot(det, vec3(0.3333));
+	vec3 col = base * mix(1.0, dl * 2.0, detail_strength);
+	col *= mix(vec3(1.0), det / (dl + 1e-3), 0.35 * detail_strength);
+	ALBEDO = clamp(col, 0.0, 1.0);
+	ROUGHNESS = 0.92;
+	vec3 nrm = mix(texture(ground_nrm, tuv).rgb, texture(cliff_nrm, tuv).rgb, b);
+	vec2 nxy = (nrm.rg * 2.0 - 1.0) * normal_strength;
+	float nz = sqrt(clamp(1.0 - dot(nxy, nxy), 0.0, 1.0));
+	vec3 N = normalize(wnorm);
+	vec3 T = normalize(vec3(1.0, 0.0, 0.0) - N * N.x);
+	vec3 Bt = cross(N, T);
+	vec3 wn = normalize(nxy.x * T + nxy.y * Bt + nz * N);
+	NORMAL = normalize((VIEW_MATRIX * vec4(wn, 0.0)).xyz);
+}
+"""
+static var _tshader: Shader = null
+static var _layer_cache: Dictionary = {}
+
+func _layer_tex(nm: String) -> Texture2D:
+	if _layer_cache.has(nm): return _layer_cache[nm]
+	var p := LAYER_DIR + nm + ".png"
+	var t: Texture2D = load(p) if ResourceLoader.exists(p) else null
+	_layer_cache[nm] = t
+	return t
+
+# Build the detail-terrain material for this map, or null if the maptile or the
+# ground-layer set isn't available (→ caller falls back to the flat decal).
+func _terrain_shader_mat(map: String) -> ShaderMaterial:
+	if not MAPTILE_DECALS.has(map): return null
+	var img := "res://raw/maptiles/%s.jpg" % map
+	if not ResourceLoader.exists(img): return null
+	var ga := _layer_tex("ground_alb"); var gn := _layer_tex("ground_nrm")
+	var ca := _layer_tex("cliff_alb"); var cn := _layer_tex("cliff_nrm")
+	if ga == null or gn == null or ca == null or cn == null: return null
+	if _tshader == null:
+		_tshader = Shader.new(); _tshader.code = TERRAIN_SHADER
+	var d: Dictionary = MAPTILE_DECALS[map]
+	var pos: Vector3 = d["pos"]; var sz: Vector3 = d["size"]
+	var m := ShaderMaterial.new()
+	m.shader = _tshader
+	m.set_shader_parameter("maptile", load(img))
+	m.set_shader_parameter("map_bounds", Vector4(pos.x - sz.x * 0.5, pos.z - sz.z * 0.5, sz.x, sz.z))
+	m.set_shader_parameter("ground_alb", ga); m.set_shader_parameter("ground_nrm", gn)
+	m.set_shader_parameter("cliff_alb", ca); m.set_shader_parameter("cliff_nrm", cn)
+	return m
+
+func _collect_mesh_instances(n: Node, out: Array) -> void:
+	if n is MeshInstance3D and (n as MeshInstance3D).mesh != null: out.append(n)
+	for c in n.get_children(): _collect_mesh_instances(c, out)
+
+# Overlay owner=null duplicates of the SDK terrain meshes (sharing the same Mesh
+# resource) nudged up slightly, carrying the detail material. The real SDK nodes
+# are never modified, so the saved scene stays byte-identical.
+func _overlay_sdk_terrain(root: Node, map: String, ctx: Node3D, mat: Material) -> int:
+	var node := root.find_child("%s_Terrain" % map, true, false)
+	if node == null: return 0
+	var mis: Array = []
+	_collect_mesh_instances(node, mis)
+	var n := 0
+	for mi in mis:
+		var dup := MeshInstance3D.new()
+		dup.mesh = (mi as MeshInstance3D).mesh
+		dup.material_override = mat
+		dup.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		ctx.add_child(dup); dup.owner = null
+		dup.global_transform = (mi as MeshInstance3D).global_transform
+		dup.position.y += 0.12                              # sit just above the SDK terrain
+		n += 1
+	return n
+
 func _load_data(map: String) -> bool:
 	var p := "%s/%s/placements.json" % [CACHE, map]
 	if not FileAccess.file_exists(p): return false
@@ -336,28 +441,43 @@ func apply(root: Node, enabled: bool, show_objects: bool, textured: bool) -> Str
 	if map == "": return "Open a level scene (MP_…) first"
 	_clear(root)
 
-	# Load extended data first when enabling context, so the maptile overlay and
-	# the extended terrain share the exact same world bounds (per-map correct).
+	# Load extended data first when enabling context.
 	var have_data := false
 	if enabled:
 		have_data = _load_data(map)
 
-	# The maptile decal is driven by `textured` ALONE — so ticking just "Textures"
-	# (map context off) projects the shipped satellite over the default SDK
-	# terrain, and it also lands on our extended terrain when context is on.
-	var sdk_overlaid := 0
-	if textured:
-		sdk_overlaid = _apply_maptile(root, map)
-
-	if not enabled:
-		if textured:
-			return "SDK terrain textured" if sdk_overlaid > 0 else "No maptile for %s" % map
+	if not enabled and not textured:
 		return "Map Context off"
-	if not have_data:
-		return "%s not downloaded (hit Reload map data)" % map
+
+	# one owner=null container for all editor-only overlay geometry (never saved)
 	var ctx := Node3D.new(); ctx.name = NODE
 	root.add_child(ctx); ctx.owner = null
 	var dir := "%s/%s" % [CACHE, map]
+
+	# --- textured ground ---
+	# Near-exact terrain: the shipped maptile gives the real large-scale colour,
+	# and the game's own tiling ground-layer textures (albedo + normal) add crisp
+	# close-up detail, slope-selected (flat ground vs cliff). Applied via a shader
+	# to owner=null DUPLICATES of the SDK terrain (we never touch the saved node)
+	# and to our extended terrain. Falls back to the flat maptile decal for maps
+	# whose layer set isn't packaged yet.
+	var tmat: ShaderMaterial = null
+	var sdk_overlaid := 0
+	var detailed := false
+	if textured:
+		tmat = _terrain_shader_mat(map)
+		if tmat != null:
+			sdk_overlaid = _overlay_sdk_terrain(root, map, ctx, tmat)
+			detailed = true
+		else:
+			sdk_overlaid = _apply_maptile(root, map)   # fallback: flat satellite decal
+
+	if not enabled:
+		if not textured: return "Map Context off"
+		if detailed: return "SDK terrain textured (detail) — %d mesh(es)" % sdk_overlaid
+		return "SDK terrain textured" if sdk_overlaid > 0 else "No maptile for %s" % map
+	if not have_data:
+		return "%s not downloaded (hit Reload map data)" % map
 
 	# central terrain: always shown when enabled. The SDK's own playable terrain
 	# is only ~±600m (the gameplay bowl); our extracted terrain covers the full
@@ -369,9 +489,7 @@ func apply(root: Node, enabled: bool, show_objects: bool, textured: bool) -> Str
 		var tmi := _build_terrain_from_heightmap(dir, hm)   # full-accuracy mesh from raw 16-bit heights
 		if tmi:
 			tmi.position.y = -0.5                            # sit just under the SDK bowl in the overlap
-			# base stays SDK green everywhere; the maptile decal (injected above)
-			# projects the satellite onto the central playable area on top of it.
-			tmi.material_override = terrain_material()
+			tmi.material_override = tmat if (textured and tmat != null) else terrain_material()
 			ctx.add_child(tmi); tmi.owner = null
 
 	# backdrop (out-of-bounds surrounding landscape) — always shown when enabled;
@@ -415,7 +533,9 @@ func apply(root: Node, enabled: bool, show_objects: bool, textured: bool) -> Str
 	var miss := bd_total - bd_ok
 	var tail := "" if miss == 0 else "  (%d surrounding piece(s) missing — hit Reload map data)" % miss
 	var objs := ", %d object meshes" % n_props if show_objects else ", objects off"
-	var mt := ", maptile decal" if sdk_overlaid > 0 else ""
+	var mt := ""
+	if textured:
+		mt = ", detail terrain (%d SDK mesh)" % sdk_overlaid if detailed else ", maptile decal"
 	var tex := "textured" if textured else "flat colour"
 	return "%s: %s — %d/%d surroundings%s%s%s" % [map, tex, bd_ok, bd_total, objs, mt, tail]
 
