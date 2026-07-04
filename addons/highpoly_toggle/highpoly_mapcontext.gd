@@ -23,7 +23,6 @@ var _cells: Dictionary = {}        # "cx,cz" -> Array[MultiMeshInstance3D] (prop
 var _cell_size := 64.0
 var _world_min := -2048.0
 var _mesh_cache: Dictionary = {}   # model path -> Mesh
-var _overlaid: Array = []          # SDK meshes we put a maptile material_overlay on
 var terrain_step: int = 2          # metres per terrain vertex (1=full, 2=high, 4=medium)
 
 # Untextured "study" colours match the SDK's own placeholder look so our overlay
@@ -53,21 +52,38 @@ func assets_material() -> StandardMaterial3D:
 	if _assets_mat == null: _assets_mat = _flat_mat(ASSETS_ORANGE)
 	return _assets_mat
 
-# The shipped maptile jpg is 4096² covering the full world heightfield (±2048m,
-# 1px/m). Everything textured — the SDK's own terrain/assets AND our extended
-# out-of-bounds terrain — must share this ONE world→UV mapping or the pieces
-# show the image at different scales and don't line up. Read the real bounds
-# from the downloaded map data when present; otherwise fall back to ±2048.
-const WORLD_HALF := 2048.0
-# V orientation of the maptile jpg vs world +Z. Single source of truth so the
-# SDK-terrain overlay and the extended-terrain material always agree. Flip if
-# the satellite image comes in mirrored north/south.
-const MAPTILE_FLIP_V := 1.0
-func _maptile_bounds() -> Array:
-	var w: Dictionary = _data.get("world", {})
-	var lo: float = float(w.get("min", -WORLD_HALF))
-	var hi: float = float(w.get("max", WORLD_HALF))
-	return [lo, hi, lo, hi]
+# The shipped maptile jpg is a top-down satellite covering ONLY the playable
+# area (~1000-2100m per map, NOT the full heightfield). Rather than guess its
+# world extent, we reuse the exact per-map placement the community "TexturedMaps"
+# pack tuned by hand: a Decal projecting the jpg straight down onto whatever
+# terrain is beneath it (the SDK's terrain AND our extended terrain), so it lands
+# pixel-accurate with zero alignment math. pos = decal centre, size = XZ extent x
+# projection height, nf = normal_fade. Keyed by level-scene root name.
+const MAPTILE_DECALS := {
+	"MP_Abbasid": {"pos": Vector3(-84.688, 64.872, 122.928), "size": Vector3(1085, 100, 1085), "nf": 0.49},
+	"MP_Aftermath": {"pos": Vector3(-576.833, 61.616, -30.161), "size": Vector3(878, 150, 878), "nf": 0.514},
+	"MP_Badlands": {"pos": Vector3(0.475, 95.294, -100.406), "size": Vector3(1400, 100, 1400), "nf": 0.515},
+	"MP_Battery": {"pos": Vector3(696.983, 0, 88.527), "size": Vector3(1400, 500, 1400), "nf": 0.51},
+	"MP_Capstone": {"pos": Vector3(0.112, 0, -168.568), "size": Vector3(1400, 1000, 1400), "nf": 0.408},
+	"MP_Contaminated": {"pos": Vector3(-0.356, 262.189, -99.707), "size": Vector3(1400, 1000, 1400), "nf": 0.471},
+	"MP_Dumbo": {"pos": Vector3(0.137, 0, -154.76), "size": Vector3(1400, 1000, 1400), "nf": 0.496},
+	"MP_Eastwood": {"pos": Vector3(0.07, 0, -187.89), "size": Vector3(1400, 1000, 1400), "nf": 0},
+	"MP_FireStorm": {"pos": Vector3(0.144, 0, 21.261), "size": Vector3(1642, 1000, 1642), "nf": 0.492},
+	"MP_GolmudRailway": {"pos": Vector3(-125.62, 637.725, 850.344), "size": Vector3(2100, 1000, 2100), "nf": 0.489},
+	"MP_Granite_ClubHouse_Portal": {"pos": Vector3(-449.986, 193.789, -574.909), "size": Vector3(1000, 1000, 1000), "nf": 0.508},
+	"MP_Granite_MainStreet_Portal": {"pos": Vector3(-1106.69, 0, 152.565), "size": Vector3(1000, 1000, 1000), "nf": 0.51},
+	"MP_Granite_Marina_Portal": {"pos": Vector3(-1201.9, 122.79, -604.9), "size": Vector3(1000, 1000, 1000), "nf": 0.504},
+	"MP_Granite_MilitaryRnD_Portal": {"pos": Vector3(469, 0, -685.396), "size": Vector3(1000, 1000, 1000), "nf": 0.51},
+	"MP_Granite_MilitaryStorage_Portal": {"pos": Vector3(561.774, 0, 388.344), "size": Vector3(1000, 1000, 1000), "nf": 0.527},
+	"MP_Granite_TechCampus_Portal": {"pos": Vector3(-209.754, 0, 320.753), "size": Vector3(1000, 1000, 1000), "nf": 0.502},
+	"MP_Granite_Underground_Portal": {"pos": Vector3(785.048, 239.369, -404.124), "size": Vector3(1000, 200, 1000), "nf": 0.5},
+	"MP_Limestone": {"pos": Vector3(696.708, 22.57, 88.363), "size": Vector3(1400, 1000, 1400), "nf": 0.481},
+	"MP_Outskirts": {"pos": Vector3(-381.997, 0, -89.8), "size": Vector3(1740, 1000, 1740), "nf": 0.532},
+	"MP_Plaza": {"pos": Vector3(14.265, 0, 100.163), "size": Vector3(1000, 1000, 1000), "nf": 0.512},
+	"MP_Subsurface": {"pos": Vector3(0.513, 66.437, -104.04), "size": Vector3(1420, 100, 1420), "nf": 0.511},
+	"MP_Tungsten": {"pos": Vector3(60.235, 86.514, -25.078), "size": Vector3(1550, 100, 1550), "nf": 0.507},
+}
+const DECAL_NODE := "_MAPTILE_DECAL"
 
 # ---------- map identity ----------
 static func map_of(root: Node) -> String:
@@ -205,63 +221,31 @@ func _clear(root: Node) -> void:
 	var old := root.get_node_or_null(NODE)
 	if old: root.remove_child(old); old.queue_free()
 	_cells.clear()
-	# remove the maptile overlay we placed on the SDK terrain/assets (editor-only)
-	for n in _overlaid:
-		if is_instance_valid(n): (n as GeometryInstance3D).material_overlay = null
-	_overlaid.clear()
+	# remove the maptile decal (editor-only)
+	var dec := root.get_node_or_null(DECAL_NODE)
+	if dec: root.remove_child(dec); dec.queue_free()
 
-# ---------- SDK terrain/assets maptile overlay (textured mode) ----------
-const MAPTILE_SHADER := """
-shader_type spatial;
-render_mode blend_mix, cull_disabled, depth_draw_opaque, unshaded;
-uniform sampler2D maptile : source_color, filter_linear_mipmap;
-uniform vec4 bounds;            // minx, maxx, minz, maxz (world XZ)
-uniform float flip_v = 1.0;
-varying vec3 wpos;
-void vertex() { wpos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz; }
-void fragment() {
-	float u = (wpos.x - bounds.x) / (bounds.y - bounds.x);
-	float v = (wpos.z - bounds.z) / (bounds.w - bounds.z);
-	if (flip_v > 0.5) v = 1.0 - v;
-	if (u < 0.0 || u > 1.0 || v < 0.0 || v > 1.0) discard;
-	ALBEDO = texture(maptile, vec2(u, v)).rgb;
-}
-"""
-static var _maptile_shader_res: Shader = null
-
-func _mesh_instances(n: Node, out: Array) -> void:
-	if n is MeshInstance3D and (n as MeshInstance3D).mesh != null: out.append(n)
-	for c in n.get_children(): _mesh_instances(c, out)
-
-# Overlay the SDK's shipped top-down maptile (res://raw/maptiles/MP_<Map>.jpg)
-# on the SDK terrain + assets meshes via material_overlay. Reversible; never
-# saved. Uses the SHARED world→UV mapping (±2048), the same one the extended
-# terrain uses, so the SDK's playable area and our out-of-bounds terrain line
-# up seamlessly. Works even without map data downloaded.
+# ---------- SDK maptile (top-down satellite) ----------
+# Inject a Decal (owner=null) that projects the shipped maptile jpg straight
+# down onto whatever terrain is beneath it — the SDK's own terrain AND our
+# extended terrain — using the community pack's hand-tuned per-map placement.
+# Reversible, never saved. Works with or without extended map data downloaded.
 func _apply_maptile(root: Node, map: String) -> int:
+	if not MAPTILE_DECALS.has(map): return 0
 	var img_path := "res://raw/maptiles/%s.jpg" % map
 	if not ResourceLoader.exists(img_path): return 0
 	var tex = load(img_path)
 	if tex == null: return 0
-	if _maptile_shader_res == null:
-		_maptile_shader_res = Shader.new(); _maptile_shader_res.code = MAPTILE_SHADER
-	# gather SDK terrain + assets mesh instances
-	var targets: Array = []
-	for nm in ["%s_Terrain" % map, "%s_Assets" % map]:
-		var node := root.find_child(nm, true, false)
-		if node: _mesh_instances(node, targets)
-	if targets.is_empty(): return 0
-	var b := _maptile_bounds()
-	var flip := float(_data.get("maptile", {}).get("flip", MAPTILE_FLIP_V))
-	for mi in targets:
-		var sm := ShaderMaterial.new()
-		sm.shader = _maptile_shader_res
-		sm.set_shader_parameter("maptile", tex)
-		sm.set_shader_parameter("bounds", Vector4(b[0], b[1], b[2], b[3]))
-		sm.set_shader_parameter("flip_v", flip)
-		(mi as GeometryInstance3D).material_overlay = sm
-		_overlaid.append(mi)
-	return targets.size()
+	var d: Dictionary = MAPTILE_DECALS[map]
+	var dec := Decal.new()
+	dec.name = DECAL_NODE
+	dec.texture_albedo = tex
+	dec.size = d["size"]
+	dec.normal_fade = float(d.get("nf", 0.0))
+	dec.cull_mask = 0xFFFFF
+	dec.position = d["pos"]
+	root.add_child(dec); dec.owner = null
+	return 1
 
 func _load_data(map: String) -> bool:
 	var p := "%s/%s/placements.json" % [CACHE, map]
@@ -358,16 +342,16 @@ func apply(root: Node, enabled: bool, show_objects: bool, textured: bool) -> Str
 	if enabled:
 		have_data = _load_data(map)
 
-	# The maptile overlay on the SDK's own terrain/assets is driven by `textured`
-	# ALONE — so ticking just "Textures" (map context off) drapes the shipped
-	# satellite image over the default SDK terrain, correctly aligned.
+	# The maptile decal is driven by `textured` ALONE — so ticking just "Textures"
+	# (map context off) projects the shipped satellite over the default SDK
+	# terrain, and it also lands on our extended terrain when context is on.
 	var sdk_overlaid := 0
 	if textured:
 		sdk_overlaid = _apply_maptile(root, map)
 
 	if not enabled:
 		if textured:
-			return "SDK terrain textured (%d mesh%s)" % [sdk_overlaid, "" if sdk_overlaid == 1 else "es"]
+			return "SDK terrain textured" if sdk_overlaid > 0 else "No maptile for %s" % map
 		return "Map Context off"
 	if not have_data:
 		return "%s not downloaded (hit Reload map data)" % map
@@ -385,10 +369,9 @@ func apply(root: Node, enabled: bool, show_objects: bool, textured: bool) -> Str
 		var tmi := _build_terrain_from_heightmap(dir, hm)   # full-accuracy mesh from raw 16-bit heights
 		if tmi:
 			tmi.position.y = -0.5                            # sit just under the SDK bowl in the overlap
-			if textured:
-				tmi.material_override = _maptile_material(map)   # shared ±2048 world→UV
-			else:
-				tmi.material_override = terrain_material()   # SDK-matched green
+			# base stays SDK green everywhere; the maptile decal (injected above)
+			# projects the satellite onto the central playable area on top of it.
+			tmi.material_override = terrain_material()
 			ctx.add_child(tmi); tmi.owner = null
 
 	# backdrop (out-of-bounds surrounding landscape) — always shown when enabled;
@@ -432,7 +415,7 @@ func apply(root: Node, enabled: bool, show_objects: bool, textured: bool) -> Str
 	var miss := bd_total - bd_ok
 	var tail := "" if miss == 0 else "  (%d surrounding piece(s) missing — hit Reload map data)" % miss
 	var objs := ", %d object meshes" % n_props if show_objects else ", objects off"
-	var mt := "" if sdk_overlaid == 0 else ", maptile on %d SDK mesh(es)" % sdk_overlaid
+	var mt := ", maptile decal" if sdk_overlaid > 0 else ""
 	var tex := "textured" if textured else "flat colour"
 	return "%s: %s — %d/%d surroundings%s%s%s" % [map, tex, bd_ok, bd_total, objs, mt, tail]
 
@@ -500,19 +483,6 @@ func _heightmap_mesh(raw: PackedByteArray, res: int, step: int, meta: Dictionary
 	var am := ArrayMesh.new()
 	am.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr)
 	return am
-
-func _maptile_material(map: String) -> Material:
-	var img_path := "res://raw/maptiles/%s.jpg" % map
-	if not ResourceLoader.exists(img_path): return terrain_material()
-	if _maptile_shader_res == null:
-		_maptile_shader_res = Shader.new(); _maptile_shader_res.code = MAPTILE_SHADER
-	var b := _maptile_bounds()
-	var sm := ShaderMaterial.new()
-	sm.shader = _maptile_shader_res
-	sm.set_shader_parameter("maptile", load(img_path))
-	sm.set_shader_parameter("bounds", Vector4(b[0], b[1], b[2], b[3]))
-	sm.set_shader_parameter("flip_v", float(_data.get("maptile", {}).get("flip", MAPTILE_FLIP_V)))
-	return sm
 
 func _load_external_glb(abs_or_res: String) -> PackedScene:
 	# user:// glbs aren't imported; load via runtime GLTF; res:// via normal loader
