@@ -101,6 +101,11 @@ func _enter_tree() -> void:
 		mcr_val.text = "%dm" % int(v)
 		mapctx.set_radius(v))
 
+	var mc_reload := Button.new(); mc_reload.text = "Reload map data"
+	mc_reload.tooltip_text = "Re-download any map pieces that didn't come in (e.g. throttled) and rebuild the current mode."
+	mc_reload.pressed.connect(_mapctx_reload)
+	dock.add_child(mc_reload)
+
 	var sep3 := HSeparator.new(); dock.add_child(sep3)
 	var turbo_title := Label.new(); turbo_title.text = "Turbo"
 	dock.add_child(turbo_title)
@@ -169,6 +174,23 @@ func _exit_tree() -> void:
 	if dock:
 		remove_control_from_docks(dock)
 		dock.queue_free()
+
+func _mapctx_reload() -> void:
+	# explicit retry: OptionButton doesn't re-fire when you pick the same mode,
+	# so this button force-downloads missing pieces and rebuilds the current mode
+	var m := mapctx_btn.get_selected_id()
+	var r := EditorInterface.get_edited_scene_root()
+	var map: String = mapctx.map_of(r)
+	if map == "":
+		lbl.text = "Open a level scene (MP_…) first"; return
+	if m == 0:
+		lbl.text = "Pick a Map Context mode first"; return
+	lbl.text = "Reloading %s map data…" % map
+	var ok: bool = await mapctx.download_map(dock, map, func(s: String): lbl.text = s)
+	if ok:
+		lbl.text = mapctx.apply(r, m)
+	else:
+		lbl.text = "Could not fetch %s map data" % map
 
 func _mapctx_changed() -> void:
 	var m := mapctx_btn.get_selected_id()
