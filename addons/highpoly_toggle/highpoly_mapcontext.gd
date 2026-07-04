@@ -14,9 +14,8 @@ class_name HighpolyMapContext
 const NODE := "_MAP_CONTEXT"
 const CACHE := "user://mapcontext"
 
-enum Mode { OFF, EXTENTS, FULL, FULL_TEXTURED }
-
-var mode: int = Mode.OFF
+var _active := false               # Map Context enabled at all
+var _show_objects := false         # original map objects (props) layer on
 var radius: float = 768.0          # metres; props beyond this are hidden
 var _map := ""
 var _data: Dictionary = {}
@@ -26,6 +25,35 @@ var _world_min := -2048.0
 var _mesh_cache: Dictionary = {}   # model path -> Mesh
 var _overlaid: Array = []          # SDK meshes we put a maptile material_overlay on
 var terrain_step: int = 2          # metres per terrain vertex (1=full, 2=high, 4=medium)
+
+# Untextured "study" colours match the SDK's own placeholder look so our overlay
+# blends seamlessly with the shipped terrain/assets: green for land, orange for
+# objects. Sampled from M_LevelTerrain / M_LevelAssets. A small emission floor
+# keeps them readable even where the scene's ambient light is dark/blue.
+const TERRAIN_GREEN := Color(0.4078, 0.5608, 0.3098)
+const ASSETS_ORANGE := Color(1.0, 0.6745, 0.4706)
+static var _terrain_mat: StandardMaterial3D = null
+static var _assets_mat: StandardMaterial3D = null
+
+static func _flat_mat(c: Color) -> StandardMaterial3D:
+	var m := StandardMaterial3D.new()
+	m.albedo_color = c
+	m.roughness = 0.98
+	m.metallic = 0.0
+	m.cull_mode = BaseMaterial3D.CULL_DISABLED
+	# emission floor: never let dark ambient crush the surface to bluish-black
+	m.emission_enabled = true
+	m.emission = c
+	m.emission_energy_multiplier = 0.18
+	return m
+
+func terrain_material() -> StandardMaterial3D:
+	if _terrain_mat == null: _terrain_mat = _flat_mat(TERRAIN_GREEN)
+	return _terrain_mat
+
+func assets_material() -> StandardMaterial3D:
+	if _assets_mat == null: _assets_mat = _flat_mat(ASSETS_ORANGE)
+	return _assets_mat
 
 # ---------- map identity ----------
 static func map_of(root: Node) -> String:
@@ -295,7 +323,7 @@ func _xform(a: Array, o: int) -> Transform3D:
 	t.origin = Vector3(a[o+9], a[o+10], a[o+11])
 	return t
 
-func _add_multimesh(parent: Node3D, mesh: Mesh, xf: Array, textured: bool) -> void:
+func _add_multimesh(parent: Node3D, mesh: Mesh, xf: Array, textured: bool, flat_mat: Material) -> void:
 	var count := int(xf.size() / 12)
 	if mesh == null or count == 0: return
 	var mm := MultiMesh.new()
@@ -307,30 +335,33 @@ func _add_multimesh(parent: Node3D, mesh: Mesh, xf: Array, textured: bool) -> vo
 	var mmi := MultiMeshInstance3D.new()
 	mmi.multimesh = mm
 	if not textured:
-		mmi.material_override = HighpolyLib.gray_material()
+		mmi.material_override = flat_mat
 	mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF   # perf
 	parent.add_child(mmi)
 
-# Build the _MAP_CONTEXT subtree for the given mode. Everything owner=null.
-func apply(root: Node, want_mode: int) -> String:
-	mode = want_mode
+# Build the _MAP_CONTEXT subtree. Everything owner=null.
+#   enabled      – Map Context on at all (terrain + surroundings baseline)
+#   show_objects – add the game's original object placements (props layer)
+#   textured     – real textures instead of the flat green/orange study colours
+func apply(root: Node, enabled: bool, show_objects: bool, textured: bool) -> String:
+	_active = enabled
+	_show_objects = show_objects
 	if root == null: return "No scene open"
 	var map := map_of(root)
 	if map == "": return "Open a level scene (MP_…) first"
 	_clear(root)
-	if mode == Mode.OFF: return "Map Context off"
+	if not enabled: return "Map Context off"
 	if not _load_data(map):
 		return "%s not downloaded" % map
 	var ctx := Node3D.new(); ctx.name = NODE
 	root.add_child(ctx); ctx.owner = null
 	var dir := "%s/%s" % [CACHE, map]
-	var textured := mode == Mode.FULL_TEXTURED
 
-	# central terrain: loaded in EVERY non-off mode. The SDK's own playable
-	# terrain is only ~±600m (the gameplay bowl); our extracted terrain covers
-	# the full ±2048 heightfield, filling the ring gap between the SDK bowl and
-	# the near backdrop tiles (which start at ~±2043). Nudged down 0.5m so the
-	# SDK's detailed bowl stays on top where they overlap.
+	# central terrain: always shown when enabled. The SDK's own playable terrain
+	# is only ~±600m (the gameplay bowl); our extracted terrain covers the full
+	# ±2048 heightfield, filling the ring gap between the SDK bowl and the near
+	# backdrop tiles (~±2043). Nudged down 0.5m so the SDK's detailed bowl stays
+	# on top where they overlap.
 	var hm: Dictionary = _data.get("heightmap", {})
 	if hm.has("file"):
 		var tmi := _build_terrain_from_heightmap(dir, hm)   # full-accuracy mesh from raw 16-bit heights
@@ -339,14 +370,11 @@ func apply(root: Node, want_mode: int) -> String:
 			if textured:
 				tmi.material_override = _maptile_material(map, [hm.get("world_min",-2048), hm.get("world_max",2048), hm.get("world_min",-2048), hm.get("world_max",2048)])
 			else:
-				var tg := StandardMaterial3D.new()
-				tg.albedo_color = Color(0.62, 0.63, 0.6)
-				tg.roughness = 0.95
-				tg.cull_mode = BaseMaterial3D.CULL_DISABLED
-				tmi.material_override = tg
+				tmi.material_override = terrain_material()   # SDK-matched green
 			ctx.add_child(tmi); tmi.owner = null
 
-	# backdrop (out-of-bounds surroundings) — shown in every non-off mode
+	# backdrop (out-of-bounds surrounding landscape) — always shown when enabled;
+	# it's terrain family, so it takes the green study colour when untextured.
 	var bd_root := Node3D.new(); bd_root.name = "Backdrop"
 	ctx.add_child(bd_root); bd_root.owner = null
 	var bd_ok := 0; var bd_total := 0
@@ -368,32 +396,31 @@ func apply(root: Node, want_mode: int) -> String:
 		elif e.has("model"):
 			mesh = _mesh_for(str(e["model"]))
 		if mesh:
-			_add_multimesh(bd_root, mesh, e.get("xf", []), textured)
+			_add_multimesh(bd_root, mesh, e.get("xf", []), textured, terrain_material())
 			bd_ok += 1
 
-	# props (interactive layer) — only in FULL / FULL_TEXTURED, streamed by cell
+	# props (original map objects) — only when show_objects; orange when untextured
 	var n_props := 0
-	if mode != Mode.EXTENTS:
+	if show_objects:
 		var props_root := Node3D.new(); props_root.name = "Props"
 		ctx.add_child(props_root); props_root.owner = null
 		for e in _data.get("props", []):
 			if not (e is Dictionary): continue
 			var mesh := _mesh_for(str(e.get("model", "")))
 			if mesh == null: continue
-			_add_cell_multimeshes(props_root, mesh, e.get("xf", []), textured)
+			_add_cell_multimeshes(props_root, mesh, e.get("xf", []), textured, assets_material())
 			n_props += 1
 		_apply_radius()
-	# textured mode: drape the SDK's shipped maptile over its terrain + assets
+	# textured: drape the SDK's shipped maptile over its terrain + assets
 	var overlaid := 0
 	if textured:
 		overlaid = _apply_maptile(root, map)
 	var miss := bd_total - bd_ok
-	var tail := "" if miss == 0 else "  (%d surrounding piece(s) missing — pick the mode again to retry the download)" % miss
-	if mode == Mode.EXTENTS:
-		var hint := "  — zoom out to see the surrounding landscape (it rings the map several km out)" if miss == 0 else ""
-		return "%s: surroundings %d/%d pieces%s%s" % [map, bd_ok, bd_total, hint, tail]
+	var tail := "" if miss == 0 else "  (%d surrounding piece(s) missing — hit Reload map data)" % miss
+	var objs := ", %d object meshes" % n_props if show_objects else ", objects off"
 	var mt := "" if overlaid == 0 else ", maptile on %d SDK mesh(es)" % overlaid
-	return "%s: %s — %d prop meshes, %d/%d surroundings%s%s" % [map, ["off","extents","full","full+tex"][mode], n_props, bd_ok, bd_total, mt, tail]
+	var tex := "textured" if textured else "flat colour"
+	return "%s: %s — %d/%d surroundings%s%s%s" % [map, tex, bd_ok, bd_total, objs, mt, tail]
 
 # ---------- full-accuracy terrain from the raw 16-bit heightmap ----------
 # Godot downsamples 16-bit PNGs to 8-bit, so heights ship as a raw uint16 blob
@@ -489,7 +516,7 @@ func _load_external_glb(abs_or_res: String) -> PackedScene:
 	var ps := PackedScene.new(); ps.pack(scene); scene.queue_free()
 	return ps
 
-func _add_cell_multimeshes(parent: Node3D, mesh: Mesh, xf: Array, textured: bool) -> void:
+func _add_cell_multimeshes(parent: Node3D, mesh: Mesh, xf: Array, textured: bool, flat_mat: Material) -> void:
 	# split this mesh's placements into world cells so the streamer can hide far ones
 	var buckets: Dictionary = {}   # "cx,cz" -> PackedFloat32Array
 	var count := int(xf.size() / 12)
@@ -500,24 +527,19 @@ func _add_cell_multimeshes(parent: Node3D, mesh: Mesh, xf: Array, textured: bool
 		if not buckets.has(key): buckets[key] = []
 		for j in range(12): buckets[key].append(xf[i * 12 + j])
 	for key in buckets.keys():
-		var mmi := _build_mmi(mesh, buckets[key], textured)
+		var mmi := _build_mmi(mesh, buckets[key], textured, flat_mat)
 		parent.add_child(mmi); mmi.owner = null
 		if not _cells.has(key): _cells[key] = []
 		_cells[key].append(mmi)
 
-func _build_mmi(mesh: Mesh, xf: Array, textured: bool) -> MultiMeshInstance3D:
+func _build_mmi(mesh: Mesh, xf: Array, textured: bool, flat_mat: Material) -> MultiMeshInstance3D:
 	var mm := MultiMesh.new(); mm.transform_format = MultiMesh.TRANSFORM_3D; mm.mesh = mesh
 	var count := int(xf.size() / 12); mm.instance_count = count
 	for i in range(count): mm.set_instance_transform(i, _xform(xf, i * 12))
 	var mmi := MultiMeshInstance3D.new(); mmi.multimesh = mm
-	if not textured: mmi.material_override = HighpolyLib.gray_material()
+	if not textured: mmi.material_override = flat_mat
 	mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	return mmi
-
-func _gray(n: Node) -> void:
-	if n is GeometryInstance3D:
-		(n as GeometryInstance3D).material_override = HighpolyLib.gray_material()
-	for c in n.get_children(): _gray(c)
 
 # ---------- distance streaming (called by the dock on a timer) ----------
 func set_radius(r: float) -> void:
@@ -543,6 +565,6 @@ func _editor_cam() -> Camera3D:
 	return vp.get_camera_3d() if vp else null
 
 func tick() -> void:
-	# called by the dock timer while a full mode is active
-	if mode == Mode.FULL or mode == Mode.FULL_TEXTURED:
+	# called by the dock timer while objects are shown (streamed by distance)
+	if _active and _show_objects:
 		_apply_radius()

@@ -16,7 +16,9 @@ const MapContextScript = preload("res://addons/highpoly_toggle/highpoly_mapconte
 var previews: Node
 var turbo: Node
 var mapctx: Node
-var mapctx_btn: OptionButton
+var mapctx_on: CheckBox        # Map Context enabled
+var mapctx_objects: CheckBox   # show original map objects
+var mapctx_tex: CheckBox       # show textures (else flat SDK green/orange)
 var mapctx_timer: Timer
 
 func _mode() -> int:
@@ -78,14 +80,23 @@ func _enter_tree() -> void:
 	var mc_title := Label.new(); mc_title.text = "Map Context"
 	dock.add_child(mc_title)
 
-	mapctx_btn = OptionButton.new()
-	mapctx_btn.add_item("Off", 0)
-	mapctx_btn.add_item("Surroundings (keep SDK terrain)", 1)
-	mapctx_btn.add_item("Full map objects", 2)
-	mapctx_btn.add_item("Full map, textured", 3)
-	mapctx_btn.tooltip_text = "Editor-only overlay (never saved). \"Surroundings\" keeps the SDK's playable terrain and adds the out-of-bounds landscape; \"Full map\" adds the real terrain + the game's original object placements."
-	mapctx_btn.item_selected.connect(func(_i): _mapctx_changed())
-	dock.add_child(mapctx_btn)
+	mapctx_on = CheckBox.new()
+	mapctx_on.text = "Show map context"
+	mapctx_on.tooltip_text = "Editor-only overlay (never saved). Adds the real out-of-bounds terrain + surrounding landscape around the SDK's playable area."
+	mapctx_on.toggled.connect(func(_v): _mapctx_changed())
+	dock.add_child(mapctx_on)
+
+	mapctx_objects = CheckBox.new()
+	mapctx_objects.text = "Original map objects"
+	mapctx_objects.tooltip_text = "Also inject the game's original object placements (vehicles, props, antennas, chairs…)."
+	mapctx_objects.toggled.connect(func(_v): _mapctx_changed())
+	dock.add_child(mapctx_objects)
+
+	mapctx_tex = CheckBox.new()
+	mapctx_tex.text = "Textures"
+	mapctx_tex.tooltip_text = "On: real textures. Off: flat SDK study colours (green land, orange objects) that blend with the shipped terrain."
+	mapctx_tex.toggled.connect(func(_v): _mapctx_changed())
+	dock.add_child(mapctx_tex)
 
 	var mcr_row := HBoxContainer.new(); dock.add_child(mcr_row)
 	var mcr_lbl := Label.new(); mcr_lbl.text = "Range"
@@ -114,7 +125,7 @@ func _enter_tree() -> void:
 	td_row.add_child(td)
 	td.item_selected.connect(func(_i):
 		mapctx.terrain_step = td.get_item_id(td.selected)
-		_mapctx_reload())
+		_mapctx_rebuild())
 
 	var mc_reload := Button.new(); mc_reload.text = "Reload map data"
 	mc_reload.tooltip_text = "Re-download any map pieces that didn't come in (e.g. throttled) and rebuild the current mode."
@@ -190,50 +201,55 @@ func _exit_tree() -> void:
 		remove_control_from_docks(dock)
 		dock.queue_free()
 
+func _mapctx_rebuild() -> void:
+	# rebuild with current toggles, no re-download (e.g. terrain detail changed)
+	if not mapctx_on.button_pressed: return
+	var r := EditorInterface.get_edited_scene_root()
+	if mapctx.map_of(r) == "": return
+	lbl.text = mapctx.apply(r, true, mapctx_objects.button_pressed, mapctx_tex.button_pressed)
+
 func _mapctx_reload() -> void:
-	# explicit retry: OptionButton doesn't re-fire when you pick the same mode,
-	# so this button force-downloads missing pieces and rebuilds the current mode
-	var m := mapctx_btn.get_selected_id()
+	# explicit retry: force-download the map data (even if a stale cache looks
+	# complete) and rebuild with the current toggles
 	var r := EditorInterface.get_edited_scene_root()
 	var rn := "<none>" if r == null else String(r.name)
 	var map: String = mapctx.map_of(r)
-	print("[MapContext] Reload pressed — scene root='%s', detected map='%s', mode=%d" % [rn, map, m])
+	print("[MapContext] Reload pressed — scene root='%s', detected map='%s'" % [rn, map])
 	if map == "":
 		lbl.text = "Scene root is '%s' — open an MP_… level scene" % rn; return
-	if m == 0:
-		lbl.text = "Pick a Map Context mode first (dropdown)"; return
+	if not mapctx_on.button_pressed:
+		lbl.text = "Turn on \"Show map context\" first"; return
 	print("[MapContext] before: " + mapctx.cache_status(map))
 	lbl.text = "Reloading %s map data…" % map
 	var ok: bool = await mapctx.download_map(dock, map, func(s: String): lbl.text = s, true)
 	print("[MapContext] after:  " + mapctx.cache_status(map))
 	if ok:
-		var res: String = mapctx.apply(r, m)
-		print("[MapContext] apply -> " + res)
-		lbl.text = res
+		lbl.text = mapctx.apply(r, true, mapctx_objects.button_pressed, mapctx_tex.button_pressed)
+		print("[MapContext] apply -> " + lbl.text)
 	else:
 		lbl.text = "Could not fetch %s map data (see Output)" % map
 
 func _mapctx_changed() -> void:
-	var m := mapctx_btn.get_selected_id()
+	var on := mapctx_on.button_pressed
+	var objs := mapctx_objects.button_pressed
+	var tex := mapctx_tex.button_pressed
 	var r := EditorInterface.get_edited_scene_root()
 	var rn := "<none>" if r == null else String(r.name)
 	var map: String = mapctx.map_of(r)
-	print("[MapContext] mode changed -> id=%d, scene root='%s', map='%s'" % [m, rn, map])
-	if m == 0 or map == "":
-		if map == "" and m != 0:
-			lbl.text = "Scene root is '%s' — open an MP_… level scene" % rn
-		else:
-			lbl.text = mapctx.apply(r, 0)
+	print("[MapContext] toggles -> on=%s objects=%s tex=%s, root='%s', map='%s'" % [on, objs, tex, rn, map])
+	if not on:
+		lbl.text = mapctx.apply(r, false, false, false); return
+	if map == "":
+		lbl.text = "Scene root is '%s' — open an MP_… level scene" % rn
+		mapctx_on.set_pressed_no_signal(false)
 		return
 	if mapctx.has_data(map):
 		# already have the manifest — top up any missing pieces (idempotent,
 		# offline-fast when complete), then apply
-		print("[MapContext] have manifest; ensuring data complete then applying…")
 		lbl.text = "Loading %s…" % map
 		await mapctx.download_map(dock, map, func(s: String): lbl.text = s)
-		var res: String = mapctx.apply(r, m)
-		print("[MapContext] apply -> " + res)
-		lbl.text = res; return
+		lbl.text = mapctx.apply(r, true, objs, tex)
+		print("[MapContext] apply -> " + lbl.text); return
 	# not downloaded yet — prompt
 	var dlg := ConfirmationDialog.new()
 	dlg.dialog_text = "Map data for %s isn't downloaded yet.\nDownload the terrain + object layout now? (~tens of MB, one time per map)" % map
@@ -243,13 +259,13 @@ func _mapctx_changed() -> void:
 		lbl.text = "Downloading map data…"
 		var ok: bool = await mapctx.download_map(dock, map, func(s: String): lbl.text = s)
 		if ok:
-			lbl.text = mapctx.apply(r, m)
+			lbl.text = mapctx.apply(r, true, objs, tex)
 		else:
-			mapctx_btn.select(0)
-			lbl.text = mapctx.apply(r, 0))
+			mapctx_on.set_pressed_no_signal(false)
+			lbl.text = mapctx.apply(r, false, false, false))
 	dlg.canceled.connect(func():
-		mapctx_btn.select(0)
-		lbl.text = mapctx.apply(r, 0)
+		mapctx_on.set_pressed_no_signal(false)
+		lbl.text = mapctx.apply(r, false, false, false)
 		dlg.queue_free())
 	EditorInterface.popup_dialog_centered(dlg)
 
