@@ -269,11 +269,11 @@ uniform sampler2D ground_nrm : filter_linear_mipmap;
 uniform sampler2D cliff_alb : source_color, filter_linear_mipmap;
 uniform sampler2D cliff_nrm : filter_linear_mipmap;
 uniform float tile_scale = 4.0;          // world metres per detail-texture repeat
-uniform float detail_strength = 0.6;
-uniform float normal_strength = 0.8;
+uniform float detail_strength = 0.5;
+uniform float normal_strength = 0.7;
 uniform float slope_lo = 0.35;
 uniform float slope_hi = 0.70;
-uniform vec3 fallback_col : source_color = vec3(0.41, 0.43, 0.33);
+uniform float edge_fade = 0.03;          // soft blend at the maptile border (uv fraction)
 varying vec3 wpos;
 varying vec3 wnorm;
 void vertex() {
@@ -281,17 +281,27 @@ void vertex() {
 	wnorm = normalize((MODEL_MATRIX * vec4(NORMAL, 0.0)).xyz);
 }
 void fragment() {
-	vec2 muv = vec2((wpos.x - map_bounds.x) / map_bounds.z, (wpos.z - map_bounds.y) / map_bounds.w);
-	float inmap = step(0.0, muv.x) * step(muv.x, 1.0) * step(0.0, muv.y) * step(muv.y, 1.0);
-	vec3 base = mix(fallback_col, texture(maptile, muv).rgb, inmap);
+	// slope-selected tiling ground detail (real game layer textures)
 	float slope = clamp(1.0 - wnorm.y, 0.0, 1.0);
 	float b = smoothstep(slope_lo, slope_hi, slope);
 	vec2 tuv = wpos.xz / tile_scale;
 	vec3 det = mix(texture(ground_alb, tuv).rgb, texture(cliff_alb, tuv).rgb, b);
 	float dl = dot(det, vec3(0.3333));
-	vec3 col = base * mix(1.0, dl * 2.0, detail_strength);
-	col *= mix(vec3(1.0), det / (dl + 1e-3), 0.35 * detail_strength);
-	ALBEDO = clamp(col, 0.0, 1.0);
+
+	// maptile weight: 1 inside the satellite footprint, faded to 0 at its edge
+	vec2 muv = vec2((wpos.x - map_bounds.x) / map_bounds.z, (wpos.z - map_bounds.y) / map_bounds.w);
+	float in01 = step(0.0, muv.x) * step(muv.x, 1.0) * step(0.0, muv.y) * step(muv.y, 1.0);
+	vec2 edge = min(muv, 1.0 - muv);
+	float w = in01 * smoothstep(0.0, edge_fade, min(edge.x, edge.y));
+
+	// inside: the real satellite colour, lightly grained by the detail texture.
+	// outside (and over the maptile's black out-of-bounds borders): no satellite
+	// data — show the actual tiling ground/cliff colour so it reads as real
+	// terrain instead of a flat tint or black.
+	vec3 mt = texture(maptile, muv).rgb;
+	w *= smoothstep(0.03, 0.12, dot(mt, vec3(0.3333)));   // drop the black borders
+	vec3 inside = mt * mix(1.0, dl * 2.0, detail_strength) * mix(vec3(1.0), det / (dl + 1e-3), 0.3 * detail_strength);
+	ALBEDO = clamp(mix(det, inside, w), 0.0, 1.0);
 	ROUGHNESS = 0.92;
 	vec3 nrm = mix(texture(ground_nrm, tuv).rgb, texture(cliff_nrm, tuv).rgb, b);
 	vec2 nxy = (nrm.rg * 2.0 - 1.0) * normal_strength;
@@ -470,35 +480,32 @@ func apply(root: Node, enabled: bool, show_objects: bool, textured: bool) -> Str
 			tmi.layers = EXT_TERRAIN_LAYER                   # keep the SDK maptile decal off it
 			ctx.add_child(tmi); tmi.owner = null
 
-	# backdrop (out-of-bounds surrounding landscape) — always shown when enabled;
-	# it's terrain family, so it takes the green study colour when untextured.
-	var bd_root := Node3D.new(); bd_root.name = "Backdrop"
-	ctx.add_child(bd_root); bd_root.owner = null
+	# "Show map context" alone = just the terrain. The backdrop meshes (big
+	# out-of-bounds landscape/mountain pieces) and the game's object placements
+	# both come in only with "Original map objects".
 	var bd_ok := 0; var bd_total := 0
-	for e in _data.get("backdrop", []):
-		if not (e is Dictionary): continue
-		bd_total += 1
-		var mesh: Mesh = null
-		if e.has("glb"):
-			var gp := "%s/%s" % [dir, e["glb"]]
-			if FileAccess.file_exists(gp):
-				var g := _load_external_glb(gp)
-				if g:
-					var gi := g.instantiate()
-					mesh = _extract_mesh(gi)
-					if mesh == null and bd_ok == 0 and bd_total <= 2:
-						print("[MapContext] backdrop '%s' produced no mesh; node tree:" % e.get("glb"))
-						_dump_tree(gi, 0)
-					gi.queue_free()
-		elif e.has("model"):
-			mesh = _mesh_for(str(e["model"]))
-		if mesh:
-			_add_multimesh(bd_root, mesh, e.get("xf", []), textured, terrain_material())
-			bd_ok += 1
-
-	# props (original map objects) — only when show_objects; orange when untextured
 	var n_props := 0
 	if show_objects:
+		var bd_root := Node3D.new(); bd_root.name = "Backdrop"
+		ctx.add_child(bd_root); bd_root.owner = null
+		for e in _data.get("backdrop", []):
+			if not (e is Dictionary): continue
+			bd_total += 1
+			var mesh: Mesh = null
+			if e.has("glb"):
+				var gp := "%s/%s" % [dir, e["glb"]]
+				if FileAccess.file_exists(gp):
+					var g := _load_external_glb(gp)
+					if g:
+						var gi := g.instantiate()
+						mesh = _extract_mesh(gi)
+						gi.queue_free()
+			elif e.has("model"):
+				mesh = _mesh_for(str(e["model"]))
+			if mesh:
+				_add_multimesh(bd_root, mesh, e.get("xf", []), textured, terrain_material())
+				bd_ok += 1
+
 		var props_root := Node3D.new(); props_root.name = "Props"
 		ctx.add_child(props_root); props_root.owner = null
 		for e in _data.get("props", []):
@@ -508,14 +515,13 @@ func apply(root: Node, enabled: bool, show_objects: bool, textured: bool) -> Str
 			_add_cell_multimeshes(props_root, mesh, e.get("xf", []), textured, assets_material())
 			n_props += 1
 		_apply_radius()
-	var miss := bd_total - bd_ok
-	var tail := "" if miss == 0 else "  (%d surrounding piece(s) missing — hit Reload map data)" % miss
-	var objs := ", %d object meshes" % n_props if show_objects else ", objects off"
+
 	var mt := ""
 	if textured:
 		mt = ", decal + detail terrain" if tmat != null else ", maptile decal (no layer set)"
 	var tex := "textured" if textured else "flat colour"
-	return "%s: %s — %d/%d surroundings%s%s%s" % [map, tex, bd_ok, bd_total, objs, mt, tail]
+	var objs := ", objects+surroundings %d/%d" % [n_props, bd_ok + bd_total] if show_objects else ", objects off"
+	return "%s: terrain %s%s%s" % [map, tex, objs, mt]
 
 # ---------- full-accuracy terrain from the raw 16-bit heightmap ----------
 # Godot downsamples 16-bit PNGs to 8-bit, so heights ship as a raw uint16 blob
