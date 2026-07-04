@@ -176,13 +176,30 @@ func _mesh_for(model_path: String) -> Mesh:
 		var res = load(model_path)
 		if res is PackedScene:
 			var inst = (res as PackedScene).instantiate()
-			var mi := _first_mesh(inst)
-			if mi: m = mi.mesh
+			m = _extract_mesh(inst)
 			inst.queue_free()
 		elif res is Mesh:
 			m = res
 	_mesh_cache[model_path] = m
 	return m
+
+# Runtime GLTF (generate_scene) yields ImporterMeshInstance3D holding an
+# ImporterMesh; res:// imported scenes yield MeshInstance3D holding a Mesh.
+# Return the first real Mesh regardless of which.
+func _extract_mesh(n: Node) -> Mesh:
+	if n is MeshInstance3D and (n as MeshInstance3D).mesh != null:
+		return (n as MeshInstance3D).mesh
+	if n is ImporterMeshInstance3D and (n as ImporterMeshInstance3D).mesh != null:
+		return (n as ImporterMeshInstance3D).mesh.get_mesh()
+	for c in n.get_children():
+		var r := _extract_mesh(c)
+		if r: return r
+	return null
+
+func _dump_tree(n: Node, depth: int) -> void:
+	print("  %s- %s (%s)" % ["  ".repeat(depth), n.name, n.get_class()])
+	for c in n.get_children():
+		_dump_tree(c, depth + 1)
 
 func _first_mesh(n: Node) -> MeshInstance3D:
 	if n is MeshInstance3D and (n as MeshInstance3D).mesh != null:
@@ -260,8 +277,10 @@ func apply(root: Node, want_mode: int) -> String:
 				var g := _load_external_glb(gp)
 				if g:
 					var gi := g.instantiate()
-					var mi := _first_mesh(gi)
-					if mi: mesh = mi.mesh
+					mesh = _extract_mesh(gi)
+					if mesh == null and bd_ok == 0 and bd_total <= 2:
+						print("[MapContext] backdrop '%s' produced no mesh; node tree:" % e.get("glb"))
+						_dump_tree(gi, 0)
 					gi.queue_free()
 		elif e.has("model"):
 			mesh = _mesh_for(str(e["model"]))
