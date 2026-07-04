@@ -293,8 +293,13 @@ func _load_external_glb(abs_or_res: String) -> PackedScene:
 	if abs_or_res.begins_with("res://"):
 		return load(abs_or_res) if ResourceLoader.exists(abs_or_res) else null
 	var doc := GLTFDocument.new(); var st := GLTFState.new()
-	if doc.append_from_file(ProjectSettings.globalize_path(abs_or_res), st) != OK:
-		return null
+	# embed textures directly instead of routing them through the editor's
+	# reimport system (which fails on user:// webp and made append_from_file
+	# return an error → whole mesh dropped). We build the scene regardless of
+	# the return code because the geometry is valid even when textures don't
+	# fully resolve.
+	st.set_handle_binary_image(GLTFState.HANDLE_BINARY_EMBED_AS_UNCOMPRESSED)
+	doc.append_from_file(ProjectSettings.globalize_path(abs_or_res), st)
 	var scene := doc.generate_scene(st)
 	if scene == null: return null
 	var ps := PackedScene.new(); ps.pack(scene); scene.queue_free()
