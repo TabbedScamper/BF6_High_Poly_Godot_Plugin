@@ -65,6 +65,11 @@ func _enter_tree() -> void:
 		HighpolyUpdater.run(dock, func(msg: String): lbl.text = msg))
 	dock.add_child(upd)
 
+	var dl_all := Button.new(); dl_all.text = "Download Full Library"
+	dl_all.tooltip_text = "One-time bulk install of every medium+high-poly model (multi-GB download). Update Models then only fetches changes."
+	dl_all.pressed.connect(_confirm_bundle)
+	dock.add_child(dl_all)
+
 	var sep3 := HSeparator.new(); dock.add_child(sep3)
 	var turbo_title := Label.new(); turbo_title.text = "Turbo"
 	dock.add_child(turbo_title)
@@ -185,6 +190,17 @@ func _apply_selected(tier: int) -> void:
 	for s in sel:
 		n += HighpolyLib.apply(s, tier, _textured())
 	lbl.text = "Selected -> %d piece(s)" % n
+
+func _confirm_bundle() -> void:
+	var dlg := ConfirmationDialog.new()
+	dlg.dialog_text = "Download the FULL model library (every medium + high-poly model)?
+This is a large one-time download (multiple GB). After it finishes, Update Models only fetches changes."
+	dlg.ok_button_text = "Download"
+	dlg.confirmed.connect(func():
+		previews.clear_cache()
+		await HighpolyUpdater.download_bundle(dock, func(msg: String): lbl.text = msg))
+	dlg.canceled.connect(dlg.queue_free)
+	EditorInterface.popup_dialog_centered(dlg)
 
 func _confirm_purge() -> void:
 	var dlg := ConfirmationDialog.new()

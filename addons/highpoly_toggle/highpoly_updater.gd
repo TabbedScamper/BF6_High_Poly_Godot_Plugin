@@ -170,6 +170,54 @@ static func download_for_scene(host: Node, root: Node, status: Callable) -> bool
 	status.call("Downloaded %d file(s)%s — reimporting…" % [done, ("" if failed == 0 else ", %d failed" % failed)])
 	return done > 0
 
+# One-time bulk install: download the prebuilt full-library zip (every proxy's
+# high + med model with hash sidecars, exact res://highpoly layout) and extract
+# it. Afterwards "Update Models" is a pure delta — it only fetches changes.
+static func download_bundle(host: Node, status: Callable) -> bool:
+	var base := manifest_url().get_base_dir() + "/"
+	var http := HTTPRequest.new(); host.add_child(http)
+	status.call("Fetching bundle info…")
+	var meta_raw := await _fetch(http, base + "bundles/bundles.json")
+	if meta_raw.is_empty():
+		status.call("Bundle info fetch failed"); http.queue_free(); return false
+	var meta: Variant = JSON.parse_string(meta_raw.get_string_from_utf8())
+	if not (meta is Dictionary):
+		status.call("Bundle info unreadable"); http.queue_free(); return false
+	var total_mb := int(int(meta.get("bytes", 0)) / 1048576.0)
+	var tmp := "user://highpoly-library.zip"
+	http.download_file = tmp                    # stream to disk; the zip is GBs
+	status.call("Downloading full library (~%d MB)…" % total_mb)
+	if http.request(base + str(meta.get("file", "bundles/highpoly-library.zip"))) != OK:
+		status.call("Bundle request failed"); http.queue_free(); return false
+	var tick := Timer.new(); tick.wait_time = 1.0; host.add_child(tick); tick.start()
+	tick.timeout.connect(func():
+		var got := http.get_downloaded_bytes()
+		if got > 0: status.call("Downloading library… %d / %d MB" % [got / 1048576, total_mb]))
+	var res: Array = await http.request_completed
+	tick.queue_free(); http.queue_free()
+	if res[0] != HTTPRequest.RESULT_SUCCESS or res[1] != 200:
+		status.call("Bundle download failed (HTTP %d)" % res[1]); return false
+	status.call("Extracting…")
+	var zr := ZIPReader.new()
+	if zr.open(ProjectSettings.globalize_path(tmp)) != OK:
+		status.call("Bundle archive unreadable"); return false
+	var files := zr.get_files()
+	var n := 0
+	for f in files:
+		if not f.begins_with("highpoly/") or f.ends_with("/"):
+			continue
+		var dest := "res://" + f
+		DirAccess.make_dir_recursive_absolute(dest.get_base_dir())
+		var out := FileAccess.open(dest, FileAccess.WRITE)
+		if out:
+			out.store_buffer(zr.read_file(f)); out.close(); n += 1
+			if n % 1000 == 0: status.call("Extracting… %d / %d files" % [n, files.size()])
+	zr.close()
+	DirAccess.remove_absolute(tmp)
+	EditorInterface.get_resource_filesystem().scan()
+	status.call("Installed %d file(s) — first import will take a while…" % n)
+	return n > 0
+
 # count of scene proxies the registry can provide (for the prompt)
 static func scene_available(root: Node, host: Node, cb: Callable) -> void:
 	var url := manifest_url()
