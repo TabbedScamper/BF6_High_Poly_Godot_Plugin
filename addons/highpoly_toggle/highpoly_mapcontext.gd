@@ -370,6 +370,27 @@ func _load_data(map: String) -> bool:
 	_cell_size = float(w.get("cell", 64))
 	return true
 
+# A prop's mesh: the EXACT extracted game mesh from the downloaded per-map props
+# bundle (`glb`) when available — the accurate path — else the res:// SDK proxy
+# (`model`) fallback for meshes we haven't extracted yet.
+func _prop_mesh(e: Dictionary, dir: String) -> Mesh:
+	if e.has("glb"):
+		var gp := "%s/%s" % [dir, e["glb"]]
+		if _mesh_cache.has(gp): return _mesh_cache[gp]
+		var m: Mesh = null
+		if FileAccess.file_exists(gp):
+			var g := _load_external_glb(gp)
+			if g:
+				var inst := g.instantiate()
+				var pair := _first_mesh_and_xf(inst, Transform3D())
+				if not pair.is_empty(): m = _bake_mesh(pair[0], pair[1])
+				inst.queue_free()
+		_mesh_cache[gp] = m
+		return m
+	elif e.has("model"):
+		return _mesh_for(str(e["model"]))
+	return null
+
 func _mesh_for(model_path: String) -> Mesh:
 	if _mesh_cache.has(model_path): return _mesh_cache[model_path]
 	var m: Mesh = null
@@ -629,7 +650,7 @@ func apply(root: Node, enabled: bool, show_objects: bool, textured: bool) -> Str
 		ctx.add_child(props_root); props_root.owner = null
 		for e in _data.get("props", []):
 			if not (e is Dictionary): continue
-			var mesh := _mesh_for(str(e.get("model", "")))
+			var mesh := _prop_mesh(e, dir)
 			if mesh == null: continue
 			_add_cell_multimeshes(props_root, mesh, e.get("xf", []), textured, assets_material())
 			n_props += 1
