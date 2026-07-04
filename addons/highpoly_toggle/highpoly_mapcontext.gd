@@ -13,6 +13,9 @@ class_name HighpolyMapContext
 
 const NODE := "_MAP_CONTEXT"
 const CACHE := "user://mapcontext"
+# shared, deduplicated prop-mesh store — downloaded ONCE and reused across every
+# map (a rock used by 5 maps is stored once), so per-map data stays tiny.
+const PROPS_CACHE := "user://mapcontext/_props"
 
 var _active := false               # Map Context enabled at all
 var _show_objects := false         # original map objects (props) layer on
@@ -374,22 +377,78 @@ func _load_data(map: String) -> bool:
 # bundle (`glb`) when available — the accurate path — else the res:// SDK proxy
 # (`model`) fallback for meshes we haven't extracted yet.
 func _prop_mesh(e: Dictionary, dir: String) -> Mesh:
-	if e.has("glb"):
-		var gp := "%s/%s" % [dir, e["glb"]]
-		if _mesh_cache.has(gp): return _mesh_cache[gp]
-		var m: Mesh = null
-		if FileAccess.file_exists(gp):
-			var g := _load_external_glb(gp)
-			if g:
-				var inst := g.instantiate()
-				var pair := _first_mesh_and_xf(inst, Transform3D())
-				if not pair.is_empty(): m = _bake_mesh(pair[0], pair[1])
-				inst.queue_free()
-		_mesh_cache[gp] = m
-		return m
-	elif e.has("model"):
-		return _mesh_for(str(e["model"]))
-	return null
+	# `mesh` = exact game mesh from the SHARED prop cache (preferred); `glb` =
+	# legacy per-map bundle; `model` = res:// SDK proxy fallback.
+	var gp := ""
+	if e.has("mesh"): gp = "%s/%s.glb" % [PROPS_CACHE, e["mesh"]]
+	elif e.has("glb"): gp = "%s/%s" % [dir, e["glb"]]
+	elif e.has("model"): return _mesh_for(str(e["model"]))
+	else: return null
+	if _mesh_cache.has(gp): return _mesh_cache[gp]
+	var m: Mesh = null
+	if FileAccess.file_exists(gp):
+		var g := _load_external_glb(gp)
+		if g:
+			var inst := g.instantiate()
+			var pair := _first_mesh_and_xf(inst, Transform3D())
+			if not pair.is_empty(): m = _bake_mesh(pair[0], pair[1])
+			inst.queue_free()
+	_mesh_cache[gp] = m
+	return m
+
+# names of prop meshes this map needs that aren't in the shared cache yet
+func _props_missing() -> Array:
+	DirAccess.make_dir_recursive_absolute(PROPS_CACHE)
+	var miss: Array = []
+	var seen: Dictionary = {}
+	for e in _data.get("props", []):
+		if e is Dictionary and e.has("mesh"):
+			var nm: String = e["mesh"]
+			if seen.has(nm): continue
+			seen[nm] = true
+			if not FileAccess.file_exists("%s/%s.glb" % [PROPS_CACHE, nm]):
+				miss.append(nm)
+	return miss
+
+# download the map's prop meshes into the SHARED cache, extracting only the ones
+# not already present (so meshes shared with previously-loaded maps aren't re-
+# written). Returns true if everything the map needs is now cached.
+func ensure_props(host: Node, map: String, status: Callable) -> bool:
+	if not _load_data(map): return false
+	var miss := _props_missing()
+	if miss.is_empty():
+		return true
+	status.call("Downloading %d prop meshes…" % miss.size())
+	var b := base_url() + "maps/%s/" % map
+	var tmp := "%s/%s/_props.zip" % [CACHE, map]
+	DirAccess.make_dir_recursive_absolute("%s/%s" % [CACHE, map])
+	var http := HTTPRequest.new(); host.add_child(http)
+	http.download_file = tmp
+	var tick := Timer.new(); tick.wait_time = 0.5; host.add_child(tick); tick.start()
+	tick.timeout.connect(func():
+		var d := http.get_downloaded_bytes()
+		if d > 0: status.call("Downloading prop meshes… %d MB" % (d / 1048576)))
+	var ok := false
+	if http.request(b + "props.zip") == OK:
+		var res: Array = await http.request_completed
+		ok = res[0] == HTTPRequest.RESULT_SUCCESS and res[1] == 200 and FileAccess.file_exists(tmp)
+	tick.queue_free(); http.queue_free()
+	if not ok:
+		status.call("Prop mesh download failed (try again)"); return false
+	var zr := ZIPReader.new()
+	if zr.open(ProjectSettings.globalize_path(tmp)) != OK:
+		status.call("Prop archive unreadable"); return false
+	var want: Dictionary = {}
+	for nm in miss: want["%s.glb" % nm] = true
+	var n := 0
+	for f in zr.get_files():
+		if want.has(f):
+			var out := FileAccess.open("%s/%s" % [PROPS_CACHE, f], FileAccess.WRITE)
+			if out: out.store_buffer(zr.read_file(f)); out.close(); n += 1
+	zr.close()
+	DirAccess.remove_absolute(tmp)
+	status.call("%d prop meshes ready" % n)
+	return true
 
 func _mesh_for(model_path: String) -> Mesh:
 	if _mesh_cache.has(model_path): return _mesh_cache[model_path]
