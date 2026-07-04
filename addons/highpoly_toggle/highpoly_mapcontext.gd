@@ -38,13 +38,11 @@ static var _assets_mat: StandardMaterial3D = null
 static func _flat_mat(c: Color) -> StandardMaterial3D:
 	var m := StandardMaterial3D.new()
 	m.albedo_color = c
-	m.roughness = 0.98
-	m.metallic = 0.0
+	# unshaded: the exact flat colour renders everywhere, independent of scene
+	# lighting / vertex normals — so the huge terrain never darkens under the
+	# level's dim ambient (was showing dark bluish/green in the middle).
+	m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	m.cull_mode = BaseMaterial3D.CULL_DISABLED
-	# emission floor: never let dark ambient crush the surface to bluish-black
-	m.emission_enabled = true
-	m.emission = c
-	m.emission_energy_multiplier = 0.18
 	return m
 
 func terrain_material() -> StandardMaterial3D:
@@ -54,6 +52,22 @@ func terrain_material() -> StandardMaterial3D:
 func assets_material() -> StandardMaterial3D:
 	if _assets_mat == null: _assets_mat = _flat_mat(ASSETS_ORANGE)
 	return _assets_mat
+
+# The shipped maptile jpg is 4096² covering the full world heightfield (±2048m,
+# 1px/m). Everything textured — the SDK's own terrain/assets AND our extended
+# out-of-bounds terrain — must share this ONE world→UV mapping or the pieces
+# show the image at different scales and don't line up. Read the real bounds
+# from the downloaded map data when present; otherwise fall back to ±2048.
+const WORLD_HALF := 2048.0
+# V orientation of the maptile jpg vs world +Z. Single source of truth so the
+# SDK-terrain overlay and the extended-terrain material always agree. Flip if
+# the satellite image comes in mirrored north/south.
+const MAPTILE_FLIP_V := 1.0
+func _maptile_bounds() -> Array:
+	var w: Dictionary = _data.get("world", {})
+	var lo: float = float(w.get("min", -WORLD_HALF))
+	var hi: float = float(w.get("max", WORLD_HALF))
+	return [lo, hi, lo, hi]
 
 # ---------- map identity ----------
 static func map_of(root: Node) -> String:
@@ -219,18 +233,11 @@ func _mesh_instances(n: Node, out: Array) -> void:
 	if n is MeshInstance3D and (n as MeshInstance3D).mesh != null: out.append(n)
 	for c in n.get_children(): _mesh_instances(c, out)
 
-func _world_xz_aabb(mis: Array) -> Array:
-	var minx := INF; var maxx := -INF; var minz := INF; var maxz := -INF
-	for mi in mis:
-		var ab: AABB = (mi as MeshInstance3D).global_transform * (mi as MeshInstance3D).get_aabb()
-		minx = min(minx, ab.position.x); minz = min(minz, ab.position.z)
-		maxx = max(maxx, ab.end.x); maxz = max(maxz, ab.end.z)
-	return [minx, maxx, minz, maxz]
-
 # Overlay the SDK's shipped top-down maptile (res://raw/maptiles/MP_<Map>.jpg)
 # on the SDK terrain + assets meshes via material_overlay. Reversible; never
-# saved. Alignment defaults to the terrain's own world AABB; a "maptile" entry
-# in the map data ({bounds:[minx,maxx,minz,maxz], flip:1}) overrides it.
+# saved. Uses the SHARED world→UV mapping (±2048), the same one the extended
+# terrain uses, so the SDK's playable area and our out-of-bounds terrain line
+# up seamlessly. Works even without map data downloaded.
 func _apply_maptile(root: Node, map: String) -> int:
 	var img_path := "res://raw/maptiles/%s.jpg" % map
 	if not ResourceLoader.exists(img_path): return 0
@@ -244,14 +251,8 @@ func _apply_maptile(root: Node, map: String) -> int:
 		var node := root.find_child(nm, true, false)
 		if node: _mesh_instances(node, targets)
 	if targets.is_empty(): return 0
-	# alignment
-	var b: Array
-	var flip := 1.0
-	var md: Dictionary = _data.get("maptile", {})
-	if md.has("bounds"):
-		b = md["bounds"]; flip = float(md.get("flip", 1))
-	else:
-		b = _world_xz_aabb(targets)
+	var b := _maptile_bounds()
+	var flip := float(_data.get("maptile", {}).get("flip", MAPTILE_FLIP_V))
 	for mi in targets:
 		var sm := ShaderMaterial.new()
 		sm.shader = _maptile_shader_res
@@ -350,9 +351,26 @@ func apply(root: Node, enabled: bool, show_objects: bool, textured: bool) -> Str
 	var map := map_of(root)
 	if map == "": return "Open a level scene (MP_…) first"
 	_clear(root)
-	if not enabled: return "Map Context off"
-	if not _load_data(map):
-		return "%s not downloaded" % map
+
+	# Load extended data first when enabling context, so the maptile overlay and
+	# the extended terrain share the exact same world bounds (per-map correct).
+	var have_data := false
+	if enabled:
+		have_data = _load_data(map)
+
+	# The maptile overlay on the SDK's own terrain/assets is driven by `textured`
+	# ALONE — so ticking just "Textures" (map context off) drapes the shipped
+	# satellite image over the default SDK terrain, correctly aligned.
+	var sdk_overlaid := 0
+	if textured:
+		sdk_overlaid = _apply_maptile(root, map)
+
+	if not enabled:
+		if textured:
+			return "SDK terrain textured (%d mesh%s)" % [sdk_overlaid, "" if sdk_overlaid == 1 else "es"]
+		return "Map Context off"
+	if not have_data:
+		return "%s not downloaded (hit Reload map data)" % map
 	var ctx := Node3D.new(); ctx.name = NODE
 	root.add_child(ctx); ctx.owner = null
 	var dir := "%s/%s" % [CACHE, map]
@@ -368,7 +386,7 @@ func apply(root: Node, enabled: bool, show_objects: bool, textured: bool) -> Str
 		if tmi:
 			tmi.position.y = -0.5                            # sit just under the SDK bowl in the overlap
 			if textured:
-				tmi.material_override = _maptile_material(map, [hm.get("world_min",-2048), hm.get("world_max",2048), hm.get("world_min",-2048), hm.get("world_max",2048)])
+				tmi.material_override = _maptile_material(map)   # shared ±2048 world→UV
 			else:
 				tmi.material_override = terrain_material()   # SDK-matched green
 			ctx.add_child(tmi); tmi.owner = null
@@ -411,14 +429,10 @@ func apply(root: Node, enabled: bool, show_objects: bool, textured: bool) -> Str
 			_add_cell_multimeshes(props_root, mesh, e.get("xf", []), textured, assets_material())
 			n_props += 1
 		_apply_radius()
-	# textured: drape the SDK's shipped maptile over its terrain + assets
-	var overlaid := 0
-	if textured:
-		overlaid = _apply_maptile(root, map)
 	var miss := bd_total - bd_ok
 	var tail := "" if miss == 0 else "  (%d surrounding piece(s) missing — hit Reload map data)" % miss
 	var objs := ", %d object meshes" % n_props if show_objects else ", objects off"
-	var mt := "" if overlaid == 0 else ", maptile on %d SDK mesh(es)" % overlaid
+	var mt := "" if sdk_overlaid == 0 else ", maptile on %d SDK mesh(es)" % sdk_overlaid
 	var tex := "textured" if textured else "flat colour"
 	return "%s: %s — %d/%d surroundings%s%s%s" % [map, tex, bd_ok, bd_total, objs, mt, tail]
 
@@ -487,16 +501,17 @@ func _heightmap_mesh(raw: PackedByteArray, res: int, step: int, meta: Dictionary
 	am.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr)
 	return am
 
-func _maptile_material(map: String, b: Array) -> Material:
+func _maptile_material(map: String) -> Material:
 	var img_path := "res://raw/maptiles/%s.jpg" % map
-	if not ResourceLoader.exists(img_path): return HighpolyLib.gray_material()
+	if not ResourceLoader.exists(img_path): return terrain_material()
 	if _maptile_shader_res == null:
 		_maptile_shader_res = Shader.new(); _maptile_shader_res.code = MAPTILE_SHADER
+	var b := _maptile_bounds()
 	var sm := ShaderMaterial.new()
 	sm.shader = _maptile_shader_res
 	sm.set_shader_parameter("maptile", load(img_path))
 	sm.set_shader_parameter("bounds", Vector4(b[0], b[1], b[2], b[3]))
-	sm.set_shader_parameter("flip_v", 1.0)
+	sm.set_shader_parameter("flip_v", float(_data.get("maptile", {}).get("flip", MAPTILE_FLIP_V)))
 	return sm
 
 func _load_external_glb(abs_or_res: String) -> PackedScene:

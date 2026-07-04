@@ -238,7 +238,9 @@ func _mapctx_changed() -> void:
 	var map: String = mapctx.map_of(r)
 	print("[MapContext] toggles -> on=%s objects=%s tex=%s, root='%s', map='%s'" % [on, objs, tex, rn, map])
 	if not on:
-		lbl.text = mapctx.apply(r, false, false, false); return
+		# map context off, but Textures can still drape the SDK's shipped maptile
+		# over the default terrain — no download needed
+		lbl.text = mapctx.apply(r, false, false, tex); return
 	if map == "":
 		lbl.text = "Scene root is '%s' — open an MP_… level scene" % rn
 		mapctx_on.set_pressed_no_signal(false)
