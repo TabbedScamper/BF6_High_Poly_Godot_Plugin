@@ -107,8 +107,19 @@ func download_map(host: Node, map: String, status: Callable) -> bool:
 		if meta is Dictionary: total_mb = int(int(meta.get("bytes", 0)) / 1048576.0)
 	status.call("Downloading %s map data%s…" % [map, (" (~%d MB)" % total_mb) if total_mb else ""])
 	var tmp := "%s/mapdata.zip" % dir
-	var got := await _fetch(host, b + "mapdata.zip", tmp)
-	if got.is_empty():
+	# dedicated progress-aware download so the user sees it moving
+	var http := HTTPRequest.new(); host.add_child(http)
+	http.download_file = tmp
+	var tick := Timer.new(); tick.wait_time = 0.5; host.add_child(tick); tick.start()
+	tick.timeout.connect(func():
+		var d := http.get_downloaded_bytes()
+		if d > 0: status.call("Downloading %s map data… %d / %d MB" % [map, d / 1048576, total_mb]))
+	var got_ok := false
+	if http.request(b + "mapdata.zip") == OK:
+		var res: Array = await http.request_completed
+		got_ok = res[0] == HTTPRequest.RESULT_SUCCESS and res[1] == 200 and FileAccess.file_exists(tmp)
+	tick.queue_free(); http.queue_free()
+	if not got_ok:
 		status.call("Map data download failed (server busy — try Reload again)")
 		return false
 	status.call("Extracting %s…" % map)
@@ -273,7 +284,8 @@ func apply(root: Node, want_mode: int) -> String:
 	var miss := bd_total - bd_ok
 	var tail := "" if miss == 0 else "  (%d surrounding piece(s) missing — pick the mode again to retry the download)" % miss
 	if mode == Mode.EXTENTS:
-		return "%s: surroundings — %d/%d pieces%s" % [map, bd_ok, bd_total, tail]
+		var hint := "  — zoom out to see the surrounding landscape (it rings the map several km out)" if miss == 0 else ""
+		return "%s: surroundings %d/%d pieces%s%s" % [map, bd_ok, bd_total, hint, tail]
 	return "%s: %s — %d prop meshes, %d/%d surroundings%s" % [map, ["off","extents","full","full+tex"][mode], n_props, bd_ok, bd_total, tail]
 
 func _load_external_glb(abs_or_res: String) -> PackedScene:
