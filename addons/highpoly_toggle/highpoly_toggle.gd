@@ -12,8 +12,12 @@ var mode_btn: OptionButton
 var tex_chk: CheckBox
 const PreviewsScript = preload("res://addons/highpoly_toggle/highpoly_previews.gd")
 const TurboScript = preload("res://addons/highpoly_toggle/highpoly_turbo.gd")
+const MapContextScript = preload("res://addons/highpoly_toggle/highpoly_mapcontext.gd")
 var previews: Node
 var turbo: Node
+var mapctx: Node
+var mapctx_btn: OptionButton
+var mapctx_timer: Timer
 
 func _mode() -> int:
 	return mode_btn.get_selected_id() if mode_btn else HighpolyLib.Tier.LOW
@@ -70,6 +74,33 @@ func _enter_tree() -> void:
 	dl_all.pressed.connect(_confirm_bundle)
 	dock.add_child(dl_all)
 
+	var sepm := HSeparator.new(); dock.add_child(sepm)
+	var mc_title := Label.new(); mc_title.text = "Map Context"
+	dock.add_child(mc_title)
+
+	mapctx_btn = OptionButton.new()
+	mapctx_btn.add_item("Off", 0)
+	mapctx_btn.add_item("Terrain + surroundings", 1)
+	mapctx_btn.add_item("Full map objects", 2)
+	mapctx_btn.add_item("Full map, textured", 3)
+	mapctx_btn.tooltip_text = "Show the real map terrain and the game's original object placements as an editor-only overlay (never saved)."
+	mapctx_btn.item_selected.connect(func(_i): _mapctx_changed())
+	dock.add_child(mapctx_btn)
+
+	var mcr_row := HBoxContainer.new(); dock.add_child(mcr_row)
+	var mcr_lbl := Label.new(); mcr_lbl.text = "Range"
+	mcr_row.add_child(mcr_lbl)
+	var mcr := HSlider.new()
+	mcr.min_value = 128; mcr.max_value = 4096; mcr.step = 64; mcr.value = 768
+	mcr.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	mcr.tooltip_text = "How far from the camera to show map objects (like a render distance)."
+	mcr_row.add_child(mcr)
+	var mcr_val := Label.new(); mcr_val.text = "768m"
+	mcr_row.add_child(mcr_val)
+	mcr.value_changed.connect(func(v: float):
+		mcr_val.text = "%dm" % int(v)
+		mapctx.set_radius(v))
+
 	var sep3 := HSeparator.new(); dock.add_child(sep3)
 	var turbo_title := Label.new(); turbo_title.text = "Turbo"
 	dock.add_child(turbo_title)
@@ -119,6 +150,11 @@ func _enter_tree() -> void:
 	turbo = TurboScript.new()
 	dock.add_child(turbo)
 	turbo.refresh.call_deferred()
+	mapctx = MapContextScript.new()
+	dock.add_child(mapctx)
+	mapctx_timer = Timer.new(); mapctx_timer.wait_time = 0.5
+	mapctx_timer.timeout.connect(func(): if mapctx: mapctx.tick())
+	dock.add_child(mapctx_timer); mapctx_timer.start()
 
 	# every session starts safe: Low-Poly until a mode is chosen
 	mode_btn.select(mode_btn.get_item_index(HighpolyLib.Tier.LOW))
@@ -133,6 +169,33 @@ func _exit_tree() -> void:
 	if dock:
 		remove_control_from_docks(dock)
 		dock.queue_free()
+
+func _mapctx_changed() -> void:
+	var m := mapctx_btn.get_selected_id()
+	var r := EditorInterface.get_edited_scene_root()
+	var map: String = mapctx.map_of(r)
+	if m == 0 or map == "":
+		lbl.text = mapctx.apply(r, 0); return
+	if mapctx.has_data(map):
+		lbl.text = mapctx.apply(r, m); return
+	# not downloaded yet — prompt
+	var dlg := ConfirmationDialog.new()
+	dlg.dialog_text = "Map data for %s isn't downloaded yet.\nDownload the terrain + object layout now? (~tens of MB, one time per map)" % map
+	dlg.ok_button_text = "Download"
+	dlg.cancel_button_text = "Cancel"
+	dlg.confirmed.connect(func():
+		lbl.text = "Downloading map data…"
+		var ok: bool = await mapctx.download_map(dock, map, func(s: String): lbl.text = s)
+		if ok:
+			lbl.text = mapctx.apply(r, m)
+		else:
+			mapctx_btn.select(0)
+			lbl.text = mapctx.apply(r, 0))
+	dlg.canceled.connect(func():
+		mapctx_btn.select(0)
+		lbl.text = mapctx.apply(r, 0)
+		dlg.queue_free())
+	EditorInterface.popup_dialog_centered(dlg)
 
 func _mode_changed() -> void:
 	previews.tier = _mode()
