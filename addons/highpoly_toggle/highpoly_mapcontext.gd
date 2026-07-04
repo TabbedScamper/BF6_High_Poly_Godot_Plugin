@@ -29,6 +29,7 @@ var terrain_step: int = 2          # metres per terrain vertex (1=full, 2=high, 
 # blends seamlessly with the shipped terrain/assets: green for land, orange for
 # objects. Sampled from M_LevelTerrain / M_LevelAssets. A small emission floor
 # keeps them readable even where the scene's ambient light is dark/blue.
+const SDK_GRID_M := 12.0                     # SDK terrain grid cell = 12 m (UV 0..100 over 1200 m)
 const TERRAIN_GREEN := Color(0.4078, 0.5608, 0.3098)
 const ASSETS_ORANGE := Color(1.0, 0.6745, 0.4706)
 static var _terrain_mat: StandardMaterial3D = null
@@ -51,6 +52,19 @@ func terrain_material() -> StandardMaterial3D:
 func assets_material() -> StandardMaterial3D:
 	if _assets_mat == null: _assets_mat = _flat_mat(ASSETS_ORANGE)
 	return _assets_mat
+
+# The SDK's own terrain material (M_LevelTerrain — the shiny lime green). Reused
+# verbatim on our untextured map-context terrain so it matches the shipped
+# playable terrain exactly (same shader/colour/shininess), instead of our flat
+# unshaded green. Fetched from the live scene; falls back to our flat green.
+func _sdk_terrain_material(root: Node, map: String) -> Material:
+	var node := root.find_child("%s_Terrain" % map, true, false)
+	if node == null: return terrain_material()
+	var mi := _first_mesh(node)
+	if mi == null or mi.mesh == null: return terrain_material()
+	var m := mi.get_surface_override_material(0)
+	if m == null: m = mi.mesh.surface_get_material(0)
+	return m if m != null else terrain_material()
 
 # The shipped maptile jpg is a top-down satellite covering ONLY the playable
 # area (~1000-2100m per map, NOT the full heightfield). Rather than guess its
@@ -516,12 +530,23 @@ func apply(root: Node, enabled: bool, show_objects: bool, textured: bool) -> Str
 	# ±2048 heightfield, filling the ring gap between the SDK bowl and the near
 	# backdrop tiles (~±2043). Nudged down 0.5m so the SDK's detailed bowl stays
 	# on top where they overlap.
+	# untextured "study" material = the SDK's own M_LevelTerrain (shiny lime green
+	# + its 12 m placeholder grid), so our map-context terrain matches the shipped
+	# terrain exactly instead of a flat unshaded green. `green` = as-is (backdrop);
+	# `green_tiled` = re-tiled to the SDK's 12 m grid for our big flat terrain.
+	var green: Material = _sdk_terrain_material(root, map)
+	var green_tiled: Material = green
 	var hm: Dictionary = _data.get("heightmap", {})
+	if green is BaseMaterial3D:
+		var span: float = float(hm.get("world_max", 2048)) - float(hm.get("world_min", -2048))
+		var gm := (green as BaseMaterial3D).duplicate() as BaseMaterial3D
+		gm.uv1_scale = Vector3(span / SDK_GRID_M, span / SDK_GRID_M, 1.0)
+		green_tiled = gm
 	if hm.has("file"):
 		var tmi := _build_terrain_from_heightmap(dir, hm)   # full-accuracy mesh from raw 16-bit heights
 		if tmi:
 			tmi.position.y = -0.5                            # sit just under the SDK bowl in the overlap
-			tmi.material_override = tmat if (textured and tmat != null) else terrain_material()
+			tmi.material_override = tmat if (textured and tmat != null) else green_tiled
 			tmi.layers = EXT_TERRAIN_LAYER                   # keep the SDK maptile decal off it
 			ctx.add_child(tmi); tmi.owner = null
 
@@ -545,7 +570,7 @@ func apply(root: Node, enabled: bool, show_objects: bool, textured: bool) -> Str
 		elif e.has("model"):
 			mesh = _mesh_for(str(e["model"]))
 		if mesh:
-			_add_multimesh(bd_root, mesh, e.get("xf", []), textured, terrain_material())
+			_add_multimesh(bd_root, mesh, e.get("xf", []), textured, green)
 			bd_ok += 1
 
 	# original object placements (props) — only with "Original map objects"
