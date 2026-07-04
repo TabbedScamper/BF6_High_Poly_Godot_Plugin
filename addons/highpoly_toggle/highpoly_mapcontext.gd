@@ -95,10 +95,13 @@ func _fetch(host: Node, url: String, to_file := "") -> PackedByteArray:
 # extract it. A single request avoids the r2.dev burst-throttling that 38
 # separate downloads trip. Idempotent: if placements.json is already cached and
 # all backdrop files present, does nothing. status is Callable(String).
-func download_map(host: Node, map: String, status: Callable) -> bool:
+func download_map(host: Node, map: String, status: Callable, force := false) -> bool:
 	var b := base_url() + "maps/%s/" % map
 	var dir := "%s/%s" % [CACHE, map]
 	DirAccess.make_dir_recursive_absolute(dir)
+	if force:
+		# force a fresh pull (e.g. the map data format changed): drop the manifest
+		DirAccess.remove_absolute("%s/placements.json" % dir)
 	if _map_cache_complete(map):
 		status.call("%s map data ready" % map); return true
 	# size (optional, for the status line)
@@ -148,6 +151,8 @@ func _map_cache_complete(map: String) -> bool:
 	if not (d is Dictionary): return false
 	var terr: Dictionary = d.get("terrain", {})
 	if terr.has("med") and not FileAccess.file_exists("%s/%s" % [dir, terr["med"]]): return false
+	var hm: Dictionary = d.get("heightmap", {})
+	if hm.has("file") and not FileAccess.file_exists("%s/%s" % [dir, hm["file"]]): return false
 	for e in d.get("backdrop", []):
 		if e is Dictionary and e.has("glb") and not FileAccess.file_exists("%s/%s" % [dir, e["glb"]]):
 			return false

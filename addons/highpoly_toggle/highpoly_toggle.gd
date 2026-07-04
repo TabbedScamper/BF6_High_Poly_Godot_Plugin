@@ -204,7 +204,7 @@ func _mapctx_reload() -> void:
 		lbl.text = "Pick a Map Context mode first (dropdown)"; return
 	print("[MapContext] before: " + mapctx.cache_status(map))
 	lbl.text = "Reloading %s map data…" % map
-	var ok: bool = await mapctx.download_map(dock, map, func(s: String): lbl.text = s)
+	var ok: bool = await mapctx.download_map(dock, map, func(s: String): lbl.text = s, true)
 	print("[MapContext] after:  " + mapctx.cache_status(map))
 	if ok:
 		var res: String = mapctx.apply(r, m)
