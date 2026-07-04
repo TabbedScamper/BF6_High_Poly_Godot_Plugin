@@ -42,16 +42,29 @@ func _cache_dir() -> String:
 func has_data(map: String) -> bool:
 	return FileAccess.file_exists("%s/%s/placements.json" % [CACHE, map])
 
-func _fetch(host: Node, url: String, to_file := "") -> PackedByteArray:
+func _fetch_once(host: Node, url: String, to_file := "") -> PackedByteArray:
 	var http := HTTPRequest.new(); host.add_child(http)
 	if to_file != "": http.download_file = to_file
 	var err := http.request(url)
 	if err != OK: http.queue_free(); return PackedByteArray()
 	var res: Array = await http.request_completed
 	http.queue_free()
+	# 200 = ok. r2.dev rate-limits (403/429/5xx) under rapid sequential pulls.
 	if res[0] != HTTPRequest.RESULT_SUCCESS or res[1] != 200:
 		return PackedByteArray()
+	if to_file != "" and not FileAccess.file_exists(to_file):
+		return PackedByteArray()
 	return res[3] if to_file == "" else PackedByteArray([1])
+
+# retry with backoff — the public r2.dev host throttles bursts
+func _fetch(host: Node, url: String, to_file := "") -> PackedByteArray:
+	for attempt in range(4):
+		var r := await _fetch_once(host, url, to_file)
+		if not r.is_empty(): return r
+		# brief backoff before retrying (0.4s, 0.8s, 1.6s)
+		var t := host.get_tree().create_timer(0.4 * pow(2, attempt))
+		await t.timeout
+	return PackedByteArray()
 
 # Download a map's data bundle (terrain + placements + backdrop glbs). Returns
 # true on success; status is Callable(String).
@@ -59,29 +72,46 @@ func download_map(host: Node, map: String, status: Callable) -> bool:
 	var b := base_url() + "maps/%s/" % map
 	var dir := "%s/%s" % [CACHE, map]
 	DirAccess.make_dir_recursive_absolute(dir)
-	status.call("Fetching %s placements…" % map)
-	var pj := await _fetch(host, b + "placements.json")
-	if pj.is_empty():
-		status.call("No map data published for %s" % map); return false
-	FileAccess.open("%s/placements.json" % dir, FileAccess.WRITE).store_buffer(pj)
-	var data: Variant = JSON.parse_string(pj.get_string_from_utf8())
+	# placements: use cached copy if present (idempotent — safe to re-run to
+	# backfill any pieces a rate-limited first pass missed)
+	var pj_path := "%s/placements.json" % dir
+	var data: Variant
+	if FileAccess.file_exists(pj_path):
+		data = JSON.parse_string(FileAccess.get_file_as_string(pj_path))
+	else:
+		status.call("Fetching %s placements…" % map)
+		var pj := await _fetch(host, b + "placements.json")
+		if pj.is_empty():
+			status.call("No map data published for %s" % map); return false
+		FileAccess.open(pj_path, FileAccess.WRITE).store_buffer(pj)
+		data = JSON.parse_string(pj.get_string_from_utf8())
 	if not (data is Dictionary):
 		status.call("Map data unreadable"); return false
-	# terrain
+	# terrain (skip if already cached)
 	var terr: Dictionary = data.get("terrain", {})
 	if terr.has("med"):
-		status.call("Downloading terrain…")
-		await _fetch(host, b + str(terr["med"]), "%s/%s" % [dir, terr["med"]])
+		var tdest := "%s/%s" % [dir, terr["med"]]
+		if not FileAccess.file_exists(tdest):
+			status.call("Downloading terrain…")
+			await _fetch(host, b + str(terr["med"]), tdest)
 	# backdrop glbs
 	var bd: Array = data.get("backdrop", [])
-	var i := 0
+	var total := 0
+	for e in bd:
+		if e is Dictionary and e.has("glb"): total += 1
+	var i := 0; var fail := 0
 	for e in bd:
 		if e is Dictionary and e.has("glb"):
 			i += 1
-			status.call("Downloading backdrop… (%d)" % i)
 			var rel := str(e["glb"])
-			DirAccess.make_dir_recursive_absolute(("%s/%s" % [dir, rel]).get_base_dir())
-			await _fetch(host, b + rel, "%s/%s" % [dir, rel])
+			var dest := "%s/%s" % [dir, rel]
+			if not FileAccess.file_exists(dest):
+				status.call("Downloading surroundings… (%d/%d)" % [i, total])
+				DirAccess.make_dir_recursive_absolute(dest.get_base_dir())
+				if (await _fetch(host, b + rel, dest)).is_empty(): fail += 1
+	if fail > 0:
+		status.call("%s ready — %d surrounding piece(s) failed (retry to finish)" % [map, fail])
+		return true
 	status.call("%s map data ready" % map)
 	return true
 
@@ -166,34 +196,42 @@ func apply(root: Node, want_mode: int) -> String:
 	var dir := "%s/%s" % [CACHE, map]
 	var textured := mode == Mode.FULL_TEXTURED
 
-	# terrain
-	var terr: Dictionary = _data.get("terrain", {})
-	if terr.has("med"):
-		var tp := "%s/%s" % [dir, terr["med"]]
-		if FileAccess.file_exists(tp):
-			var tres := _load_external_glb(tp)
-			if tres:
-				var tnode := tres.instantiate()
-				tnode.name = "Terrain"
-				if not textured: _gray(tnode)
-				ctx.add_child(tnode); tnode.owner = null
+	# central terrain: only in the FULL modes (EXTENTS keeps the SDK's own
+	# playable terrain as the base and adds ONLY the out-of-bounds surroundings)
+	if mode != Mode.EXTENTS:
+		var terr: Dictionary = _data.get("terrain", {})
+		if terr.has("med"):
+			var tp := "%s/%s" % [dir, terr["med"]]
+			if FileAccess.file_exists(tp):
+				var tres := _load_external_glb(tp)
+				if tres:
+					var tnode := tres.instantiate()
+					tnode.name = "Terrain"
+					if not textured: _gray(tnode)
+					ctx.add_child(tnode); tnode.owner = null
 
 	# backdrop (out-of-bounds surroundings) — shown in every non-off mode
 	var bd_root := Node3D.new(); bd_root.name = "Backdrop"
 	ctx.add_child(bd_root); bd_root.owner = null
+	var bd_ok := 0; var bd_total := 0
 	for e in _data.get("backdrop", []):
 		if not (e is Dictionary): continue
+		bd_total += 1
 		var mesh: Mesh = null
 		if e.has("glb"):
 			var gp := "%s/%s" % [dir, e["glb"]]
 			if FileAccess.file_exists(gp):
 				var g := _load_external_glb(gp)
 				if g:
-					var mi := _first_mesh(g.instantiate())
+					var gi := g.instantiate()
+					var mi := _first_mesh(gi)
 					if mi: mesh = mi.mesh
+					gi.queue_free()
 		elif e.has("model"):
 			mesh = _mesh_for(str(e["model"]))
-		if mesh: _add_multimesh(bd_root, mesh, e.get("xf", []), textured)
+		if mesh:
+			_add_multimesh(bd_root, mesh, e.get("xf", []), textured)
+			bd_ok += 1
 
 	# props (interactive layer) — only in FULL / FULL_TEXTURED, streamed by cell
 	var n_props := 0
@@ -207,7 +245,11 @@ func apply(root: Node, want_mode: int) -> String:
 			_add_cell_multimeshes(props_root, mesh, e.get("xf", []), textured)
 			n_props += 1
 		_apply_radius()
-	return "%s: %s (%d prop meshes)" % [map, ["off","extents","full","full+tex"][mode], n_props]
+	var miss := bd_total - bd_ok
+	var tail := "" if miss == 0 else "  (%d surrounding piece(s) missing — pick the mode again to retry the download)" % miss
+	if mode == Mode.EXTENTS:
+		return "%s: surroundings — %d/%d pieces%s" % [map, bd_ok, bd_total, tail]
+	return "%s: %s — %d prop meshes, %d/%d surroundings%s" % [map, ["off","extents","full","full+tex"][mode], n_props, bd_ok, bd_total, tail]
 
 func _load_external_glb(abs_or_res: String) -> PackedScene:
 	# user:// glbs aren't imported; load via runtime GLTF; res:// via normal loader

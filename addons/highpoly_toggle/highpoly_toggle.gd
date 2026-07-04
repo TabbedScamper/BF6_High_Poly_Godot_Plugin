@@ -80,10 +80,10 @@ func _enter_tree() -> void:
 
 	mapctx_btn = OptionButton.new()
 	mapctx_btn.add_item("Off", 0)
-	mapctx_btn.add_item("Terrain + surroundings", 1)
+	mapctx_btn.add_item("Surroundings (keep SDK terrain)", 1)
 	mapctx_btn.add_item("Full map objects", 2)
 	mapctx_btn.add_item("Full map, textured", 3)
-	mapctx_btn.tooltip_text = "Show the real map terrain and the game's original object placements as an editor-only overlay (never saved)."
+	mapctx_btn.tooltip_text = "Editor-only overlay (never saved). \"Surroundings\" keeps the SDK's playable terrain and adds the out-of-bounds landscape; \"Full map\" adds the real terrain + the game's original object placements."
 	mapctx_btn.item_selected.connect(func(_i): _mapctx_changed())
 	dock.add_child(mapctx_btn)
 
@@ -177,6 +177,10 @@ func _mapctx_changed() -> void:
 	if m == 0 or map == "":
 		lbl.text = mapctx.apply(r, 0); return
 	if mapctx.has_data(map):
+		# already have the manifest — top up any missing pieces (idempotent,
+		# offline-fast when complete), then apply
+		lbl.text = "Loading %s…" % map
+		await mapctx.download_map(dock, map, func(s: String): lbl.text = s)
 		lbl.text = mapctx.apply(r, m); return
 	# not downloaded yet — prompt
 	var dlg := ConfirmationDialog.new()
