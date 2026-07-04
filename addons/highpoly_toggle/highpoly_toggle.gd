@@ -201,15 +201,24 @@ func _mapctx_reload() -> void:
 func _mapctx_changed() -> void:
 	var m := mapctx_btn.get_selected_id()
 	var r := EditorInterface.get_edited_scene_root()
+	var rn := "<none>" if r == null else String(r.name)
 	var map: String = mapctx.map_of(r)
+	print("[MapContext] mode changed -> id=%d, scene root='%s', map='%s'" % [m, rn, map])
 	if m == 0 or map == "":
-		lbl.text = mapctx.apply(r, 0); return
+		if map == "" and m != 0:
+			lbl.text = "Scene root is '%s' — open an MP_… level scene" % rn
+		else:
+			lbl.text = mapctx.apply(r, 0)
+		return
 	if mapctx.has_data(map):
 		# already have the manifest — top up any missing pieces (idempotent,
 		# offline-fast when complete), then apply
+		print("[MapContext] have manifest; ensuring data complete then applying…")
 		lbl.text = "Loading %s…" % map
 		await mapctx.download_map(dock, map, func(s: String): lbl.text = s)
-		lbl.text = mapctx.apply(r, m); return
+		var res: String = mapctx.apply(r, m)
+		print("[MapContext] apply -> " + res)
+		lbl.text = res; return
 	# not downloaded yet — prompt
 	var dlg := ConfirmationDialog.new()
 	dlg.dialog_text = "Map data for %s isn't downloaded yet.\nDownload the terrain + object layout now? (~tens of MB, one time per map)" % map
