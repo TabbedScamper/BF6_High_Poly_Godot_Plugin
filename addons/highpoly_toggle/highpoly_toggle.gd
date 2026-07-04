@@ -201,6 +201,13 @@ func _exit_tree() -> void:
 		remove_control_from_docks(dock)
 		dock.queue_free()
 
+# ensure the map's prop meshes are in the shared cache (only when objects are
+# shown), then apply. Prop meshes download once and are reused across maps.
+func _apply_mapctx(r: Node, objs: bool, tex: bool) -> void:
+	if objs:
+		await mapctx.ensure_props(dock, mapctx.map_of(r), func(s: String): lbl.text = s)
+	lbl.text = mapctx.apply(r, true, objs, tex)
+
 func _mapctx_rebuild() -> void:
 	# rebuild with current toggles, no re-download (e.g. terrain detail changed)
 	if not mapctx_on.button_pressed: return
@@ -224,7 +231,7 @@ func _mapctx_reload() -> void:
 	var ok: bool = await mapctx.download_map(dock, map, func(s: String): lbl.text = s, true)
 	print("[MapContext] after:  " + mapctx.cache_status(map))
 	if ok:
-		lbl.text = mapctx.apply(r, true, mapctx_objects.button_pressed, mapctx_tex.button_pressed)
+		await _apply_mapctx(r, mapctx_objects.button_pressed, mapctx_tex.button_pressed)
 		print("[MapContext] apply -> " + lbl.text)
 	else:
 		lbl.text = "Could not fetch %s map data (see Output)" % map
@@ -250,7 +257,7 @@ func _mapctx_changed() -> void:
 		# offline-fast when complete), then apply
 		lbl.text = "Loading %s…" % map
 		await mapctx.download_map(dock, map, func(s: String): lbl.text = s)
-		lbl.text = mapctx.apply(r, true, objs, tex)
+		await _apply_mapctx(r, objs, tex)
 		print("[MapContext] apply -> " + lbl.text); return
 	# not downloaded yet — prompt
 	var dlg := ConfirmationDialog.new()
@@ -261,7 +268,7 @@ func _mapctx_changed() -> void:
 		lbl.text = "Downloading map data…"
 		var ok: bool = await mapctx.download_map(dock, map, func(s: String): lbl.text = s)
 		if ok:
-			lbl.text = mapctx.apply(r, true, objs, tex)
+			await _apply_mapctx(r, objs, tex)
 		else:
 			mapctx_on.set_pressed_no_signal(false)
 			lbl.text = mapctx.apply(r, false, false, false))
