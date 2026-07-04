@@ -89,53 +89,55 @@ func _fetch(host: Node, url: String, to_file := "") -> PackedByteArray:
 		await t.timeout
 	return PackedByteArray()
 
-# Download a map's data bundle (terrain + placements + backdrop glbs). Returns
-# true on success; status is Callable(String).
+# Download a map's data as ONE zip (terrain + placements + backdrop glbs) and
+# extract it. A single request avoids the r2.dev burst-throttling that 38
+# separate downloads trip. Idempotent: if placements.json is already cached and
+# all backdrop files present, does nothing. status is Callable(String).
 func download_map(host: Node, map: String, status: Callable) -> bool:
 	var b := base_url() + "maps/%s/" % map
 	var dir := "%s/%s" % [CACHE, map]
 	DirAccess.make_dir_recursive_absolute(dir)
-	# placements: use cached copy if present (idempotent — safe to re-run to
-	# backfill any pieces a rate-limited first pass missed)
-	var pj_path := "%s/placements.json" % dir
-	var data: Variant
-	if FileAccess.file_exists(pj_path):
-		data = JSON.parse_string(FileAccess.get_file_as_string(pj_path))
-	else:
-		status.call("Fetching %s placements…" % map)
-		var pj := await _fetch(host, b + "placements.json")
-		if pj.is_empty():
-			status.call("No map data published for %s" % map); return false
-		FileAccess.open(pj_path, FileAccess.WRITE).store_buffer(pj)
-		data = JSON.parse_string(pj.get_string_from_utf8())
-	if not (data is Dictionary):
-		status.call("Map data unreadable"); return false
-	# terrain (skip if already cached)
-	var terr: Dictionary = data.get("terrain", {})
-	if terr.has("med"):
-		var tdest := "%s/%s" % [dir, terr["med"]]
-		if not FileAccess.file_exists(tdest):
-			status.call("Downloading terrain…")
-			await _fetch(host, b + str(terr["med"]), tdest)
-	# backdrop glbs
-	var bd: Array = data.get("backdrop", [])
-	var total := 0
-	for e in bd:
-		if e is Dictionary and e.has("glb"): total += 1
-	var i := 0; var fail := 0
-	for e in bd:
-		if e is Dictionary and e.has("glb"):
-			i += 1
-			var rel := str(e["glb"])
-			var dest := "%s/%s" % [dir, rel]
-			if not FileAccess.file_exists(dest):
-				status.call("Downloading surroundings… (%d/%d)" % [i, total])
-				DirAccess.make_dir_recursive_absolute(dest.get_base_dir())
-				if (await _fetch(host, b + rel, dest)).is_empty(): fail += 1
-	if fail > 0:
-		status.call("%s ready — %d surrounding piece(s) failed (retry to finish)" % [map, fail])
-		return true
-	status.call("%s map data ready" % map)
+	if _map_cache_complete(map):
+		status.call("%s map data ready" % map); return true
+	# size (optional, for the status line)
+	var total_mb := 0
+	var meta_raw := await _fetch(host, b + "mapdata.json")
+	if not meta_raw.is_empty():
+		var meta: Variant = JSON.parse_string(meta_raw.get_string_from_utf8())
+		if meta is Dictionary: total_mb = int(int(meta.get("bytes", 0)) / 1048576.0)
+	status.call("Downloading %s map data%s…" % [map, (" (~%d MB)" % total_mb) if total_mb else ""])
+	var tmp := "%s/mapdata.zip" % dir
+	var got := await _fetch(host, b + "mapdata.zip", tmp)
+	if got.is_empty():
+		status.call("Map data download failed (server busy — try Reload again)")
+		return false
+	status.call("Extracting %s…" % map)
+	var zr := ZIPReader.new()
+	if zr.open(ProjectSettings.globalize_path(tmp)) != OK:
+		status.call("Map archive unreadable"); return false
+	var n := 0
+	for f in zr.get_files():
+		if f.ends_with("/"): continue
+		var dest := "%s/%s" % [dir, f]
+		DirAccess.make_dir_recursive_absolute(dest.get_base_dir())
+		var out := FileAccess.open(dest, FileAccess.WRITE)
+		if out: out.store_buffer(zr.read_file(f)); out.close(); n += 1
+	zr.close()
+	DirAccess.remove_absolute(tmp)
+	status.call("%s map data ready (%d files)" % [map, n])
+	return _map_cache_complete(map)
+
+func _map_cache_complete(map: String) -> bool:
+	var dir := "%s/%s" % [CACHE, map]
+	var pjp := "%s/placements.json" % dir
+	if not FileAccess.file_exists(pjp): return false
+	var d: Variant = JSON.parse_string(FileAccess.get_file_as_string(pjp))
+	if not (d is Dictionary): return false
+	var terr: Dictionary = d.get("terrain", {})
+	if terr.has("med") and not FileAccess.file_exists("%s/%s" % [dir, terr["med"]]): return false
+	for e in d.get("backdrop", []):
+		if e is Dictionary and e.has("glb") and not FileAccess.file_exists("%s/%s" % [dir, e["glb"]]):
+			return false
 	return true
 
 # ---------- apply / build ----------
