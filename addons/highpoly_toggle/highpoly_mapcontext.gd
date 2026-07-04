@@ -320,19 +320,28 @@ func apply(root: Node, want_mode: int) -> String:
 	var dir := "%s/%s" % [CACHE, map]
 	var textured := mode == Mode.FULL_TEXTURED
 
-	# central terrain: only in the FULL modes (EXTENTS keeps the SDK's own
-	# playable terrain as the base and adds ONLY the out-of-bounds surroundings)
-	if mode != Mode.EXTENTS:
-		var terr: Dictionary = _data.get("terrain", {})
-		if terr.has("med"):
-			var tp := "%s/%s" % [dir, terr["med"]]
-			if FileAccess.file_exists(tp):
-				var tres := _load_external_glb(tp)
-				if tres:
-					var tnode := tres.instantiate()
-					tnode.name = "Terrain"
-					if not textured: _gray(tnode)
-					ctx.add_child(tnode); tnode.owner = null
+	# central terrain: loaded in EVERY non-off mode. The SDK's own playable
+	# terrain is only ~±600m (the gameplay bowl); our extracted terrain covers
+	# the full ±2048 heightfield, filling the ring gap between the SDK bowl and
+	# the near backdrop tiles (which start at ~±2043). Nudged down 0.5m so the
+	# SDK's detailed bowl stays on top where they overlap.
+	var terr: Dictionary = _data.get("terrain", {})
+	if terr.has("med"):
+		var tp := "%s/%s" % [dir, terr["med"]]
+		if FileAccess.file_exists(tp):
+			var tres := _load_external_glb(tp)
+			if tres:
+				var tinst := tres.instantiate()
+				var tmesh := _extract_mesh(tinst)   # runtime GLTF -> ImporterMesh; pull the real Mesh
+				tinst.queue_free()
+				if tmesh:
+					var tmi := MeshInstance3D.new()
+					tmi.name = "Terrain"
+					tmi.mesh = tmesh
+					tmi.position.y = -0.5           # sit just under the SDK bowl in the overlap
+					tmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+					if not textured: tmi.material_override = HighpolyLib.gray_material()
+					ctx.add_child(tmi); tmi.owner = null
 
 	# backdrop (out-of-bounds surroundings) — shown in every non-off mode
 	var bd_root := Node3D.new(); bd_root.name = "Backdrop"
