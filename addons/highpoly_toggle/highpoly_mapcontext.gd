@@ -24,6 +24,7 @@ var _cells: Dictionary = {}        # "cx,cz" -> Array[MultiMeshInstance3D] (prop
 var _cell_size := 64.0
 var _world_min := -2048.0
 var _mesh_cache: Dictionary = {}   # model path -> Mesh
+var _overlaid: Array = []          # SDK meshes we put a maptile material_overlay on
 
 # ---------- map identity ----------
 static func map_of(root: Node) -> String:
@@ -156,6 +157,76 @@ func _clear(root: Node) -> void:
 	var old := root.get_node_or_null(NODE)
 	if old: root.remove_child(old); old.queue_free()
 	_cells.clear()
+	# remove the maptile overlay we placed on the SDK terrain/assets (editor-only)
+	for n in _overlaid:
+		if is_instance_valid(n): (n as GeometryInstance3D).material_overlay = null
+	_overlaid.clear()
+
+# ---------- SDK terrain/assets maptile overlay (textured mode) ----------
+const MAPTILE_SHADER := """
+shader_type spatial;
+render_mode blend_mix, cull_back, depth_draw_opaque, unshaded;
+uniform sampler2D maptile : source_color, filter_linear_mipmap;
+uniform vec4 bounds;            // minx, maxx, minz, maxz (world XZ)
+uniform float flip_v = 1.0;
+varying vec3 wpos;
+void vertex() { wpos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz; }
+void fragment() {
+	float u = (wpos.x - bounds.x) / (bounds.y - bounds.x);
+	float v = (wpos.z - bounds.z) / (bounds.w - bounds.z);
+	if (flip_v > 0.5) v = 1.0 - v;
+	if (u < 0.0 || u > 1.0 || v < 0.0 || v > 1.0) discard;
+	ALBEDO = texture(maptile, vec2(u, v)).rgb;
+}
+"""
+static var _maptile_shader_res: Shader = null
+
+func _mesh_instances(n: Node, out: Array) -> void:
+	if n is MeshInstance3D and (n as MeshInstance3D).mesh != null: out.append(n)
+	for c in n.get_children(): _mesh_instances(c, out)
+
+func _world_xz_aabb(mis: Array) -> Array:
+	var minx := INF; var maxx := -INF; var minz := INF; var maxz := -INF
+	for mi in mis:
+		var ab: AABB = (mi as MeshInstance3D).global_transform * (mi as MeshInstance3D).get_aabb()
+		minx = min(minx, ab.position.x); minz = min(minz, ab.position.z)
+		maxx = max(maxx, ab.end.x); maxz = max(maxz, ab.end.z)
+	return [minx, maxx, minz, maxz]
+
+# Overlay the SDK's shipped top-down maptile (res://raw/maptiles/MP_<Map>.jpg)
+# on the SDK terrain + assets meshes via material_overlay. Reversible; never
+# saved. Alignment defaults to the terrain's own world AABB; a "maptile" entry
+# in the map data ({bounds:[minx,maxx,minz,maxz], flip:1}) overrides it.
+func _apply_maptile(root: Node, map: String) -> int:
+	var img_path := "res://raw/maptiles/%s.jpg" % map
+	if not ResourceLoader.exists(img_path): return 0
+	var tex = load(img_path)
+	if tex == null: return 0
+	if _maptile_shader_res == null:
+		_maptile_shader_res = Shader.new(); _maptile_shader_res.code = MAPTILE_SHADER
+	# gather SDK terrain + assets mesh instances
+	var targets: Array = []
+	for nm in ["%s_Terrain" % map, "%s_Assets" % map]:
+		var node := root.find_child(nm, true, false)
+		if node: _mesh_instances(node, targets)
+	if targets.is_empty(): return 0
+	# alignment
+	var b: Array
+	var flip := 1.0
+	var md: Dictionary = _data.get("maptile", {})
+	if md.has("bounds"):
+		b = md["bounds"]; flip = float(md.get("flip", 1))
+	else:
+		b = _world_xz_aabb(targets)
+	for mi in targets:
+		var sm := ShaderMaterial.new()
+		sm.shader = _maptile_shader_res
+		sm.set_shader_parameter("maptile", tex)
+		sm.set_shader_parameter("bounds", Vector4(b[0], b[1], b[2], b[3]))
+		sm.set_shader_parameter("flip_v", flip)
+		(mi as GeometryInstance3D).material_overlay = sm
+		_overlaid.append(mi)
+	return targets.size()
 
 func _load_data(map: String) -> bool:
 	var p := "%s/%s/placements.json" % [CACHE, map]
@@ -300,12 +371,17 @@ func apply(root: Node, want_mode: int) -> String:
 			_add_cell_multimeshes(props_root, mesh, e.get("xf", []), textured)
 			n_props += 1
 		_apply_radius()
+	# textured mode: drape the SDK's shipped maptile over its terrain + assets
+	var overlaid := 0
+	if textured:
+		overlaid = _apply_maptile(root, map)
 	var miss := bd_total - bd_ok
 	var tail := "" if miss == 0 else "  (%d surrounding piece(s) missing — pick the mode again to retry the download)" % miss
 	if mode == Mode.EXTENTS:
 		var hint := "  — zoom out to see the surrounding landscape (it rings the map several km out)" if miss == 0 else ""
 		return "%s: surroundings %d/%d pieces%s%s" % [map, bd_ok, bd_total, hint, tail]
-	return "%s: %s — %d prop meshes, %d/%d surroundings%s" % [map, ["off","extents","full","full+tex"][mode], n_props, bd_ok, bd_total, tail]
+	var mt := "" if overlaid == 0 else ", maptile on %d SDK mesh(es)" % overlaid
+	return "%s: %s — %d prop meshes, %d/%d surroundings%s%s" % [map, ["off","extents","full","full+tex"][mode], n_props, bd_ok, bd_total, mt, tail]
 
 func _load_external_glb(abs_or_res: String) -> PackedScene:
 	# user:// glbs aren't imported; load via runtime GLTF; res:// via normal loader
