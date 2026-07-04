@@ -101,6 +101,21 @@ func _enter_tree() -> void:
 		mcr_val.text = "%dm" % int(v)
 		mapctx.set_radius(v))
 
+	var td_row := HBoxContainer.new(); dock.add_child(td_row)
+	var td_lbl := Label.new(); td_lbl.text = "Terrain"
+	td_row.add_child(td_lbl)
+	var td := OptionButton.new()
+	td.add_item("Full (1m)", 1)
+	td.add_item("High (2m)", 2)
+	td.add_item("Medium (4m)", 4)
+	td.select(1)   # High is the default (near-native, performant)
+	td.tooltip_text = "Terrain mesh detail, built locally from the full-accuracy heightmap. Full = native 1m (heaviest); built once per level, then cached."
+	td.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	td_row.add_child(td)
+	td.item_selected.connect(func(_i):
+		mapctx.terrain_step = td.get_item_id(td.selected)
+		_mapctx_reload())
+
 	var mc_reload := Button.new(); mc_reload.text = "Reload map data"
 	mc_reload.tooltip_text = "Re-download any map pieces that didn't come in (e.g. throttled) and rebuild the current mode."
 	mc_reload.pressed.connect(_mapctx_reload)

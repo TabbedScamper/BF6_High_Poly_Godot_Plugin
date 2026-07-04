@@ -25,6 +25,7 @@ var _cell_size := 64.0
 var _world_min := -2048.0
 var _mesh_cache: Dictionary = {}   # model path -> Mesh
 var _overlaid: Array = []          # SDK meshes we put a maptile material_overlay on
+var terrain_step: int = 2          # metres per terrain vertex (1=full, 2=high, 4=medium)
 
 # ---------- map identity ----------
 static func map_of(root: Node) -> String:
@@ -165,7 +166,7 @@ func _clear(root: Node) -> void:
 # ---------- SDK terrain/assets maptile overlay (textured mode) ----------
 const MAPTILE_SHADER := """
 shader_type spatial;
-render_mode blend_mix, cull_back, depth_draw_opaque, unshaded;
+render_mode blend_mix, cull_disabled, depth_draw_opaque, unshaded;
 uniform sampler2D maptile : source_color, filter_linear_mipmap;
 uniform vec4 bounds;            // minx, maxx, minz, maxz (world XZ)
 uniform float flip_v = 1.0;
@@ -325,23 +326,20 @@ func apply(root: Node, want_mode: int) -> String:
 	# the full ±2048 heightfield, filling the ring gap between the SDK bowl and
 	# the near backdrop tiles (which start at ~±2043). Nudged down 0.5m so the
 	# SDK's detailed bowl stays on top where they overlap.
-	var terr: Dictionary = _data.get("terrain", {})
-	if terr.has("med"):
-		var tp := "%s/%s" % [dir, terr["med"]]
-		if FileAccess.file_exists(tp):
-			var tres := _load_external_glb(tp)
-			if tres:
-				var tinst := tres.instantiate()
-				var tmesh := _extract_mesh(tinst)   # runtime GLTF -> ImporterMesh; pull the real Mesh
-				tinst.queue_free()
-				if tmesh:
-					var tmi := MeshInstance3D.new()
-					tmi.name = "Terrain"
-					tmi.mesh = tmesh
-					tmi.position.y = -0.5           # sit just under the SDK bowl in the overlap
-					tmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-					if not textured: tmi.material_override = HighpolyLib.gray_material()
-					ctx.add_child(tmi); tmi.owner = null
+	var hm: Dictionary = _data.get("heightmap", {})
+	if hm.has("file"):
+		var tmi := _build_terrain_from_heightmap(dir, hm)   # full-accuracy mesh from raw 16-bit heights
+		if tmi:
+			tmi.position.y = -0.5                            # sit just under the SDK bowl in the overlap
+			if textured:
+				tmi.material_override = _maptile_material(map, [hm.get("world_min",-2048), hm.get("world_max",2048), hm.get("world_min",-2048), hm.get("world_max",2048)])
+			else:
+				var tg := StandardMaterial3D.new()
+				tg.albedo_color = Color(0.62, 0.63, 0.6)
+				tg.roughness = 0.95
+				tg.cull_mode = BaseMaterial3D.CULL_DISABLED
+				tmi.material_override = tg
+			ctx.add_child(tmi); tmi.owner = null
 
 	# backdrop (out-of-bounds surroundings) — shown in every non-off mode
 	var bd_root := Node3D.new(); bd_root.name = "Backdrop"
@@ -391,6 +389,83 @@ func apply(root: Node, want_mode: int) -> String:
 		return "%s: surroundings %d/%d pieces%s%s" % [map, bd_ok, bd_total, hint, tail]
 	var mt := "" if overlaid == 0 else ", maptile on %d SDK mesh(es)" % overlaid
 	return "%s: %s — %d prop meshes, %d/%d surroundings%s%s" % [map, ["off","extents","full","full+tex"][mode], n_props, bd_ok, bd_total, mt, tail]
+
+# ---------- full-accuracy terrain from the raw 16-bit heightmap ----------
+# Godot downsamples 16-bit PNGs to 8-bit, so heights ship as a raw uint16 blob
+# (row-major, little-endian). Built at `terrain_step` metres/vertex and cached
+# to user:// so the (slow) build only happens once per detail level.
+func _build_terrain_from_heightmap(dir: String, meta: Dictionary) -> MeshInstance3D:
+	var step: int = max(1, terrain_step)
+	var cache := "%s/terrain_s%d.res" % [dir, step]
+	var mesh: ArrayMesh = null
+	if ResourceLoader.exists(cache):
+		mesh = ResourceLoader.load(cache)
+	if mesh == null:
+		var raw := FileAccess.get_file_as_bytes("%s/%s" % [dir, meta.get("file", "height.r16")])
+		if raw.is_empty(): return null
+		mesh = _heightmap_mesh(raw, int(meta.get("res", 4097)), step, meta)
+		if mesh: ResourceSaver.save(mesh, cache)
+	if mesh == null: return null
+	var mi := MeshInstance3D.new(); mi.name = "Terrain"; mi.mesh = mesh
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	return mi
+
+func _heightmap_mesh(raw: PackedByteArray, res: int, step: int, meta: Dictionary) -> ArrayMesh:
+	var wmin: float = float(meta.get("world_min", -2048))
+	var wspan: float = float(meta.get("world_max", 2048)) - wmin
+	var base: float = float(meta.get("base", 0.0))
+	var scale: float = float(meta.get("scale", 1.0)) / 65535.0
+	var n := (res - 1) / step + 1
+	var inv := 1.0 / float(res - 1)
+	var verts := PackedVector3Array(); verts.resize(n * n)
+	var norms := PackedVector3Array(); norms.resize(n * n)
+	var uvs := PackedVector2Array(); uvs.resize(n * n)
+	var world_step := float(step) * inv * wspan
+	for gz in range(n):
+		var py := gz * step
+		var rowoff := py * res
+		var pym := (maxi(0, py - step)) * res
+		var pyp := (mini(res - 1, py + step)) * res
+		for gx in range(n):
+			var px := gx * step
+			var wy := base + float(raw.decode_u16((rowoff + px) * 2)) * scale
+			var i := gz * n + gx
+			verts[i] = Vector3(wmin + float(px) * inv * wspan, wy, wmin + float(py) * inv * wspan)
+			uvs[i] = Vector2(float(px) * inv, float(py) * inv)
+			var hxm := float(raw.decode_u16((rowoff + maxi(0, px - step)) * 2)) * scale
+			var hxp := float(raw.decode_u16((rowoff + mini(res - 1, px + step)) * 2)) * scale
+			var hzm := float(raw.decode_u16((pym + px) * 2)) * scale
+			var hzp := float(raw.decode_u16((pyp + px) * 2)) * scale
+			norms[i] = Vector3(-(hxp - hxm), 2.0 * world_step, -(hzp - hzm)).normalized()
+	var indices := PackedInt32Array(); indices.resize((n - 1) * (n - 1) * 6)
+	var k := 0
+	for gz in range(n - 1):
+		var ro := gz * n
+		for gx in range(n - 1):
+			var a := ro + gx
+			indices[k] = a; indices[k+1] = a + n; indices[k+2] = a + 1
+			indices[k+3] = a + 1; indices[k+4] = a + n; indices[k+5] = a + n + 1
+			k += 6
+	var arr := []; arr.resize(Mesh.ARRAY_MAX)
+	arr[Mesh.ARRAY_VERTEX] = verts
+	arr[Mesh.ARRAY_NORMAL] = norms
+	arr[Mesh.ARRAY_TEX_UV] = uvs
+	arr[Mesh.ARRAY_INDEX] = indices
+	var am := ArrayMesh.new()
+	am.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr)
+	return am
+
+func _maptile_material(map: String, b: Array) -> Material:
+	var img_path := "res://raw/maptiles/%s.jpg" % map
+	if not ResourceLoader.exists(img_path): return HighpolyLib.gray_material()
+	if _maptile_shader_res == null:
+		_maptile_shader_res = Shader.new(); _maptile_shader_res.code = MAPTILE_SHADER
+	var sm := ShaderMaterial.new()
+	sm.shader = _maptile_shader_res
+	sm.set_shader_parameter("maptile", load(img_path))
+	sm.set_shader_parameter("bounds", Vector4(b[0], b[1], b[2], b[3]))
+	sm.set_shader_parameter("flip_v", 1.0)
+	return sm
 
 func _load_external_glb(abs_or_res: String) -> PackedScene:
 	# user:// glbs aren't imported; load via runtime GLTF; res:// via normal loader
