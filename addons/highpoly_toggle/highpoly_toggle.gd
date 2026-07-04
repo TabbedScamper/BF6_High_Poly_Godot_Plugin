@@ -88,7 +88,7 @@ func _enter_tree() -> void:
 
 	mapctx_objects = CheckBox.new()
 	mapctx_objects.text = "Original map objects"
-	mapctx_objects.tooltip_text = "Also inject the game's original object placements (vehicles, props, antennas, chairs…) plus the out-of-bounds backdrop landscape/mountains."
+	mapctx_objects.tooltip_text = "Also inject the game's original object placements (vehicles, props, antennas, chairs…). The distant terrain/landscape comes in with \"Show map context\"."
 	mapctx_objects.toggled.connect(func(_v): _mapctx_changed())
 	dock.add_child(mapctx_objects)
 
