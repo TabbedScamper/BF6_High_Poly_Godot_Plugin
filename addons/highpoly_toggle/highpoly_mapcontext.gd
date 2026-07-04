@@ -242,7 +242,10 @@ func _apply_maptile(root: Node, map: String) -> int:
 	dec.texture_albedo = tex
 	dec.size = d["size"]
 	dec.normal_fade = float(d.get("nf", 0.0))
-	dec.cull_mask = 0xFFFFF
+	# hit everything EXCEPT our extended terrain (which carries its own detail
+	# shader) — so the decal only textures the SDK terrain + assets/buildings and
+	# doesn't re-flatten our detailed map-context terrain where they overlap.
+	dec.cull_mask = 0xFFFFF & ~EXT_TERRAIN_LAYER
 	dec.position = d["pos"]
 	root.add_child(dec); dec.owner = null
 	return 1
@@ -253,6 +256,9 @@ func _apply_maptile(root: Node, map: String) -> int:
 # close-up detail. Layer selected by surface slope (flat = ground, steep = cliff).
 # Normal is applied in view space (no mesh tangents needed).
 const LAYER_DIR := "res://addons/highpoly_toggle/terrain_layers/"
+# dedicated render layer for our extended terrain, so the SDK maptile decal can
+# be told to skip it (the decal only textures the SDK's own terrain + assets)
+const EXT_TERRAIN_LAYER := 1 << 19
 const TERRAIN_SHADER := """
 shader_type spatial;
 render_mode cull_disabled;
@@ -327,30 +333,6 @@ func _terrain_shader_mat(map: String) -> ShaderMaterial:
 	m.set_shader_parameter("ground_alb", ga); m.set_shader_parameter("ground_nrm", gn)
 	m.set_shader_parameter("cliff_alb", ca); m.set_shader_parameter("cliff_nrm", cn)
 	return m
-
-func _collect_mesh_instances(n: Node, out: Array) -> void:
-	if n is MeshInstance3D and (n as MeshInstance3D).mesh != null: out.append(n)
-	for c in n.get_children(): _collect_mesh_instances(c, out)
-
-# Overlay owner=null duplicates of the SDK terrain meshes (sharing the same Mesh
-# resource) nudged up slightly, carrying the detail material. The real SDK nodes
-# are never modified, so the saved scene stays byte-identical.
-func _overlay_sdk_terrain(root: Node, map: String, ctx: Node3D, mat: Material) -> int:
-	var node := root.find_child("%s_Terrain" % map, true, false)
-	if node == null: return 0
-	var mis: Array = []
-	_collect_mesh_instances(node, mis)
-	var n := 0
-	for mi in mis:
-		var dup := MeshInstance3D.new()
-		dup.mesh = (mi as MeshInstance3D).mesh
-		dup.material_override = mat
-		dup.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-		ctx.add_child(dup); dup.owner = null
-		dup.global_transform = (mi as MeshInstance3D).global_transform
-		dup.position.y += 0.12                              # sit just above the SDK terrain
-		n += 1
-	return n
 
 func _load_data(map: String) -> bool:
 	var p := "%s/%s/placements.json" % [CACHE, map]
@@ -455,27 +437,22 @@ func apply(root: Node, enabled: bool, show_objects: bool, textured: bool) -> Str
 	var dir := "%s/%s" % [CACHE, map]
 
 	# --- textured ground ---
-	# Near-exact terrain: the shipped maptile gives the real large-scale colour,
-	# and the game's own tiling ground-layer textures (albedo + normal) add crisp
-	# close-up detail, slope-selected (flat ground vs cliff). Applied via a shader
-	# to owner=null DUPLICATES of the SDK terrain (we never touch the saved node)
-	# and to our extended terrain. Falls back to the flat maptile decal for maps
-	# whose layer set isn't packaged yet.
+	# Two layers, kept separate:
+	#  1. The SDK's shipped playable centre (MP_<Map>_Terrain + _Assets/buildings)
+	#     keeps the simple maptile DECAL — the "easy win", untouched, still textures
+	#     the buildings.
+	#  2. OUR map-context terrain (the centre-fill our terrain adds + the outer
+	#     tiles beyond the SDK bowl) gets the near-exact DETAIL shader: real game
+	#     ground-layer albedo/normal, slope-selected, so it's no longer pixelated.
 	var tmat: ShaderMaterial = null
 	var sdk_overlaid := 0
-	var detailed := false
 	if textured:
-		tmat = _terrain_shader_mat(map)
-		if tmat != null:
-			sdk_overlaid = _overlay_sdk_terrain(root, map, ctx, tmat)
-			detailed = true
-		else:
-			sdk_overlaid = _apply_maptile(root, map)   # fallback: flat satellite decal
+		sdk_overlaid = _apply_maptile(root, map)      # decal on SDK terrain + assets
+		tmat = _terrain_shader_mat(map)               # detail material for our extended terrain
 
 	if not enabled:
 		if not textured: return "Map Context off"
-		if detailed: return "SDK terrain textured (detail) — %d mesh(es)" % sdk_overlaid
-		return "SDK terrain textured" if sdk_overlaid > 0 else "No maptile for %s" % map
+		return "SDK terrain textured (decal)" if sdk_overlaid > 0 else "No maptile for %s" % map
 	if not have_data:
 		return "%s not downloaded (hit Reload map data)" % map
 
@@ -490,6 +467,7 @@ func apply(root: Node, enabled: bool, show_objects: bool, textured: bool) -> Str
 		if tmi:
 			tmi.position.y = -0.5                            # sit just under the SDK bowl in the overlap
 			tmi.material_override = tmat if (textured and tmat != null) else terrain_material()
+			tmi.layers = EXT_TERRAIN_LAYER                   # keep the SDK maptile decal off it
 			ctx.add_child(tmi); tmi.owner = null
 
 	# backdrop (out-of-bounds surrounding landscape) — always shown when enabled;
@@ -535,7 +513,7 @@ func apply(root: Node, enabled: bool, show_objects: bool, textured: bool) -> Str
 	var objs := ", %d object meshes" % n_props if show_objects else ", objects off"
 	var mt := ""
 	if textured:
-		mt = ", detail terrain (%d SDK mesh)" % sdk_overlaid if detailed else ", maptile decal"
+		mt = ", decal + detail terrain" if tmat != null else ", maptile decal (no layer set)"
 	var tex := "textured" if textured else "flat colour"
 	return "%s: %s — %d/%d surroundings%s%s%s" % [map, tex, bd_ok, bd_total, objs, mt, tail]
 
