@@ -377,12 +377,53 @@ func _mesh_for(model_path: String) -> Mesh:
 		var res = load(model_path)
 		if res is PackedScene:
 			var inst = (res as PackedScene).instantiate()
-			m = _extract_mesh(inst)
+			# The mesh often sits under a node carrying the glTF import transform
+			# (e.g. 0.01 scale + Z-up→Y-up swap, with the raw verts in cm). Grabbing
+			# just the Mesh drops that → giant, mis-oriented props (the 700 m
+			# helicopter). Bake the mesh-node's transform into the mesh so the
+			# placement transforms land it correctly. Identity nodes are a no-op.
+			var pair := _first_mesh_and_xf(inst, Transform3D())
+			if not pair.is_empty():
+				m = _bake_mesh(pair[0], pair[1])
 			inst.queue_free()
 		elif res is Mesh:
 			m = res
 	_mesh_cache[model_path] = m
 	return m
+
+# first mesh + its transform relative to the scene root (accumulated)
+func _first_mesh_and_xf(n: Node, pxf: Transform3D) -> Array:
+	var xf := pxf * ((n as Node3D).transform if n is Node3D else Transform3D())
+	var mesh: Mesh = null
+	if n is MeshInstance3D and (n as MeshInstance3D).mesh != null:
+		mesh = (n as MeshInstance3D).mesh
+	elif n is ImporterMeshInstance3D and (n as ImporterMeshInstance3D).mesh != null:
+		mesh = (n as ImporterMeshInstance3D).mesh.get_mesh()
+	if mesh != null: return [mesh, xf]
+	for c in n.get_children():
+		var r := _first_mesh_and_xf(c, xf)
+		if not r.is_empty(): return r
+	return []
+
+# bake a transform into a mesh's vertices + normals (cached per model, so once)
+func _bake_mesh(mesh: Mesh, xf: Transform3D) -> Mesh:
+	if xf.is_equal_approx(Transform3D()): return mesh
+	var out := ArrayMesh.new()
+	var nb := xf.basis.inverse().transposed()
+	for s in range(mesh.get_surface_count()):
+		var arr: Array = mesh.surface_get_arrays(s)
+		var V = arr[Mesh.ARRAY_VERTEX]
+		if V != null:
+			var nv := PackedVector3Array(); nv.resize(V.size())
+			for i in range(V.size()): nv[i] = xf * V[i]
+			arr[Mesh.ARRAY_VERTEX] = nv
+		var N = arr[Mesh.ARRAY_NORMAL]
+		if N != null:
+			var nn := PackedVector3Array(); nn.resize(N.size())
+			for i in range(N.size()): nn[i] = (nb * N[i]).normalized()
+			arr[Mesh.ARRAY_NORMAL] = nn
+		out.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr)
+	return out
 
 # Runtime GLTF (generate_scene) yields ImporterMeshInstance3D holding an
 # ImporterMesh; res:// imported scenes yield MeshInstance3D holding a Mesh.
@@ -532,16 +573,24 @@ func apply(root: Node, enabled: bool, show_objects: bool, textured: bool) -> Str
 	# on top where they overlap.
 	# untextured "study" material = the SDK's own M_LevelTerrain (shiny lime green
 	# + its 12 m placeholder grid), so our map-context terrain matches the shipped
-	# terrain exactly instead of a flat unshaded green. `green` = as-is (backdrop);
-	# `green_tiled` = re-tiled to the SDK's 12 m grid for our big flat terrain.
-	var green: Material = _sdk_terrain_material(root, map)
-	var green_tiled: Material = green
+	# terrain exactly instead of a flat unshaded green. We DUPLICATE it (never touch
+	# the shared SDK material) and force CULL_DISABLED: our heightmap mesh winds the
+	# opposite way to the SDK mesh, so with the SDK material's default back-face
+	# culling the top faces get culled and the terrain reads as black. `green` =
+	# backdrop; `green_tiled` = re-tiled to the SDK's 12 m grid for our big terrain.
+	var green_base: Material = _sdk_terrain_material(root, map)
+	var green: Material = green_base
+	var green_tiled: Material = green_base
 	var hm: Dictionary = _data.get("heightmap", {})
-	if green is BaseMaterial3D:
+	if green_base is BaseMaterial3D:
 		var span: float = float(hm.get("world_max", 2048)) - float(hm.get("world_min", -2048))
-		var gm := (green as BaseMaterial3D).duplicate() as BaseMaterial3D
-		gm.uv1_scale = Vector3(span / SDK_GRID_M, span / SDK_GRID_M, 1.0)
-		green_tiled = gm
+		var gb := (green_base as BaseMaterial3D).duplicate() as BaseMaterial3D
+		gb.cull_mode = BaseMaterial3D.CULL_DISABLED
+		green = gb
+		var gt := (green_base as BaseMaterial3D).duplicate() as BaseMaterial3D
+		gt.cull_mode = BaseMaterial3D.CULL_DISABLED
+		gt.uv1_scale = Vector3(span / SDK_GRID_M, span / SDK_GRID_M, 1.0)
+		green_tiled = gt
 	if hm.has("file"):
 		var tmi := _build_terrain_from_heightmap(dir, hm)   # full-accuracy mesh from raw 16-bit heights
 		if tmi:
@@ -677,20 +726,34 @@ func _load_external_glb(abs_or_res: String) -> PackedScene:
 	return ps
 
 func _add_cell_multimeshes(parent: Node3D, mesh: Mesh, xf: Array, textured: bool, flat_mat: Material) -> void:
-	# split this mesh's placements into world cells so the streamer can hide far ones
-	var buckets: Dictionary = {}   # "cx,cz" -> PackedFloat32Array
+	# split placements into world cells (for distance streaming), and within each
+	# cell split normal vs mirrored (negative-determinant) instances — the game
+	# legitimately mirror-instances props and a MultiMesh renders those inside-out
+	# unless fed a winding-flipped mesh.
+	var buckets: Dictionary = {}   # "cx,cz" -> [Array normal, Array mirrored]
 	var count := int(xf.size() / 12)
 	for i in range(count):
-		var ox: float = xf[i * 12 + 9]
-		var oz: float = xf[i * 12 + 11]
+		var o := i * 12
+		var ox: float = xf[o + 9]
+		var oz: float = xf[o + 11]
 		var key := "%d,%d" % [int((ox - _world_min) / _cell_size), int((oz - _world_min) / _cell_size)]
-		if not buckets.has(key): buckets[key] = []
-		for j in range(12): buckets[key].append(xf[i * 12 + j])
+		if not buckets.has(key): buckets[key] = [[], []]
+		var dst: Array = buckets[key][1] if _det3(xf, o) < 0.0 else buckets[key][0]
+		for j in range(12): dst.append(xf[o + j])
+	var flipped: Mesh = null
 	for key in buckets.keys():
-		var mmi := _build_mmi(mesh, buckets[key], textured, flat_mat)
-		parent.add_child(mmi); mmi.owner = null
-		if not _cells.has(key): _cells[key] = []
-		_cells[key].append(mmi)
+		var groups: Array = buckets[key]
+		for gi in range(2):
+			var gxf: Array = groups[gi]
+			if gxf.is_empty(): continue
+			var msh := mesh
+			if gi == 1:
+				if flipped == null: flipped = _flipped_mesh(mesh)
+				msh = flipped
+			var mmi := _build_mmi(msh, gxf, textured, flat_mat)
+			parent.add_child(mmi); mmi.owner = null
+			if not _cells.has(key): _cells[key] = []
+			_cells[key].append(mmi)
 
 func _build_mmi(mesh: Mesh, xf: Array, textured: bool, flat_mat: Material) -> MultiMeshInstance3D:
 	var mm := MultiMesh.new(); mm.transform_format = MultiMesh.TRANSFORM_3D; mm.mesh = mesh
