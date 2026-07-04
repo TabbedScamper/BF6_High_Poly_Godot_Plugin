@@ -405,21 +405,66 @@ func _xform(a: Array, o: int) -> Transform3D:
 	t.origin = Vector3(a[o+9], a[o+10], a[o+11])
 	return t
 
-func _add_multimesh(parent: Node3D, mesh: Mesh, xf: Array, textured: bool, flat_mat: Material) -> void:
+# basis determinant sign: negative = a mirrored instance, which a MultiMesh
+# renders with reversed winding (inside-out / inverted normals) unless we feed
+# it a winding-flipped copy of the mesh (double flip = correct).
+func _det3(a: Array, o: int) -> float:
+	var r := Vector3(a[o+0], a[o+3], a[o+6])
+	var u := Vector3(a[o+1], a[o+4], a[o+7])
+	var f := Vector3(a[o+2], a[o+5], a[o+8])
+	return r.dot(u.cross(f))
+
+static var _flip_cache: Dictionary = {}
+func _flipped_mesh(mesh: Mesh) -> Mesh:
+	if _flip_cache.has(mesh): return _flip_cache[mesh]
+	var out := ArrayMesh.new()
+	for s in range(mesh.get_surface_count()):
+		var arr: Array = mesh.surface_get_arrays(s)
+		var idx = arr[Mesh.ARRAY_INDEX]
+		if idx != null and idx.size() >= 3:
+			var ni := PackedInt32Array(); ni.resize(idx.size())
+			for t in range(0, idx.size() - 2, 3):
+				ni[t] = idx[t]; ni[t + 1] = idx[t + 2]; ni[t + 2] = idx[t + 1]
+			arr[Mesh.ARRAY_INDEX] = ni
+		var nrm = arr[Mesh.ARRAY_NORMAL]
+		if nrm != null:
+			var nn := PackedVector3Array(); nn.resize(nrm.size())
+			for k in range(nrm.size()): nn[k] = -nrm[k]
+			arr[Mesh.ARRAY_NORMAL] = nn
+		out.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr)
+	_flip_cache[mesh] = out
+	return out
+
+func _mm_group(parent: Node3D, mesh: Mesh, xf: PackedFloat32Array, textured: bool, flat_mat: Material) -> void:
 	var count := int(xf.size() / 12)
 	if mesh == null or count == 0: return
 	var mm := MultiMesh.new()
 	mm.transform_format = MultiMesh.TRANSFORM_3D
 	mm.mesh = mesh
 	mm.instance_count = count
+	var arr: Array = Array(xf)
 	for i in range(count):
-		mm.set_instance_transform(i, _xform(xf, i * 12))
+		mm.set_instance_transform(i, _xform(arr, i * 12))
 	var mmi := MultiMeshInstance3D.new()
 	mmi.multimesh = mm
 	if not textured:
 		mmi.material_override = flat_mat
 	mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF   # perf
 	parent.add_child(mmi)
+
+func _add_multimesh(parent: Node3D, mesh: Mesh, xf: Array, textured: bool, flat_mat: Material) -> void:
+	var count := int(xf.size() / 12)
+	if mesh == null or count == 0: return
+	# split normal vs mirrored instances so the mirrored ones render right-side-out
+	var pos := PackedFloat32Array()
+	var neg := PackedFloat32Array()
+	for i in range(count):
+		var o := i * 12
+		var dst := neg if _det3(xf, o) < 0.0 else pos
+		for j in range(12): dst.append(xf[o + j])
+	_mm_group(parent, mesh, pos, textured, flat_mat)
+	if neg.size() > 0:
+		_mm_group(parent, _flipped_mesh(mesh), neg, textured, flat_mat)
 
 # Build the _MAP_CONTEXT subtree. Everything owner=null.
 #   enabled      – Map Context on at all (terrain + surroundings baseline)
@@ -480,32 +525,32 @@ func apply(root: Node, enabled: bool, show_objects: bool, textured: bool) -> Str
 			tmi.layers = EXT_TERRAIN_LAYER                   # keep the SDK maptile decal off it
 			ctx.add_child(tmi); tmi.owner = null
 
-	# "Show map context" alone = just the terrain. The backdrop meshes (big
-	# out-of-bounds landscape/mountain pieces) and the game's object placements
-	# both come in only with "Original map objects".
+	# distant terrain: the backdrop landscape/mountain chunks are part of the map
+	# context TERRAIN, so they come in with "Show map context" (not objects).
+	var bd_root := Node3D.new(); bd_root.name = "Backdrop"
+	ctx.add_child(bd_root); bd_root.owner = null
 	var bd_ok := 0; var bd_total := 0
+	for e in _data.get("backdrop", []):
+		if not (e is Dictionary): continue
+		bd_total += 1
+		var mesh: Mesh = null
+		if e.has("glb"):
+			var gp := "%s/%s" % [dir, e["glb"]]
+			if FileAccess.file_exists(gp):
+				var g := _load_external_glb(gp)
+				if g:
+					var gi := g.instantiate()
+					mesh = _extract_mesh(gi)
+					gi.queue_free()
+		elif e.has("model"):
+			mesh = _mesh_for(str(e["model"]))
+		if mesh:
+			_add_multimesh(bd_root, mesh, e.get("xf", []), textured, terrain_material())
+			bd_ok += 1
+
+	# original object placements (props) — only with "Original map objects"
 	var n_props := 0
 	if show_objects:
-		var bd_root := Node3D.new(); bd_root.name = "Backdrop"
-		ctx.add_child(bd_root); bd_root.owner = null
-		for e in _data.get("backdrop", []):
-			if not (e is Dictionary): continue
-			bd_total += 1
-			var mesh: Mesh = null
-			if e.has("glb"):
-				var gp := "%s/%s" % [dir, e["glb"]]
-				if FileAccess.file_exists(gp):
-					var g := _load_external_glb(gp)
-					if g:
-						var gi := g.instantiate()
-						mesh = _extract_mesh(gi)
-						gi.queue_free()
-			elif e.has("model"):
-				mesh = _mesh_for(str(e["model"]))
-			if mesh:
-				_add_multimesh(bd_root, mesh, e.get("xf", []), textured, terrain_material())
-				bd_ok += 1
-
 		var props_root := Node3D.new(); props_root.name = "Props"
 		ctx.add_child(props_root); props_root.owner = null
 		for e in _data.get("props", []):
@@ -520,8 +565,9 @@ func apply(root: Node, enabled: bool, show_objects: bool, textured: bool) -> Str
 	if textured:
 		mt = ", decal + detail terrain" if tmat != null else ", maptile decal (no layer set)"
 	var tex := "textured" if textured else "flat colour"
-	var objs := ", objects+surroundings %d/%d" % [n_props, bd_ok + bd_total] if show_objects else ", objects off"
-	return "%s: terrain %s%s%s" % [map, tex, objs, mt]
+	var surr := ", surroundings %d/%d" % [bd_ok, bd_total]
+	var objs := ", %d object meshes" % n_props if show_objects else ""
+	return "%s: terrain %s%s%s%s" % [map, tex, surr, objs, mt]
 
 # ---------- full-accuracy terrain from the raw 16-bit heightmap ----------
 # Godot downsamples 16-bit PNGs to 8-bit, so heights ship as a raw uint16 blob
