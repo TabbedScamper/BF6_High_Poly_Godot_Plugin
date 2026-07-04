@@ -42,6 +42,29 @@ func _cache_dir() -> String:
 func has_data(map: String) -> bool:
 	return FileAccess.file_exists("%s/%s/placements.json" % [CACHE, map])
 
+# Audit what's cached vs. what the manifest needs. Returns a human string and
+# prints to the Output panel so problems are visible without a live debugger.
+func cache_status(map: String) -> String:
+	var dir := "%s/%s" % [CACHE, map]
+	var pjp := "%s/placements.json" % dir
+	if not FileAccess.file_exists(pjp):
+		var s := "MapContext[%s]: NO placements.json in %s (nothing downloaded yet)" % [map, dir]
+		print(s); return s
+	var d: Variant = JSON.parse_string(FileAccess.get_file_as_string(pjp))
+	if not (d is Dictionary):
+		var s := "MapContext[%s]: placements.json unreadable" % map
+		print(s); return s
+	var terr: Dictionary = d.get("terrain", {})
+	var terr_have := terr.has("med") and FileAccess.file_exists("%s/%s" % [dir, terr["med"]])
+	var need := 0; var have := 0
+	for e in d.get("backdrop", []):
+		if e is Dictionary and e.has("glb"):
+			need += 1
+			if FileAccess.file_exists("%s/%s" % [dir, e["glb"]]): have += 1
+	var s := "MapContext[%s]: terrain=%s, surroundings %d/%d cached, dir=%s" % [
+		map, ("yes" if terr_have else "MISSING"), have, need, ProjectSettings.globalize_path(dir)]
+	print(s); return s
+
 func _fetch_once(host: Node, url: String, to_file := "") -> PackedByteArray:
 	var http := HTTPRequest.new(); host.add_child(http)
 	if to_file != "": http.download_file = to_file

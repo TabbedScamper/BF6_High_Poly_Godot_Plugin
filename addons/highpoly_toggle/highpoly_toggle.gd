@@ -180,17 +180,23 @@ func _mapctx_reload() -> void:
 	# so this button force-downloads missing pieces and rebuilds the current mode
 	var m := mapctx_btn.get_selected_id()
 	var r := EditorInterface.get_edited_scene_root()
+	var rn := "<none>" if r == null else String(r.name)
 	var map: String = mapctx.map_of(r)
+	print("[MapContext] Reload pressed — scene root='%s', detected map='%s', mode=%d" % [rn, map, m])
 	if map == "":
-		lbl.text = "Open a level scene (MP_…) first"; return
+		lbl.text = "Scene root is '%s' — open an MP_… level scene" % rn; return
 	if m == 0:
-		lbl.text = "Pick a Map Context mode first"; return
+		lbl.text = "Pick a Map Context mode first (dropdown)"; return
+	print("[MapContext] before: " + mapctx.cache_status(map))
 	lbl.text = "Reloading %s map data…" % map
 	var ok: bool = await mapctx.download_map(dock, map, func(s: String): lbl.text = s)
+	print("[MapContext] after:  " + mapctx.cache_status(map))
 	if ok:
-		lbl.text = mapctx.apply(r, m)
+		var res: String = mapctx.apply(r, m)
+		print("[MapContext] apply -> " + res)
+		lbl.text = res
 	else:
-		lbl.text = "Could not fetch %s map data" % map
+		lbl.text = "Could not fetch %s map data (see Output)" % map
 
 func _mapctx_changed() -> void:
 	var m := mapctx_btn.get_selected_id()
