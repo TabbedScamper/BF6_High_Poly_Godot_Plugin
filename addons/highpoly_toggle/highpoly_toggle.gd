@@ -10,9 +10,11 @@ var dock: VBoxContainer
 var lbl: Label
 var mode_btn: OptionButton
 var tex_chk: CheckBox
-const PreviewsScript = preload("res://addons/highpoly_toggle/highpoly_previews.gd")
-const TurboScript = preload("res://addons/highpoly_toggle/highpoly_turbo.gd")
-const MapContextScript = preload("res://addons/highpoly_toggle/highpoly_mapcontext.gd")
+# relative preloads: the plugin works from ANY folder under addons/ (users
+# often drop the whole repo zip in, nesting the plugin one level deeper)
+const PreviewsScript = preload("highpoly_previews.gd")
+const TurboScript = preload("highpoly_turbo.gd")
+const MapContextScript = preload("highpoly_mapcontext.gd")
 var previews: Node
 var turbo: Node
 var mapctx: Node

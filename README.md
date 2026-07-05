@@ -22,12 +22,16 @@ ship to every plugin user automatically.
 
 ## Install
 
-1. Download this repository (Code → Download ZIP, or `git clone`).
-2. Copy the `addons/highpoly_toggle/` folder into your Portal SDK Godot
-   project's `addons/` folder (create `addons/` if it doesn't exist).
-3. In the SDK editor: **Project → Project Settings → Plugins** → enable
+1. Grab **`highpoly_toggle.zip`** from the
+   [latest release](https://github.com/TabbedScamper/BF6_High_Poly_Godot_Plugin/releases/latest)
+   and extract it into your Portal SDK Godot **project folder** — it merges
+   into `addons/highpoly_toggle/`.
+   *(Downloading the repository ZIP instead also works: copy or extract it
+   anywhere under the project's `addons/` folder — the plugin finds its own
+   files regardless of the folder it lands in.)*
+2. In the SDK editor: **Project → Project Settings → Plugins** → enable
    **BF6 High-Poly Preview**.
-4. A **High-Poly** dock appears (right side, top). Done — no configuration
+3. A **High-Poly** dock appears (right side, top). Done — no configuration
    needed; the plugin talks to the public model registry out of the box.
 
 > Optional: to point at a different registry host, set the project setting
