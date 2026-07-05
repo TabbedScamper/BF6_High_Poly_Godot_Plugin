@@ -153,8 +153,8 @@ func cache_status(map: String) -> String:
 	if not (d is Dictionary):
 		var s := "MapContext[%s]: placements.json unreadable" % map
 		print(s); return s
-	var terr: Dictionary = d.get("terrain", {})
-	var terr_have := terr.has("med") and FileAccess.file_exists("%s/%s" % [dir, terr["med"]])
+	var hm: Dictionary = d.get("heightmap", {})
+	var terr_have := hm.has("file") and FileAccess.file_exists("%s/%s" % [dir, hm["file"]])
 	var need := 0; var have := 0
 	for e in d.get("backdrop", []):
 		if e is Dictionary and e.has("glb"):
@@ -188,6 +188,25 @@ func _fetch(host: Node, url: String, to_file := "") -> PackedByteArray:
 		await t.timeout
 	return PackedByteArray()
 
+# Large-file download straight to disk with a live "N MB" progress callback
+# (total_mb = 0 hides the total). Returns true on HTTP 200 + file present.
+func _download_with_progress(host: Node, url: String, to_file: String, status: Callable,
+		label: String, total_mb := 0) -> bool:
+	var http := HTTPRequest.new(); host.add_child(http)
+	http.download_file = to_file
+	var tick := Timer.new(); tick.wait_time = 0.5; host.add_child(tick); tick.start()
+	tick.timeout.connect(func():
+		var d := http.get_downloaded_bytes()
+		if d > 0:
+			var mb := d / 1048576
+			status.call("%s %d%s MB…" % [label, mb, (" / %d" % total_mb) if total_mb > 0 else ""]))
+	var ok := false
+	if http.request(url) == OK:
+		var res: Array = await http.request_completed
+		ok = res[0] == HTTPRequest.RESULT_SUCCESS and res[1] == 200 and FileAccess.file_exists(to_file)
+	tick.queue_free(); http.queue_free()
+	return ok
+
 # Download a map's data as ONE zip (terrain + placements + backdrop glbs) and
 # extract it. A single request avoids the r2.dev burst-throttling that 38
 # separate downloads trip. Idempotent: if placements.json is already cached and
@@ -209,18 +228,8 @@ func download_map(host: Node, map: String, status: Callable, force := false) -> 
 		if meta is Dictionary: total_mb = int(int(meta.get("bytes", 0)) / 1048576.0)
 	status.call("Downloading %s map data%s…" % [map, (" (~%d MB)" % total_mb) if total_mb else ""])
 	var tmp := "%s/mapdata.zip" % dir
-	# dedicated progress-aware download so the user sees it moving
-	var http := HTTPRequest.new(); host.add_child(http)
-	http.download_file = tmp
-	var tick := Timer.new(); tick.wait_time = 0.5; host.add_child(tick); tick.start()
-	tick.timeout.connect(func():
-		var d := http.get_downloaded_bytes()
-		if d > 0: status.call("Downloading %s map data… %d / %d MB" % [map, d / 1048576, total_mb]))
-	var got_ok := false
-	if http.request(b + "mapdata.zip") == OK:
-		var res: Array = await http.request_completed
-		got_ok = res[0] == HTTPRequest.RESULT_SUCCESS and res[1] == 200 and FileAccess.file_exists(tmp)
-	tick.queue_free(); http.queue_free()
+	var got_ok := await _download_with_progress(host, b + "mapdata.zip", tmp, status,
+		"Downloading %s map data:" % map, total_mb)
 	if not got_ok:
 		status.call("Map data download failed (server busy — try Reload again)")
 		return false
@@ -240,14 +249,14 @@ func download_map(host: Node, map: String, status: Callable, force := false) -> 
 	status.call("%s map data ready (%d files)" % [map, n])
 	return _map_cache_complete(map)
 
+# True when the cached manifest AND every file it references (heightmap blob +
+# backdrop glbs) are on disk — i.e. nothing left to download for this map.
 func _map_cache_complete(map: String) -> bool:
 	var dir := "%s/%s" % [CACHE, map]
 	var pjp := "%s/placements.json" % dir
 	if not FileAccess.file_exists(pjp): return false
 	var d: Variant = JSON.parse_string(FileAccess.get_file_as_string(pjp))
 	if not (d is Dictionary): return false
-	var terr: Dictionary = d.get("terrain", {})
-	if terr.has("med") and not FileAccess.file_exists("%s/%s" % [dir, terr["med"]]): return false
 	var hm: Dictionary = d.get("heightmap", {})
 	if hm.has("file") and not FileAccess.file_exists("%s/%s" % [dir, hm["file"]]): return false
 	for e in d.get("backdrop", []):
@@ -447,17 +456,8 @@ func ensure_props(host: Node, map: String, status: Callable) -> bool:
 	var b := base_url() + "maps/%s/" % map
 	var tmp := "%s/%s/_props.zip" % [CACHE, map]
 	DirAccess.make_dir_recursive_absolute("%s/%s" % [CACHE, map])
-	var http := HTTPRequest.new(); host.add_child(http)
-	http.download_file = tmp
-	var tick := Timer.new(); tick.wait_time = 0.5; host.add_child(tick); tick.start()
-	tick.timeout.connect(func():
-		var d := http.get_downloaded_bytes()
-		if d > 0: status.call("Downloading prop meshes… %d MB" % (d / 1048576)))
-	var ok := false
-	if http.request(b + "props.zip") == OK:
-		var res: Array = await http.request_completed
-		ok = res[0] == HTTPRequest.RESULT_SUCCESS and res[1] == 200 and FileAccess.file_exists(tmp)
-	tick.queue_free(); http.queue_free()
+	var ok := await _download_with_progress(host, b + "props.zip", tmp, status,
+		"Downloading prop meshes:")
 	if not ok:
 		status.call("Prop mesh download failed (try again)"); return false
 	var zr := ZIPReader.new()
@@ -545,11 +545,6 @@ func _extract_mesh(n: Node) -> Mesh:
 		if r: return r
 	return null
 
-func _dump_tree(n: Node, depth: int) -> void:
-	print("  %s- %s (%s)" % ["  ".repeat(depth), n.name, n.get_class()])
-	for c in n.get_children():
-		_dump_tree(c, depth + 1)
-
 func _first_mesh(n: Node) -> MeshInstance3D:
 	if n is MeshInstance3D and (n as MeshInstance3D).mesh != null:
 		return n
@@ -597,36 +592,22 @@ func _flipped_mesh(mesh: Mesh) -> Mesh:
 	_flip_cache[mesh] = out
 	return out
 
-func _mm_group(parent: Node3D, mesh: Mesh, xf: PackedFloat32Array, textured: bool, flat_mat: Material) -> void:
-	var count := int(xf.size() / 12)
-	if mesh == null or count == 0: return
-	var mm := MultiMesh.new()
-	mm.transform_format = MultiMesh.TRANSFORM_3D
-	mm.mesh = mesh
-	mm.instance_count = count
-	var arr: Array = Array(xf)
-	for i in range(count):
-		mm.set_instance_transform(i, _xform(arr, i * 12))
-	var mmi := MultiMeshInstance3D.new()
-	mmi.multimesh = mm
-	if not textured:
-		mmi.material_override = flat_mat
-	mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF   # perf
-	parent.add_child(mmi)
-
+# One MultiMeshInstance3D for a batch of placements, splitting mirrored
+# (negative-determinant) instances onto a winding-flipped copy of the mesh so
+# they render right-side-out. Used for backdrop entries (no distance streaming).
 func _add_multimesh(parent: Node3D, mesh: Mesh, xf: Array, textured: bool, flat_mat: Material) -> void:
 	var count := int(xf.size() / 12)
 	if mesh == null or count == 0: return
-	# split normal vs mirrored instances so the mirrored ones render right-side-out
-	var pos := PackedFloat32Array()
-	var neg := PackedFloat32Array()
+	var pos: Array = []
+	var neg: Array = []
 	for i in range(count):
 		var o := i * 12
-		var dst := neg if _det3(xf, o) < 0.0 else pos
+		var dst: Array = neg if _det3(xf, o) < 0.0 else pos
 		for j in range(12): dst.append(xf[o + j])
-	_mm_group(parent, mesh, pos, textured, flat_mat)
-	if neg.size() > 0:
-		_mm_group(parent, _flipped_mesh(mesh), neg, textured, flat_mat)
+	if not pos.is_empty():
+		parent.add_child(_build_mmi(mesh, pos, textured, flat_mat))
+	if not neg.is_empty():
+		parent.add_child(_build_mmi(_flipped_mesh(mesh), neg, textured, flat_mat))
 
 # Build the _MAP_CONTEXT subtree. Everything owner=null.
 #   enabled      – Map Context on at all (terrain + surroundings baseline)
@@ -702,27 +683,7 @@ func apply(root: Node, enabled: bool, show_objects: bool, textured: bool) -> Str
 				tmi.material_override = tmat if (textured and tmat != null) else green_tiled
 				tmi.layers = EXT_TERRAIN_LAYER                   # keep the SDK maptile decal off it
 				ctx.add_child(tmi); tmi.owner = null
-			# water: exact flat plane from the extracted WaterEntityData (occluded by
-			# terrain above it, so it only fills the real harbour/river surface)
-			var wcfg: Dictionary = _data.get("water", {})
-			if wcfg.has("height"):
-				var wc: Array = wcfg.get("center", [0.0, 0.0])
-				var wsz: Array = wcfg.get("size", [5000.0, 5000.0])
-				var wp := MeshInstance3D.new()
-				wp.name = WATER_NODE
-				var pm := PlaneMesh.new()
-				pm.size = Vector2(float(wsz[0]), float(wsz[1]))
-				wp.mesh = pm
-				var wmat := StandardMaterial3D.new()
-				wmat.albedo_color = WATER_COLOR
-				wmat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-				wmat.metallic = 0.3
-				wmat.roughness = 0.1
-				wmat.cull_mode = BaseMaterial3D.CULL_DISABLED
-				wp.material_override = wmat
-				wp.position = Vector3(float(wc[0]), float(wcfg["height"]), float(wc[1]))
-				wp.layers = EXT_TERRAIN_LAYER
-				ctx.add_child(wp); wp.owner = null
+			_add_water_plane(ctx)
 		var bd_root := Node3D.new(); bd_root.name = "Backdrop"
 		ctx.add_child(bd_root); bd_root.owner = null
 		for e in _data.get("backdrop", []):
@@ -771,6 +732,31 @@ func apply(root: Node, enabled: bool, show_objects: bool, textured: bool) -> Str
 	var surr := ", surroundings %d/%d" % [bd_ok, bd_total]
 	var objs := ", %d object meshes" % n_props if show_objects else ""
 	return "%s: terrain %s%s%s%s" % [map, tex, surr, objs, mt]
+
+# Water: exact flat plane from the extracted WaterEntityData in placements.json
+# ("water" = surface height + world centre + XZ extent). Terrain above the plane
+# occludes it, so it only shows where the ground is below the waterline.
+# Maps without a water body carry no "water" key and get no plane.
+func _add_water_plane(ctx: Node3D) -> void:
+	var wcfg: Dictionary = _data.get("water", {})
+	if not wcfg.has("height"): return
+	var wc: Array = wcfg.get("center", [0.0, 0.0])
+	var wsz: Array = wcfg.get("size", [5000.0, 5000.0])
+	var wp := MeshInstance3D.new()
+	wp.name = WATER_NODE
+	var pm := PlaneMesh.new()
+	pm.size = Vector2(float(wsz[0]), float(wsz[1]))
+	wp.mesh = pm
+	var wmat := StandardMaterial3D.new()
+	wmat.albedo_color = WATER_COLOR
+	wmat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	wmat.metallic = 0.3
+	wmat.roughness = 0.1
+	wmat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	wp.material_override = wmat
+	wp.position = Vector3(float(wc[0]), float(wcfg["height"]), float(wc[1]))
+	wp.layers = EXT_TERRAIN_LAYER    # keep the SDK maptile decal off the water
+	ctx.add_child(wp); wp.owner = null
 
 # ---------- full-accuracy terrain from the raw 16-bit heightmap ----------
 # Godot downsamples 16-bit PNGs to 8-bit, so heights ship as a raw uint16 blob

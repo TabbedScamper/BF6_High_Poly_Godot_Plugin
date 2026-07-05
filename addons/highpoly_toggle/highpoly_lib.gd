@@ -12,6 +12,9 @@ class_name HighpolyLib
 const HP_DIR := "res://highpoly"
 const HP_ROT := Vector3(-90, 0, 0)   # legacy OBJ assets are Z-up; GLB assets are Y-up
 const HP_NODE := "_HIPOLY_PREVIEW"
+# Props whose proxy AABB legitimately disagrees with the real asset's shape
+# (e.g. a wreck proxy that is just the hull) — skip the auto-fitter for these
+# so it doesn't wrongly rescale or reject the overlay.
 const NOFIT := ["WreckTank_Abra01"]
 
 enum Tier { LOW, MEDIUM, HIGH }
