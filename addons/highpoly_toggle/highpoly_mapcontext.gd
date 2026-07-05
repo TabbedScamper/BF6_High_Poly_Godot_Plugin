@@ -114,6 +114,17 @@ const MAPTILE_DECALS := {
 	"MP_Tungsten": {"pos": Vector3(60.235, 86.514, -25.078), "size": Vector3(1550, 100, 1550), "nf": 0.507},
 }
 const DECAL_NODE := "_MAPTILE_DECAL"
+const WATER_NODE := "_WATER"
+
+# Water is a flat surface entity (WaterEntityData), not a mesh placement, so it is
+# reconstructed as a large translucent plane at the map's water height. A flat
+# plane is naturally occluded by any terrain above it, so it only shows in the
+# low basins (harbour/river) — full-terrain extent is safe. Height is the water
+# surface in SDK world Y (tune per map). Add a map here to give it water.
+const WATER_PLANES := {
+	# Aftermath (coastal NYC): city sits at ~24 m, harbour basin at ~0-3 m.
+	"MP_Aftermath": {"height": 3.0, "color": Color(0.10, 0.22, 0.30, 0.72)},
+}
 
 # ---------- map identity ----------
 static func map_of(root: Node) -> String:
@@ -690,6 +701,26 @@ func apply(root: Node, enabled: bool, show_objects: bool, textured: bool) -> Str
 				tmi.material_override = tmat if (textured and tmat != null) else green_tiled
 				tmi.layers = EXT_TERRAIN_LAYER                   # keep the SDK maptile decal off it
 				ctx.add_child(tmi); tmi.owner = null
+			# water: flat translucent plane at the map's water surface (occluded by
+			# terrain above it, so it only fills the low harbour/river basins)
+			if WATER_PLANES.has(map):
+				var wcfg: Dictionary = WATER_PLANES[map]
+				var span2: float = float(hm.get("world_max", 2048)) - float(hm.get("world_min", -2048))
+				var wp := MeshInstance3D.new()
+				wp.name = WATER_NODE
+				var pm := PlaneMesh.new()
+				pm.size = Vector2(span2, span2)
+				wp.mesh = pm
+				var wmat := StandardMaterial3D.new()
+				wmat.albedo_color = wcfg.get("color", Color(0.10, 0.22, 0.30, 0.72))
+				wmat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+				wmat.metallic = 0.3
+				wmat.roughness = 0.1
+				wmat.cull_mode = BaseMaterial3D.CULL_DISABLED
+				wp.material_override = wmat
+				wp.position = Vector3(0.0, float(wcfg.get("height", 0.0)), 0.0)
+				wp.layers = EXT_TERRAIN_LAYER
+				ctx.add_child(wp); wp.owner = null
 		var bd_root := Node3D.new(); bd_root.name = "Backdrop"
 		ctx.add_child(bd_root); bd_root.owner = null
 		for e in _data.get("backdrop", []):
