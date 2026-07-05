@@ -203,10 +203,10 @@ func _exit_tree() -> void:
 
 # ensure the map's prop meshes are in the shared cache (only when objects are
 # shown), then apply. Prop meshes download once and are reused across maps.
-func _apply_mapctx(r: Node, objs: bool, tex: bool) -> void:
+func _apply_mapctx(r: Node, on: bool, objs: bool, tex: bool) -> void:
 	if objs:
 		await mapctx.ensure_props(dock, mapctx.map_of(r), func(s: String): lbl.text = s)
-	lbl.text = mapctx.apply(r, true, objs, tex)
+	lbl.text = mapctx.apply(r, on, objs, tex)
 
 func _mapctx_rebuild() -> void:
 	# rebuild with current toggles, no re-download (e.g. terrain detail changed)
@@ -224,14 +224,14 @@ func _mapctx_reload() -> void:
 	print("[MapContext] Reload pressed — scene root='%s', detected map='%s'" % [rn, map])
 	if map == "":
 		lbl.text = "Scene root is '%s' — open an MP_… level scene" % rn; return
-	if not mapctx_on.button_pressed:
-		lbl.text = "Turn on \"Show map context\" first"; return
+	if not mapctx_on.button_pressed and not mapctx_objects.button_pressed:
+		lbl.text = "Turn on \"Show map context\" or \"Original map objects\" first"; return
 	print("[MapContext] before: " + mapctx.cache_status(map))
 	lbl.text = "Reloading %s map data…" % map
 	var ok: bool = await mapctx.download_map(dock, map, func(s: String): lbl.text = s, true)
 	print("[MapContext] after:  " + mapctx.cache_status(map))
 	if ok:
-		await _apply_mapctx(r, mapctx_objects.button_pressed, mapctx_tex.button_pressed)
+		await _apply_mapctx(r, mapctx_on.button_pressed, mapctx_objects.button_pressed, mapctx_tex.button_pressed)
 		print("[MapContext] apply -> " + lbl.text)
 	else:
 		lbl.text = "Could not fetch %s map data (see Output)" % map
@@ -244,20 +244,21 @@ func _mapctx_changed() -> void:
 	var rn := "<none>" if r == null else String(r.name)
 	var map: String = mapctx.map_of(r)
 	print("[MapContext] toggles -> on=%s objects=%s tex=%s, root='%s', map='%s'" % [on, objs, tex, rn, map])
-	if not on:
-		# map context off, but Textures can still drape the SDK's shipped maptile
-		# over the default terrain — no download needed
+	if not on and not objs:
+		# neither terrain context nor objects — Textures can still drape the SDK's
+		# shipped maptile over the default terrain (no download needed)
 		lbl.text = mapctx.apply(r, false, false, tex); return
 	if map == "":
 		lbl.text = "Scene root is '%s' — open an MP_… level scene" % rn
 		mapctx_on.set_pressed_no_signal(false)
+		mapctx_objects.set_pressed_no_signal(false)
 		return
 	if mapctx.has_data(map):
 		# already have the manifest — top up any missing pieces (idempotent,
 		# offline-fast when complete), then apply
 		lbl.text = "Loading %s…" % map
 		await mapctx.download_map(dock, map, func(s: String): lbl.text = s)
-		await _apply_mapctx(r, objs, tex)
+		await _apply_mapctx(r, on, objs, tex)
 		print("[MapContext] apply -> " + lbl.text); return
 	# not downloaded yet — prompt
 	var dlg := ConfirmationDialog.new()
@@ -268,12 +269,14 @@ func _mapctx_changed() -> void:
 		lbl.text = "Downloading map data…"
 		var ok: bool = await mapctx.download_map(dock, map, func(s: String): lbl.text = s)
 		if ok:
-			await _apply_mapctx(r, objs, tex)
+			await _apply_mapctx(r, on, objs, tex)
 		else:
 			mapctx_on.set_pressed_no_signal(false)
+			mapctx_objects.set_pressed_no_signal(false)
 			lbl.text = mapctx.apply(r, false, false, false))
 	dlg.canceled.connect(func():
 		mapctx_on.set_pressed_no_signal(false)
+		mapctx_objects.set_pressed_no_signal(false)
 		lbl.text = mapctx.apply(r, false, false, false)
 		dlg.queue_free())
 	EditorInterface.popup_dialog_centered(dlg)
