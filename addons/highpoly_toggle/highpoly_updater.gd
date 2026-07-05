@@ -15,14 +15,20 @@ static func manifest_url() -> String:
 		return str(ProjectSettings.get_setting(SETTING))
 	return DEFAULT_MANIFEST
 
+# GET with retry/backoff — the public r2.dev host throttles rapid bursts, so a
+# single failed attempt (403/429/5xx) is usually transient.
 static func _fetch(http: HTTPRequest, url: String) -> PackedByteArray:
-	var err := http.request(url)
-	if err != OK: return PackedByteArray()
-	var res: Array = await http.request_completed
-	# res = [result, response_code, headers, body]
-	if res[0] != HTTPRequest.RESULT_SUCCESS or res[1] != 200:
-		return PackedByteArray()
-	return res[3]
+	for attempt in range(4):
+		if attempt > 0:
+			# 0.4s, 0.8s, 1.6s between retries
+			await http.get_tree().create_timer(0.4 * pow(2, attempt - 1)).timeout
+		if http.request(url) != OK:
+			continue
+		var res: Array = await http.request_completed
+		# res = [result, response_code, headers, body]
+		if res[0] == HTTPRequest.RESULT_SUCCESS and res[1] == 200:
+			return res[3]
+	return PackedByteArray()
 
 # Write one downloaded model file and record its content hash in the prop's
 # sidecar json (res://highpoly/<Name>/<Name>.json) so the next update check can
