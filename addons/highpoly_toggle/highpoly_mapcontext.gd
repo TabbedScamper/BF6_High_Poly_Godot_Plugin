@@ -260,6 +260,9 @@ func _clear(root: Node) -> void:
 	var old := root.get_node_or_null(NODE)
 	if old: root.remove_child(old); old.queue_free()
 	_cells.clear()
+	# drop the in-RAM mesh cache so a re-apply re-reads the on-disk prop cache
+	# (picks up textures updated since the last apply instead of reusing stale meshes)
+	_mesh_cache.clear()
 	# remove the maptile decal (editor-only)
 	var dec := root.get_node_or_null(DECAL_NODE)
 	if dec: root.remove_child(dec); dec.queue_free()
