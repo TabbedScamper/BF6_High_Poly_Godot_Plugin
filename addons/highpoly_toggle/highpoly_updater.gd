@@ -89,7 +89,7 @@ static func _scene_proxy_keys(root: Node, out: Dictionary) -> void:
 	var stack: Array = [root]
 	while not stack.is_empty():
 		var n: Node = stack.pop_back()
-		if n.name == "_HIPOLY_PREVIEW":
+		if n.name == "_HIPOLY_PREVIEW" or n.name == "_MAP_CONTEXT":
 			continue
 		var k := ""
 		var sfp := n.scene_file_path

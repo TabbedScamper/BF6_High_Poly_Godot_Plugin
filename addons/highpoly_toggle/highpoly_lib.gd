@@ -75,8 +75,8 @@ static func apply(root: Node, tier: Tier, textured: bool = true) -> int:
 	var stack: Array = [root]
 	while not stack.is_empty():
 		var node: Node = stack.pop_back()
-		if node.name == HP_NODE:
-			continue
+		if node.name == HP_NODE or node.name == "_MAP_CONTEXT":
+			continue                          # skip our overlays (esp. the huge map-context subtree)
 		if node is Node3D:
 			var k := _match_key(node, ks)
 			if k != "":
@@ -164,7 +164,9 @@ static func purge_all() -> int:
 static func in_overlay(node: Node) -> bool:
 	var n := node
 	while n != null:
-		if n.name == HP_NODE: return true
+		# HP_NODE = our high-poly overlay; _MAP_CONTEXT = the map-context overlay
+		# (tens of thousands of owner=null nodes). Detail Mode must ignore both.
+		if n.name == HP_NODE or n.name == "_MAP_CONTEXT": return true
 		n = n.get_parent()
 	return false
 
