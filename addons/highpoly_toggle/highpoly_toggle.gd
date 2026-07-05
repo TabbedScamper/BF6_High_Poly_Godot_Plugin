@@ -20,6 +20,7 @@ var mapctx_on: CheckBox        # Map Context enabled
 var mapctx_objects: CheckBox   # show original map objects
 var mapctx_tex: CheckBox       # show textures (else flat SDK green/orange)
 var mapctx_timer: Timer
+var _edited_root: Node = null  # tracks the active scene to detect tab switches
 
 func _mode() -> int:
 	return mode_btn.get_selected_id() if mode_btn else HighpolyLib.Tier.LOW
@@ -184,8 +185,11 @@ func _enter_tree() -> void:
 	mapctx = MapContextScript.new()
 	dock.add_child(mapctx)
 	mapctx_timer = Timer.new(); mapctx_timer.wait_time = 0.5
-	mapctx_timer.timeout.connect(func(): if mapctx: mapctx.tick())
+	mapctx_timer.timeout.connect(func():
+		_check_scene_change()
+		if mapctx: mapctx.tick())
 	dock.add_child(mapctx_timer); mapctx_timer.start()
+	_edited_root = EditorInterface.get_edited_scene_root()
 
 	# every session starts safe: Low-Poly until a mode is chosen
 	mode_btn.select(mode_btn.get_item_index(HighpolyLib.Tier.LOW))
@@ -200,6 +204,25 @@ func _exit_tree() -> void:
 	if dock:
 		remove_control_from_docks(dock)
 		dock.queue_free()
+
+# When the user switches scene tabs, tear down our heavy owner=null overlays on
+# the scene we're LEAVING (Map Context = tens of thousands of nodes; high-poly =
+# thousands) and reset the dock to Low-Poly / Map Context off. Keeps every scene
+# light so swapping tabs stays fast; the user re-enables per scene as needed.
+func _check_scene_change() -> void:
+	var r := EditorInterface.get_edited_scene_root()
+	if r == _edited_root: return
+	var old := _edited_root
+	_edited_root = r
+	if old != null and is_instance_valid(old):
+		if mapctx: mapctx.apply(old, false, false, false)     # frees _MAP_CONTEXT + maptile decal
+		HighpolyLib.apply(old, HighpolyLib.Tier.LOW, true)    # hide high-poly overlays, show proxies
+	# reset the dock to default for the newly-active scene (programmatic, no rebuild)
+	if mode_btn: mode_btn.select(mode_btn.get_item_index(HighpolyLib.Tier.LOW))
+	if previews: previews.tier = HighpolyLib.Tier.LOW
+	if mapctx_on: mapctx_on.set_pressed_no_signal(false)
+	if mapctx_objects: mapctx_objects.set_pressed_no_signal(false)
+	if lbl and old != null: lbl.text = "Scene changed — reset to Low-Poly"
 
 # ensure the map's prop meshes are in the shared cache (only when objects are
 # shown), then apply. Prop meshes download once and are reused across maps.
