@@ -87,6 +87,9 @@ func _sdk_material(root: Node, node_name: String, fallback: Material) -> Materia
 const MAPTILE_DECALS := {
 	"MP_Abbasid": {"pos": Vector3(-84.688, 64.872, 122.928), "size": Vector3(1085, 100, 1085), "nf": 0.49},
 	"MP_Aftermath": {"pos": Vector3(-576.833, 61.616, -30.161), "size": Vector3(878, 150, 878), "nf": 0.514},
+	# Portal variant of Aftermath: same world space; "tile" reuses MP_Aftermath's
+	# maptile jpg (the SDK ships no MP_Aftermath_Portal.jpg of its own)
+	"MP_Aftermath_Portal": {"pos": Vector3(-576.833, 61.616, -30.161), "size": Vector3(878, 150, 878), "nf": 0.514, "tile": "MP_Aftermath"},
 	"MP_Badlands": {"pos": Vector3(0.475, 95.294, -100.406), "size": Vector3(1400, 100, 1400), "nf": 0.515},
 	"MP_Battery": {"pos": Vector3(696.983, 0, 88.527), "size": Vector3(1400, 500, 1400), "nf": 0.51},
 	"MP_Capstone": {"pos": Vector3(0.112, 0, -168.568), "size": Vector3(1400, 1000, 1400), "nf": 0.408},
@@ -269,9 +272,10 @@ func _clear(root: Node) -> void:
 	var old := root.get_node_or_null(NODE)
 	if old: root.remove_child(old); old.queue_free()
 	_cells.clear()
-	# drop the in-RAM mesh cache so a re-apply re-reads the on-disk prop cache
-	# (picks up textures updated since the last apply instead of reusing stale meshes)
+	# drop the in-RAM caches so a re-apply re-reads the on-disk files (picks up
+	# prop textures / terrain layers updated since the last apply)
 	_mesh_cache.clear()
+	_layer_cache.clear()
 	# remove the maptile decal (editor-only)
 	var dec := root.get_node_or_null(DECAL_NODE)
 	if dec: root.remove_child(dec); dec.queue_free()
@@ -283,7 +287,8 @@ func _clear(root: Node) -> void:
 # Reversible, never saved. Works with or without extended map data downloaded.
 func _apply_maptile(root: Node, map: String) -> int:
 	if not MAPTILE_DECALS.has(map): return 0
-	var img_path := "res://raw/maptiles/%s.jpg" % map
+	# "tile" lets a variant map (e.g. MP_Aftermath_Portal) reuse another map's jpg
+	var img_path := "res://raw/maptiles/%s.jpg" % MAPTILE_DECALS[map].get("tile", map)
 	if not ResourceLoader.exists(img_path): return 0
 	var tex = load(img_path)
 	if tex == null: return 0
@@ -365,23 +370,36 @@ void fragment() {
 }
 """
 static var _tshader: Shader = null
-static var _layer_cache: Dictionary = {}
+static var _layer_cache: Dictionary = {}   # "<map>/<name>" -> Texture2D (or null)
 
-func _layer_tex(nm: String) -> Texture2D:
-	if _layer_cache.has(nm): return _layer_cache[nm]
-	var p := LAYER_DIR + nm + ".png"
-	var t: Texture2D = load(p) if ResourceLoader.exists(p) else null
-	_layer_cache[nm] = t
+# Detail-layer texture for a map: prefer the PER-MAP layer shipped in the map
+# package (user://mapcontext/<map>/terrain_layers/<name>.png — the real ground/
+# cliff set that map streams in game), falling back per file to the plugin's
+# bundled default set.
+func _layer_tex(map: String, nm: String) -> Texture2D:
+	var key := "%s/%s" % [map, nm]
+	if _layer_cache.has(key): return _layer_cache[key]
+	var t: Texture2D = null
+	var per_map := "%s/%s/terrain_layers/%s.png" % [CACHE, map, nm]
+	if FileAccess.file_exists(per_map):
+		var img := Image.load_from_file(ProjectSettings.globalize_path(per_map))
+		if img != null:
+			img.generate_mipmaps()
+			t = ImageTexture.create_from_image(img)
+	if t == null:
+		var p := LAYER_DIR + nm + ".png"
+		t = load(p) if ResourceLoader.exists(p) else null
+	_layer_cache[key] = t
 	return t
 
 # Build the detail-terrain material for this map, or null if the maptile or the
 # ground-layer set isn't available (→ caller falls back to the flat decal).
 func _terrain_shader_mat(map: String) -> ShaderMaterial:
 	if not MAPTILE_DECALS.has(map): return null
-	var img := "res://raw/maptiles/%s.jpg" % map
+	var img := "res://raw/maptiles/%s.jpg" % MAPTILE_DECALS[map].get("tile", map)
 	if not ResourceLoader.exists(img): return null
-	var ga := _layer_tex("ground_alb"); var gn := _layer_tex("ground_nrm")
-	var ca := _layer_tex("cliff_alb"); var cn := _layer_tex("cliff_nrm")
+	var ga := _layer_tex(map, "ground_alb"); var gn := _layer_tex(map, "ground_nrm")
+	var ca := _layer_tex(map, "cliff_alb"); var cn := _layer_tex(map, "cliff_nrm")
 	if ga == null or gn == null or ca == null or cn == null: return null
 	if _tshader == null:
 		_tshader = Shader.new(); _tshader.code = TERRAIN_SHADER
@@ -733,30 +751,38 @@ func apply(root: Node, enabled: bool, show_objects: bool, textured: bool) -> Str
 	var objs := ", %d object meshes" % n_props if show_objects else ""
 	return "%s: terrain %s%s%s%s" % [map, tex, surr, objs, mt]
 
-# Water: exact flat plane from the extracted WaterEntityData in placements.json
-# ("water" = surface height + world centre + XZ extent). Terrain above the plane
-# occludes it, so it only shows where the ground is below the waterline.
-# Maps without a water body carry no "water" key and get no plane.
+# Water: exact flat plane(s) from the extracted WaterEntityData in
+# placements.json. "water" is either one {height, center, size} dict (a single
+# sea-level surface) or a LIST of them (separate lakes/pools at different
+# elevations, e.g. Golmud's 18 mountain lakes). Terrain above a plane occludes
+# it, so each only shows where the ground dips below its own waterline.
+# Maps without a water body carry no "water" key and get no planes.
 func _add_water_plane(ctx: Node3D) -> void:
-	var wcfg: Dictionary = _data.get("water", {})
-	if not wcfg.has("height"): return
-	var wc: Array = wcfg.get("center", [0.0, 0.0])
-	var wsz: Array = wcfg.get("size", [5000.0, 5000.0])
-	var wp := MeshInstance3D.new()
-	wp.name = WATER_NODE
-	var pm := PlaneMesh.new()
-	pm.size = Vector2(float(wsz[0]), float(wsz[1]))
-	wp.mesh = pm
+	var wdata: Variant = _data.get("water", null)
+	var planes: Array = []
+	if wdata is Dictionary:
+		planes = [wdata]
+	elif wdata is Array:
+		planes = wdata
 	var wmat := StandardMaterial3D.new()
 	wmat.albedo_color = WATER_COLOR
 	wmat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	wmat.metallic = 0.3
 	wmat.roughness = 0.1
 	wmat.cull_mode = BaseMaterial3D.CULL_DISABLED
-	wp.material_override = wmat
-	wp.position = Vector3(float(wc[0]), float(wcfg["height"]), float(wc[1]))
-	wp.layers = EXT_TERRAIN_LAYER    # keep the SDK maptile decal off the water
-	ctx.add_child(wp); wp.owner = null
+	for wcfg in planes:
+		if not (wcfg is Dictionary) or not wcfg.has("height"): continue
+		var wc: Array = wcfg.get("center", [0.0, 0.0])
+		var wsz: Array = wcfg.get("size", [5000.0, 5000.0])
+		var wp := MeshInstance3D.new()
+		wp.name = WATER_NODE
+		var pm := PlaneMesh.new()
+		pm.size = Vector2(float(wsz[0]), float(wsz[1]))
+		wp.mesh = pm
+		wp.material_override = wmat
+		wp.position = Vector3(float(wc[0]), float(wcfg["height"]), float(wc[1]))
+		wp.layers = EXT_TERRAIN_LAYER    # keep the SDK maptile decal off the water
+		ctx.add_child(wp); wp.owner = null
 
 # ---------- full-accuracy terrain from the raw 16-bit heightmap ----------
 # Godot downsamples 16-bit PNGs to 8-bit, so heights ship as a raw uint16 blob
