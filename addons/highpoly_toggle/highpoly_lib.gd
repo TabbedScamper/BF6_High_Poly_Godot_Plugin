@@ -14,8 +14,24 @@ const HP_ROT := Vector3(-90, 0, 0)   # legacy OBJ assets are Z-up; GLB assets ar
 const HP_NODE := "_HIPOLY_PREVIEW"
 # Props whose proxy AABB legitimately disagrees with the real asset's shape
 # (e.g. a wreck proxy that is just the hull) — skip the auto-fitter for these
-# so it doesn't wrongly rescale or reject the overlay.
+# so it doesn't wrongly rescale or reject the overlay. Prefab-assembled models
+# carry the same flag data-driven, via `"nofit": true` in their sidecar json
+# (they are exact game-space builds; fitting would rescale/re-center them).
 const NOFIT := ["WreckTank_Abra01"]
+
+static var _nofit_cache := {}
+
+static func _sidecar_nofit(path: String) -> bool:
+	var key := path.get_file().get_basename().trim_suffix("_med")
+	if _nofit_cache.has(key):
+		return _nofit_cache[key]
+	var side := "%s/%s.json" % [path.get_base_dir(), key]
+	var flag := false
+	if FileAccess.file_exists(side):
+		var j: Variant = JSON.parse_string(FileAccess.get_file_as_string(side))
+		flag = j is Dictionary and bool((j as Dictionary).get("nofit", false))
+	_nofit_cache[key] = flag
+	return flag
 
 enum Tier { LOW, MEDIUM, HIGH }
 
@@ -119,7 +135,7 @@ static func apply_one(node: Node3D, entry: Dictionary, tier: Tier, textured: boo
 		node.add_child(child)
 		child.owner = null                   # editor-only: not saved, not exported
 		var key := path.get_file().get_basename().trim_suffix("_med")
-		if not (key in NOFIT) and not _fit_scale(node, child):
+		if not (key in NOFIT) and not _sidecar_nofit(path) and not _fit_scale(node, child):
 			node.remove_child(child); child.queue_free()
 			return false                     # wrong-shaped asset: keep the proxy
 		hp = child
