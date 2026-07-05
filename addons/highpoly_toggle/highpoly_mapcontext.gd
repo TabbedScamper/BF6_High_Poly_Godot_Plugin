@@ -311,7 +311,10 @@ func _apply_maptile(root: Node, map: String) -> int:
 # layers (albedo + normal, extracted from the terrainmaterials palette) add crisp
 # close-up detail. Layer selected by surface slope (flat = ground, steep = cliff).
 # Normal is applied in view space (no mesh tangents needed).
-const LAYER_DIR := "res://addons/highpoly_toggle/terrain_layers/"
+# bundled fallback layers live next to this script (path derived at runtime so
+# the plugin works from any install folder under addons/)
+static func _layer_dir() -> String:
+	return (HighpolyMapContext as Script).resource_path.get_base_dir() + "/terrain_layers/"
 # dedicated render layer for our extended terrain, so the SDK maptile decal can
 # be told to skip it (the decal only textures the SDK's own terrain + assets)
 const EXT_TERRAIN_LAYER := 1 << 19
@@ -387,7 +390,7 @@ func _layer_tex(map: String, nm: String) -> Texture2D:
 			img.generate_mipmaps()
 			t = ImageTexture.create_from_image(img)
 	if t == null:
-		var p := LAYER_DIR + nm + ".png"
+		var p := _layer_dir() + nm + ".png"
 		t = load(p) if ResourceLoader.exists(p) else null
 	_layer_cache[key] = t
 	return t

@@ -240,12 +240,17 @@ static func scene_available(root: Node, host: Node, cb: Callable) -> void:
 #  - remote version = <registry host>/plugin/plugin-version.json
 #                     {"version": "x.y.z", "zip": "plugin/highpoly_toggle.zip", "notes": "..."}
 # The zip contains the whole addons/highpoly_toggle/ folder and is extracted
-# over it in place; a restart of the editor loads the new scripts.
-const PLUGIN_DIR := "res://addons/highpoly_toggle"
+# over the INSTALLED location; a restart of the editor loads the new scripts.
+
+# The plugin's install folder, derived from this script's own path — so the
+# plugin works no matter where under addons/ the user placed it (e.g. dropping
+# the whole repo zip in nests it one level deeper).
+static func plugin_dir() -> String:
+	return (HighpolyUpdater as Script).resource_path.get_base_dir()
 
 static func plugin_version() -> String:
 	var cf := ConfigFile.new()
-	if cf.load(PLUGIN_DIR + "/plugin.cfg") != OK: return "0.0.0"
+	if cf.load(plugin_dir() + "/plugin.cfg") != OK: return "0.0.0"
 	return str(cf.get_value("plugin", "version", "0.0.0"))
 
 static func _version_tuple(v: String) -> Array:
@@ -298,12 +303,14 @@ static func update_plugin(host: Node, status: Callable) -> bool:
 	var zr := ZIPReader.new()
 	if zr.open(ProjectSettings.globalize_path(tmp)) != OK:
 		status.call("Update archive unreadable"); return false
+	var pdir := plugin_dir()
 	var n := 0
 	for path in zr.get_files():
-		# the zip is rooted at addons/highpoly_toggle/ — ignore anything else
+		# the zip is rooted at addons/highpoly_toggle/ — ignore anything else,
+		# and extract into wherever THIS install actually lives
 		if path.ends_with("/") or not path.begins_with("addons/highpoly_toggle/"):
 			continue
-		var dest := "res://" + path
+		var dest := "%s/%s" % [pdir, path.trim_prefix("addons/highpoly_toggle/")]
 		DirAccess.make_dir_recursive_absolute(dest.get_base_dir())
 		var out := FileAccess.open(dest, FileAccess.WRITE)
 		if out:
