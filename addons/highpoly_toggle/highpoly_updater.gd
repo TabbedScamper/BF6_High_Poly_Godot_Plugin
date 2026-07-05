@@ -32,7 +32,7 @@ static func _fetch(http: HTTPRequest, url: String) -> PackedByteArray:
 
 # Write one downloaded model file and record its content hash in the prop's
 # sidecar json (res://highpoly/<Name>/<Name>.json) so the next update check can
-# skip unchanged files. job = [prox, remote_rel, hash, local_file, sidecar_key]
+# skip unchanged files. job = [prox, remote_rel, hash, local_file, sidecar_key, nofit]
 static func _store_model(job: Array, data: PackedByteArray) -> bool:
 	DirAccess.make_dir_recursive_absolute("res://highpoly/%s" % job[0])
 	var f := FileAccess.open(job[3], FileAccess.WRITE)
@@ -44,6 +44,9 @@ static func _store_model(job: Array, data: PackedByteArray) -> bool:
 		var j: Variant = JSON.parse_string(FileAccess.get_file_as_string(side))
 		if j is Dictionary: sj = j
 	sj[job[4]] = job[2]
+	# prefab-assembled models must not be auto-fitted (exact game-space builds)
+	if job.size() > 5 and job[5]:
+		sj["nofit"] = true
 	var s := FileAccess.open(side, FileAccess.WRITE)
 	if s:
 		s.store_string(JSON.stringify(sj)); s.close()
@@ -76,12 +79,13 @@ static func run(host: Node, status: Callable) -> void:
 		if FileAccess.file_exists(side):
 			var j: Variant = JSON.parse_string(FileAccess.get_file_as_string(side))
 			if j is Dictionary: sj = j
+		var nofit: bool = bool(remote.get("nofit", false))
 		var rhash := str(remote.get("hash", ""))
 		if rhash != "" and str(sj.get("hash", "")) != rhash:
-			to_update.append([prox, str(remote.get("glb", "")), rhash, "%s/%s.glb" % [dir, prox], "hash"])
+			to_update.append([prox, str(remote.get("glb", "")), rhash, "%s/%s.glb" % [dir, prox], "hash", nofit])
 		var mhash := str(remote.get("med_hash", ""))
 		if mhash != "" and mhash != "null" and str(sj.get("med_hash", "")) != mhash:
-			to_update.append([prox, str(remote.get("med_glb", "")), mhash, "%s/%s_med.glb" % [dir, prox], "med_hash"])
+			to_update.append([prox, str(remote.get("med_glb", "")), mhash, "%s/%s_med.glb" % [dir, prox], "med_hash", nofit])
 	if to_update.is_empty():
 		status.call("All models up to date"); http.queue_free(); return
 	var done := 0
@@ -153,12 +157,13 @@ static func download_for_scene(host: Node, root: Node, status: Callable) -> bool
 		if not props.has(prox): continue
 		var remote: Dictionary = props[prox]
 		var dir := "res://highpoly/%s" % prox
+		var nofit: bool = bool(remote.get("nofit", false))
 		var gh := str(remote.get("hash", ""))
 		if gh != "":
-			jobs.append([prox, str(remote.get("glb", "")), gh, "%s/%s.glb" % [dir, prox], "hash"])
+			jobs.append([prox, str(remote.get("glb", "")), gh, "%s/%s.glb" % [dir, prox], "hash", nofit])
 		var mh := str(remote.get("med_hash", ""))
 		if mh != "" and mh != "null":
-			jobs.append([prox, str(remote.get("med_glb", "")), mh, "%s/%s_med.glb" % [dir, prox], "med_hash"])
+			jobs.append([prox, str(remote.get("med_glb", "")), mh, "%s/%s_med.glb" % [dir, prox], "med_hash", nofit])
 	if jobs.is_empty():
 		status.call("No registry models for this scene"); http.queue_free(); return false
 	var done := 0; var failed := 0
