@@ -105,6 +105,11 @@ const MAPTILE_DECALS := {
 	"MP_Limestone": {"pos": Vector3(696.708, 22.57, 88.363), "size": Vector3(1400, 1000, 1400), "nf": 0.481},
 	"MP_Outskirts": {"pos": Vector3(-381.997, 0, -89.8), "size": Vector3(1740, 1000, 1740), "nf": 0.532},
 	"MP_Plaza": {"pos": Vector3(14.265, 0, 100.163), "size": Vector3(1000, 1000, 1000), "nf": 0.512},
+	# Portal_Sand is a blank desert canvas: uniform sand maptile + no placed objects.
+	# Full-terrain bounds so the whole heightfield reads as sand (its only detail
+	# layer available is Capstone's greenish ground; restricting bounds would show
+	# green vista). pos.y/size.y span the 0..330 m dune height for the decal box.
+	"MP_Portal_Sand": {"pos": Vector3(0, 165, 0), "size": Vector3(8192, 700, 8192), "nf": 0.5},
 	"MP_Subsurface": {"pos": Vector3(0.513, 66.437, -104.04), "size": Vector3(1420, 100, 1420), "nf": 0.511},
 	"MP_Tungsten": {"pos": Vector3(60.235, 86.514, -25.078), "size": Vector3(1550, 100, 1550), "nf": 0.507},
 }
