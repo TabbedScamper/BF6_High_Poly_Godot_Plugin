@@ -1,35 +1,111 @@
-# BF6 Portal High-Poly Preview
+# BF6 High-Poly Preview (Portal SDK plugin)
 
-Build Battlefield 6 Portal maps in the SDK's Godot editor against the
-**actual in-game models** — fully textured high-poly overlays on top of the
-SDK's low-poly proxies. Non-destructive: the proxies stay the source of
-truth (they're what saves and exports); the high-poly view is an editor-only
-overlay you can toggle on and off at any time.
+Build Battlefield 6 Portal maps in the SDK's Godot editor while seeing the
+**real game** — fully-textured high-poly models, the full map terrain, the
+original object layouts, and water — instead of grey proxy boxes on a floating
+green island.
 
-Companion to the **[BF6 Model Viewer](https://github.com/TabbedScamper/BF6_Model_Viewer)** — browse every prop in 3D and submit model fixes (they flow to everyone automatically).
+Everything the plugin adds is an **editor-only overlay**:
 
-## Quick start
+- The SDK's low-poly proxies stay the **source of truth** — they are what your
+  `.tscn` saves and what the Portal exporter ships. The plugin never modifies
+  them.
+- Overlays are `owner = null` nodes (`_HIPOLY_PREVIEW`, `_MAP_CONTEXT`) that
+  Godot never serializes. Your level file stays byte-identical whether the
+  plugin is on or off.
 
-1. Copy `addons/highpoly_toggle/` into your Portal SDK Godot project's
-   `addons/` folder and enable it (Project Settings → Plugins).
-2. Set the registry URL once:
-   Project Settings → add `highpoly/manifest_url` =
-   `https://<models-host>/plugin-manifest.json`
-3. Deploy assets for your level: `python tools/deploy_scene.py <level.tscn>`
-   (or download a prepared prop pack into `res://highpoly/`).
-4. Reload the project, open your level, and hit **Scene → High-Poly** in the
-   High-Poly dock.
+Companion project: **[BF6 Model Viewer](https://github.com/TabbedScamper/BF6_Model_Viewer)** —
+browse every prop in 3D in your browser and submit model fixes; approved fixes
+ship to every plugin user automatically.
 
-**Update Models** in the dock pulls corrected models from the registry —
-it compares content hashes and downloads only what changed, only for props
-you have deployed.
+---
 
-## How it works, limits, and fixing bad matches
+## Install
 
-See `docs/HIGHPOLY-PREVIEW.md` — the full guide covers the overlay design,
-the conservative auto-fitter (identity-first; wrong-shaped assets are skipped
-rather than shown distorted), the SDK validator interplay, the proxy→model
-matching database, and the playbook for correcting a mismatched prop.
+1. Download this repository (Code → Download ZIP, or `git clone`).
+2. Copy the `addons/highpoly_toggle/` folder into your Portal SDK Godot
+   project's `addons/` folder (create `addons/` if it doesn't exist).
+3. In the SDK editor: **Project → Project Settings → Plugins** → enable
+   **BF6 High-Poly Preview**.
+4. A **High-Poly** dock appears (right side, top). Done — no configuration
+   needed; the plugin talks to the public model registry out of the box.
 
-Found a broken model? Submit a fix to the [BF6_Model_Viewer](https://github.com/TabbedScamper/BF6_Model_Viewer) registry — once approved it
-ships to every user's next **Update Models** click.
+> Optional: to point at a different registry host, set the project setting
+> `highpoly/manifest_url` to your `plugin-manifest.json` URL.
+
+## Staying up to date
+
+- **Plugin updates itself.** On editor start the dock checks the registry;
+  when a newer plugin exists an **"Update Plugin → vX.Y.Z"** button appears.
+  One click installs it — restart the editor to finish. (New game patches that
+  change map data need no plugin update at all: map data is re-published
+  server-side and **Reload map data** picks it up.)
+- **Update Models** re-downloads any prop models whose community-fixed version
+  changed (content-hash compare; only fetches what changed, only for props you
+  have locally).
+- **Reload map data** re-downloads the current map's terrain/objects package.
+
+---
+
+## The High-Poly dock
+
+### Detail Mode
+Swaps every placed prop between the SDK proxy and the real game model:
+
+| Control | What it does |
+|---|---|
+| **Low/Medium/High-Poly** | Scene-wide detail tier. Newly placed pieces auto-overlay while a tier is active. |
+| **Textured** | Off = flat-grey geometry study mode. |
+| **Re-apply Scene** | Re-runs the overlay pass on the whole scene. |
+| **Selected → …** | Change tier for just the selected node(s). |
+| **Update Models** | Pull community-fixed models (delta download). |
+| **Download Full Library** | One-time multi-GB bulk install of every model; afterwards updates are deltas. |
+
+The first time you pick Medium/High for a scene with models you don't have
+locally, the plugin offers to download exactly what that scene needs.
+
+### Map Context
+Rebuilds the real surroundings of the playable area, straight from data
+extracted out of the game:
+
+| Control | What it does |
+|---|---|
+| **Show map context** | Full-accuracy terrain heightfield (the whole map, not just the SDK bowl), distant backdrop, and the exact water plane on maps that have one. |
+| **Original map objects** | The game's original object placements — buildings, vehicles, props — drawn as MultiMeshes and streamed by camera distance. Works with or without the terrain layer. |
+| **Textures** | On = maptile satellite + tiling ground detail + real prop textures. Off = SDK study colours (green terrain / orange objects) that match the shipped look. |
+| **Range** | Object streaming distance from the editor camera. |
+| **Terrain** | Terrain mesh density (Full 1 m / High 2 m / Medium 4 m). Built once per level, then cached. |
+| **Reload map data** | Force re-download of this map's package (after a game patch or a bad download). |
+
+Map data downloads on demand per map (you'll be prompted; ~25 MB terrain +
+a few hundred MB of shared prop meshes that are reused across all maps).
+All 23 launch maps are published.
+
+### Turbo
+Editor performance helpers — never saved into the scene:
+
+- **Cull dist** — hide geometry beyond N metres.
+- **Cull behind camera** — aggressively hides static map geometry outside the
+  view (skips shadow passes too).
+- **Static map shadows** — disable shadow casting from static scenery (big FPS win).
+- **Purge Local Models** — delete all downloaded models from `res://highpoly`;
+  your scene is untouched.
+
+---
+
+## How it works / contributing
+
+See [`docs/HIGHPOLY-PREVIEW.md`](docs/HIGHPOLY-PREVIEW.md) for the overlay
+design, the conservative auto-fitter, and the fix-a-mismatch playbook, and
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for what each script does and
+how the data + release pipelines fit together.
+
+Found a broken model? Submit a fix through the
+[BF6 Model Viewer](https://github.com/TabbedScamper/BF6_Model_Viewer) — once
+approved it reaches every user's next **Update Models** click.
+
+## Requirements & notes
+
+- Battlefield 6 Portal SDK (Godot 4.6.x based).
+- The plugin only reads published preview data; it never touches your game
+  install and nothing it does affects exported/published Portal experiences.

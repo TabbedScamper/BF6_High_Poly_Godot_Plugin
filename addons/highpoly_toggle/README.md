@@ -1,26 +1,23 @@
-# Low/High-Poly Interchange (BF6 Portal SDK)
+# BF6 High-Poly Preview
 
-Preview your Portal level with the game's actual high-poly, fully-textured
-models — without ever touching what gets saved or exported.
+Editor-only overlays for the BF6 Portal SDK: real high-poly models over the
+low-poly proxies, plus Map Context (full terrain, original object layouts,
+water) and viewport performance tools.
 
-- The **low-poly proxy stays the source of truth**: it's what the `.tscn`
-  saves and what the Portal exporter ships.
-- The **high-poly is an editor-only overlay** (`owner = null` child): never
-  serialized, never exported, dropped automatically on scene reload.
-- Toggle with the **High-Poly dock**: `Scene → High/Low-Poly`,
-  `Selected → High/Low-Poly`.
+- The **low-poly proxy stays the source of truth** — it's what the `.tscn`
+  saves and what the Portal exporter ships. This plugin never modifies it.
+- Overlays are `owner = null` nodes (`_HIPOLY_PREVIEW`, `_MAP_CONTEXT`):
+  never serialized, never exported, dropped automatically on scene reload.
 
-## Setup
+## Install
 
-1. Copy this folder to `addons/highpoly_toggle/` in the SDK Godot project and
-   enable it under Project Settings → Plugins.
-2. Generate preview assets for your level:
-   `python tools/deploy_scene.py <your-level.tscn>` (from the pipeline repo).
-   Assets land in `res://highpoly/<PropName>/<PropName>.glb`.
-3. Reload the project once so Godot imports the GLBs, open your level, and
-   click **Scene → High-Poly**.
+1. Copy this folder to `addons/highpoly_toggle/` in the SDK Godot project.
+2. Enable it under Project → Project Settings → Plugins.
+3. Use the **High-Poly** dock (top right). Models and map data download on
+   demand — no other setup.
 
-Placement is conservative: overlays inherit the proxy's transform untouched
-when the shapes agree; mismatched assets are skipped (the proxy stays visible)
-rather than shown wrong. See `docs/HIGHPOLY-PREVIEW.md` in the pipeline repo
-for the full guide, the matching database, and the fix-a-mismatch playbook.
+The dock offers a one-click **Update Plugin** button whenever a newer plugin
+version is published, and **Update Models** pulls community model fixes.
+
+Full guide: the repository README. Contributor guide: `docs/ARCHITECTURE.md`.
+Overlay/fitter internals: `docs/HIGHPOLY-PREVIEW.md`.

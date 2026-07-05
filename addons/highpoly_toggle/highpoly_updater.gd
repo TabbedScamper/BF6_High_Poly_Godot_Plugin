@@ -24,6 +24,25 @@ static func _fetch(http: HTTPRequest, url: String) -> PackedByteArray:
 		return PackedByteArray()
 	return res[3]
 
+# Write one downloaded model file and record its content hash in the prop's
+# sidecar json (res://highpoly/<Name>/<Name>.json) so the next update check can
+# skip unchanged files. job = [prox, remote_rel, hash, local_file, sidecar_key]
+static func _store_model(job: Array, data: PackedByteArray) -> bool:
+	DirAccess.make_dir_recursive_absolute("res://highpoly/%s" % job[0])
+	var f := FileAccess.open(job[3], FileAccess.WRITE)
+	if f == null: return false
+	f.store_buffer(data); f.close()
+	var side := "res://highpoly/%s/%s.json" % [job[0], job[0]]
+	var sj: Dictionary = {}
+	if FileAccess.file_exists(side):
+		var j: Variant = JSON.parse_string(FileAccess.get_file_as_string(side))
+		if j is Dictionary: sj = j
+	sj[job[4]] = job[2]
+	var s := FileAccess.open(side, FileAccess.WRITE)
+	if s:
+		s.store_string(JSON.stringify(sj)); s.close()
+	return true
+
 static func run(host: Node, status: Callable) -> void:
 	var url := manifest_url()
 	if url == "":
@@ -64,21 +83,10 @@ static func run(host: Node, status: Callable) -> void:
 	for item in to_update:
 		status.call("Downloading %s… (%d/%d)" % [item[0], done + failed + 1, to_update.size()])
 		var data := await _fetch(http, base + item[1])
-		if data.is_empty():
-			failed += 1; continue
-		var f := FileAccess.open(item[3], FileAccess.WRITE)
-		if f == null: failed += 1; continue
-		f.store_buffer(data); f.close()
-		var side := "res://highpoly/%s/%s.json" % [item[0], item[0]]
-		var sj: Dictionary = {}
-		if FileAccess.file_exists(side):
-			var j: Variant = JSON.parse_string(FileAccess.get_file_as_string(side))
-			if j is Dictionary: sj = j
-		sj[item[4]] = item[2]
-		var s := FileAccess.open(side, FileAccess.WRITE)
-		if s:
-			s.store_string(JSON.stringify(sj)); s.close()
-		done += 1
+		if not data.is_empty() and _store_model(item, data):
+			done += 1
+		else:
+			failed += 1
 	http.queue_free()
 	EditorInterface.get_resource_filesystem().scan()
 	status.call("Updated %d model(s)%s — reimporting…" %
@@ -151,20 +159,10 @@ static func download_for_scene(host: Node, root: Node, status: Callable) -> bool
 	for item in jobs:
 		status.call("Downloading… (%d/%d)" % [done + failed + 1, jobs.size()])
 		var data := await _fetch(http, base + item[1])
-		if data.is_empty(): failed += 1; continue
-		DirAccess.make_dir_recursive_absolute("res://highpoly/%s" % item[0])
-		var f := FileAccess.open(item[3], FileAccess.WRITE)
-		if f == null: failed += 1; continue
-		f.store_buffer(data); f.close()
-		var side := "res://highpoly/%s/%s.json" % [item[0], item[0]]
-		var sj: Dictionary = {}
-		if FileAccess.file_exists(side):
-			var j: Variant = JSON.parse_string(FileAccess.get_file_as_string(side))
-			if j is Dictionary: sj = j
-		sj[item[4]] = item[2]
-		var s := FileAccess.open(side, FileAccess.WRITE)
-		if s: s.store_string(JSON.stringify(sj)); s.close()
-		done += 1
+		if not data.is_empty() and _store_model(item, data):
+			done += 1
+		else:
+			failed += 1
 	http.queue_free()
 	EditorInterface.get_resource_filesystem().scan()
 	status.call("Downloaded %d file(s)%s — reimporting…" % [done, ("" if failed == 0 else ", %d failed" % failed)])
@@ -229,3 +227,84 @@ static func scene_available(root: Node, host: Node, cb: Callable) -> void:
 	if not (man is Dictionary) or not man.has("props"): cb.call(0); return
 	var need := missing_for_scene(root, true, man["props"])
 	cb.call(need.size())
+
+# ---------- plugin self-update ----------
+# The plugin can update ITSELF (new features / fixes after game patches):
+#  - local version  = plugin.cfg [plugin] version
+#  - remote version = <registry host>/plugin/plugin-version.json
+#                     {"version": "x.y.z", "zip": "plugin/highpoly_toggle.zip", "notes": "..."}
+# The zip contains the whole addons/highpoly_toggle/ folder and is extracted
+# over it in place; a restart of the editor loads the new scripts.
+const PLUGIN_DIR := "res://addons/highpoly_toggle"
+
+static func plugin_version() -> String:
+	var cf := ConfigFile.new()
+	if cf.load(PLUGIN_DIR + "/plugin.cfg") != OK: return "0.0.0"
+	return str(cf.get_value("plugin", "version", "0.0.0"))
+
+static func _version_tuple(v: String) -> Array:
+	var out: Array = []
+	for p in v.split("."):
+		out.append(int(p))
+	while out.size() < 3:
+		out.append(0)
+	return out
+
+static func is_newer_version(remote: String, local: String) -> bool:
+	var r := _version_tuple(remote)
+	var l := _version_tuple(local)
+	for i in range(3):
+		if r[i] != l[i]: return r[i] > l[i]
+	return false
+
+# Check the registry for a newer plugin. cb.call(new_version, notes) — new_version
+# is "" when already up to date (or the check failed; fail-quiet by design).
+static func check_plugin_update(host: Node, cb: Callable) -> void:
+	var base := manifest_url().get_base_dir() + "/"
+	var http := HTTPRequest.new(); host.add_child(http)
+	var body := await _fetch(http, base + "plugin/plugin-version.json")
+	http.queue_free()
+	var info: Variant = JSON.parse_string(body.get_string_from_utf8()) if not body.is_empty() else null
+	if not (info is Dictionary):
+		cb.call("", ""); return
+	var remote := str(info.get("version", ""))
+	if remote != "" and is_newer_version(remote, plugin_version()):
+		cb.call(remote, str(info.get("notes", "")))
+	else:
+		cb.call("", "")
+
+# Download the plugin zip and extract it over addons/highpoly_toggle/. Running
+# scripts stay loaded in memory, so overwriting is safe; the user restarts the
+# editor (or disables/re-enables the plugin) to load the new version.
+static func update_plugin(host: Node, status: Callable) -> bool:
+	var base := manifest_url().get_base_dir() + "/"
+	var http := HTTPRequest.new(); host.add_child(http)
+	status.call("Downloading plugin update…")
+	var body := await _fetch(http, base + "plugin/highpoly_toggle.zip")
+	http.queue_free()
+	if body.is_empty():
+		status.call("Plugin update download failed"); return false
+	var tmp := "user://highpoly_plugin_update.zip"
+	var f := FileAccess.open(tmp, FileAccess.WRITE)
+	if f == null:
+		status.call("Cannot write the update file"); return false
+	f.store_buffer(body); f.close()
+	var zr := ZIPReader.new()
+	if zr.open(ProjectSettings.globalize_path(tmp)) != OK:
+		status.call("Update archive unreadable"); return false
+	var n := 0
+	for path in zr.get_files():
+		# the zip is rooted at addons/highpoly_toggle/ — ignore anything else
+		if path.ends_with("/") or not path.begins_with("addons/highpoly_toggle/"):
+			continue
+		var dest := "res://" + path
+		DirAccess.make_dir_recursive_absolute(dest.get_base_dir())
+		var out := FileAccess.open(dest, FileAccess.WRITE)
+		if out:
+			out.store_buffer(zr.read_file(path)); out.close(); n += 1
+	zr.close()
+	DirAccess.remove_absolute(tmp)
+	if n == 0:
+		status.call("Update archive had no plugin files"); return false
+	status.call("Plugin updated (%d files) — restart the editor to finish" % n)
+	return true

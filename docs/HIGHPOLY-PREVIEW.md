@@ -19,19 +19,21 @@ the game.
   `owner = null` child node named `_HIPOLY_PREVIEW` — Godot never serializes
   it, so it cannot leak into your scene file or your export. Reloading the
   scene silently drops all overlays; one click brings them back.
-- **Toggle any time.** The "High-Poly" dock has four buttons:
-  `Scene → High/Low-Poly` and `Selected → High/Low-Poly`.
+- **Toggle any time.** The High-Poly dock's Detail Mode dropdown drives the
+  whole scene; `Selected → Current Mode` / `Selected → Low-Poly` work per node.
 
 ## 2. Installation (for a fresh SDK project)
 
-1. Copy `godot-plugin/highpoly_toggle/` into the project's `addons/` folder.
-2. Enable it: Project → Project Settings → Plugins → "Low/High-Poly Interchange".
-3. Deploy assets for your level (see §3), then reload the project once so
-   Godot imports the GLBs.
+1. Copy `addons/highpoly_toggle/` into the project's `addons/` folder.
+2. Enable it: Project → Project Settings → Plugins → "BF6 High-Poly Preview".
+3. That's it for normal use — the dock downloads models and map data on demand
+   (see the repository README). The rest of this document covers the
+   internals and the maintainer-side asset pipeline.
 
-## 3. Deploying assets for a level
+## 3. Deploying assets for a level (maintainer / pipeline path)
 
-One command generates everything a specific level needs:
+Normally users just click download in the dock. For pipeline work, one command
+generates everything a specific level needs:
 
 ```
 python tools/deploy_scene.py <path-to-level.tscn> [godot-project-dir]
@@ -52,7 +54,7 @@ shared assembly space, so the parts recombine exactly.
 
 ## 4. How the plugin matches and places overlays
 
-Source: `godot-plugin/highpoly_toggle/highpoly_lib.gd`
+Source: `addons/highpoly_toggle/highpoly_lib.gd`
 
 **Matching** is by each instance's `scene_file_path` (the proxy scene it was
 instanced from), so duplicates and renamed nodes all match; node-name matching
@@ -140,7 +142,7 @@ game's Frostbite material compositing. Key facts (full history in
   workable on a mid-range GPU. Use `Selected → High-Poly` to preview only the
   area you're detailing if the editor gets heavy.
 - After deploying new GLBs, Godot needs a moment to import them; if a piece
-  doesn't swap on the first click, click `Scene → High-Poly` again once the
+  doesn't swap on the first click, hit **Re-apply Scene** again once the
   import finishes (the plugin skips assets that aren't imported yet rather
   than erroring).
 
@@ -148,7 +150,7 @@ game's Frostbite material compositing. Key facts (full history in
 
 | Path | Role |
 | --- | --- |
-| `godot-plugin/highpoly_toggle/` | the editor plugin (canonical copy) |
+| `addons/highpoly_toggle/` | the editor plugin (this repo, canonical copy) |
 | `<project>/addons/highpoly_toggle/` | installed copy |
 | `<project>/highpoly/<Name>/<Name>.glb` | per-prop preview assets |
 | `tools/deploy_scene.py` | one-command asset deployment for a level |

@@ -20,6 +20,7 @@ var mapctx_on: CheckBox        # Map Context enabled
 var mapctx_objects: CheckBox   # show original map objects
 var mapctx_tex: CheckBox       # show textures (else flat SDK green/orange)
 var mapctx_timer: Timer
+var update_btn: Button         # "Update Plugin → vX.Y.Z" — hidden until a newer version exists
 var _edited_root: Node = null  # tracks the active scene to detect tab switches
 
 func _mode() -> int:
@@ -31,6 +32,12 @@ func _textured() -> bool:
 func _enter_tree() -> void:
 	dock = VBoxContainer.new()
 	dock.name = "High-Poly"
+
+	# plugin self-update: hidden unless the registry advertises a newer version
+	update_btn = Button.new()
+	update_btn.visible = false
+	update_btn.pressed.connect(_do_plugin_update)
+	dock.add_child(update_btn)
 
 	var title := Label.new()
 	title.text = "Detail Mode"
@@ -175,7 +182,13 @@ func _enter_tree() -> void:
 	lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	dock.add_child(lbl)
 
+	var ver_lbl := Label.new()
+	ver_lbl.text = "v%s" % HighpolyUpdater.plugin_version()
+	ver_lbl.add_theme_color_override("font_color", Color(1, 1, 1, 0.35))
+	dock.add_child(ver_lbl)
+
 	add_control_to_dock(DOCK_SLOT_RIGHT_UL, dock)
+	_check_plugin_update.call_deferred()
 
 	previews = PreviewsScript.new()
 	dock.add_child(previews)
@@ -204,6 +217,25 @@ func _exit_tree() -> void:
 	if dock:
 		remove_control_from_docks(dock)
 		dock.queue_free()
+
+# ---------- plugin self-update ----------
+# Once per editor session: ask the registry whether a newer plugin exists and,
+# if so, surface a one-click update button. Fail-quiet — no version file, no
+# network, no button.
+func _check_plugin_update() -> void:
+	HighpolyUpdater.check_plugin_update(dock, func(new_version: String, _notes: String):
+		if new_version != "" and update_btn != null:
+			update_btn.text = "Update Plugin → v%s" % new_version
+			update_btn.tooltip_text = "A newer plugin version is available. One click downloads it over addons/highpoly_toggle; restart the editor afterwards."
+			update_btn.visible = true)
+
+func _do_plugin_update() -> void:
+	update_btn.disabled = true
+	var ok: bool = await HighpolyUpdater.update_plugin(dock, func(msg: String): lbl.text = msg)
+	if ok:
+		update_btn.text = "Restart editor to finish update"
+	else:
+		update_btn.disabled = false
 
 # When the user switches scene tabs, tear down our heavy owner=null overlays on
 # the scene we're LEAVING (Map Context = tens of thousands of nodes; high-poly =
