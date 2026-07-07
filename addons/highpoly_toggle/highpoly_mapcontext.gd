@@ -27,6 +27,26 @@ var _cell_size := 64.0
 var _world_min := -2048.0
 var _mesh_cache: Dictionary = {}   # model path -> Mesh
 var terrain_step: int = 2          # metres per terrain vertex (1=full, 2=high, 4=medium)
+# self-healing (v1.5): once per session per map, HEAD the map's packages and
+# compare ETags against the ones recorded at last download. A republished
+# package (game patch, fixed placements, corrected prop meshes) re-downloads
+# automatically — no "Reload map data" button. Installs with no recorded ETag
+# (anything pre-1.5) count as stale, which retroactively heals every install
+# that cached wrong props under the old "file exists = current" rule.
+var _session_checked: Dictionary = {}   # map -> true
+var _props_refresh: Dictionary = {}     # map -> true (props.zip must overwrite-all)
+# registry-following props: shared prop meshes are verified per session per map
+# against the model registry (mesh-name keyed hashes from the plugin manifest),
+# so a model swapped on the SITE under the same name reaches map context too —
+# not only when the map's props.zip is rebuilt. Verified hashes are remembered
+# in _props/index.json; unknown files are content-hashed ONCE (same sha1[:12]
+# the registry publishes), so nothing is re-downloaded that already matches.
+var last_verify_updates := 0
+var _props_verified: Dictionary = {}    # map -> true (this session)
+
+func reset_props_verification() -> void:
+	# called when the sync manager adopts a NEW manifest (models changed)
+	_props_verified.clear()
 
 # Untextured "study" colours match the SDK's own placeholder look so our overlay
 # blends seamlessly with the shipped terrain/assets: green for land, orange for
@@ -210,6 +230,54 @@ func _download_with_progress(host: Node, url: String, to_file: String, status: C
 	tick.queue_free(); http.queue_free()
 	return ok
 
+# ---------- package freshness (ETags) ----------
+func _etags_path(map: String) -> String:
+	return "%s/%s/etags.json" % [CACHE, map]
+
+func _etags(map: String) -> Dictionary:
+	if FileAccess.file_exists(_etags_path(map)):
+		var j: Variant = JSON.parse_string(FileAccess.get_file_as_string(_etags_path(map)))
+		if j is Dictionary: return j
+	return {}
+
+func _save_etag(map: String, key: String, val: String) -> void:
+	if val == "": return
+	var d := _etags(map)
+	d[key] = val
+	DirAccess.make_dir_recursive_absolute("%s/%s" % [CACHE, map])
+	var f := FileAccess.open(_etags_path(map), FileAccess.WRITE)
+	if f: f.store_string(JSON.stringify(d)); f.close()
+
+# Record the CURRENT remote ETag for a package we just downloaded in full.
+func _stamp_etag(host: Node, map: String, key: String, url: String) -> void:
+	var http := HTTPRequest.new(); host.add_child(http)
+	var tag := await HighpolyUpdater.remote_etag(http, url)
+	http.queue_free()
+	_save_etag(map, key, tag)
+
+# Once per session per map: are the published packages newer than our cache?
+# Returns {"mapdata": bool, "props": bool}; network failure = not stale (the
+# cached data keeps working offline, and we re-check next session).
+func _check_freshness(host: Node, map: String) -> Dictionary:
+	var out := {"mapdata": false, "props": false}
+	var have := _etags(map)
+	var b := base_url() + "maps/%s/" % map
+	var http := HTTPRequest.new(); host.add_child(http)
+	for key in ["mapdata", "props"]:
+		var tag: String = await HighpolyUpdater.remote_etag(http, b + key + ".zip")
+		if tag != "" and tag != str(have.get(key, "")):
+			out[key] = true
+	http.queue_free()
+	return out
+
+func _purge_terrain_cache(map: String) -> void:
+	var dir := "%s/%s" % [CACHE, map]
+	var da := DirAccess.open(dir)
+	if da == null: return
+	for f in da.get_files():
+		if f.begins_with("terrain_s") and f.ends_with(".res"):
+			DirAccess.remove_absolute("%s/%s" % [dir, f])
+
 # Download a map's data as ONE zip (terrain + placements + backdrop glbs) and
 # extract it. A single request avoids the r2.dev burst-throttling that 38
 # separate downloads trip. Idempotent: if placements.json is already cached and
@@ -218,9 +286,22 @@ func download_map(host: Node, map: String, status: Callable, force := false) -> 
 	var b := base_url() + "maps/%s/" % map
 	var dir := "%s/%s" % [CACHE, map]
 	DirAccess.make_dir_recursive_absolute(dir)
+	# self-heal: on first touch this session, compare package ETags; a
+	# republished mapdata.zip forces a fresh pull (incl. rebuilding the cached
+	# terrain meshes), a republished props.zip flags an overwrite-all extract
+	if has_data(map) and not _session_checked.get(map, false):
+		_session_checked[map] = true
+		var fresh: Dictionary = await _check_freshness(host, map)
+		if fresh.get("props", false):
+			_props_refresh[map] = true
+		if fresh.get("mapdata", false):
+			status.call("%s map data was updated — refreshing…" % map)
+			force = true
 	if force:
 		# force a fresh pull (e.g. the map data format changed): drop the manifest
+		# AND the terrain meshes built from the old heightmap
 		DirAccess.remove_absolute("%s/placements.json" % dir)
+		_purge_terrain_cache(map)
 	if _map_cache_complete(map):
 		status.call("%s map data ready" % map); return true
 	# size (optional, for the status line)
@@ -249,6 +330,7 @@ func download_map(host: Node, map: String, status: Callable, force := false) -> 
 		if out: out.store_buffer(zr.read_file(f)); out.close(); n += 1
 	zr.close()
 	DirAccess.remove_absolute(tmp)
+	await _stamp_etag(host, map, "mapdata", b + "mapdata.zip")
 	status.call("%s map data ready (%d files)" % [map, n])
 	return _map_cache_complete(map)
 
@@ -465,15 +547,23 @@ func _props_missing() -> Array:
 				miss.append(nm)
 	return miss
 
-# download the map's prop meshes into the SHARED cache, extracting only the ones
-# not already present (so meshes shared with previously-loaded maps aren't re-
-# written). Returns true if everything the map needs is now cached.
+# download the map's prop meshes into the SHARED cache. Normally extracts only
+# meshes not already present (a rock shared with a previously-loaded map isn't
+# re-written), but when the freshness check saw a republished props.zip it
+# overwrites EVERY mesh the zip carries — this is what heals a stale/wrong
+# cached prop (the old rule "file exists = current" pinned it forever).
+# Returns true if everything the map needs is now cached.
 func ensure_props(host: Node, map: String, status: Callable) -> bool:
 	if not _load_data(map): return false
+	var refresh: bool = _props_refresh.get(map, false)
 	var miss := _props_missing()
-	if miss.is_empty():
+	if miss.is_empty() and not refresh:
+		await _verify_props_registry(host, map, status)
 		return true
-	status.call("Downloading %d prop meshes…" % miss.size())
+	if refresh:
+		status.call("Prop meshes were updated — refreshing…")
+	else:
+		status.call("Downloading %d prop meshes…" % miss.size())
 	var b := base_url() + "maps/%s/" % map
 	var tmp := "%s/%s/_props.zip" % [CACHE, map]
 	DirAccess.make_dir_recursive_absolute("%s/%s" % [CACHE, map])
@@ -488,13 +578,85 @@ func ensure_props(host: Node, map: String, status: Callable) -> bool:
 	for nm in miss: want["%s.glb" % nm] = true
 	var n := 0
 	for f in zr.get_files():
-		if want.has(f):
+		if want.has(f) or (refresh and f.ends_with(".glb") and not f.contains("/")):
 			var out := FileAccess.open("%s/%s" % [PROPS_CACHE, f], FileAccess.WRITE)
 			if out: out.store_buffer(zr.read_file(f)); out.close(); n += 1
 	zr.close()
 	DirAccess.remove_absolute(tmp)
+	if refresh:
+		_props_refresh.erase(map)
+		_mesh_cache.clear()          # re-parse refreshed meshes on the next build
+		_save_props_index({})        # overwritten files: forget verified hashes, re-verify
+	await _stamp_etag(host, map, "props", b + "props.zip")
+	await _verify_props_registry(host, map, status)
 	status.call("%d prop meshes ready" % n)
 	return true
+
+# ---------- registry-following prop meshes ----------
+func _props_index() -> Dictionary:
+	var p := "%s/index.json" % PROPS_CACHE
+	if FileAccess.file_exists(p):
+		var j: Variant = JSON.parse_string(FileAccess.get_file_as_string(p))
+		if j is Dictionary: return j
+	return {}
+
+func _save_props_index(d: Dictionary) -> void:
+	DirAccess.make_dir_recursive_absolute(PROPS_CACHE)
+	var f := FileAccess.open("%s/index.json" % PROPS_CACHE, FileAccess.WRITE)
+	if f: f.store_string(JSON.stringify(d)); f.close()
+
+# Bring this map's registry-published prop meshes in line with the site.
+# Change-only: verified hashes short-circuit via index.json; a file whose hash
+# is unknown is content-hashed once (recorded if it already matches); only
+# genuine mismatches download, individually, from godot/<mesh>.glb.
+func _verify_props_registry(host: Node, map: String, status: Callable) -> void:
+	last_verify_updates = 0
+	if _props_verified.get(map, false): return
+	var reg: Dictionary = HighpolyStore.mesh_remote
+	if reg.is_empty(): return          # manifest not adopted yet; next pass covers
+	_props_verified[map] = true
+	var idx := _props_index()
+	var jobs: Array = []               # [mesh, remote_glb, target_hash]
+	var seen: Dictionary = {}
+	var hashed := 0
+	for e in _data.get("props", []):
+		if not (e is Dictionary) or not e.has("mesh"): continue
+		var nm: String = e["mesh"]
+		if seen.has(nm): continue
+		seen[nm] = true
+		if not reg.has(nm): continue   # not registry-published: props.zip copy + ETag healing apply
+		var target := str((reg[nm] as Dictionary).get("hash", ""))
+		if target == "" or str(idx.get(nm, "")) == target: continue
+		var p := "%s/%s.glb" % [PROPS_CACHE, nm]
+		if not FileAccess.file_exists(p): continue   # missing files are ensure_props' job
+		var lh := HighpolyStore.file_hash(p)
+		hashed += 1
+		if hashed % 10 == 0:
+			await host.get_tree().process_frame      # keep the editor smooth
+		if lh == target:
+			idx[nm] = target           # already the site's model — record, done forever
+			continue
+		jobs.append([nm, str((reg[nm] as Dictionary).get("glb", "")), target])
+	if jobs.is_empty():
+		_save_props_index(idx)
+		return
+	var http := HTTPRequest.new(); host.add_child(http)
+	var done := 0
+	for j in jobs:
+		status.call("Updating prop meshes to match the site… (%d/%d)" % [done + 1, jobs.size()])
+		var data := await HighpolyUpdater._fetch(http, base_url() + j[1])
+		if not data.is_empty():
+			var out := FileAccess.open("%s/%s.glb" % [PROPS_CACHE, j[0]], FileAccess.WRITE)
+			if out:
+				out.store_buffer(data); out.close()
+				idx[j[0]] = j[2]
+				_mesh_cache.erase("%s/%s.glb" % [PROPS_CACHE, j[0]])
+				last_verify_updates += 1
+		done += 1
+	http.queue_free()
+	_save_props_index(idx)
+	if last_verify_updates > 0:
+		status.call("%d prop mesh(es) updated to match the site" % last_verify_updates)
 
 func _mesh_for(model_path: String) -> Mesh:
 	if _mesh_cache.has(model_path): return _mesh_cache[model_path]

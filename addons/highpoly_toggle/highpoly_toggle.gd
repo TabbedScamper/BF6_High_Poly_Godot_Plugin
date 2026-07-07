@@ -1,29 +1,37 @@
 @tool
 extends EditorPlugin
-# Low / Medium / High-poly interchange for Portal SDK level building.
-# - Mode selector drives the whole scene AND newly placed pieces (placement
-#   stays the low-poly proxy; the visual overlay attaches automatically).
-# - Object Library thumbnails render the active tier's asset.
-# - Textured toggle swaps overlays to flat gray (geometry study mode).
+# Low / High-poly interchange for Portal SDK level building.
+# v1.5: zero model-management buttons. A background sync (highpoly_sync.gd)
+# downloads the open scene's props first, then (in "full" scope) the rest of
+# the library; overlays swap in automatically as models land; stale models and
+# map data re-download themselves. The dock shows one progress bar + pause.
 
 var dock: VBoxContainer
 var lbl: Label
 var mode_btn: OptionButton
-var tex_chk: CheckBox
 # relative preloads: the plugin works from ANY folder under addons/ (users
 # often drop the whole repo zip in, nesting the plugin one level deeper)
 const PreviewsScript = preload("highpoly_previews.gd")
 const TurboScript = preload("highpoly_turbo.gd")
 const MapContextScript = preload("highpoly_mapcontext.gd")
+const SyncScript = preload("highpoly_sync.gd")
 var previews: Node
 var turbo: Node
 var mapctx: Node
+var sync: Node
 var mapctx_on: CheckBox        # Map Context enabled
 var mapctx_objects: CheckBox   # show original map objects
 var mapctx_tex: CheckBox       # show textures (else flat SDK green/orange)
 var mapctx_timer: Timer
 var update_btn: Button         # "Update Plugin → vX.Y.Z" — hidden until a newer version exists
+var banner: Label              # legacy-mode notice ("reorganization pending")
+var progress: ProgressBar
+var sync_lbl: Label
+var pause_btn: Button
+var purge_btn: Button
 var _edited_root: Node = null  # tracks the active scene to detect tab switches
+var _ready_names: Dictionary = {}   # models that landed since the last swap-in pass
+var _swap_timer: Timer
 
 # dropdown ids: 0 = Low-Poly, 1 = High-Poly grey, 2 = High-Poly textured
 func _mode() -> int:
@@ -43,13 +51,35 @@ func _enter_tree() -> void:
 	update_btn.pressed.connect(_do_plugin_update)
 	dock.add_child(update_btn)
 
+	banner = Label.new()
+	banner.visible = false
+	banner.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	banner.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
+	dock.add_child(banner)
+
+	# ---- sync progress (the whole "model management UI" in 1.5) ----
+	progress = ProgressBar.new()
+	progress.min_value = 0.0
+	progress.max_value = 1.0
+	progress.visible = false
+	dock.add_child(progress)
+	sync_lbl = Label.new()
+	sync_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	sync_lbl.add_theme_font_size_override("font_size", 12)
+	dock.add_child(sync_lbl)
+	pause_btn = Button.new()
+	pause_btn.text = "Pause downloads"
+	pause_btn.visible = false
+	pause_btn.tooltip_text = "Pause/resume the background model sync (e.g. on a metered connection)."
+	pause_btn.pressed.connect(func():
+		sync.paused = not sync.paused
+		pause_btn.text = "Resume downloads" if sync.paused else "Pause downloads")
+	dock.add_child(pause_btn)
+
 	var title := Label.new()
 	title.text = "Detail Mode"
 	dock.add_child(title)
 
-	# three modes, no separate mesh tier: "no textures" is a runtime grey
-	# override on the same high-poly geometry (the old Medium decimated tier
-	# is retired — Turbo tools cover editor performance instead)
 	mode_btn = OptionButton.new()
 	mode_btn.add_item("Low-Poly (default)", 0)
 	mode_btn.add_item("High-Poly — no textures", 1)
@@ -58,21 +88,6 @@ func _enter_tree() -> void:
 	mode_btn.item_selected.connect(func(_i): _mode_changed())
 	dock.add_child(mode_btn)
 
-	# kept for compatibility with existing signal wiring; hidden — texturing
-	# is part of the mode now
-	tex_chk = CheckBox.new()
-	tex_chk.text = "Textured"
-	tex_chk.button_pressed = true
-	tex_chk.visible = false
-	tex_chk.toggled.connect(func(_v): _mode_changed())
-	dock.add_child(tex_chk)
-
-	var apply_btn := Button.new(); apply_btn.text = "Re-apply Scene"
-	apply_btn.pressed.connect(_apply_scene)
-	dock.add_child(apply_btn)
-
-	var sep := HSeparator.new(); dock.add_child(sep)
-
 	var sel_hi := Button.new(); sel_hi.text = "Selected → Current Mode"
 	sel_hi.pressed.connect(func(): _apply_selected(_mode()))
 	dock.add_child(sel_hi)
@@ -80,20 +95,6 @@ func _enter_tree() -> void:
 	var sel_lo := Button.new(); sel_lo.text = "Selected → Low-Poly"
 	sel_lo.pressed.connect(func(): _apply_selected(HighpolyLib.Tier.LOW))
 	dock.add_child(sel_lo)
-
-	var sep2 := HSeparator.new(); dock.add_child(sep2)
-
-	var upd := Button.new(); upd.text = "Update Models"
-	upd.tooltip_text = "Pull corrected models from the community registry (only props deployed locally)"
-	upd.pressed.connect(func():
-		previews.clear_cache()
-		HighpolyUpdater.run(dock, func(msg: String): lbl.text = msg))
-	dock.add_child(upd)
-
-	var dl_all := Button.new(); dl_all.text = "Download Full Library"
-	dl_all.tooltip_text = "One-time bulk install of every high-poly model (multi-GB download). Update Models then only fetches changes."
-	dl_all.pressed.connect(_confirm_bundle)
-	dock.add_child(dl_all)
 
 	var sepm := HSeparator.new(); dock.add_child(sepm)
 	var mc_title := Label.new(); mc_title.text = "Map Context"
@@ -146,11 +147,6 @@ func _enter_tree() -> void:
 		mapctx.terrain_step = td.get_item_id(td.selected)
 		_mapctx_rebuild())
 
-	var mc_reload := Button.new(); mc_reload.text = "Reload map data"
-	mc_reload.tooltip_text = "Re-download any map pieces that didn't come in (e.g. throttled) and rebuild the current mode."
-	mc_reload.pressed.connect(_mapctx_reload)
-	dock.add_child(mc_reload)
-
 	var sep3 := HSeparator.new(); dock.add_child(sep3)
 	var turbo_title := Label.new(); turbo_title.text = "Turbo"
 	dock.add_child(turbo_title)
@@ -183,13 +179,12 @@ func _enter_tree() -> void:
 		turbo.apply_shadows())
 	dock.add_child(shad)
 
-	var purge := Button.new(); purge.text = "Purge Local Models"
-	purge.tooltip_text = "Delete all downloaded preview models (res://highpoly). Proxies and your scene are unaffected; re-deploy or Update Models to get previews back."
-	purge.pressed.connect(_confirm_purge)
-	dock.add_child(purge)
+	purge_btn = Button.new(); purge_btn.text = "Purge Local Models"
+	purge_btn.tooltip_text = "Delete all downloaded preview models. Proxies and your scene are unaffected; the sync re-downloads what your scenes need."
+	purge_btn.pressed.connect(_confirm_purge)
+	dock.add_child(purge_btn)
 
 	lbl = Label.new()
-	lbl.text = "%d high-poly assets available" % HighpolyLib.keys().size()
 	lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	dock.add_child(lbl)
 
@@ -208,6 +203,16 @@ func _enter_tree() -> void:
 	turbo.refresh.call_deferred()
 	mapctx = MapContextScript.new()
 	dock.add_child(mapctx)
+	sync = SyncScript.new()
+	dock.add_child(sync)
+	sync.model_ready.connect(_on_model_ready)
+	sync.progress_changed.connect(_update_progress)
+	sync.manifest_refreshed.connect(_on_manifest_refreshed)
+	_swap_timer = Timer.new()
+	_swap_timer.one_shot = true
+	_swap_timer.wait_time = 0.5
+	_swap_timer.timeout.connect(_swap_in_ready)
+	dock.add_child(_swap_timer)
 	mapctx_timer = Timer.new(); mapctx_timer.wait_time = 0.5
 	mapctx_timer.timeout.connect(func():
 		_check_scene_change()
@@ -222,17 +227,144 @@ func _enter_tree() -> void:
 	# auto-overlay for pieces placed while a detail mode is active
 	get_tree().node_added.connect(_on_node_added)
 
+	_startup.call_deferred()
+
 func _exit_tree() -> void:
 	if get_tree().node_added.is_connected(_on_node_added):
 		get_tree().node_added.disconnect(_on_node_added)
+	HighpolyStore.save()
 	if dock:
 		remove_control_from_docks(dock)
 		dock.queue_free()
 
+# ---------- startup: migration -> scope -> sync ----------
+func _startup() -> void:
+	if HighpolyMigrate.needed():
+		_show_migration_wizard()
+		return
+	if not HighpolyStore.initialized():
+		HighpolyStore.save()          # fresh install: create the store marker
+	if HighpolyStore.scope() == "":
+		_show_scope_prompt()
+		return
+	_start_sync()
+
+func _show_migration_wizard() -> void:
+	var s: Dictionary = HighpolyMigrate.scan()
+	var mb := int(s.model_bytes / 1048576.0)
+	var freed := int(s.med_bytes / 1048576.0)
+	var lines := [
+		"High-Poly Preview 1.5 reorganizes its storage so the editor no longer",
+		"imports every downloaded model (much faster startup + updates).",
+		"",
+		"• Move %d model(s) (%d MB) into the new cache — no re-download" % [s.models, mb],
+		"• Delete %d editor import file(s) and %d retired medium-tier model(s) (frees ~%d MB)" % [s.import_files, s.med_files, freed],
+	]
+	if s.obj_only > 0:
+		lines.append("• Re-download %d legacy model(s) in the current format" % s.obj_only)
+	lines.append("• Map data re-checks itself automatically from now on")
+	lines.append("")
+	lines.append("Your scenes, the SDK proxies, and the Portal exporter are not affected.")
+	var dlg := ConfirmationDialog.new()
+	dlg.title = "High-Poly Preview — one-time reorganization"
+	dlg.dialog_text = "\n".join(PackedStringArray(lines))
+	dlg.ok_button_text = "Reorganize now"
+	dlg.cancel_button_text = "Not yet"
+	dlg.confirmed.connect(func():
+		HighpolyLib.use_legacy = false
+		banner.visible = false
+		var res: Dictionary = await HighpolyMigrate.run(dock, func(m: String): sync_lbl.text = m)
+		previews.clear_cache()
+		if HighpolyStore.scope() == "":
+			_show_scope_prompt(res.get("redownload", []))
+		else:
+			_start_sync(res.get("redownload", [])))
+	dlg.canceled.connect(func():
+		# fully usable legacy mode; the wizard re-offers next launch
+		HighpolyLib.use_legacy = true
+		banner.text = "Storage reorganization pending — model sync is paused until it runs (next editor start)."
+		banner.visible = true
+		purge_btn.visible = false
+		lbl.text = "%d high-poly assets available (legacy layout)" % HighpolyLib.known().size()
+		dlg.queue_free())
+	EditorInterface.popup_dialog_centered(dlg)
+
+func _show_scope_prompt(redownload: Array = []) -> void:
+	var dlg := ConfirmationDialog.new()
+	dlg.title = "High-Poly Preview — model downloads"
+	dlg.dialog_text = "How should models download?\n\n" + \
+		"Full library: everything syncs quietly in the background\n" + \
+		"(one large download, small deltas afterwards). Best if you build a lot.\n\n" + \
+		"As needed: only the models your open scenes use."
+	dlg.ok_button_text = "Full library"
+	dlg.cancel_button_text = "As needed"
+	dlg.confirmed.connect(func():
+		HighpolyStore.set_scope("full")
+		_start_sync(redownload))
+	dlg.canceled.connect(func():
+		HighpolyStore.set_scope("scene")
+		_start_sync(redownload)
+		dlg.queue_free())
+	EditorInterface.popup_dialog_centered(dlg)
+
+func _start_sync(extra: Array = []) -> void:
+	lbl.text = "%d models local" % HighpolyStore.count()
+	await sync.start()
+	if not extra.is_empty():
+		sync.enqueue(extra, true)
+	# prefetch whatever the open scene needs so switching to High-Poly is instant
+	var r := EditorInterface.get_edited_scene_root()
+	if r != null:
+		sync.prioritize_scene(HighpolyLib.scene_keys(r))
+
+# ---------- background sync -> auto swap-in ----------
+func _on_model_ready(nm: String) -> void:
+	_ready_names[nm] = true
+	previews.invalidate(nm)
+	_swap_timer.start()   # debounce: one scene walk per burst of downloads
+
+func _swap_in_ready() -> void:
+	var names := _ready_names
+	_ready_names = {}
+	if names.is_empty() or _mode() == HighpolyLib.Tier.LOW:
+		return
+	var r := EditorInterface.get_edited_scene_root()
+	if r == null: return
+	# pre-parse the GLBs a couple per frame (the expensive part), so the single
+	# scene walk afterwards only instantiates cached scenes — no frame hitch
+	var parsed := 0
+	for nm in names.keys():
+		HighpolyStore.load_scene(nm)
+		parsed += 1
+		if parsed % 2 == 0:
+			await get_tree().process_frame
+	var n := HighpolyLib.apply_names(r, names, _mode(), _textured())
+	if n > 0:
+		lbl.text = "%d piece(s) upgraded as models arrived" % n
+
+# The sync manager adopted a NEW manifest (a model changed server-side, e.g. a
+# site model swap under the same name): map-context prop meshes re-verify, and
+# if any were actually replaced, the visible context rebuilds with them.
+func _on_manifest_refreshed() -> void:
+	mapctx.reset_props_verification()
+	if mapctx_objects == null or not mapctx_objects.button_pressed: return
+	var r := EditorInterface.get_edited_scene_root()
+	if r == null: return
+	var map: String = mapctx.map_of(r)
+	if map == "": return
+	await mapctx.ensure_props(dock, map, func(s: String): lbl.text = s)
+	if mapctx.last_verify_updates > 0:
+		lbl.text = mapctx.apply(r, mapctx_on.button_pressed, true, mapctx_tex.button_pressed)
+
+func _update_progress() -> void:
+	if sync == null: return
+	var busy: bool = sync.pending() > 0 or sync.bootstrapping
+	progress.visible = busy
+	pause_btn.visible = busy or sync.paused
+	progress.value = sync.progress_ratio()
+	sync_lbl.text = sync.status_text() if not HighpolyLib.use_legacy else ""
+
 # ---------- plugin self-update ----------
-# Once per editor session: ask the registry whether a newer plugin exists and,
-# if so, surface a one-click update button. Fail-quiet — no version file, no
-# network, no button.
 func _check_plugin_update() -> void:
 	HighpolyUpdater.check_plugin_update(dock, func(new_version: String, _notes: String):
 		if new_version != "" and update_btn != null:
@@ -266,6 +398,9 @@ func _check_scene_change() -> void:
 	if mapctx_on: mapctx_on.set_pressed_no_signal(false)
 	if mapctx_objects: mapctx_objects.set_pressed_no_signal(false)
 	if lbl and old != null: lbl.text = "Scene changed — reset to Low-Poly"
+	# the new scene's props move to the front of the download queue
+	if r != null and sync != null and not HighpolyLib.use_legacy:
+		sync.prioritize_scene(HighpolyLib.scene_keys(r))
 
 # ensure the map's prop meshes are in the shared cache (only when objects are
 # shown), then apply. Prop meshes download once and are reused across maps.
@@ -281,27 +416,6 @@ func _mapctx_rebuild() -> void:
 	if mapctx.map_of(r) == "": return
 	lbl.text = mapctx.apply(r, true, mapctx_objects.button_pressed, mapctx_tex.button_pressed)
 
-func _mapctx_reload() -> void:
-	# explicit retry: force-download the map data (even if a stale cache looks
-	# complete) and rebuild with the current toggles
-	var r := EditorInterface.get_edited_scene_root()
-	var rn := "<none>" if r == null else String(r.name)
-	var map: String = mapctx.map_of(r)
-	print("[MapContext] Reload pressed — scene root='%s', detected map='%s'" % [rn, map])
-	if map == "":
-		lbl.text = "Scene root is '%s' — open an MP_… level scene" % rn; return
-	if not mapctx_on.button_pressed and not mapctx_objects.button_pressed:
-		lbl.text = "Turn on \"Show map context\" or \"Original map objects\" first"; return
-	print("[MapContext] before: " + mapctx.cache_status(map))
-	lbl.text = "Reloading %s map data…" % map
-	var ok: bool = await mapctx.download_map(dock, map, func(s: String): lbl.text = s, true)
-	print("[MapContext] after:  " + mapctx.cache_status(map))
-	if ok:
-		await _apply_mapctx(r, mapctx_on.button_pressed, mapctx_objects.button_pressed, mapctx_tex.button_pressed)
-		print("[MapContext] apply -> " + lbl.text)
-	else:
-		lbl.text = "Could not fetch %s map data (see Output)" % map
-
 func _mapctx_changed() -> void:
 	var on := mapctx_on.button_pressed
 	var objs := mapctx_objects.button_pressed
@@ -309,7 +423,6 @@ func _mapctx_changed() -> void:
 	var r := EditorInterface.get_edited_scene_root()
 	var rn := "<none>" if r == null else String(r.name)
 	var map: String = mapctx.map_of(r)
-	print("[MapContext] toggles -> on=%s objects=%s tex=%s, root='%s', map='%s'" % [on, objs, tex, rn, map])
 	if not on and not objs:
 		# neither terrain context nor objects — Textures can still drape the SDK's
 		# shipped maptile over the default terrain (no download needed)
@@ -320,13 +433,13 @@ func _mapctx_changed() -> void:
 		mapctx_objects.set_pressed_no_signal(false)
 		return
 	if mapctx.has_data(map):
-		# already have the manifest — top up any missing pieces (idempotent,
-		# offline-fast when complete), then apply
+		# already cached — download_map self-heals (ETag check) + tops up any
+		# missing pieces (idempotent, offline-fast when complete), then apply
 		lbl.text = "Loading %s…" % map
 		await mapctx.download_map(dock, map, func(s: String): lbl.text = s)
 		await _apply_mapctx(r, on, objs, tex)
-		print("[MapContext] apply -> " + lbl.text); return
-	# not downloaded yet — prompt
+		return
+	# not downloaded yet — prompt (per-map sized, obvious in context)
 	var dlg := ConfirmationDialog.new()
 	dlg.dialog_text = "Map data for %s isn't downloaded yet.\nDownload the terrain + object layout now? (~tens of MB, one time per map)" % map
 	dlg.ok_button_text = "Download"
@@ -349,44 +462,14 @@ func _mapctx_changed() -> void:
 
 func _mode_changed() -> void:
 	previews.tier = _mode()
-	if _mode() == HighpolyLib.Tier.LOW:
-		_apply_scene()
-		return
-	var r := EditorInterface.get_edited_scene_root()
-	if r == null:
-		_apply_scene()
-		return
-	# do we have everything this scene needs for the chosen tier?
-	lbl.text = "Checking models…"
-	HighpolyUpdater.scene_available(r, dock, func(n: int):
-		if n <= 0:
-			_apply_scene()                 # all present (or nothing downloadable) -> just apply
-		else:
-			_prompt_download(n))
-
-func _prompt_download(n: int) -> void:
-	var dlg := ConfirmationDialog.new()
-	dlg.dialog_text = "%d model(s) for this scene aren't downloaded yet.\nDownload them now to preview at this detail level?" % n
-	dlg.ok_button_text = "Download"
-	dlg.cancel_button_text = "Stay Low-Poly"
-	dlg.confirmed.connect(func():
-		lbl.text = "Downloading…"
-		var got: bool = await HighpolyUpdater.download_for_scene(dock, EditorInterface.get_edited_scene_root(),
-			func(msg: String): lbl.text = msg)
-		previews.clear_cache()
-		if got:
-			_apply_scene()
-		else:
-			_revert_low())
-	dlg.canceled.connect(func():
-		_revert_low()
-		dlg.queue_free())
-	EditorInterface.popup_dialog_centered(dlg)
-
-func _revert_low() -> void:
-	mode_btn.select(mode_btn.get_item_index(HighpolyLib.Tier.LOW))
-	previews.tier = HighpolyLib.Tier.LOW
 	_apply_scene()
+	# whatever this scene needs but doesn't have yet: front of the queue, and
+	# swapped in automatically as it lands (no prompt, no re-apply button)
+	if _mode() != HighpolyLib.Tier.LOW and not HighpolyLib.use_legacy:
+		var missing: Array = HighpolyLib.take_wanted()
+		if not missing.is_empty():
+			sync.prioritize_scene(missing)
+			lbl.text += " — %d downloading in background" % missing.size()
 
 func _apply_scene() -> void:
 	var r := EditorInterface.get_edited_scene_root()
@@ -403,22 +486,15 @@ func _apply_selected(tier: int) -> void:
 	for s in sel:
 		n += HighpolyLib.apply(s, tier, _textured())
 	lbl.text = "Selected -> %d piece(s)" % n
-
-func _confirm_bundle() -> void:
-	var dlg := ConfirmationDialog.new()
-	dlg.dialog_text = "Download the FULL model library (every high-poly model)?
-This is a large one-time download (multiple GB). After it finishes, Update Models only fetches changes."
-	dlg.ok_button_text = "Download"
-	dlg.confirmed.connect(func():
-		previews.clear_cache()
-		await HighpolyUpdater.download_bundle(dock, func(msg: String): lbl.text = msg))
-	dlg.canceled.connect(dlg.queue_free)
-	EditorInterface.popup_dialog_centered(dlg)
+	if not HighpolyLib.use_legacy:
+		var missing: Array = HighpolyLib.take_wanted()
+		if not missing.is_empty():
+			sync.prioritize_scene(missing)
 
 func _confirm_purge() -> void:
 	var dlg := ConfirmationDialog.new()
-	dlg.dialog_text = "Delete ALL downloaded preview models from res://highpoly?
-Your scene and the low-poly proxies are not affected."
+	dlg.dialog_text = "Delete ALL downloaded preview models?
+Your scene and the low-poly proxies are not affected; the sync re-downloads what your scenes need."
 	dlg.ok_button_text = "Purge"
 	dlg.confirmed.connect(func():
 		# drop overlays first so nothing references the files
@@ -428,9 +504,8 @@ Your scene and the low-poly proxies are not affected."
 		mode_btn.select(mode_btn.get_item_index(HighpolyLib.Tier.LOW))
 		previews.tier = HighpolyLib.Tier.LOW
 		previews.clear_cache()
-		var n := HighpolyLib.purge_all()
-		EditorInterface.get_resource_filesystem().scan()
-		lbl.text = "Purged %d model folder(s)" % n)
+		var n := HighpolyStore.purge_all()
+		lbl.text = "Purged %d file(s)" % n)
 	dlg.canceled.connect(dlg.queue_free)
 	EditorInterface.popup_dialog_centered(dlg)
 
@@ -448,7 +523,10 @@ func _on_node_added(node: Node) -> void:
 func _swap_deferred(node: Node) -> void:
 	if not is_instance_valid(node) or not (node is Node3D): return
 	if node.get_node_or_null(HighpolyLib.HP_NODE) != null: return
-	var ks := HighpolyLib.keys()
 	var k := HighpolyLib.match_key_public(node)
 	if k == "": return
-	HighpolyLib.apply_one(node as Node3D, ks[k], _mode(), _textured())
+	if not HighpolyLib.apply_one(node as Node3D, k, _mode(), _textured()):
+		# not local yet: a just-placed prop goes to the VERY front of the queue
+		if not HighpolyLib.use_legacy and sync != null:
+			HighpolyLib.take_wanted()
+			sync.prioritize_one(k)
