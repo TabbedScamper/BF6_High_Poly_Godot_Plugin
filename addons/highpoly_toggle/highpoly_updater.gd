@@ -83,9 +83,7 @@ static func run(host: Node, status: Callable) -> void:
 		var rhash := str(remote.get("hash", ""))
 		if rhash != "" and str(sj.get("hash", "")) != rhash:
 			to_update.append([prox, str(remote.get("glb", "")), rhash, "%s/%s.glb" % [dir, prox], "hash", nofit])
-		var mhash := str(remote.get("med_hash", ""))
-		if mhash != "" and mhash != "null" and str(sj.get("med_hash", "")) != mhash:
-			to_update.append([prox, str(remote.get("med_glb", "")), mhash, "%s/%s_med.glb" % [dir, prox], "med_hash", nofit])
+		# (medium tier retired — high-poly is the only downloadable rendition)
 	if to_update.is_empty():
 		status.call("All models up to date"); http.queue_free(); return
 	var done := 0
@@ -124,14 +122,7 @@ static func missing_for_scene(root: Node, want_med: bool, props: Dictionary) -> 
 	var need: Array = []
 	for prox in keys.keys():
 		if not props.has(prox): continue
-		var dir := "res://highpoly/%s" % prox
-		var high := "%s/%s.glb" % [dir, prox]
-		var med := "%s/%s_med.glb" % [dir, prox]
-		var remote: Dictionary = props[prox]
-		var missing_high := not FileAccess.file_exists(high)
-		var has_med_remote := str(remote.get("med_hash", "")) not in ["", "null"]
-		var missing_med := want_med and has_med_remote and not FileAccess.file_exists(med)
-		if missing_high or missing_med:
+		if not FileAccess.file_exists("res://highpoly/%s/%s.glb" % [prox, prox]):
 			need.append(prox)
 	return need
 
@@ -161,9 +152,6 @@ static func download_for_scene(host: Node, root: Node, status: Callable) -> bool
 		var gh := str(remote.get("hash", ""))
 		if gh != "":
 			jobs.append([prox, str(remote.get("glb", "")), gh, "%s/%s.glb" % [dir, prox], "hash", nofit])
-		var mh := str(remote.get("med_hash", ""))
-		if mh != "" and mh != "null":
-			jobs.append([prox, str(remote.get("med_glb", "")), mh, "%s/%s_med.glb" % [dir, prox], "med_hash", nofit])
 	if jobs.is_empty():
 		status.call("No registry models for this scene"); http.queue_free(); return false
 	var done := 0; var failed := 0

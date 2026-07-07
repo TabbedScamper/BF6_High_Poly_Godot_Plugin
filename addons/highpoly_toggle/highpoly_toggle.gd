@@ -25,11 +25,13 @@ var mapctx_timer: Timer
 var update_btn: Button         # "Update Plugin → vX.Y.Z" — hidden until a newer version exists
 var _edited_root: Node = null  # tracks the active scene to detect tab switches
 
+# dropdown ids: 0 = Low-Poly, 1 = High-Poly grey, 2 = High-Poly textured
 func _mode() -> int:
-	return mode_btn.get_selected_id() if mode_btn else HighpolyLib.Tier.LOW
+	if mode_btn == null: return HighpolyLib.Tier.LOW
+	return HighpolyLib.Tier.LOW if mode_btn.get_selected_id() == 0 else HighpolyLib.Tier.HIGH
 
 func _textured() -> bool:
-	return tex_chk.button_pressed if tex_chk else true
+	return mode_btn.get_selected_id() == 2 if mode_btn else true
 
 func _enter_tree() -> void:
 	dock = VBoxContainer.new()
@@ -45,16 +47,23 @@ func _enter_tree() -> void:
 	title.text = "Detail Mode"
 	dock.add_child(title)
 
+	# three modes, no separate mesh tier: "no textures" is a runtime grey
+	# override on the same high-poly geometry (the old Medium decimated tier
+	# is retired — Turbo tools cover editor performance instead)
 	mode_btn = OptionButton.new()
-	mode_btn.add_item("Low-Poly (proxies)", HighpolyLib.Tier.LOW)
-	mode_btn.add_item("Medium-Poly", HighpolyLib.Tier.MEDIUM)
-	mode_btn.add_item("High-Poly", HighpolyLib.Tier.HIGH)
+	mode_btn.add_item("Low-Poly (default)", 0)
+	mode_btn.add_item("High-Poly — no textures", 1)
+	mode_btn.add_item("High-Poly — textured", 2)
+	mode_btn.selected = 0
 	mode_btn.item_selected.connect(func(_i): _mode_changed())
 	dock.add_child(mode_btn)
 
+	# kept for compatibility with existing signal wiring; hidden — texturing
+	# is part of the mode now
 	tex_chk = CheckBox.new()
 	tex_chk.text = "Textured"
 	tex_chk.button_pressed = true
+	tex_chk.visible = false
 	tex_chk.toggled.connect(func(_v): _mode_changed())
 	dock.add_child(tex_chk)
 
@@ -82,7 +91,7 @@ func _enter_tree() -> void:
 	dock.add_child(upd)
 
 	var dl_all := Button.new(); dl_all.text = "Download Full Library"
-	dl_all.tooltip_text = "One-time bulk install of every medium+high-poly model (multi-GB download). Update Models then only fetches changes."
+	dl_all.tooltip_text = "One-time bulk install of every high-poly model (multi-GB download). Update Models then only fetches changes."
 	dl_all.pressed.connect(_confirm_bundle)
 	dock.add_child(dl_all)
 
@@ -397,7 +406,7 @@ func _apply_selected(tier: int) -> void:
 
 func _confirm_bundle() -> void:
 	var dlg := ConfirmationDialog.new()
-	dlg.dialog_text = "Download the FULL model library (every medium + high-poly model)?
+	dlg.dialog_text = "Download the FULL model library (every high-poly model)?
 This is a large one-time download (multiple GB). After it finishes, Update Models only fetches changes."
 	dlg.ok_button_text = "Download"
 	dlg.confirmed.connect(func():
