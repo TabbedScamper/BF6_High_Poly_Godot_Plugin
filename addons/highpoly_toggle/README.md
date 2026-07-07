@@ -13,11 +13,11 @@ water) and viewport performance tools.
 
 1. Copy this folder to `addons/highpoly_toggle/` in the SDK Godot project.
 2. Enable it under Project → Project Settings → Plugins.
-3. Use the **High-Poly** dock (top right). Models and map data download on
-   demand — no other setup.
+3. Use the **High-Poly** dock (top right). Models and map data sync
+   automatically in the background (scene props first) — no other setup.
 
 The dock offers a one-click **Update Plugin** button whenever a newer plugin
-version is published, and **Update Models** pulls community model fixes.
+version is published; model fixes and map-data refreshes arrive on their own.
 
 Full guide: the repository README. Contributor guide: `docs/ARCHITECTURE.md`.
 Overlay/fitter internals: `docs/HIGHPOLY-PREVIEW.md`.

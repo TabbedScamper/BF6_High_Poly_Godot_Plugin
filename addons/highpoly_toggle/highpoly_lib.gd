@@ -3,37 +3,34 @@ extends RefCounted
 class_name HighpolyLib
 # Non-destructive, editor-only high-poly preview overlay.
 # The low-poly proxy stays the SOURCE OF TRUTH (saved, exported); the overlay
-# is an owner=null child `_HIPOLY_PREVIEW` (never saved). Tiers:
-#   LOW    = proxy only (overlays hidden)
-#   MEDIUM = <Name>_med.glb if present, else falls back to <Name>.glb
-#   HIGH   = <Name>.glb
-# "textured" off = flat-gray material override on the overlay (no extra files).
+# is an owner=null child `_HIPOLY_PREVIEW` (never saved).
+#
+# v1.5: models come from the user:// store (runtime-parsed GLBs — nothing in
+# res://, nothing imported). A prop whose model isn't local yet keeps its proxy
+# and is recorded in `wanted`; the dock hands those to the sync manager and
+# swaps them in automatically as they land. `use_legacy` keeps the exact 1.4
+# res://highpoly behavior alive for installs that haven't migrated yet.
 
-const HP_DIR := "res://highpoly"
 const HP_ROT := Vector3(-90, 0, 0)   # legacy OBJ assets are Z-up; GLB assets are Y-up
 const HP_NODE := "_HIPOLY_PREVIEW"
+const LEGACY_DIR := "res://highpoly"
 # Props whose proxy AABB legitimately disagrees with the real asset's shape
 # (e.g. a wreck proxy that is just the hull) — skip the auto-fitter for these
 # so it doesn't wrongly rescale or reject the overlay. Prefab-assembled models
-# carry the same flag data-driven, via `"nofit": true` in their sidecar json
-# (they are exact game-space builds; fitting would rescale/re-center them).
+# carry the same flag data-driven, via `nofit` in the store index.
 const NOFIT := ["WreckTank_Abra01"]
 
-static var _nofit_cache := {}
+enum Tier { LOW, MEDIUM, HIGH }      # MEDIUM retired in 1.4 (kept for compat)
 
-static func _sidecar_nofit(path: String) -> bool:
-	var key := path.get_file().get_basename().trim_suffix("_med")
-	if _nofit_cache.has(key):
-		return _nofit_cache[key]
-	var side := "%s/%s.json" % [path.get_base_dir(), key]
-	var flag := false
-	if FileAccess.file_exists(side):
-		var j: Variant = JSON.parse_string(FileAccess.get_file_as_string(side))
-		flag = j is Dictionary and bool((j as Dictionary).get("nofit", false))
-	_nofit_cache[key] = flag
-	return flag
+static var use_legacy := false       # pre-migration installs: read res://highpoly
+# props the current tier wants but the store doesn't have yet (drained by the
+# dock into the sync queue after every apply pass)
+static var wanted: Dictionary = {}
 
-enum Tier { LOW, MEDIUM, HIGH }
+static func take_wanted() -> Array:
+	var out := wanted.keys()
+	wanted.clear()
+	return out
 
 static var _gray: StandardMaterial3D = null
 
@@ -44,35 +41,34 @@ static func gray_material() -> StandardMaterial3D:
 		_gray.roughness = 0.9
 	return _gray
 
-static func keys() -> Dictionary:
-	# name -> {high: path or "", med: path or ""}
+# ---------- what can we overlay? ----------
+# name -> true when the model is available locally, false when only the
+# registry knows it (still matchable — it gets queued instead of skipped).
+static func known() -> Dictionary:
 	var d := {}
-	var da := DirAccess.open(HP_DIR)
-	if da == null: return d
-	da.list_dir_begin()
-	var f := da.get_next()
-	while f != "":
-		if da.current_is_dir() and not f.begins_with("."):
-			var high := "%s/%s/%s.glb" % [HP_DIR, f, f]
-			var med := "%s/%s/%s_med.glb" % [HP_DIR, f, f]
-			var obj := "%s/%s/%s.obj" % [HP_DIR, f, f]
-			var e := {"high": "", "med": ""}
-			if ResourceLoader.exists(high): e.high = high
-			elif ResourceLoader.exists(obj): e.high = obj
-			if ResourceLoader.exists(med): e.med = med
-			if e.high != "" or e.med != "":
-				d[f] = e
-		f = da.get_next()
+	if use_legacy:
+		var da := DirAccess.open(LEGACY_DIR)
+		if da != null:
+			for f in da.get_directories():
+				if not f.begins_with("."):
+					d[f] = true
+		return d
+	for name in HighpolyStore.models().keys():
+		d[name] = true
+	for name in HighpolyStore.remote.keys():
+		if not d.has(name):
+			d[name] = false
 	return d
-
-static func asset_for(entry: Dictionary, tier: Tier) -> String:
-	if tier == Tier.MEDIUM:
-		return entry.med if entry.med != "" else entry.high
-	return entry.high if entry.high != "" else entry.med
 
 static func _match_key(node: Node, ks: Dictionary) -> String:
 	var sfp := node.scene_file_path
 	if sfp != "":
+		# only real placeable objects can be proxies. Instanced logic/gameplay
+		# scenes (Sector, MCOM areas, FixedCamera, …) must never match a model
+		# key — junk registry rows share their names, and a match here both
+		# skips the node's subtree and hides its child geometry.
+		if not sfp.begins_with("res://objects/"):
+			return ""
 		var base := sfp.get_file().get_basename()
 		if ks.has(base): return base
 	var n := String(node.name).split("@")[0]
@@ -83,12 +79,53 @@ static func _match_key(node: Node, ks: Dictionary) -> String:
 		if ks.has(m): return m
 	return ""
 
-static func match_key_public(node: Node) -> String:
-	return _match_key(node, keys())
+# A matched proxy's subtree may still contain USER-placed nodes (builders often
+# parent props under buildings/groups so they move together). Those belong to
+# the walk: collect every descendant owned by the edited scene root so the
+# caller keeps walking them. Instance-internal geometry (owner = the instance)
+# and owner=null overlays stay out.
+static func _push_user_children(node: Node, stack: Array) -> void:
+	var scene_root := EditorInterface.get_edited_scene_root()
+	if scene_root == null or node == scene_root: return
+	var st: Array = []
+	for c in node.get_children():
+		if c.name != HP_NODE: st.append(c)
+	while not st.is_empty():
+		var c: Node = st.pop_back()
+		if c.name == HP_NODE: continue
+		if c.owner == scene_root:
+			stack.append(c)          # user content: the main walk takes it from here
+			continue
+		for gc in c.get_children():
+			st.append(gc)
 
+static func match_key_public(node: Node) -> String:
+	return _match_key(node, known())
+
+# every proxy key present in a scene (used to feed the sync priority queue)
+static func scene_keys(root: Node) -> Array:
+	if root == null: return []
+	var ks := known()
+	var out: Dictionary = {}
+	var stack: Array = [root]
+	while not stack.is_empty():
+		var n: Node = stack.pop_back()
+		if n.name == HP_NODE or n.name == "_MAP_CONTEXT":
+			continue
+		if n is Node3D:
+			var k := _match_key(n, ks)
+			if k != "":
+				out[k] = true
+				_push_user_children(n, stack)
+				continue
+		for c in n.get_children():
+			stack.append(c)
+	return out.keys()
+
+# ---------- apply ----------
 static func apply(root: Node, tier: Tier, textured: bool = true) -> int:
 	if root == null: return 0
-	var ks := keys()
+	var ks := known()
 	if ks.is_empty(): return 0
 	var count := 0
 	var stack: Array = [root]
@@ -99,43 +136,96 @@ static func apply(root: Node, tier: Tier, textured: bool = true) -> int:
 		if node is Node3D:
 			var k := _match_key(node, ks)
 			if k != "":
-				if apply_one(node as Node3D, ks[k], tier, textured):
+				if apply_one(node as Node3D, k, tier, textured):
 					count += 1
+				_push_user_children(node, stack)   # user props nested under this one
 				continue
 		for c in node.get_children():
 			stack.append(c)
 	return count
 
-static func apply_one(node: Node3D, entry: Dictionary, tier: Tier, textured: bool) -> bool:
+# Apply only the props in `names` (the batched swap-in pass after downloads):
+# touches matching nodes that don't already carry a current overlay.
+static func apply_names(root: Node, names: Dictionary, tier: Tier, textured: bool) -> int:
+	if root == null or names.is_empty() or tier == Tier.LOW: return 0
+	var ks := known()
+	var count := 0
+	var stack: Array = [root]
+	while not stack.is_empty():
+		var node: Node = stack.pop_back()
+		if node.name == HP_NODE or node.name == "_MAP_CONTEXT":
+			continue
+		if node is Node3D:
+			var k := _match_key(node, ks)
+			if k != "":
+				if names.has(k) and apply_one(node as Node3D, k, tier, textured):
+					count += 1
+				_push_user_children(node, stack)
+				continue
+		for c in node.get_children():
+			stack.append(c)
+	return count
+
+# asset identity string: overlay rebuilds when it changes (tier switch, or a
+# community fix bumping the model's hash)
+static func _asset_id(key: String) -> String:
+	if use_legacy:
+		var high := "%s/%s/%s.glb" % [LEGACY_DIR, key, key]
+		if ResourceLoader.exists(high): return high
+		var obj := "%s/%s/%s.obj" % [LEGACY_DIR, key, key]
+		if ResourceLoader.exists(obj): return obj
+		return ""
+	if HighpolyStore.has_model(key):
+		return "store://%s#%s" % [key, HighpolyStore.hash_of(key)]
+	return ""
+
+static func _instance_for(key: String, id: String) -> Node3D:
+	if id.begins_with("store://"):
+		var ps := HighpolyStore.load_scene(key)
+		return ps.instantiate() as Node3D if ps != null else null
+	var res = load(id)
+	if res is PackedScene:
+		return (res as PackedScene).instantiate() as Node3D
+	if res is Mesh:
+		var mi := MeshInstance3D.new()
+		mi.mesh = res
+		return mi
+	return null
+
+static func _nofit_for(key: String) -> bool:
+	if key in NOFIT: return true
+	if use_legacy:
+		var side := "%s/%s/%s.json" % [LEGACY_DIR, key, key]
+		if FileAccess.file_exists(side):
+			var j: Variant = JSON.parse_string(FileAccess.get_file_as_string(side))
+			return j is Dictionary and bool((j as Dictionary).get("nofit", false))
+		return false
+	return HighpolyStore.nofit(key)
+
+static func apply_one(node: Node3D, key: String, tier: Tier, textured: bool) -> bool:
 	if tier == Tier.LOW:
 		var hp := node.get_node_or_null(HP_NODE)
 		if hp and hp is Node3D: (hp as Node3D).visible = false
 		_set_proxy_visible(node, true)
 		return true
-	var path := asset_for(entry, tier)
-	if path == "": return false
+	var id := _asset_id(key)
+	if id == "":
+		wanted[key] = true                    # known to the registry, not local yet
+		return false
 	var hp := node.get_node_or_null(HP_NODE)
-	if hp != null and hp.get_meta("hp_asset", "") != path:
-		node.remove_child(hp); hp.queue_free(); hp = null   # tier changed -> rebuild
+	if hp != null and hp.get_meta("hp_asset", "") != id:
+		node.remove_child(hp); hp.queue_free(); hp = null   # tier/model changed -> rebuild
 	if hp == null:
-		if not ResourceLoader.exists(path): return false
-		var res = load(path)
-		if res == null: return false
-		var child: Node3D = null
-		if res is PackedScene:
-			child = (res as PackedScene).instantiate() as Node3D
-		elif res is Mesh:
-			var mi := MeshInstance3D.new(); mi.mesh = res; child = mi
+		var child := _instance_for(key, id)
 		if child == null: return false
 		child.name = HP_NODE
 		child.scene_file_path = ""           # anonymize: SDK level validator ignores us
-		child.set_meta("hp_asset", path)
-		if path.ends_with(".obj"):
+		child.set_meta("hp_asset", id)
+		if id.ends_with(".obj"):
 			child.rotation_degrees = HP_ROT
 		node.add_child(child)
 		child.owner = null                   # editor-only: not saved, not exported
-		var key := path.get_file().get_basename().trim_suffix("_med")
-		if not (key in NOFIT) and not _sidecar_nofit(path) and not _fit_scale(node, child):
+		if not _nofit_for(key) and not _fit_scale(node, child):
 			node.remove_child(child); child.queue_free()
 			return false                     # wrong-shaped asset: keep the proxy
 		hp = child
@@ -154,6 +244,11 @@ static func _set_textured(hp: Node, textured: bool) -> void:
 			stack.append(c)
 
 static func _set_proxy_visible(node: Node3D, vis: bool) -> void:
+	# When HIDING (overlay active), user-placed nodes nested under this proxy
+	# are never touched — hiding a building's proxy must not vanish the props a
+	# builder parented under it. When SHOWING (back to Low-Poly), restore
+	# EVERYTHING — that also heals any geometry a pre-fix version wrongly hid.
+	var scene_root: Node = EditorInterface.get_edited_scene_root() if not vis else null
 	var stack: Array = []
 	for c in node.get_children():
 		if c.name != HP_NODE:
@@ -162,23 +257,12 @@ static func _set_proxy_visible(node: Node3D, vis: bool) -> void:
 		var n: Node = stack.pop_back()
 		if n.name == HP_NODE:
 			continue                       # never touch overlay geometry
+		if scene_root != null and n.owner == scene_root:
+			continue                       # user content under the proxy: leave it alone
 		if n is GeometryInstance3D:
 			(n as GeometryInstance3D).visible = vis
 		for c in n.get_children():
 			stack.append(c)
-
-static func purge_all() -> int:
-	# delete every downloaded preview asset under res://highpoly
-	var removed := 0
-	var da := DirAccess.open(HP_DIR)
-	if da == null: return 0
-	for sub in da.get_directories():
-		var dir := "%s/%s" % [HP_DIR, sub]
-		for f in DirAccess.get_files_at(dir):
-			DirAccess.remove_absolute("%s/%s" % [dir, f])
-		if DirAccess.remove_absolute(dir) == OK:
-			removed += 1
-	return removed
 
 static func in_overlay(node: Node) -> bool:
 	var n := node

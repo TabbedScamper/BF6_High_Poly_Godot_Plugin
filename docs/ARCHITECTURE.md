@@ -21,12 +21,15 @@ and how releases/updates work.
 | File | Responsibility |
 |---|---|
 | `plugin.cfg` | Plugin metadata. `version` here is the source of truth for self-update checks. |
-| `highpoly_toggle.gd` | The `EditorPlugin` + the entire dock UI. Owns the 0.5 s timer that drives object streaming and scene-tab-switch detection (switching tabs tears down overlays on the scene being left and resets the dock, so tab swaps stay fast). |
-| `highpoly_lib.gd` | Static helpers for the **Detail Mode** overlay: discovers downloaded models under `res://highpoly/<Name>/`, matches placed nodes to model keys (scene filename first, then name with trailing digits stripped), attaches/hides `_HIPOLY_PREVIEW` children, and runs the conservative auto-fitter (identity-first; wrong-shaped assets are rejected rather than shown distorted — see HIGHPOLY-PREVIEW.md §fitter). |
-| `highpoly_mapcontext.gd` | The **Map Context** overlay: downloads per-map packages, rebuilds the full terrain from a raw 16-bit heightmap, injects the maptile decal + detail-terrain shader, the exact water plane, the distant backdrop, and the original object placements as distance-streamed MultiMeshes (mirrored instances get a winding-flipped mesh copy). |
-| `highpoly_previews.gd` | Swaps the SDK Object Library thumbnails to renders of the active tier's models, remembering stock icons for restore. |
+| `highpoly_toggle.gd` | The `EditorPlugin` + the entire dock UI. Runs the startup sequence (migration wizard → sync-scope prompt → background sync), the auto swap-in debounce, and the 0.5 s timer that drives object streaming and scene-tab-switch detection (switching tabs tears down overlays on the scene being left and resets the dock, so tab swaps stay fast). |
+| `highpoly_store.gd` | The v1.5 model store: `user://highpoly/` (index `store.json`, `models/*.glb`, `thumbs/*.png`). Runtime GLB → renderable `PackedScene` conversion (ImporterMesh → Mesh) with a session cache. Nothing lives in `res://`, so the editor never imports or scans anything. |
+| `highpoly_sync.gd` | The background sync: manifest diff on startup + hourly, priority queue (open scene first, then just-placed props, then — in "full" scope — the rest of the library), 2 concurrent workers, full-library zip bootstrap, `model_ready`/`progress_changed` signals. |
+| `highpoly_migrate.gd` | One-time reorganization of pre-1.5 installs: scans `res://highpoly`, shows real numbers in the wizard, moves GLBs + hashes into the store, deletes retired `_med`/`.obj`/import files, then triggers the plugin's final `EditorFileSystem.scan()`. |
+| `highpoly_lib.gd` | Static helpers for the **Detail Mode** overlay: matches placed nodes to model keys (scene filename first, then name with trailing digits stripped), attaches/hides `_HIPOLY_PREVIEW` children, records not-yet-local props in `wanted` for the sync queue, and runs the conservative auto-fitter (identity-first; wrong-shaped assets are rejected rather than shown distorted — see HIGHPOLY-PREVIEW.md §fitter). |
+| `highpoly_mapcontext.gd` | The **Map Context** overlay: downloads per-map packages (self-healing via ETag checks once per session), rebuilds the full terrain from a raw 16-bit heightmap, injects the maptile decal + detail-terrain shader, the exact water plane, the distant backdrop, and the original object placements as distance-streamed MultiMeshes (mirrored instances get a winding-flipped mesh copy). |
+| `highpoly_previews.gd` | Swaps the SDK Object Library thumbnails to locally-rendered previews of the high-poly models (off-screen SubViewport, cached to `user://highpoly/thumbs/`), remembering stock icons for restore. |
 | `highpoly_turbo.gd` | Editor performance tools: distance cull, behind-camera cull for static map geometry, static-shadow toggle. Pure runtime property tweaks. |
-| `highpoly_updater.gd` | Everything network: registry manifest fetch, per-model delta updates (content-hash sidecars), per-scene downloads, the full-library bundle, and **plugin self-update** (version check + zip-over-install). |
+| `highpoly_updater.gd` | Registry plumbing (manifest URL, throttling-aware fetch, ETag HEAD) and **plugin self-update** (version check + zip-over-install). Model downloading itself lives in `highpoly_sync.gd`. |
 | `terrain_layers/*.png` | Tiling ground/cliff albedo+normal used by the detail terrain shader. |
 
 ## Data flow
@@ -48,12 +51,17 @@ registry host (Cloudflare R2, default baked into highpoly_updater.gd)
 
 Local caches:
 
-- `res://highpoly/<Name>/` — downloaded Detail Mode models + `<Name>.json`
-  hash sidecars (what "Update Models" diffs against).
+- `user://highpoly/` — the model store: `store.json` (schema + per-model
+  content hashes; the single source of local truth), `models/<Name>.glb`,
+  `thumbs/<Name>.png`. Hash-diffed against the manifest on startup + hourly;
+  never touched by the editor's import pipeline.
 - `user://mapcontext/<MP_Map>/` — per-map terrain + manifest
-  (+ `terrain_s<N>.res`, the locally-built terrain mesh cache per density).
+  (+ `terrain_s<N>.res`, the locally-built terrain mesh cache per density,
+  + `etags.json`, the package ETags recorded at download for freshness checks).
 - `user://mapcontext/_props/` — **shared** prop-mesh store, deduplicated across
-  maps: a mesh used by five maps is downloaded and stored once.
+  maps: a mesh used by five maps is downloaded and stored once. A republished
+  `props.zip` (detected by ETag once per session per map) overwrites every
+  mesh it carries — "file exists" alone never counts as current.
 
 ### Map package format (`placements.json`)
 
@@ -74,12 +82,12 @@ Local caches:
 `xf` packs one 3×4 transform per instance: 9 basis floats (row-major) + origin.
 Heights ship as raw `.r16` because Godot downsamples 16-bit PNGs to 8-bit.
 
-## Updates
+## Updates (all automatic since 1.5)
 
 | What changed | What the user does | What happens |
 |---|---|---|
-| A prop model was fixed | **Update Models** | hash-diff against sidecars, download only changed files |
-| A game patch changed a map | **Reload map data** | force re-download of that map's package |
+| A prop model was fixed | nothing | startup/hourly manifest diff re-queues it; it swaps into open scenes as it lands |
+| A game patch changed a map | nothing | per-session ETag check on the map's packages triggers a re-download (incl. overwriting shared prop meshes + rebuilding cached terrain) |
 | The plugin itself changed | click **Update Plugin → vX.Y.Z** (auto-appears) | zip extracted over `addons/highpoly_toggle/`, restart editor |
 
 Publishing a plugin release (maintainer side): bump `version` in `plugin.cfg`,
