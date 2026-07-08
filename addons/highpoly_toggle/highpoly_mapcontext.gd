@@ -1028,6 +1028,8 @@ func _load_external_glb(abs_or_res: String) -> PackedScene:
 	doc.append_from_file(ProjectSettings.globalize_path(abs_or_res), st)
 	var scene := doc.generate_scene(st)
 	if scene == null: return null
+	# raw embedded textures are a memory bomb at scale — recompress to S3TC
+	HighpolyStore.compress_scene_textures(scene)
 	var ps := PackedScene.new(); ps.pack(scene); scene.queue_free()
 	return ps
 

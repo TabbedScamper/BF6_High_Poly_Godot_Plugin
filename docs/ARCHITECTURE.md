@@ -22,11 +22,13 @@ and how releases/updates work.
 |---|---|
 | `plugin.cfg` | Plugin metadata. `version` here is the source of truth for self-update checks. |
 | `highpoly_toggle.gd` | The `EditorPlugin` + the entire dock UI. Runs the startup sequence (migration wizard → sync-scope prompt → background sync), the auto swap-in debounce, and the 0.5 s timer that drives object streaming and scene-tab-switch detection (switching tabs tears down overlays on the scene being left and resets the dock, so tab swaps stay fast). |
-| `highpoly_store.gd` | The v1.5 model store: `user://highpoly/` (index `store.json`, `models/*.glb`, `thumbs/*.png`). Runtime GLB → renderable `PackedScene` conversion (ImporterMesh → Mesh) with a session cache. Nothing lives in `res://`, so the editor never imports or scans anything. |
+| `highpoly_store.gd` | The v1.5 model store: `user://highpoly/` (index `store.json`, `models/*.glb`, `thumbs/*.png`). Runtime GLB → renderable `PackedScene` conversion (ImporterMesh → Mesh) with a session cache. On load, textures are recompressed to GPU-native S3TC (runtime GLTF parsing otherwise keeps them uncompressed — 4-8× the RAM/VRAM) and missing tangents are generated for normal-mapped surfaces (kills a per-draw renderer warning). Nothing lives in `res://`, so the editor never imports or scans anything. |
 | `highpoly_sync.gd` | The background sync: manifest diff on startup + hourly, priority queue (open scene first, then just-placed props, then — in "full" scope — the rest of the library), 2 concurrent workers, full-library zip bootstrap, `model_ready`/`progress_changed` signals. |
 | `highpoly_migrate.gd` | One-time reorganization of pre-1.5 installs: scans `res://highpoly`, shows real numbers in the wizard, moves GLBs + hashes into the store, deletes retired `_med`/`.obj`/import files, then triggers the plugin's final `EditorFileSystem.scan()`. |
 | `highpoly_lib.gd` | Static helpers for the **Detail Mode** overlay: matches placed nodes to model keys (scene filename first, then name with trailing digits stripped), attaches/hides `_HIPOLY_PREVIEW` children, records not-yet-local props in `wanted` for the sync queue, and runs the conservative auto-fitter (identity-first; wrong-shaped assets are rejected rather than shown distorted — see HIGHPOLY-PREVIEW.md §fitter). |
 | `highpoly_mapcontext.gd` | The **Map Context** overlay: downloads per-map packages (self-healing via ETag checks once per session), rebuilds the full terrain from a raw 16-bit heightmap, injects the maptile decal + detail-terrain shader, the exact water plane, the distant backdrop, and the original object placements as distance-streamed MultiMeshes (mirrored instances get a winding-flipped mesh copy). |
+| `highpoly_collision.gd` | The **Collision** overlay: per-object `_COLLISION_VIS` duplicates of the proxy geometry rendered with a shared unshaded transparent material (color/alpha user-settable). Reproduces the game's collision-scaling rule — the collision shape uses the object's own geometry scaled **uniformly from the X axis** (visual scale (10, 20, 20) collides as (10, 10, 10)) — by composing `parent_inverse * (rotation * uniform_x_scale)` so the overlay stays correct under any parent transform. Also owns isolate-selection (selected objects show only collision; restore respects the active detail mode). |
+| `highpoly_doors.gd` | Interactable-door swing: left double-click in the 3D viewport (via `EditorPlugin._forward_3d_gui_input`) ray-picks a known door proxy by local AABB and tweens its high-poly overlay leaf around the real hinge (hinge transform + swing angle per door in the plugin manifest's door specs, mined from the game's `interactabledoorcontrol` data). Open state is remembered on the node so mode switches rebuild it. |
 | `highpoly_previews.gd` | Swaps the SDK Object Library thumbnails to locally-rendered previews of the high-poly models (off-screen SubViewport, cached to `user://highpoly/thumbs/`), remembering stock icons for restore. |
 | `highpoly_turbo.gd` | Editor performance tools: distance cull, behind-camera cull for static map geometry, static-shadow toggle. Pure runtime property tweaks. |
 | `highpoly_updater.gd` | Registry plumbing (manifest URL, throttling-aware fetch, ETag HEAD) and **plugin self-update** (version check + zip-over-install). Model downloading itself lives in `highpoly_sync.gd`. |
@@ -94,10 +96,14 @@ Publishing a plugin release (maintainer side): bump `version` in `plugin.cfg`,
 commit, then upload `plugin/highpoly_toggle.zip` + `plugin/plugin-version.json`
 to the registry host (the zip is the addon folder rooted at
 `addons/highpoly_toggle/`). Installed copies pick it up on next editor start.
+The model-library site reads the same `plugin-version.json` for its version
+badge, so a plugin release bumps the site version automatically — one version
+number across the whole system.
 
 ## Overlay node names (reserved)
 
 - `_HIPOLY_PREVIEW` — a prop's Detail Mode overlay child.
+- `_COLLISION_VIS` — a prop's Collision overlay child.
 - `_MAP_CONTEXT` — the whole Map Context subtree (terrain/backdrop/props/water).
 - `_MAPTILE_DECAL` — the satellite maptile decal.
 

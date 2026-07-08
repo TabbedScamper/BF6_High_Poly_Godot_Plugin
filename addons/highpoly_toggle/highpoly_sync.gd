@@ -48,15 +48,23 @@ func start() -> void:
 	_recheck.start()
 	await _diff_and_queue(true)
 
+# Manual "check for updates now": force-refreshes the manifest (cache-busted —
+# the registry manifest is CDN-cached ~5 min, which the button must not wait
+# out), diffs, queues, and resets the hourly timer.
+func check_now() -> void:
+	if _recheck != null:
+		_recheck.start()
+	await _diff_and_queue(false, true)
+
 # Diff local state against the manifest and queue whatever is stale or (in
 # full scope) missing. Change-only by design: an ETag HEAD decides whether the
 # manifest even downloads; the diff itself is pure in-memory index lookups
 # (no per-file disk stats), chunked so it never blocks a frame.
-func _diff_and_queue(first := false) -> void:
-	var res: Dictionary = await refresh_manifest()
+func _diff_and_queue(first := false, force := false) -> void:
+	var res: Dictionary = await refresh_manifest(force)
 	if not res.get("ok", false):
 		return
-	if not res.get("changed", false) and not first:
+	if not res.get("changed", false) and not first and not force:
 		return                        # nothing published since last check — zero work
 	var full := HighpolyStore.scope() == "full"
 	if first and full and HighpolyStore.count() == 0:
@@ -86,15 +94,20 @@ const MANIFEST_CACHE := "user://highpoly/manifest-cache.json"
 # Returns {ok, changed}. The manifest only downloads when its ETag moved;
 # an unchanged manifest at startup loads from the disk cache (no network body,
 # but still counts as "changed" once so the session gets its first diff).
-func refresh_manifest() -> Dictionary:
+func refresh_manifest(force := false) -> Dictionary:
 	var url := HighpolyUpdater.manifest_url()
 	if url == "": return {"ok": false, "changed": false}
 	base = url.get_base_dir() + "/"
+	var fetch_url := url
+	if force:
+		# unique query string = CDN cache miss -> the origin's current manifest
+		var sep := "&" if url.contains("?") else "?"
+		fetch_url = "%s%sts=%d" % [url, sep, Time.get_unix_time_from_system()]
 	var http := HTTPRequest.new()
 	add_child(http)
-	var tag := await HighpolyUpdater.remote_etag(http, url)
+	var tag := await HighpolyUpdater.remote_etag(http, fetch_url)
 	var stored := HighpolyStore.manifest_etag()
-	if tag != "" and tag == stored:
+	if not force and tag != "" and tag == stored:
 		if not manifest.is_empty():
 			http.queue_free()
 			return {"ok": true, "changed": false}   # hourly no-op
@@ -103,7 +116,7 @@ func refresh_manifest() -> Dictionary:
 			http.queue_free()
 			await _adopt_manifest(cached)
 			return {"ok": true, "changed": true}
-	var body := await HighpolyUpdater._fetch(http, url)
+	var body := await HighpolyUpdater._fetch(http, fetch_url)
 	http.queue_free()
 	if body.is_empty(): return {"ok": false, "changed": false}
 	var man: Variant = JSON.parse_string(body.get_string_from_utf8())
