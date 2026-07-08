@@ -175,12 +175,121 @@ static func load_external_glb(user_path: String) -> PackedScene:
 	if scene == null:
 		return null
 	_fix_importer_meshes(scene, scene)
+	compress_scene_textures(scene)
 	var ps := PackedScene.new()
 	if ps.pack(scene) != OK:
 		scene.free()
 		return null
 	scene.free()
 	return ps
+
+# ---------- texture memory ----------
+# The runtime GLTF path embeds textures UNCOMPRESSED: a 20 MB webp'd GLB
+# balloons to hundreds of MB of raw RGBA in RAM + VRAM (Palace_01: 676 MB),
+# and with the session scene-cache that adds up to editor-killing totals on
+# big scenes. Recompress every texture to GPU-native S3TC right after parse —
+# etcpak encode is milliseconds per texture, memory drops 4-8x in BOTH RAM
+# and VRAM, and it happens once per model per session.
+static func compress_scene_textures(root: Node) -> void:
+	var seen_mats: Dictionary = {}   # material RID -> true
+	var swapped: Dictionary = {}     # old texture RID -> compressed ImageTexture
+	var stack: Array = [root]
+	while not stack.is_empty():
+		var n: Node = stack.pop_back()
+		var mats: Array = []
+		if n is MeshInstance3D:
+			var mi := n as MeshInstance3D
+			if mi.material_override != null:
+				mats.append(mi.material_override)
+			if mi.mesh != null:
+				for i in range(mi.mesh.get_surface_count()):
+					mats.append(mi.mesh.surface_get_material(i))
+					mats.append(mi.get_surface_override_material(i))
+		elif n is ImporterMeshInstance3D:
+			var im := (n as ImporterMeshInstance3D).mesh
+			if im != null:
+				for i in range(im.get_surface_count()):
+					mats.append(im.get_surface_material(i))
+		for m in mats:
+			if m == null or not (m is BaseMaterial3D):
+				continue
+			var rid := (m as Material).get_rid()
+			if seen_mats.has(rid):
+				continue
+			seen_mats[rid] = true
+			_compress_material(m as BaseMaterial3D, swapped)
+		# normal-mapped surfaces need TANGENTS or the renderer warns per draw
+		# (runtime-parsed GLBs ship without them) — generate once at parse
+		if n is MeshInstance3D and (n as MeshInstance3D).mesh is ArrayMesh:
+			var mi2 := n as MeshInstance3D
+			mi2.mesh = _ensure_tangents(mi2.mesh as ArrayMesh)
+		for c in n.get_children():
+			stack.append(c)
+
+# Rebuild any surface that has a normal-mapped material but no tangent array.
+# SurfaceTool.generate_tangents = MikkTSpace, one-time per model per session.
+static func _ensure_tangents(mesh: ArrayMesh) -> ArrayMesh:
+	var needs := false
+	for i in range(mesh.get_surface_count()):
+		var m := mesh.surface_get_material(i)
+		if m is BaseMaterial3D and (m as BaseMaterial3D).normal_texture != null:
+			var arr := mesh.surface_get_arrays(i)
+			if arr[Mesh.ARRAY_TANGENT] == null and arr[Mesh.ARRAY_TEX_UV] != null \
+					and arr[Mesh.ARRAY_NORMAL] != null:
+				needs = true
+				break
+	if not needs:
+		return mesh
+	var out := ArrayMesh.new()
+	for i in range(mesh.get_surface_count()):
+		var m := mesh.surface_get_material(i)
+		var arr := mesh.surface_get_arrays(i)
+		var has_nm: bool = m is BaseMaterial3D and (m as BaseMaterial3D).normal_texture != null
+		if has_nm and arr[Mesh.ARRAY_TANGENT] == null and arr[Mesh.ARRAY_TEX_UV] != null \
+				and arr[Mesh.ARRAY_NORMAL] != null:
+			var st := SurfaceTool.new()
+			st.create_from(mesh, i)
+			st.generate_tangents()
+			var fixed := st.commit_to_arrays()
+			out.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, fixed)
+		else:
+			out.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr)
+		out.surface_set_material(out.get_surface_count() - 1, m)
+	return out
+
+const _TEX_PROPS := [
+	["albedo_texture", Image.COMPRESS_SOURCE_SRGB],
+	["emission_texture", Image.COMPRESS_SOURCE_SRGB],
+	["normal_texture", Image.COMPRESS_SOURCE_NORMAL],
+	["metallic_texture", Image.COMPRESS_SOURCE_GENERIC],
+	["roughness_texture", Image.COMPRESS_SOURCE_GENERIC],
+	["ao_texture", Image.COMPRESS_SOURCE_GENERIC],
+]
+
+static func _compress_material(m: BaseMaterial3D, swapped: Dictionary) -> void:
+	for p in _TEX_PROPS:
+		var tex: Variant = m.get(p[0])
+		if tex == null or not (tex is Texture2D):
+			continue
+		var rid: RID = (tex as Texture2D).get_rid()
+		if swapped.has(rid):
+			m.set(p[0], swapped[rid])
+			continue
+		var img: Image = (tex as Texture2D).get_image()
+		if img == null or img.is_compressed():
+			continue
+		# S3TC needs 4-aligned dimensions; game textures are POT so odd sizes
+		# are rare — leave those raw rather than resampling them
+		if img.get_width() < 8 or img.get_height() < 8 \
+				or img.get_width() % 4 != 0 or img.get_height() % 4 != 0:
+			continue
+		if not img.has_mipmaps():
+			img.generate_mipmaps()
+		if img.compress(Image.COMPRESS_S3TC, p[1]) != OK:
+			continue
+		var ct := ImageTexture.create_from_image(img)
+		swapped[rid] = ct
+		m.set(p[0], ct)
 
 static func _fix_importer_meshes(n: Node, root: Node) -> void:
 	for c in n.get_children().duplicate():
@@ -211,6 +320,26 @@ static func _set_owner_deep(n: Node, root: Node) -> void:
 		n.owner = root
 	for c in n.get_children():
 		_set_owner_deep(c, root)
+
+# ---------- prune ----------
+# Delete every stored model NOT in `keep` (proxy-name keyed). Used when the
+# sync scope drops to "current scene only" — anything pruned re-downloads on
+# demand, so this is the disk-space lever that replaced Purge.
+static func prune_keep(keep: Dictionary) -> int:
+	_load()
+	var n := 0
+	var models: Dictionary = _index["models"]
+	for name in models.keys().duplicate():
+		if keep.has(name):
+			continue
+		var p := model_path(name)
+		if FileAccess.file_exists(p):
+			if DirAccess.remove_absolute(p) == OK:
+				n += 1
+		models.erase(name)
+		_invalidate(name)
+	save()
+	return n
 
 # ---------- purge ----------
 static func purge_all() -> int:

@@ -57,6 +57,16 @@ the background (one large download, small deltas forever after) or download
 **as needed** (only what your scenes use). A progress bar in the dock shows
 what's happening; a pause button covers metered connections.
 
+Both knobs stay in your hands afterwards:
+
+- **Check for Updates** — force a registry check right now instead of waiting
+  for the hourly diff. Handy right after a model fix is published.
+- **Download scope** — switch any time between **current scene only** (keeps
+  just the models your open scene uses; switching frees the rest from disk,
+  and they re-download on demand) and **all models** (the whole library syncs
+  in the background). Both directions confirm before doing anything — the
+  full-library download is large and can be declined.
+
 > Upgrading from 1.4 or older? On first start the plugin offers a one-time
 > reorganization: it shows exactly what will be moved (your downloaded models
 > — no re-download), what will be deleted (retired medium-tier files + editor
@@ -74,7 +84,28 @@ Swaps every placed prop between the SDK proxy and the real game model:
 | Control | What it does |
 |---|---|
 | **Low-Poly / High-Poly (no textures) / High-Poly (textured)** | Scene-wide detail mode. Newly placed pieces auto-overlay while a mode is active; models still downloading swap in automatically as they land. |
-| **Selected → …** | Change mode for just the selected node(s). |
+| **Preview selected in High-Poly** | Per-object override that follows your selection live. In Low-Poly mode the selected objects show high-poly (work light, inspect in detail); in High-Poly mode they drop to their proxies (reclaim FPS in heavy areas). Uncheck to restore the scene mode everywhere. |
+
+High-poly mode covers more than static props:
+
+- **Interactable doors swing.** Left **double-click** a door (DoorRural,
+  BorderFenceDoor, ChickenWire, interior doors…) to animate it open/closed on
+  its real hinge — check a doorway's clearance without leaving the editor.
+- **Gameplay spawners show what they spawn.** Vehicle spawners render the
+  actual drivable vehicle (wheels, tracks, mounted guns, livery), SpawnPoint /
+  AI Spawner show a real soldier, and the Loot Spawner shows its weapon —
+  instead of anonymous placeholder boxes.
+
+### Collision
+See what the game will actually collide with:
+
+| Control | What it does |
+|---|---|
+| **Show collisions** | Draws each object's **actual in-game collision** as a transparent overlay. BF6 scales collision uniformly from the X axis — an object visually scaled (10, 20, 20) still collides as (10, 10, 10) — and the overlay reproduces exactly that, so stretched walls/floors reveal their true walkable shape. |
+| **Isolate selected collision** | Selected object(s) show *only* their collision while everything else keeps its model; follows the selection live. Enabled while "Show collisions" is on. |
+| **Color / Alpha** | Overlay color picker + transparency slider (default transparent red). |
+
+Like everything else, the overlay is editor-only and never saved.
 
 ### Map Context
 Rebuilds the real surroundings of the playable area, straight from data
@@ -82,7 +113,7 @@ extracted out of the game:
 
 | Control | What it does |
 |---|---|
-| **Show map context** | Full-accuracy terrain heightfield (the whole map, not just the SDK bowl), distant backdrop, and the exact water plane on maps that have one. |
+| **Show whole map** | Full-accuracy terrain heightfield (the whole map, not just the SDK bowl), distant backdrop, and the exact water plane on maps that have one. |
 | **Original map objects** | The game's original object placements — buildings, vehicles, props — drawn as MultiMeshes and streamed by camera distance. Works with or without the terrain layer. |
 | **Textures** | On = maptile satellite + tiling ground detail + real prop textures. Off = SDK study colours (green terrain / orange objects) that match the shipped look. |
 | **Range** | Object streaming distance from the editor camera. |
@@ -102,8 +133,10 @@ Editor performance helpers — never saved into the scene:
 - **Cull behind camera** — aggressively hides static map geometry outside the
   view (skips shadow passes too).
 - **Static map shadows** — disable shadow casting from static scenery (big FPS win).
-- **Purge Local Models** — delete all downloaded models; your scene is
-  untouched and the sync re-downloads what your scenes need.
+
+(Need to reclaim disk space? Switch the download scope to **current scene
+only** — everything your scenes don't use is freed and re-downloads on
+demand.)
 
 ---
 

@@ -13,6 +13,7 @@ class_name HighpolyLib
 
 const HP_ROT := Vector3(-90, 0, 0)   # legacy OBJ assets are Z-up; GLB assets are Y-up
 const HP_NODE := "_HIPOLY_PREVIEW"
+const COL_NODE := "_COLLISION_VIS"   # collision overlay (highpoly_collision.gd)
 const LEGACY_DIR := "res://highpoly"
 # Props whose proxy AABB legitimately disagrees with the real asset's shape
 # (e.g. a wreck proxy that is just the hull) — skip the auto-fitter for these
@@ -110,7 +111,7 @@ static func scene_keys(root: Node) -> Array:
 	var stack: Array = [root]
 	while not stack.is_empty():
 		var n: Node = stack.pop_back()
-		if n.name == HP_NODE or n.name == "_MAP_CONTEXT":
+		if n.name == HP_NODE or n.name == "_MAP_CONTEXT" or n.name == COL_NODE:
 			continue
 		if n is Node3D:
 			var k := _match_key(n, ks)
@@ -131,7 +132,7 @@ static func apply(root: Node, tier: Tier, textured: bool = true) -> int:
 	var stack: Array = [root]
 	while not stack.is_empty():
 		var node: Node = stack.pop_back()
-		if node.name == HP_NODE or node.name == "_MAP_CONTEXT":
+		if node.name == HP_NODE or node.name == "_MAP_CONTEXT" or node.name == COL_NODE:
 			continue                          # skip our overlays (esp. the huge map-context subtree)
 		if node is Node3D:
 			var k := _match_key(node, ks)
@@ -153,7 +154,7 @@ static func apply_names(root: Node, names: Dictionary, tier: Tier, textured: boo
 	var stack: Array = [root]
 	while not stack.is_empty():
 		var node: Node = stack.pop_back()
-		if node.name == HP_NODE or node.name == "_MAP_CONTEXT":
+		if node.name == HP_NODE or node.name == "_MAP_CONTEXT" or node.name == COL_NODE:
 			continue
 		if node is Node3D:
 			var k := _match_key(node, ks)
@@ -251,11 +252,11 @@ static func _set_proxy_visible(node: Node3D, vis: bool) -> void:
 	var scene_root: Node = EditorInterface.get_edited_scene_root() if not vis else null
 	var stack: Array = []
 	for c in node.get_children():
-		if c.name != HP_NODE:
+		if c.name != HP_NODE and c.name != COL_NODE:
 			stack.append(c)
 	while not stack.is_empty():
 		var n: Node = stack.pop_back()
-		if n.name == HP_NODE:
+		if n.name == HP_NODE or n.name == COL_NODE:
 			continue                       # never touch overlay geometry
 		if scene_root != null and n.owner == scene_root:
 			continue                       # user content under the proxy: leave it alone
@@ -268,8 +269,10 @@ static func in_overlay(node: Node) -> bool:
 	var n := node
 	while n != null:
 		# HP_NODE = our high-poly overlay; _MAP_CONTEXT = the map-context overlay
-		# (tens of thousands of owner=null nodes). Detail Mode must ignore both.
-		if n.name == HP_NODE or n.name == "_MAP_CONTEXT": return true
+		# (tens of thousands of owner=null nodes); COL_NODE = the collision
+		# overlay. Detail Mode must ignore all of them.
+		if n.name == HP_NODE or n.name == "_MAP_CONTEXT" or n.name == COL_NODE:
+			return true
 		n = n.get_parent()
 	return false
 
@@ -281,9 +284,11 @@ static func _merged_aabb(root: Node, skip_name: String) -> AABB:
 	var inv: Transform3D = (root as Node3D).global_transform.affine_inverse()
 	var stack: Array = []
 	for c in root.get_children():
-		if c.name != skip_name: stack.append(c)
+		if c.name != skip_name and c.name != COL_NODE: stack.append(c)
 	while not stack.is_empty():
 		var n: Node = stack.pop_back()
+		if n.name == COL_NODE:
+			continue                       # collision overlay must not skew the fit
 		if n is GeometryInstance3D:
 			var g := n as GeometryInstance3D
 			var ab: AABB = (inv * g.global_transform) * g.get_aabb()
