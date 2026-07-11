@@ -113,11 +113,16 @@ extracted out of the game:
 
 | Control | What it does |
 |---|---|
-| **Show whole map** | Full-accuracy terrain heightfield (the whole map, not just the SDK bowl), distant backdrop, and the exact water plane on maps that have one. |
-| **Original map objects** | The game's original object placements — buildings, vehicles, props — drawn as MultiMeshes and streamed by camera distance. Works with or without the terrain layer. |
+| **Show whole map** | Full-accuracy terrain heightfield at the exact in-game height (the whole map, not just the SDK bowl), distant backdrop, and the game's exact water — animated, depth-tinted planes on maps that have them. |
+| **Original map objects** | The game's original object placements — buildings, vehicles, props — drawn as MultiMeshes and streamed by camera distance. Multi-part models render complete (every mesh node merged, not just the largest piece). Works with or without the terrain layer. |
 | **Textures** | On = maptile satellite + tiling ground detail + real prop textures. Off = SDK study colours (green terrain / orange objects) that match the shipped look. |
+| **Grass** | Vegetation scatter — grass/shrub kits from the game's own scatter database, placed procedurally around the editor camera — with a density slider (1.0 = the database budget). |
 | **Range** | Object streaming distance from the editor camera. |
 | **Terrain** | Terrain mesh density (Full 1 m / High 2 m / Medium 4 m). Built once per level, then cached. |
+
+Trees and bushes render with proper leaf transparency both here and in the
+prop library (v1.7 rebuilt the whole vegetation set — no more flat black or
+white foliage).
 
 After a game patch there's nothing to press — the plugin notices a
 republished map package on its own and refreshes it.
