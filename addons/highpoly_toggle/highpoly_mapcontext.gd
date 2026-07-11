@@ -365,6 +365,7 @@ func _clear(root: Node) -> void:
 	# prop textures / terrain layers updated since the last apply)
 	_mesh_cache.clear()
 	_layer_cache.clear()
+	_splat_cache.clear()   # re-read baked splat data on the next apply
 	# remove the maptile decal (editor-only)
 	var dec := root.get_node_or_null(DECAL_NODE)
 	if dec: root.remove_child(dec); dec.queue_free()
@@ -422,6 +423,16 @@ uniform float normal_strength = 0.7;
 uniform float slope_lo = 0.35;
 uniform float slope_hi = 0.70;
 uniform float edge_fade = 0.03;          // soft blend at the maptile border (uv fraction)
+// EXACT splat data (baked from the game's own terrain layer masks — see the
+// pipeline's splat_build.py). splat_slices = 0 (default) keeps the legacy
+// slope ground/cliff heuristic, so maps/packages without splat data render
+// exactly as before.
+uniform int splat_slices = 0;            // layer_alb/layer_nrm slice count
+uniform vec4 splat_bounds;               // xmin, zmin, sizeX, sizeZ (world)
+uniform sampler2D splat_idx : filter_nearest, repeat_disable;  // top-4 table idx (x255)
+uniform sampler2D splat_w : filter_linear, repeat_disable;     // top-4 weights (sum=1)
+uniform sampler2DArray layer_alb : source_color, filter_linear_mipmap, repeat_enable;
+uniform sampler2DArray layer_nrm : filter_linear_mipmap, repeat_enable;
 varying vec3 wpos;
 varying vec3 wnorm;
 void vertex() {
@@ -429,11 +440,45 @@ void vertex() {
 	wnorm = normalize((MODEL_MATRIX * vec4(NORMAL, 0.0)).xyz);
 }
 void fragment() {
-	// slope-selected tiling ground detail (real game layer textures)
+	// slope-selected tiling ground detail — the legacy heuristic, kept as the
+	// fallback for texels/maps without splat data and for out-of-slice layers
 	float slope = clamp(1.0 - wnorm.y, 0.0, 1.0);
 	float b = smoothstep(slope_lo, slope_hi, slope);
 	vec2 tuv = wpos.xz / tile_scale;
-	vec3 det = mix(texture(ground_alb, tuv).rgb, texture(cliff_alb, tuv).rgb, b);
+	vec3 fb_alb = mix(texture(ground_alb, tuv).rgb, texture(cliff_alb, tuv).rgb, b);
+	vec3 fb_nrm = mix(texture(ground_nrm, tuv).rgb, texture(cliff_nrm, tuv).rgb, b);
+	vec3 det = fb_alb;
+	vec3 nrm = fb_nrm;
+	if (splat_slices > 0) {
+		// exact per-texel layer blend: 4 table indices (nearest) + 4 weights
+		// (linear — weights fall to 0 where indices change, hiding idx seams)
+		vec2 suv = vec2((wpos.x - splat_bounds.x) / splat_bounds.z,
+		                (wpos.z - splat_bounds.y) / splat_bounds.w);
+		if (suv.x >= 0.0 && suv.x <= 1.0 && suv.y >= 0.0 && suv.y <= 1.0) {
+			vec4 sid = texture(splat_idx, suv) * 255.0;
+			vec4 sw = texture(splat_w, suv);
+			vec3 acc = vec3(0.0);
+			vec3 nacc = vec3(0.0);
+			float tot = 0.0;
+			for (int i = 0; i < 4; i++) {
+				float wi = sw[i];
+				if (wi < 0.004) { continue; }
+				int id = int(sid[i] + 0.5);
+				if (id < splat_slices) {
+					acc += wi * texture(layer_alb, vec3(tuv, float(id))).rgb;
+					nacc += wi * texture(layer_nrm, vec3(tuv, float(id))).rgb;
+				} else {
+					acc += wi * fb_alb;      // unpackaged layer: slope fallback
+					nacc += wi * fb_nrm;
+				}
+				tot += wi;
+			}
+			if (tot > 0.01) {
+				det = acc / tot;
+				nrm = nacc / tot;
+			}
+		}
+	}
 	float dl = dot(det, vec3(0.3333));
 
 	// maptile weight: 1 inside the satellite footprint, faded to 0 at its edge
@@ -442,16 +487,14 @@ void fragment() {
 	vec2 edge = min(muv, 1.0 - muv);
 	float w = in01 * smoothstep(0.0, edge_fade, min(edge.x, edge.y));
 
-	// inside: the real satellite colour, lightly grained by the detail texture.
-	// outside (and over the maptile's black out-of-bounds borders): no satellite
-	// data — show the actual tiling ground/cliff colour so it reads as real
-	// terrain instead of a flat tint or black.
+	// inside: the real satellite colour as the large-scale tint, grained by the
+	// (now splat-exact) detail layers. outside (and over the maptile's black
+	// out-of-bounds borders): the tiling detail colour alone.
 	vec3 mt = texture(maptile, muv).rgb;
 	w *= smoothstep(0.03, 0.12, dot(mt, vec3(0.3333)));   // drop the black borders
 	vec3 inside = mt * mix(1.0, dl * 2.0, detail_strength) * mix(vec3(1.0), det / (dl + 1e-3), 0.3 * detail_strength);
 	ALBEDO = clamp(mix(det, inside, w), 0.0, 1.0);
 	ROUGHNESS = 0.92;
-	vec3 nrm = mix(texture(ground_nrm, tuv).rgb, texture(cliff_nrm, tuv).rgb, b);
 	vec2 nxy = (nrm.rg * 2.0 - 1.0) * normal_strength;
 	float nz = sqrt(clamp(1.0 - dot(nxy, nxy), 0.0, 1.0));
 	vec3 N = normalize(wnorm);
@@ -463,6 +506,59 @@ void fragment() {
 """
 static var _tshader: Shader = null
 static var _layer_cache: Dictionary = {}   # "<map>/<name>" -> Texture2D (or null)
+# ---------- exact splat data (baked from the game's terrain layer masks) ----------
+# user://mapcontext/<map>/splat/{idx.png, w.png, layers.json, lNN_alb/_nrm.png,
+# grass_mask.png} — produced by the pipeline's splat_build.py. Maps without the
+# files (older packages, graph-layer city maps) keep the legacy heuristic path.
+static var _splat_cache: Dictionary = {}   # map -> Dictionary ({} = none)
+var _splat_active := false                 # last _terrain_shader_mat had splat data
+var _splat_n := 0                          # its texture-array slice count
+# With splat shading the extended terrain (which spans the WHOLE footprint,
+# including under the SDK bowl) becomes the ground truth. It is lifted slightly
+# so it wins the depth test against the SDK's own coincident bowl mesh — the
+# maptile decal that used to mask that z-fight is gone in splat mode.
+const SPLAT_LIFT := 0.15
+
+# Load a map's baked splat set (cached): textures + world box + slice count.
+# Returns {} when the map package carries no usable splat data.
+func _splat_set(map: String) -> Dictionary:
+	if _splat_cache.has(map): return _splat_cache[map]
+	var out: Dictionary = {}
+	var dir := "%s/%s/splat" % [CACHE, map]
+	var lj := "%s/layers.json" % dir
+	if FileAccess.file_exists(lj) and FileAccess.file_exists("%s/idx.png" % dir) \
+			and FileAccess.file_exists("%s/w.png" % dir):
+		var meta: Variant = JSON.parse_string(FileAccess.get_file_as_string(lj))
+		if meta is Dictionary and int((meta as Dictionary).get("slices", 0)) > 0 \
+				and (meta as Dictionary).get("world", {}) is Dictionary:
+			var slices := int(meta["slices"])
+			var wj: Dictionary = meta["world"]
+			var idx_img := Image.load_from_file(ProjectSettings.globalize_path("%s/idx.png" % dir))
+			var w_img := Image.load_from_file(ProjectSettings.globalize_path("%s/w.png" % dir))
+			var albs: Array[Image] = []
+			var nrms: Array[Image] = []
+			for i in range(slices):
+				var a := Image.load_from_file(ProjectSettings.globalize_path("%s/l%02d_alb.png" % [dir, i]))
+				var n := Image.load_from_file(ProjectSettings.globalize_path("%s/l%02d_nrm.png" % [dir, i]))
+				if a == null or n == null:
+					albs.clear()
+					break
+				a.convert(Image.FORMAT_RGB8); a.generate_mipmaps(); albs.append(a)
+				n.convert(Image.FORMAT_RGB8); n.generate_mipmaps(); nrms.append(n)
+			if idx_img != null and w_img != null and albs.size() == slices:
+				idx_img.convert(Image.FORMAT_RGBA8)   # indices: MUST stay unfiltered/no mips
+				w_img.convert(Image.FORMAT_RGBA8)
+				var ta := Texture2DArray.new(); ta.create_from_images(albs)
+				var tn := Texture2DArray.new(); tn.create_from_images(nrms)
+				out = {
+					"idx": ImageTexture.create_from_image(idx_img),
+					"w": ImageTexture.create_from_image(w_img),
+					"alb": ta, "nrm": tn, "slices": slices,
+					"bounds": Vector4(float(wj.get("x0", 0.0)), float(wj.get("z0", 0.0)),
+						float(wj.get("size", 1.0)), float(wj.get("size", 1.0))),
+				}
+	_splat_cache[map] = out
+	return out
 
 # Detail-layer texture for a map: prefer the PER-MAP layer shipped in the map
 # package (user://mapcontext/<map>/terrain_layers/<name>.png — the real ground/
@@ -503,6 +599,20 @@ func _terrain_shader_mat(map: String) -> ShaderMaterial:
 	m.set_shader_parameter("map_bounds", Vector4(pos.x - sz.x * 0.5, pos.z - sz.z * 0.5, sz.x, sz.z))
 	m.set_shader_parameter("ground_alb", ga); m.set_shader_parameter("ground_nrm", gn)
 	m.set_shader_parameter("cliff_alb", ca); m.set_shader_parameter("cliff_nrm", cn)
+	# exact splat blend where the map package ships baked splat data; without it
+	# splat_slices stays 0 and the shader keeps the legacy slope heuristic
+	_splat_active = false
+	_splat_n = 0
+	var sp := _splat_set(map)
+	if not sp.is_empty():
+		m.set_shader_parameter("splat_idx", sp["idx"])
+		m.set_shader_parameter("splat_w", sp["w"])
+		m.set_shader_parameter("layer_alb", sp["alb"])
+		m.set_shader_parameter("layer_nrm", sp["nrm"])
+		m.set_shader_parameter("splat_bounds", sp["bounds"])
+		m.set_shader_parameter("splat_slices", int(sp["slices"]))
+		_splat_active = true
+		_splat_n = int(sp["slices"])
 	return m
 
 func _load_data(map: String) -> bool:
@@ -934,8 +1044,17 @@ func apply(root: Node, enabled: bool, show_objects: bool, textured: bool) -> Str
 	var tmat: ShaderMaterial = null
 	var sdk_overlaid := 0
 	if textured:
-		sdk_overlaid = _apply_maptile(root, map)      # decal on SDK terrain + assets
 		tmat = _terrain_shader_mat(map)               # detail material for our extended terrain
+		# With REAL splat data the extended terrain (which underlies the whole
+		# footprint, SDK bowl included) carries the exact ground look and the
+		# maptile lives INSIDE its shader as the large-scale colour term — so the
+		# old maptile decal is skipped entirely: it used to tint props/buildings
+		# and re-flatten the ground. Maps/packages without splat data keep the
+		# decal exactly as before.
+		var splat_covers: bool = _splat_active and tmat != null and enabled \
+			and have_data and (_data.get("heightmap", {}) as Dictionary).has("file")
+		if not splat_covers:
+			sdk_overlaid = _apply_maptile(root, map)  # decal on SDK terrain + assets
 
 	if not enabled and not show_objects:
 		if not textured: return "Map Context off"
@@ -964,12 +1083,19 @@ func apply(root: Node, enabled: bool, show_objects: bool, textured: bool) -> Str
 			gt.cull_mode = BaseMaterial3D.CULL_DISABLED
 			gt.uv1_scale = Vector3(span / SDK_GRID_M, span / SDK_GRID_M, 1.0)
 			green_tiled = gt
+		var terrain_lift := 0.0
 		if hm.has("file"):
 			var tmi := _build_terrain_from_heightmap(dir, hm)   # full-accuracy mesh from raw 16-bit heights
 			if tmi:
-				tmi.position.y = 0.0                             # exact data height, no sink
-				# (was -0.5 to dodge z-fighting under the SDK bowl: read as
-				# "terrain a meter low" — the heightmap itself is exact ±5 mm)
+				# exact data height, no sink (was -0.5 to dodge z-fighting under
+				# the SDK bowl: read as "terrain a meter low" — the heightmap is
+				# exact ±5 mm). In SPLAT mode the maptile decal that visually
+				# masked the coincident SDK bowl is gone, so lift our terrain a
+				# hair instead: it wins the depth test and the splat ground shows
+				# over the whole footprint (bowl included).
+				if textured and tmat != null and _splat_active:
+					terrain_lift = SPLAT_LIFT
+				tmi.position.y = terrain_lift
 				tmi.material_override = tmat if (textured and tmat != null) else green_tiled
 				tmi.layers = EXT_TERRAIN_LAYER                   # keep the SDK maptile decal off it
 				ctx.add_child(tmi); tmi.owner = null
@@ -978,6 +1104,7 @@ func apply(root: Node, enabled: bool, show_objects: bool, textured: bool) -> Str
 			# editor camera (highpoly_scatter.gd). Any detail mode — grass reads
 			# fine over the flat green too; no scatter.json → strict no-op.
 			if hm.has("file"):
+				_scatter.y_lift = terrain_lift    # grass sits ON the (possibly lifted) ground
 				_scatter_n = _scatter.setup(self, ctx, map, dir, hm, _scatter_tile(map))
 				if _scatter_n > 0:
 					var scam := _editor_cam()
@@ -1025,7 +1152,12 @@ func apply(root: Node, enabled: bool, show_objects: bool, textured: bool) -> Str
 
 	var mt := ""
 	if textured:
-		mt = ", decal + detail terrain" if tmat != null else ", maptile decal (no layer set)"
+		if tmat != null and _splat_active:
+			mt = ", SPLAT terrain (%d layer slices, no decal)" % _splat_n
+		elif tmat != null:
+			mt = ", decal + detail terrain"
+		else:
+			mt = ", maptile decal (no layer set)"
 	var tex := "textured" if textured else "flat colour"
 	var surr := ", surroundings %d/%d" % [bd_ok, bd_total]
 	var objs := ", %d object meshes" % n_props if show_objects else ""

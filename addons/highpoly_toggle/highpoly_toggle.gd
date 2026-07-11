@@ -20,6 +20,7 @@ const SyncScript = preload("highpoly_sync.gd")
 const HighpolyCollision = preload("highpoly_collision.gd")
 const HighpolyDoors = preload("highpoly_doors.gd")
 const HighpolyVariants = preload("highpoly_variants.gd")
+const LightingScript = preload("highpoly_lighting.gd")
 var previews: Node
 var turbo: Node
 var mapctx: Node
@@ -31,6 +32,7 @@ var col_alpha: HSlider
 var mapctx_on: CheckBox        # Map Context enabled
 var mapctx_objects: CheckBox   # show original map objects
 var mapctx_tex: CheckBox       # show textures (else flat SDK green/orange)
+var mapctx_light: CheckBox     # game lighting (sun/sky/fog from the real map VE)
 var mapctx_timer: Timer
 # generation counter for Map Context toggles: every click supersedes the
 # in-flight handler (which may be awaiting a long download). A superseded
@@ -189,6 +191,12 @@ func _enter_tree() -> void:
 	mapctx_tex.toggled.connect(func(_v): _mapctx_changed())
 	dock.add_child(mapctx_tex)
 
+	mapctx_light = CheckBox.new()
+	mapctx_light.text = "Game lighting"
+	mapctx_light.tooltip_text = "Editor-only (never saved). Light the scene like the real map: the game's actual sun direction/colour, sky gradient, ambient and haze — extracted from this map's VisualEnvironment data (e.g. Badlands' low golden sun). Replaces the editor's neutral preview sun/sky while on."
+	mapctx_light.toggled.connect(func(_v): _lighting_changed())
+	dock.add_child(mapctx_light)
+
 	var mcr_row := HBoxContainer.new(); dock.add_child(mcr_row)
 	var mcr_lbl := Label.new(); mcr_lbl.text = "Range"
 	mcr_row.add_child(mcr_lbl)
@@ -296,6 +304,7 @@ func _enter_tree() -> void:
 	mapctx_timer = Timer.new(); mapctx_timer.wait_time = 0.5
 	mapctx_timer.timeout.connect(func():
 		_check_scene_change()
+		_lighting_guard()
 		if mapctx: mapctx.tick()
 		# collision overlays follow objects the user moves/rescales
 		if col_chk.button_pressed or HighpolyCollision.has_isolation():
@@ -330,6 +339,7 @@ func _exit_tree() -> void:
 		HighpolyCollision.release_isolation(HighpolyLib.Tier.LOW, true, false)
 		HighpolyCollision.apply(r, false)                  # frees collision overlays
 		if mapctx: mapctx.apply(r, false, false, false)    # frees _MAP_CONTEXT + maptile
+		LightingScript.clear(r)                          # frees _GAME_LIGHTING
 		HighpolyLib.apply(r, HighpolyLib.Tier.LOW, true)   # hide hi-poly overlays, show proxies
 	if turbo:
 		turbo.cull_distance = 0.0
@@ -513,6 +523,7 @@ func _check_scene_change() -> void:
 	_edited_root = r
 	if old != null and is_instance_valid(old):
 		if mapctx: mapctx.apply(old, false, false, false)     # frees _MAP_CONTEXT + maptile decal
+		LightingScript.clear(old)                           # frees _GAME_LIGHTING (restores editor sun/env)
 		HighpolyCollision.release_isolation(HighpolyLib.Tier.LOW, true, false)
 		HighpolyCollision.apply(old, false)                   # frees collision overlays
 		HighpolyLib.apply(old, HighpolyLib.Tier.LOW, true)    # hide high-poly overlays, show proxies
@@ -525,6 +536,7 @@ func _check_scene_change() -> void:
 		ovr_chk.text = _override_label()
 	if mapctx_on: mapctx_on.set_pressed_no_signal(false)
 	if mapctx_objects: mapctx_objects.set_pressed_no_signal(false)
+	if mapctx_light: mapctx_light.set_pressed_no_signal(false)
 	if col_chk: col_chk.set_pressed_no_signal(false)
 	if iso_chk:
 		iso_chk.set_pressed_no_signal(false)
@@ -549,6 +561,32 @@ func _mapctx_rebuild() -> void:
 	var r := EditorInterface.get_edited_scene_root()
 	if mapctx.map_of(r) == "": return
 	lbl.text = mapctx.apply(r, true, mapctx_objects.button_pressed, mapctx_tex.button_pressed)
+
+# "Game lighting": inject/remove the real map sun+sky+fog (highpoly_lighting.gd).
+# Independent of the Map Context download (no map data needed — compiled-in table).
+func _lighting_changed() -> void:
+	var r := EditorInterface.get_edited_scene_root()
+	var map: String = mapctx.map_of(r)
+	if not mapctx_light.button_pressed:
+		LightingScript.clear(r)
+		lbl.text = "Game lighting off"
+		return
+	if map == "" or not LightingScript.has_data(map):
+		mapctx_light.set_pressed_no_signal(false)
+		lbl.text = "No lighting data for this scene" if map != "" else "Open an MP_… level scene first"
+		return
+	lbl.text = LightingScript.apply(r, map)
+
+# grey the checkbox out when the open scene has no lighting data (called from
+# the dock's 0.5 s timer — cheap: one dictionary lookup)
+func _lighting_guard() -> void:
+	if mapctx_light == null: return
+	var map: String = mapctx.map_of(EditorInterface.get_edited_scene_root())
+	var ok := map != "" and LightingScript.has_data(map)
+	if mapctx_light.disabled == (not ok): return
+	mapctx_light.disabled = not ok
+	if not ok and mapctx_light.button_pressed:
+		mapctx_light.set_pressed_no_signal(false)
 
 func _mapctx_changed() -> void:
 	_mapctx_gen += 1

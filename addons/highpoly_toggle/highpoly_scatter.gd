@@ -7,13 +7,15 @@ class_name HighpolyScatter
 # scatter.json in the map package (see pipeline scatter_build.py):
 #   {"budget": N, "entries": [{mesh, kit:[[x,z,w]..], viewDistance, param,
 #                              budgetShare, spacing}, ...]}
-# The game places these at runtime from terrain-layer splat masks that are not
-# shipped/decoded, so anchors are generated PROCEDURALLY here: a deterministic
-# jittered grid in a ring around the editor camera (position-seeded hash — the
-# same spot always grows the same grass), snapped to the map heightfield and
-# filtered by the terrain detail shader's ground criteria (low slope; maptile
-# greenness where a satellite tile exists). Each accepted anchor stamps the
-# entry's kit point pattern (random yaw, 0.8-1.2 scale jitter).
+# The game places these at runtime from its terrain-layer splat masks. Those
+# masks are now DECODED: maps whose package ships splat/grass_mask.png (the
+# baked combined coverage of the map's grass layers) accept anchors by the REAL
+# coverage weight, with slope kept only as a cliff sanity clamp. Anchors are
+# still generated as a deterministic jittered grid in a ring around the editor
+# camera (position-seeded hash — the same spot always grows the same grass),
+# snapped to the map heightfield. Maps without the mask keep the old heuristic
+# (low slope; maptile greenness where a satellite tile exists). Each accepted
+# anchor stamps the entry's kit point pattern (random yaw, 0.8-1.2 scale jitter).
 #
 # Rendering: ONE MultiMeshInstance3D per scatter mesh; regenerated only when
 # the camera crosses a 32 m cell. DB distance model: full kit to 65 m, every
@@ -51,6 +53,16 @@ var _hm_scale := 0.0
 # optional maptile greenness (satellite jpg + world bounds)
 var _tile: Image = null
 var _tile_b := Vector4()      # xmin, zmin, sizeX, sizeZ
+# REAL grass coverage (splat/grass_mask.png, baked from the game's own terrain
+# layer masks by the pipeline's splat_build.py). When present it REPLACES the
+# slope-band + maptile-greenness heuristic as the anchor accept weight; slope
+# stays only as a cliff sanity clamp. Maps without the file keep the heuristic.
+var _mask: Image = null
+var _mask_b := Vector4()      # xmin, zmin, sizeX, sizeZ (splat bake box)
+# ground lift applied by the map context when the splat terrain is active (the
+# extended terrain is raised slightly to win the SDK-bowl depth fight; grass
+# must sit on the lifted surface, not inside it)
+var y_lift := 0.0
 var _last_cell := Vector2i(2147483647, 2147483647)
 
 func clear() -> void:
@@ -63,6 +75,9 @@ func clear() -> void:
 	_mesh_cache.clear()
 	_hm_raw = PackedByteArray()
 	_tile = null
+	_mask = null
+	# (y_lift is NOT reset here: the map context owns it and assigns it around
+	# setup(); clear() runs at the start of setup and must not wipe it)
 	_last_cell = Vector2i(2147483647, 2147483647)
 	active = false
 	last_instances = 0
@@ -96,6 +111,21 @@ func setup(mc: Object, ctx: Node3D, map: String, dir: String, hm: Dictionary, ti
 		if img.load(gp) == OK:
 			_tile = img
 			_tile_b = tile.get("bounds", Vector4())
+	# REAL grass coverage from the map package's splat bake (preferred over the
+	# heuristic): grass_mask.png = combined coverage of the map's grass layers,
+	# world box from splat/layers.json
+	var mp := "%s/splat/grass_mask.png" % dir
+	var lj := "%s/splat/layers.json" % dir
+	if FileAccess.file_exists(mp) and FileAccess.file_exists(lj):
+		var meta: Variant = JSON.parse_string(FileAccess.get_file_as_string(lj))
+		if meta is Dictionary and (meta as Dictionary).get("world", {}) is Dictionary:
+			var wj: Dictionary = (meta as Dictionary)["world"]
+			var mimg := Image.load_from_file(ProjectSettings.globalize_path(mp))
+			if mimg != null:
+				_mask = mimg
+				_mask_b = Vector4(float(wj.get("x0", 0.0)), float(wj.get("z0", 0.0)),
+					float(wj.get("size", 1.0)), float(wj.get("size", 1.0)))
+				print("MapContext[%s]: scatter uses the real grass-layer mask" % map)
 	_root = Node3D.new()
 	_root.name = NODE
 	ctx.add_child(_root)
@@ -198,11 +228,18 @@ func _gen_entry(e: Dictionary, cam: Vector3) -> PackedFloat32Array:
 			var dz := az - cam.z
 			var d2 := dx * dx + dz * dz
 			if d2 > r2: continue
-			# terrain shader ground criteria: low slope, fading out over the band
+			# slope: with the real grass mask it is only a cliff SANITY clamp;
+			# without it, it keeps its old fade-band role in the heuristic
 			var sl := _slope(ax, az)
 			if sl >= SLOPE_NONE: continue
-			var wgt := clampf((SLOPE_NONE - sl) / (SLOPE_NONE - SLOPE_FULL), 0.0, 1.0)
-			wgt *= _green_weight(ax, az)
+			var wgt: float
+			if _mask != null:
+				# EXACT accept weight: the game's own grass-layer coverage here
+				wgt = _mask_weight(ax, az)
+			else:
+				wgt = clampf((SLOPE_NONE - sl) / (SLOPE_NONE - SLOPE_FULL), 0.0, 1.0)
+				wgt *= _green_weight(ax, az)
+			if wgt <= 0.0: continue
 			if _hash01(seed_i, cx, cz, 2) > wgt: continue
 			var yaw := _hash01(seed_i, cx, cz, 3) * TAU
 			var ca := cos(yaw)
@@ -218,6 +255,7 @@ func _gen_entry(e: Dictionary, cam: Vector3) -> PackedFloat32Array:
 				var wy := _height(wx, wz)
 				pi += thin
 				if wy < -1.0e8: continue
+				wy += y_lift            # sit on the (possibly lifted) splat terrain
 				# w (k.z) is the DB per-point seed but ships as 0 — hash instead
 				var sc: float = 0.8 + 0.4 * _hash01(seed_i, cx * 131 + pi, cz, 4) if k.z == 0.0 \
 					else 0.8 + 0.4 * (k.z - floorf(k.z))
@@ -264,6 +302,27 @@ func _slope(x: float, z: float) -> float:
 	var gx := hxp - hxm
 	var gz := hzp - hzm
 	return 1.0 - (2.0 * s) / sqrt(gx * gx + gz * gz + 4.0 * s * s)
+
+# real grass-layer coverage (bilinear); 0 outside the splat box — the box is
+# the whole playable maptile area, so no more heuristic desert scatter beyond it
+func _mask_weight(x: float, z: float) -> float:
+	var u := (x - _mask_b.x) / _mask_b.z
+	var v := (z - _mask_b.y) / _mask_b.w
+	if u < 0.0 or u > 1.0 or v < 0.0 or v > 1.0:
+		return 0.0
+	var fx := u * float(_mask.get_width() - 1)
+	var fz := v * float(_mask.get_height() - 1)
+	var x0 := int(fx)
+	var z0 := int(fz)
+	var x1 := mini(x0 + 1, _mask.get_width() - 1)
+	var z1 := mini(z0 + 1, _mask.get_height() - 1)
+	var tx := fx - float(x0)
+	var tz := fz - float(z0)
+	var m00 := _mask.get_pixel(x0, z0).r
+	var m10 := _mask.get_pixel(x1, z0).r
+	var m01 := _mask.get_pixel(x0, z1).r
+	var m11 := _mask.get_pixel(x1, z1).r
+	return lerpf(lerpf(m00, m10, tx), lerpf(m01, m11, tx), tz)
 
 # maptile greenness: density weight 0.15..1 inside the satellite footprint,
 # 1 outside it (or when the map has no tile). Grey/asphalt reads low, green
