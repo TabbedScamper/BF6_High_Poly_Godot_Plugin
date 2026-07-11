@@ -19,6 +19,7 @@ const MapContextScript = preload("highpoly_mapcontext.gd")
 const SyncScript = preload("highpoly_sync.gd")
 const HighpolyCollision = preload("highpoly_collision.gd")
 const HighpolyDoors = preload("highpoly_doors.gd")
+const HighpolyVariants = preload("highpoly_variants.gd")
 var previews: Node
 var turbo: Node
 var mapctx: Node
@@ -202,6 +203,20 @@ func _enter_tree() -> void:
 		mcr_val.text = "%dm" % int(v)
 		mapctx.set_radius(v))
 
+	var gd_row := HBoxContainer.new(); dock.add_child(gd_row)
+	var gd_lbl := Label.new(); gd_lbl.text = "Grass"
+	gd_row.add_child(gd_lbl)
+	var gd := HSlider.new()
+	gd.min_value = 0.1; gd.max_value = 8.0; gd.step = 0.1; gd.value = 3.0
+	gd.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	gd.tooltip_text = "Vegetation scatter density. 1.0 = the database budget read conservatively; the game's true density is unknown until terrain splat masks are decoded — tune to taste/GPU."
+	gd_row.add_child(gd)
+	var gd_val := Label.new(); gd_val.text = "3.0x"
+	gd_row.add_child(gd_val)
+	gd.value_changed.connect(func(v: float):
+		gd_val.text = "%.1fx" % v
+		mapctx.set_scatter_density(v))
+
 	var td_row := HBoxContainer.new(); dock.add_child(td_row)
 	var td_lbl := Label.new(); td_lbl.text = "Terrain"
 	td_row.add_child(td_lbl)
@@ -296,7 +311,8 @@ func _enter_tree() -> void:
 	get_tree().node_added.connect(_on_node_added)
 	# live isolation follows the editor selection
 	EditorInterface.get_selection().selection_changed.connect(_on_selection_changed)
-	# door toggling needs viewport clicks even with nothing edited/selected
+	# door toggling + variant cycling need viewport clicks even with nothing
+	# edited/selected
 	set_input_event_forwarding_always_enabled()
 
 	_startup.call_deferred()
@@ -658,16 +674,20 @@ func _reoverride_selection() -> void:
 		if not missing.is_empty():
 			sync.prioritize_scene(missing)
 
-# ---------- interactable doors (left double-click swing) ----------
-# Double-clicking a door proxy in the viewport swings it open/closed like in
-# game. Only consumed when a door was actually hit, so normal click/drag
-# selection and camera behavior stay untouched.
+# ---------- viewport double-click: doors, then variant cycling ----------
+# Double-clicking a door proxy swings it open/closed like in game. If no door
+# was hit, a prop that ships variant models (police liveries, barn colours,
+# destroyed shells, …) cycles base -> variants -> base instead — doors always
+# win when a prop is both. Only consumed when something was actually hit, so
+# normal click/drag selection and camera behavior stay untouched.
 func _forward_3d_gui_input(camera: Camera3D, event: InputEvent) -> int:
 	if event is InputEventMouseButton:
 		var mb := event as InputEventMouseButton
 		if mb.button_index == MOUSE_BUTTON_LEFT and mb.pressed and mb.double_click:
 			var r := EditorInterface.get_edited_scene_root()
 			var hit: Dictionary = HighpolyDoors.click(camera, mb.position, r)
+			if hit.is_empty():
+				hit = HighpolyVariants.click(camera, mb.position, r)
 			if not hit.is_empty():
 				lbl.text = str(hit.get("msg", ""))
 				return EditorPlugin.AFTER_GUI_INPUT_STOP

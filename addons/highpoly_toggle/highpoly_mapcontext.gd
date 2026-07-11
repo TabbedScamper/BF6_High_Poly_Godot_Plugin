@@ -27,6 +27,11 @@ var _cell_size := 64.0
 var _world_min := -2048.0
 var _mesh_cache: Dictionary = {}   # model path -> Mesh
 var terrain_step: int = 2          # metres per terrain vertex (1=full, 2=high, 4=medium)
+# vegetation scatter (grass/shrub kits from the game's MeshScatteringDatabase);
+# a strict no-op for maps whose package carries no scatter.json
+const ScatterScript = preload("highpoly_scatter.gd")
+var _scatter = ScatterScript.new()
+var _scatter_n := 0
 # self-healing (v1.5): once per session per map, HEAD the map's packages and
 # compare ETags against the ones recorded at last download. A republished
 # package (game patch, fixed placements, corrected prop meshes) re-downloads
@@ -354,6 +359,8 @@ func _clear(root: Node) -> void:
 	var old := root.get_node_or_null(NODE)
 	if old: root.remove_child(old); old.queue_free()
 	_cells.clear()
+	_scatter.clear()      # scatter lives under _MAP_CONTEXT; drop its caches too
+	_scatter_n = 0
 	# drop the in-RAM caches so a re-apply re-reads the on-disk files (picks up
 	# prop textures / terrain layers updated since the last apply)
 	_mesh_cache.clear()
@@ -545,7 +552,24 @@ func _props_missing() -> Array:
 			seen[nm] = true
 			if not FileAccess.file_exists("%s/%s.glb" % [PROPS_CACHE, nm]):
 				miss.append(nm)
+	# vegetation scatter kit meshes (scatter.json) live in the same shared cache
+	for nm in _scatter_mesh_names():
+		if seen.has(nm): continue
+		seen[nm] = true
+		if not FileAccess.file_exists("%s/%s.glb" % [PROPS_CACHE, nm]):
+			miss.append(nm)
 	return miss
+
+# mesh names the map's scatter table needs ([] when the map has no scatter data)
+func _scatter_mesh_names() -> Array:
+	var p := "%s/%s/scatter.json" % [CACHE, _map]
+	if not FileAccess.file_exists(p): return []
+	var d: Variant = JSON.parse_string(FileAccess.get_file_as_string(p))
+	if not (d is Dictionary): return []
+	var out: Array = []
+	for e in (d as Dictionary).get("entries", []):
+		if e is Dictionary and e.has("mesh"): out.append(str(e["mesh"]))
+	return out
 
 # download the map's prop meshes into the SHARED cache. Normally extracts only
 # meshes not already present (a rock shared with a previously-loaded map isn't
@@ -665,19 +689,100 @@ func _mesh_for(model_path: String) -> Mesh:
 		var res = load(model_path)
 		if res is PackedScene:
 			var inst = (res as PackedScene).instantiate()
-			# The mesh often sits under a node carrying the glTF import transform
-			# (e.g. 0.01 scale + Z-up→Y-up swap, with the raw verts in cm). Grabbing
-			# just the Mesh drops that → giant, mis-oriented props (the 700 m
-			# helicopter). Bake the mesh-node's transform into the mesh so the
-			# placement transforms land it correctly. Identity nodes are a no-op.
-			var pair := _first_mesh_and_xf(inst, Transform3D())
-			if not pair.is_empty():
-				m = _bake_mesh(pair[0], pair[1])
+			# Library GLBs are MANY mesh nodes now (per-material sub-parts, swatch
+			# splits) — taking only the first node rendered props as lone
+			# fragments. Merge EVERY mesh node (its glTF import transform baked:
+			# 0.01 scale / axis swap / cm verts — the 700 m helicopter class),
+			# grouping surfaces by material to stay under MAX_MESH_SURFACES.
+			var pairs: Array = []
+			_all_meshes_and_xf(inst, Transform3D(), pairs)
+			if pairs.size() == 1:
+				m = _bake_mesh(pairs[0][0], pairs[0][1])
+			elif pairs.size() > 1:
+				m = _merge_meshes(pairs)
 			inst.queue_free()
 		elif res is Mesh:
 			m = res
 	_mesh_cache[model_path] = m
 	return m
+
+# every mesh node in the scene with its accumulated transform
+func _all_meshes_and_xf(n: Node, pxf: Transform3D, out: Array) -> void:
+	var xf := pxf * ((n as Node3D).transform if n is Node3D else Transform3D())
+	var mesh: Mesh = null
+	if n is MeshInstance3D and (n as MeshInstance3D).mesh != null:
+		mesh = (n as MeshInstance3D).mesh
+	elif n is ImporterMeshInstance3D and (n as ImporterMeshInstance3D).mesh != null:
+		mesh = (n as ImporterMeshInstance3D).mesh.get_mesh()
+	if mesh != null:
+		out.append([mesh, xf])
+	for c in n.get_children():
+		_all_meshes_and_xf(c, xf, out)
+
+# merge many (mesh, xf) into one ArrayMesh: bake transforms, concatenate
+# surfaces PER MATERIAL (one output surface per unique material) so hundreds
+# of sub-part nodes never exceed RenderingServer::MAX_MESH_SURFACES (256)
+func _merge_meshes(pairs: Array) -> ArrayMesh:
+	# NOTE: plain Arrays (reference type) as accumulators — packed arrays kept
+	# inside a Dictionary are copy-on-write and `g["v"].append(...)` mutates a
+	# discarded copy (classic GDScript pitfall). Packed at surface build below.
+	var groups: Dictionary = {}   # material RID key -> {mat, v, n, uv, i, has_uv}
+	for pair in pairs:
+		var mesh: Mesh = pair[0]
+		var xf: Transform3D = pair[1]
+		var nb := xf.basis.inverse().transposed()
+		var flip := xf.basis.determinant() < 0.0
+		for s in range(mesh.get_surface_count()):
+			var arr: Array = mesh.surface_get_arrays(s)
+			var V = arr[Mesh.ARRAY_VERTEX]
+			if V == null or V.size() == 0: continue
+			var mat := mesh.surface_get_material(s)
+			var key := mat.get_rid() if mat != null else RID()
+			if not groups.has(key):
+				groups[key] = {"mat": mat, "v": [], "n": [], "uv": [], "i": [],
+					"has_uv": false}
+			var g: Dictionary = groups[key]
+			var gv: Array = g["v"]
+			var gn: Array = g["n"]
+			var guv: Array = g["uv"]
+			var gi: Array = g["i"]
+			var base := gv.size()
+			for i in range(V.size()): gv.append(xf * V[i])
+			var N = arr[Mesh.ARRAY_NORMAL]
+			if N != null and N.size() == V.size():
+				for i in range(N.size()): gn.append((nb * N[i]).normalized())
+			else:
+				for i in range(V.size()): gn.append(Vector3.UP)
+			var UV = arr[Mesh.ARRAY_TEX_UV]
+			if UV != null and UV.size() == V.size():
+				g["has_uv"] = true
+				for i in range(UV.size()): guv.append(UV[i])
+			else:
+				for i in range(V.size()): guv.append(Vector2.ZERO)
+			var idx = arr[Mesh.ARRAY_INDEX]
+			if idx != null and idx.size() >= 3:
+				if flip:
+					for t in range(0, idx.size() - 2, 3):
+						gi.append(base + idx[t]); gi.append(base + idx[t + 2]); gi.append(base + idx[t + 1])
+				else:
+					for t in range(idx.size()): gi.append(base + idx[t])
+			else:
+				for t in range(V.size()): gi.append(base + t)
+	var out := ArrayMesh.new()
+	for key in groups:
+		if out.get_surface_count() >= 255:
+			push_warning("map-context merge: >255 unique materials, dropping remainder")
+			break
+		var g: Dictionary = groups[key]
+		var arr := []; arr.resize(Mesh.ARRAY_MAX)
+		arr[Mesh.ARRAY_VERTEX] = PackedVector3Array(g["v"])
+		arr[Mesh.ARRAY_NORMAL] = PackedVector3Array(g["n"])
+		if g["has_uv"]: arr[Mesh.ARRAY_TEX_UV] = PackedVector2Array(g["uv"])
+		arr[Mesh.ARRAY_INDEX] = PackedInt32Array(g["i"])
+		out.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr)
+		if g["mat"] != null:
+			out.surface_set_material(out.get_surface_count() - 1, g["mat"])
+	return out
 
 # first mesh + its transform relative to the scene root (accumulated)
 func _first_mesh_and_xf(n: Node, pxf: Transform3D) -> Array:
@@ -862,11 +967,21 @@ func apply(root: Node, enabled: bool, show_objects: bool, textured: bool) -> Str
 		if hm.has("file"):
 			var tmi := _build_terrain_from_heightmap(dir, hm)   # full-accuracy mesh from raw 16-bit heights
 			if tmi:
-				tmi.position.y = -0.5                            # sit just under the SDK bowl in the overlap
+				tmi.position.y = 0.0                             # exact data height, no sink
+				# (was -0.5 to dodge z-fighting under the SDK bowl: read as
+				# "terrain a meter low" — the heightmap itself is exact ±5 mm)
 				tmi.material_override = tmat if (textured and tmat != null) else green_tiled
 				tmi.layers = EXT_TERRAIN_LAYER                   # keep the SDK maptile decal off it
 				ctx.add_child(tmi); tmi.owner = null
 			_add_water_plane(ctx)
+			# vegetation scatter: grass/shrub kits placed procedurally around the
+			# editor camera (highpoly_scatter.gd). Any detail mode — grass reads
+			# fine over the flat green too; no scatter.json → strict no-op.
+			if hm.has("file"):
+				_scatter_n = _scatter.setup(self, ctx, map, dir, hm, _scatter_tile(map))
+				if _scatter_n > 0:
+					var scam := _editor_cam()
+					if scam: _scatter.tick(scam.global_transform.origin)
 		var bd_root := Node3D.new(); bd_root.name = "Backdrop"
 		ctx.add_child(bd_root); bd_root.owner = null
 		for e in _data.get("backdrop", []):
@@ -914,13 +1029,16 @@ func apply(root: Node, enabled: bool, show_objects: bool, textured: bool) -> Str
 	var tex := "textured" if textured else "flat colour"
 	var surr := ", surroundings %d/%d" % [bd_ok, bd_total]
 	var objs := ", %d object meshes" % n_props if show_objects else ""
-	return "%s: terrain %s%s%s%s" % [map, tex, surr, objs, mt]
+	var sct := ", %d scatter types" % _scatter_n if _scatter_n > 0 else ""
+	return "%s: terrain %s%s%s%s%s" % [map, tex, surr, objs, sct, mt]
 
-# Water: exact flat plane(s) from the extracted WaterEntityData in
-# placements.json. "water" is either one {height, center, size} dict (a single
-# sea-level surface) or a LIST of them (separate lakes/pools at different
-# elevations, e.g. Golmud's 18 mountain lakes). Terrain above a plane occludes
-# it, so each only shows where the ground dips below its own waterline.
+# Water: exact flat plane(s) from the extracted WaterEntityData / placed water
+# quads in placements.json. "water" is either one {height, center, size} dict (a
+# single sea-level surface) or a LIST of them (separate lakes/rivers/pools at
+# different elevations, e.g. Golmud's mountain lakes). Optional per-plane keys:
+# "kind" (ocean/river/lake/pool shading preset), "yaw" (rotated quads, radians),
+# "color" ([r,g,b] tint override) — see HighpolyWater. Terrain above a plane
+# occludes it, so each only shows where the ground dips below its own waterline.
 # Maps without a water body carry no "water" key and get no planes.
 func _add_water_plane(ctx: Node3D) -> void:
 	var wdata: Variant = _data.get("water", null)
@@ -929,12 +1047,6 @@ func _add_water_plane(ctx: Node3D) -> void:
 		planes = [wdata]
 	elif wdata is Array:
 		planes = wdata
-	var wmat := StandardMaterial3D.new()
-	wmat.albedo_color = WATER_COLOR
-	wmat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	wmat.metallic = 0.3
-	wmat.roughness = 0.1
-	wmat.cull_mode = BaseMaterial3D.CULL_DISABLED
 	for wcfg in planes:
 		if not (wcfg is Dictionary) or not wcfg.has("height"): continue
 		var wc: Array = wcfg.get("center", [0.0, 0.0])
@@ -944,8 +1056,20 @@ func _add_water_plane(ctx: Node3D) -> void:
 		var pm := PlaneMesh.new()
 		pm.size = Vector2(float(wsz[0]), float(wsz[1]))
 		wp.mesh = pm
+		# BF6-style animated water (depth-tinted transparency + fresnel + ripples,
+		# see water.gdshader); flat translucent colour if the shader file is missing
+		var wmat: Material = HighpolyWater.material(wcfg)
+		if wmat == null:
+			var fb := StandardMaterial3D.new()
+			fb.albedo_color = WATER_COLOR
+			fb.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+			fb.metallic = 0.3
+			fb.roughness = 0.1
+			fb.cull_mode = BaseMaterial3D.CULL_DISABLED
+			wmat = fb
 		wp.material_override = wmat
 		wp.position = Vector3(float(wc[0]), float(wcfg["height"]), float(wc[1]))
+		wp.rotation.y = float(wcfg.get("yaw", 0.0))   # rotated river/lake quads keep their bearing
 		wp.layers = EXT_TERRAIN_LAYER    # keep the SDK maptile decal off the water
 		ctx.add_child(wp); wp.owner = null
 
@@ -1095,7 +1219,26 @@ func _editor_cam() -> Camera3D:
 	var vp := EditorInterface.get_editor_viewport_3d(0)
 	return vp.get_camera_3d() if vp else null
 
+# maptile jpg + world bounds for the scatter greenness filter (same source the
+# detail-terrain shader uses); {} when the map has no tile — scatter still works
+func _scatter_tile(map: String) -> Dictionary:
+	if not MAPTILE_DECALS.has(map): return {}
+	var img := "res://raw/maptiles/%s.jpg" % MAPTILE_DECALS[map].get("tile", map)
+	if not ResourceLoader.exists(img): return {}
+	var d: Dictionary = MAPTILE_DECALS[map]
+	var pos: Vector3 = d["pos"]; var sz: Vector3 = d["size"]
+	return {"img": img, "bounds": Vector4(pos.x - sz.x * 0.5, pos.z - sz.z * 0.5, sz.x, sz.z)}
+
+func set_scatter_density(v: float) -> void:
+	if _scatter == null: return
+	var cam := _editor_cam()
+	_scatter.set_density(v, cam.global_transform.origin if cam else Vector3.ZERO)
+
 func tick() -> void:
 	# called by the dock timer while objects are shown (streamed by distance)
 	if _active and _show_objects:
 		_apply_radius()
+	# vegetation scatter follows the camera (regenerates on 32 m cell crossings)
+	if _scatter != null and _scatter.active:
+		var cam := _editor_cam()
+		if cam: _scatter.tick(cam.global_transform.origin)
