@@ -215,15 +215,15 @@ func _enter_tree() -> void:
 	var gd_lbl := Label.new(); gd_lbl.text = "Grass"
 	gd_row.add_child(gd_lbl)
 	var gd := HSlider.new()
-	gd.min_value = 0.1; gd.max_value = 8.0; gd.step = 0.1; gd.value = 3.0
+	gd.min_value = 0.0; gd.max_value = 300.0; gd.step = 10.0; gd.value = 120.0
 	gd.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	gd.tooltip_text = "Vegetation scatter density. 1.0 = the database budget read conservatively; the game's true density is unknown until terrain splat masks are decoded — tune to taste/GPU."
+	gd.tooltip_text = "How far from the camera vegetation scatter grows (carpet density is fixed to match the game). 0 = grass off. Bigger = prettier vistas, heavier regeneration when flying."
 	gd_row.add_child(gd)
-	var gd_val := Label.new(); gd_val.text = "3.0x"
+	var gd_val := Label.new(); gd_val.text = "120m"
 	gd_row.add_child(gd_val)
 	gd.value_changed.connect(func(v: float):
-		gd_val.text = "%.1fx" % v
-		mapctx.set_scatter_density(v))
+		gd_val.text = "off" if v <= 0.0 else "%dm" % int(v)
+		mapctx.set_scatter_range(v))
 
 	var td_row := HBoxContainer.new(); dock.add_child(td_row)
 	var td_lbl := Label.new(); td_lbl.text = "Terrain"

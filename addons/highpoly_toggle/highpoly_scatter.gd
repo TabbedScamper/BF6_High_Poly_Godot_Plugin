@@ -34,10 +34,15 @@ const Y_EPS := 0.02           # lift above the heightfield to dodge z-fighting
 const OUTSIDE := -1.0e9
 
 var active := false
-var density := 3.0            # dock slider: 1.0 = raw DB-budget reading (sparse);
-                              # true density unknown until splat masks are decoded
+var grass_range := 120.0      # dock slider: how far from the camera grass grows
+                              # (metres; 0 = grass off). Density itself is FIXED
+                              # at carpet spacing derived from each kit's own
+                              # footprint — matching the game's near-continuous
+                              # cover where the mask is full — so range is the
+                              # one perf lever.
 var last_regen_ms := 0        # debug: last regeneration cost
 var last_instances := 0       # debug: instances currently placed
+const HARD_TOTAL := 90000     # absolute instance safety cap across all entries
 
 var _entries: Array = []      # {mesh, kit:PackedVector3Array(x,z,w), spacing, radius, cap, seed, mmi}
 var _budget := 0
@@ -153,11 +158,19 @@ func setup(mc: Object, ctx: Node3D, map: String, dir: String, hm: Dictionary, ti
 		_root.add_child(mmi)
 		mmi.owner = null
 		var share := float(e.get("budgetShare", 1.0 / ents.size()))
+		# CARPET spacing from the kit's own footprint: clumps tile nearly
+		# edge-to-edge where the mask is full (the game's cell budget works
+		# out near-continuous close up — the old DB-ring reading was ~8x too
+		# sparse and read as "scattered blobs" vs the screenshots)
+		var span := 0.0
+		for p in kit:
+			span = maxf(span, maxf(absf(p.x), absf(p.y)))
+		var dense := clampf(span * 2.0 * 0.9, 1.5, 6.0)
 		_entries.append({
 			"kit": kit,
-			"spacing": maxf(1.0, float(e.get("spacing", 16.0))),
+			"spacing": dense,
 			"radius": minf(CULL_R, float(e.get("viewDistance", CULL_R))),
-			"cap": maxi(8, int(ceil(share * _budget * 1.2))),
+			"share": share,
 			"seed": nm.hash(),
 			"mmi": mmi,
 		})
@@ -170,14 +183,15 @@ func setup(mc: Object, ctx: Node3D, map: String, dir: String, hm: Dictionary, ti
 	active = true
 	return _entries.size()
 
-func set_density(v: float, cam_pos: Vector3) -> void:
-	density = clampf(v, 0.1, 8.0)
+func set_range(v: float, cam_pos: Vector3) -> void:
+	grass_range = clampf(v, 0.0, CULL_R)
 	if active:
 		_regenerate(cam_pos)
 
 # regenerate when the camera crosses a REGEN_CELL boundary
 func tick(cam_pos: Vector3) -> void:
 	if not active: return
+	if grass_range <= 0.0: return       # grass off: nothing to follow
 	var cell := Vector2i(int(floor(cam_pos.x / REGEN_CELL)), int(floor(cam_pos.z / REGEN_CELL)))
 	if cell == _last_cell: return
 	_last_cell = cell
@@ -186,6 +200,14 @@ func tick(cam_pos: Vector3) -> void:
 func _regenerate(cam_pos: Vector3) -> void:
 	var t0 := Time.get_ticks_msec()
 	var total := 0
+	if grass_range <= 0.0:
+		# slider at 0 = grass off: empty every MultiMesh
+		for e in _entries:
+			var mm0: MultiMesh = (e["mmi"] as MultiMeshInstance3D).multimesh
+			mm0.instance_count = 0
+		last_instances = 0
+		last_regen_ms = 0
+		return
 	for e in _entries:
 		var buf := _gen_entry(e, cam_pos)
 		var cnt := int(buf.size() / 12)
@@ -203,11 +225,10 @@ func _regenerate(cam_pos: Vector3) -> void:
 func _gen_entry(e: Dictionary, cam: Vector3) -> PackedFloat32Array:
 	var kit: PackedVector3Array = e["kit"]
 	var n := kit.size()
-	# density is a free parameter until the terrain splat masks are decoded —
-	# the DB budget reading is conservative; the dock slider scales it
-	var spacing: float = e["spacing"] / sqrt(maxf(0.05, density))
-	var radius: float = e["radius"]
-	var cap: int = int(e["cap"] * maxf(0.05, density))
+	var spacing: float = e["spacing"]                       # carpet spacing (kit footprint)
+	var radius: float = minf(e["radius"], grass_range)      # dock range slider
+	# per-entry cap: its share of the hard safety total
+	var cap: int = maxi(64, int(float(HARD_TOTAL) * float(e["share"])))
 	var seed_i: int = e["seed"]
 	var buf := PackedFloat32Array()
 	buf.resize(cap * 12)

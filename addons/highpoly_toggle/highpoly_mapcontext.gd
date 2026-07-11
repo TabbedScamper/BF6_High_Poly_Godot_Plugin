@@ -1361,10 +1361,10 @@ func _scatter_tile(map: String) -> Dictionary:
 	var pos: Vector3 = d["pos"]; var sz: Vector3 = d["size"]
 	return {"img": img, "bounds": Vector4(pos.x - sz.x * 0.5, pos.z - sz.z * 0.5, sz.x, sz.z)}
 
-func set_scatter_density(v: float) -> void:
+func set_scatter_range(v: float) -> void:
 	if _scatter == null: return
 	var cam := _editor_cam()
-	_scatter.set_density(v, cam.global_transform.origin if cam else Vector3.ZERO)
+	_scatter.set_range(v, cam.global_transform.origin if cam else Vector3.ZERO)
 
 func tick() -> void:
 	# called by the dock timer while objects are shown (streamed by distance)
