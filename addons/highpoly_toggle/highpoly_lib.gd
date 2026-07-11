@@ -181,6 +181,9 @@ static func _asset_id(key: String) -> String:
 	return ""
 
 static func _instance_for(key: String, id: String) -> Node3D:
+	if id.begins_with("variant://"):
+		var vs := variant_scene(id.trim_prefix("variant://"))
+		return vs.instantiate() as Node3D if vs != null else null
 	if id.begins_with("store://"):
 		var ps := HighpolyStore.load_scene(key)
 		return ps.instantiate() as Node3D if ps != null else null
@@ -213,6 +216,14 @@ static func apply_one(node: Node3D, key: String, tier: Tier, textured: bool) -> 
 	if id == "":
 		wanted[key] = true                    # known to the registry, not local yet
 		return false
+	# per-instance variant selection (double-click cycling, highpoly_variants.gd):
+	# the chosen variant GLB replaces the base model for this node only. A stale
+	# selection whose file is gone falls back to the base silently.
+	var vname := String(node.get_meta(VARIANT_META, ""))
+	if vname != "":
+		var vpath := variant_path(key, vname)
+		if vpath != "":
+			id = "variant://%s" % vpath
 	var hp := node.get_node_or_null(HP_NODE)
 	if hp != null and hp.get_meta("hp_asset", "") != id:
 		node.remove_child(hp); hp.queue_free(); hp = null   # tier/model changed -> rebuild
@@ -226,7 +237,11 @@ static func apply_one(node: Node3D, key: String, tier: Tier, textured: bool) -> 
 			child.rotation_degrees = HP_ROT
 		node.add_child(child)
 		child.owner = null                   # editor-only: not saved, not exported
-		if not _nofit_for(key) and not _fit_scale(node, child):
+		# variants skip the fitter: they are published pre-aligned to the base
+		# model's frame, and destroyed/partial variants LEGITIMATELY disagree
+		# with the proxy AABB (the fitter would wrongly veto them)
+		if not id.begins_with("variant://") \
+				and not _nofit_for(key) and not _fit_scale(node, child):
 			node.remove_child(child); child.queue_free()
 			return false                     # wrong-shaped asset: keep the proxy
 		hp = child
@@ -264,6 +279,71 @@ static func _set_proxy_visible(node: Node3D, vis: bool) -> void:
 			(n as GeometryInstance3D).visible = vis
 		for c in n.get_children():
 			stack.append(c)
+
+# ---------- model variants (per-instance, cycled by highpoly_variants.gd) ----------
+# Variant GLBs are full standalone models published NEXT TO the base model as
+# <Proxy>__<variant>.glb — in the store (user://highpoly/models/) and/or the
+# legacy/staging layout (res://highpoly/<Proxy>/). Discovery is a cheap
+# directory glob cached per proxy; nothing reads variant metadata per node.
+
+const VARIANT_META := "hp_variant"   # proxy-node meta: active variant ("" = base)
+
+static var _store_var_scanned := false
+static var _store_vars: Dictionary = {}   # proxy -> {variant: glb_path}
+static var _var_disc: Dictionary = {}     # proxy -> {variant: glb_path} (merged, cached)
+static var _var_scenes: Dictionary = {}   # glb_path -> PackedScene (null = parse failed)
+
+# the flat store dir can hold thousands of files: scan it ONCE and bucket every
+# "<Proxy>__<variant>.glb" by proxy, instead of re-globbing it per proxy
+static func _scan_store_variants() -> void:
+	if _store_var_scanned: return
+	_store_var_scanned = true
+	var da := DirAccess.open(HighpolyStore.MODELS_DIR)
+	if da == null: return
+	for f in da.get_files():
+		if f.get_extension() != "glb": continue
+		var base := f.get_basename()
+		var i := base.find("__")
+		if i <= 0: continue
+		var vn := base.substr(i + 2)
+		if vn == "": continue
+		var prox := base.substr(0, i)
+		var m: Dictionary = _store_vars.get(prox, {})
+		m[vn] = "%s/%s" % [HighpolyStore.MODELS_DIR, f]
+		_store_vars[prox] = m
+
+static func variants_of(prox: String) -> Dictionary:
+	if _var_disc.has(prox):
+		return _var_disc[prox]
+	_scan_store_variants()
+	var found: Dictionary = {}
+	# legacy/staging layout first; a store copy of the same variant wins below
+	var da := DirAccess.open("%s/%s" % [LEGACY_DIR, prox])
+	if da != null:
+		var prefix := prox + "__"
+		for f in da.get_files():
+			if f.begins_with(prefix) and f.get_extension() == "glb":
+				var vn := f.get_basename().substr(prefix.length())
+				if vn != "":
+					found[vn] = "%s/%s/%s" % [LEGACY_DIR, prox, f]
+	var sv: Dictionary = _store_vars.get(prox, {})
+	for vn in sv:
+		found[vn] = sv[vn]
+	_var_disc[prox] = found
+	return found
+
+static func variant_path(prox: String, vname: String) -> String:
+	return str(variants_of(prox).get(vname, ""))
+
+# runtime-parse a variant GLB exactly like the base models (the editor's
+# GLTFDocument path yields non-rendering ImporterMeshInstance3D nodes;
+# HighpolyStore.load_external_glb converts + compresses them correctly)
+static func variant_scene(path: String) -> PackedScene:
+	if _var_scenes.has(path):
+		return _var_scenes[path]
+	var ps := HighpolyStore.load_external_glb(path)
+	_var_scenes[path] = ps
+	return ps
 
 static func in_overlay(node: Node) -> bool:
 	var n := node

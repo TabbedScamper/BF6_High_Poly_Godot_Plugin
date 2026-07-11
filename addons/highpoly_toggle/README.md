@@ -19,5 +19,13 @@ water) and viewport performance tools.
 The dock offers a one-click **Update Plugin** button whenever a newer plugin
 version is published; model fixes and map-data refreshes arrive on their own.
 
+## Viewport double-click
+
+- **Doors** swing open/closed like in game.
+- **Variant props** (police liveries, barn colour schemes, destroyed shells, …)
+  cycle base → variant → … → base. The choice is per instance — two buses can
+  wear different liveries — and survives Low/High-Poly toggles. Variants seen
+  on the current map come first in the cycle. Doors win when a prop is both.
+
 Full guide: the repository README. Contributor guide: `docs/ARCHITECTURE.md`.
 Overlay/fitter internals: `docs/HIGHPOLY-PREVIEW.md`.
