@@ -34,8 +34,9 @@ const Y_EPS := 0.02           # lift above the heightfield to dodge z-fighting
 const OUTSIDE := -1.0e9
 
 var active := false
-var grass_range := 120.0      # dock slider: how far from the camera grass grows
-                              # (metres; 0 = grass off). Density itself is FIXED
+var grass_range := 0.0        # dock slider: how far from the camera grass grows
+                              # (metres; DEFAULT 0 = grass OFF until the user
+                              # asks for it). Density itself is FIXED
                               # at carpet spacing derived from each kit's own
                               # footprint — matching the game's near-continuous
                               # cover where the mask is full — so range is the
