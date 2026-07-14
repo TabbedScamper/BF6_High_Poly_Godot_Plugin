@@ -426,6 +426,7 @@ func _clear(root: Node) -> void:
 			root.remove_child(c)
 			c.queue_free()
 	_cells.clear()
+	_bd_list.clear()
 	# drop the in-RAM caches so a re-apply re-reads the on-disk files (picks up
 	# prop textures / terrain layers updated since the last apply)
 	_mesh_cache.clear()
@@ -1387,6 +1388,8 @@ func _flipped_mesh(mesh: Mesh) -> Mesh:
 # One MultiMeshInstance3D for a batch of placements, splitting mirrored
 # (negative-determinant) instances onto a winding-flipped copy of the mesh so
 # they render right-side-out. Used for backdrop entries (no distance streaming).
+var _bd_list: Array = []    # backdrop MMIs — tied to the Range slider too
+
 func _add_multimesh(parent: Node3D, mesh: Mesh, xf: Array, textured: bool, flat_mat: Material) -> void:
 	var count := int(xf.size() / 12)
 	if mesh == null or count == 0: return
@@ -1397,9 +1400,13 @@ func _add_multimesh(parent: Node3D, mesh: Mesh, xf: Array, textured: bool, flat_
 		var dst: Array = neg if _det3(xf, o) < 0.0 else pos
 		for j in range(12): dst.append(xf[o + j])
 	if not pos.is_empty():
-		parent.add_child(_build_mmi(mesh, pos, textured, flat_mat))
+		var m1 := _build_mmi(mesh, pos, textured, flat_mat)
+		parent.add_child(m1)
+		_bd_list.append(m1)
 	if not neg.is_empty():
-		parent.add_child(_build_mmi(_flipped_mesh(mesh), neg, textured, flat_mat))
+		var m2 := _build_mmi(_flipped_mesh(mesh), neg, textured, flat_mat)
+		parent.add_child(m2)
+		_bd_list.append(m2)
 
 # Build the _MAP_CONTEXT subtree. Everything owner=null.
 #   enabled      – Map Context on at all (terrain + surroundings baseline)
@@ -2282,13 +2289,26 @@ func set_radius(r: float) -> void:
 	radius = r
 	_apply_radius()
 
-func _apply_radius() -> void:
-	if _cells.is_empty(): return
+func _apply_radius(budget: int = 1 << 30) -> void:
+	# backdrop-only is valid (Show Whole Map without objects) — don't early-out
+	# on empty cells or the skyline loop below never runs
+	if _cells.is_empty() and _bd_list.is_empty(): return
 	var cam := _editor_cam()
 	var cx := 0.0; var cz := 0.0
 	if cam:
 		var p := cam.global_transform.origin; cx = p.x; cz = p.z
+	# Flip only the cells whose state actually CHANGES, nearest first, capped at
+	# `budget` cells per pass (the dock tick passes a small one; slider changes
+	# and rebuilds pass unlimited). Showing a cell re-registers every instance
+	# with the renderer and dirties SDFGI + the shadow atlas — flipping a whole
+	# ring of cells in one frame was the fly-forward hitch. The old loop also
+	# re-issued cast_shadow on EVERY cell EVERY tick (same value or not), which
+	# dirties the render server even standing still.
+	var half_diag := _cell_size * 0.7071
+	var changes: Array = []
 	for key in _cells.keys():
+		var lst: Array = _cells[key]
+		if lst.is_empty() or not is_instance_valid(lst[0]): continue
 		var parts: PackedStringArray = String(key).split(",")
 		# Euclidean distance to the cell CENTRE, margin = half the cell
 		# diagonal. The old test used the cell's min corner with a square
@@ -2299,19 +2319,40 @@ func _apply_radius() -> void:
 		var dx := ckx - cx
 		var dz := ckz - cz
 		var dist := sqrt(dx * dx + dz * dz)
-		var near: bool = dist <= radius + _cell_size * 0.7071
+		var vis_now: bool = (lst[0] as Node3D).visible
+		# hysteresis: a visible cell gets an extra half-cell of grace before it
+		# hides, so slow flight along the boundary doesn't flip the same cells
+		# back and forth every tick
+		var near: bool = dist <= radius + half_diag + (_cell_size * 0.5 if vis_now else 0.0)
 		# shadow-caster LOD: only cells near the camera join the sun-shadow
 		# pass (the pass re-renders every caster per split — with GI + map
 		# lights on, whole-map casting was THE lag). 350 m covers everything
 		# a shadow is visible on at street scale.
-		var casts: bool = near and dist <= 350.0 + _cell_size * 0.7071 \
+		var casts: bool = near and dist <= 350.0 + half_diag \
 			and HighpolyLighting.cast_shadows
-		for mmi in _cells[key]:
+		var casts_now: bool = (lst[0] as GeometryInstance3D).cast_shadow \
+			== GeometryInstance3D.SHADOW_CASTING_SETTING_ON
+		if near != vis_now or casts != casts_now:
+			changes.append([0 if near else 1, dist, key, near, casts])
+	changes.sort()   # lexicographic: shows before hides, nearest first
+	for ch in changes:
+		if budget <= 0: break
+		budget -= 1
+		for mmi in _cells[ch[2]]:
 			if is_instance_valid(mmi):
-				mmi.visible = near
+				mmi.visible = ch[3]
 				(mmi as GeometryInstance3D).cast_shadow = \
-					GeometryInstance3D.SHADOW_CASTING_SETTING_ON if casts \
+					GeometryInstance3D.SHADOW_CASTING_SETTING_ON if ch[4] \
 					else GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	# backdrop follows the Range slider too: cull each skyline/surroundings
+	# cluster by distance to its own bounds (a 500 m-wide cluster whose edge
+	# is near stays visible); "No Culling" keeps the full horizon
+	for bmi in _bd_list:
+		if not is_instance_valid(bmi): continue
+		var bb: AABB = (bmi as VisualInstance3D).get_aabb()
+		var ndx := clampf(cx, bb.position.x, bb.end.x) - cx
+		var ndz := clampf(cz, bb.position.z, bb.end.z) - cz
+		(bmi as Node3D).visible = (ndx * ndx + ndz * ndz) <= radius * radius
 
 func _editor_cam() -> Camera3D:
 	var vp := EditorInterface.get_editor_viewport_3d(0)
@@ -2338,8 +2379,8 @@ func tick() -> void:
 	# map" (_active), and the old `_active and` gate froze their culling —
 	# the radius only applied once at slider-change instead of following the
 	# camera.
-	if _show_objects:
-		_apply_radius()
+	if _show_objects or (_active and not _bd_list.is_empty()):
+		_apply_radius(4)   # amortised: a few cells per tick, never a whole ring
 	# vegetation scatter follows the camera (regenerates on 32 m cell crossings);
 	# frozen while the context layers are hidden (set_context_shown fast path)
 	if _active and _scatter != null and _scatter.active:

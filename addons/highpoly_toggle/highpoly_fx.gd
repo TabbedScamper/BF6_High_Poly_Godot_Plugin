@@ -76,7 +76,22 @@ static func _emitter(cls: String) -> GPUParticles3D:
 	g.visibility_range_end_margin = 40.0
 	g.visibility_range_fade_mode = GeometryInstance3D.VISIBILITY_RANGE_FADE_SELF
 	g.visibility_aabb = AABB(Vector3(-6, -1, -6), Vector3(12, 14, 12))
+	g.set_meta("vr", g.visibility_range_end)   # class default, for set_range
 	return g
+
+# Range-slider tie-in: clamp every emitter's draw distance to the dock's
+# Range value (never past its class default). 0 hides FX entirely.
+static func set_range(root: Node, r: float) -> void:
+	var h := root.get_node_or_null(NODE) if root != null else null
+	if h == null: return
+	for c in h.get_children():
+		if c is GPUParticles3D:
+			var g := c as GPUParticles3D
+			if r <= 0.0:
+				g.visible = false
+			else:
+				g.visible = true
+				g.visibility_range_end = minf(float(g.get_meta("vr", 300.0)), r)
 
 static func _class_mats(cls: String) -> Array:
 	if _mats.has(cls): return _mats[cls]
