@@ -341,13 +341,20 @@ func _enter_tree() -> void:
 	mapctx_range.min_value = 0; mapctx_range.max_value = 3500
 	mapctx_range.step = 100; mapctx_range.value = 800
 	mapctx_range.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	mapctx_range.tooltip_text = "How far from the camera to show map objects (like a render distance). 0 turns \"Original map objects\" off; the far end (3500) disables culling entirely."
+	mapctx_range.tooltip_text = "Render distance for the overlay: map objects, the skyline/backdrop, FX and map lights all follow it (lights cap at 300 m for GPU safety). 0 turns \"Original map objects\" off; the far end (3500) disables culling entirely."
 	mcr_row.add_child(mapctx_range)
 	mapctx_range_val = Label.new(); mapctx_range_val.text = _range_label(800.0)
 	mcr_row.add_child(mapctx_range_val)
 	mapctx_range.value_changed.connect(func(v: float):
 		mapctx_range_val.text = _range_label(v)
-		mapctx.set_radius(1.0e9 if int(v) >= 3500 else v)
+		var _rad := 1.0e9 if int(v) >= 3500 else v
+		mapctx.set_radius(_rad)
+		# lights + FX ride the same slider: lights capped at 300 m (the
+		# clustered-lighting GPU budget), FX clamped to their class ranges
+		var _rr := EditorInterface.get_edited_scene_root()
+		LightingScript.lights_range = clampf(_rad, 0.0, 300.0)
+		if _rr != null:
+			HighpolyFx.set_range(_rr, _rad)
 		if int(v) == 0 and mapctx_objects.button_pressed:
 			mapctx_objects.button_pressed = false    # fires _mapctx_changed
 		else:
