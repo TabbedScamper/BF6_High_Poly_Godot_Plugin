@@ -186,17 +186,32 @@ func setup(mc: Object, ctx: Node3D, map: String, dir: String, hm: Dictionary, ti
 
 func set_range(v: float, cam_pos: Vector3) -> void:
 	grass_range = clampf(v, 0.0, CULL_R)
-	if active:
-		_regenerate(cam_pos)
+	if not active: return
+	if not _alive():
+		clear()                         # our nodes were freed externally — self-heal
+		return
+	_regenerate(cam_pos)
 
 # regenerate when the camera crosses a REGEN_CELL boundary
 func tick(cam_pos: Vector3) -> void:
 	if not active: return
+	if not _alive():
+		clear()                         # our nodes were freed externally — self-heal
+		return
 	if grass_range <= 0.0: return       # grass off: nothing to follow
 	var cell := Vector2i(int(floor(cam_pos.x / REGEN_CELL)), int(floor(cam_pos.z / REGEN_CELL)))
 	if cell == _last_cell: return
 	_last_cell = cell
 	_regenerate(cam_pos)
+
+# _MAP_CONTEXT (and everything under it, our _root included) can be freed by
+# an apply()/_clear() we don't control — another HighpolyMapContext instance
+# (PhotoMatch's render hook builds its own) tears the shared node down, and
+# with the props layer now building across frames those frees interleave with
+# our camera-follow ticks. A RefCounted can't get freed-node signals, so every
+# entry point re-checks liveness instead of trusting the held references.
+func _alive() -> bool:
+	return _root != null and is_instance_valid(_root)
 
 func _regenerate(cam_pos: Vector3) -> void:
 	var t0 := Time.get_ticks_msec()
@@ -204,15 +219,19 @@ func _regenerate(cam_pos: Vector3) -> void:
 	if grass_range <= 0.0:
 		# slider at 0 = grass off: empty every MultiMesh
 		for e in _entries:
-			var mm0: MultiMesh = (e["mmi"] as MultiMeshInstance3D).multimesh
+			var node0 = e["mmi"]        # untyped on purpose: casting a freed ref errors
+			if not is_instance_valid(node0): continue
+			var mm0: MultiMesh = (node0 as MultiMeshInstance3D).multimesh
 			mm0.instance_count = 0
 		last_instances = 0
 		last_regen_ms = 0
 		return
 	for e in _entries:
+		var node = e["mmi"]             # untyped on purpose: casting a freed ref errors
+		if not is_instance_valid(node): continue
 		var buf := _gen_entry(e, cam_pos)
 		var cnt := int(buf.size() / 12)
-		var mm: MultiMesh = (e["mmi"] as MultiMeshInstance3D).multimesh
+		var mm: MultiMesh = (node as MultiMeshInstance3D).multimesh
 		mm.instance_count = 0          # drop the old buffer before resizing
 		mm.instance_count = cnt
 		if cnt > 0:
@@ -387,6 +406,7 @@ func _scatter_mesh(mc: Object, nm: String) -> Mesh:
 				if m == pair[0]:
 					m = (m as Mesh).duplicate()   # never mutate the packed scene's mesh
 				_foliage_fix(m)
+				mc._wind_swap_materials(m)    # grass joins Foliage Wind
 			inst.queue_free()
 	_mesh_cache[nm] = m
 	return m

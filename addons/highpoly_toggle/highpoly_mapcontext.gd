@@ -49,6 +49,45 @@ var _props_refresh: Dictionary = {}     # map -> true (props.zip must overwrite-
 var last_verify_updates := 0
 var _props_verified: Dictionary = {}    # map -> true (this session)
 
+# ---------- non-blocking props build (state) ----------
+# apply() stays synchronous for terrain/backdrop/scatter (fast), but the props
+# layer (~2k unique GLB parses + MultiMesh builds — minutes of work that used
+# to freeze the editor) is handed to an incremental background builder; see
+# _build_props_async. _build_gen is bumped by _clear(), cancelling any
+# in-flight build; is_build_done() lets batch consumers (PhotoMatch's render
+# hook) wait for a COMPLETE overlay before shooting.
+signal build_progress(done: int, total: int)   # per work-slice + on completion
+signal build_finished(built: int)              # completed (not emitted when superseded)
+const BUILD_FRAME_MS := 40          # per-frame parse budget (always >=1 mesh per frame)
+const BUILD_REPORT_EVERY := 100     # print / progress-file cadence (meshes)
+var _build_gen := 0                 # generation: _clear() bumps it, cancelling in-flight builds
+var _building := false              # a background props build is in flight
+var _build_done := 0                # mesh groups processed so far
+var _build_total := 0               # mesh groups queued
+var _build_props := 0               # meshes actually built (parse succeeded)
+var _last_report := 0               # _build_done at the last print/file report
+var _build_status_base := ""        # apply()'s summary minus the objects part
+var _last_status := ""              # exact string the last full apply() returned
+var status_label: Label = null      # set by the toggle plugin: live progress target
+# incremental refresh ("Check for Updates"): per-parsed-GLB source stamps plus
+# which prop entries each source built, so a cache file overwritten by the
+# background re-bake rebuilds JUST its own MultiMeshes — no full re-toggle
+var _mesh_stat: Dictionary = {}     # glb path -> {"mt": int, "sz": int} at parse time
+var _prop_by_src: Dictionary = {}   # glb path -> Array[prop entry] built from it
+var _props_dir := ""                # last props build: per-map dir (legacy "glb" paths)
+var _props_textured := false        # last props build: textured flag
+var _props_mat: Material = null     # last props build: flat study material
+var _props_tex_mode := -1           # last props build: detail mode (0/1/2)
+var _ctx_tex_mode := -1             # last apply(): detail mode (set_context_shown key)
+# manual override for the maptile DECAL on the SDK terrain + assets (textured
+# mode, non-splat path): it tints buildings/props, which fights the re-baked
+# real textures. Default true = exactly the old behaviour. STATIC on purpose:
+# the dock checkbox (via set_maptile) and PhotoMatch's transient render
+# instance share ONE preference — as a per-instance var, the render hook's
+# fresh instance re-added the decal from its own default on every render.
+static var maptile_enabled := true
+static var _maptile_ok := false     # last apply(): textured + non-splat (a decal would show)
+
 func reset_props_verification() -> void:
 	# called when the sync manager adopts a NEW manifest (models changed)
 	_props_verified.clear()
@@ -62,6 +101,19 @@ const TERRAIN_GREEN := Color(0.4078, 0.5608, 0.3098)
 const ASSETS_ORANGE := Color(1.0, 0.6745, 0.4706)
 static var _terrain_mat: StandardMaterial3D = null
 static var _assets_mat: StandardMaterial3D = null
+
+# tex_mode 1 (High-Poly — no textures): neutral SHADED clay, so geometry reads
+# like the library's untextured high-poly mode (the study green/orange above are
+# unshaded placeholders by design).
+static var _clay_cache: StandardMaterial3D = null
+static func _clay_mat() -> StandardMaterial3D:
+	if _clay_cache == null:
+		var m := StandardMaterial3D.new()
+		m.albedo_color = Color(0.62, 0.62, 0.62)
+		m.roughness = 0.9
+		m.cull_mode = BaseMaterial3D.CULL_DISABLED
+		_clay_cache = m
+	return _clay_cache
 
 static func _flat_mat(c: Color) -> StandardMaterial3D:
 	var m := StandardMaterial3D.new()
@@ -356,19 +408,33 @@ func _map_cache_complete(map: String) -> bool:
 
 # ---------- apply / build ----------
 func _clear(root: Node) -> void:
-	var old := root.get_node_or_null(NODE)
-	if old: root.remove_child(old); old.queue_free()
-	_cells.clear()
+	# cancel any in-flight background props build: the builder re-checks this
+	# generation after every await and stops dead once it changes (its nodes
+	# are freed with _MAP_CONTEXT below)
+	_build_gen += 1
+	_building = false
+	# detach/stop the scatter BEFORE freeing the tree it lives under: its
+	# camera-follow tick holds MultiMeshInstance3D refs that must not outlive
+	# _MAP_CONTEXT (frees now interleave with running ticks across frames)
 	_scatter.clear()      # scatter lives under _MAP_CONTEXT; drop its caches too
 	_scatter_n = 0
+	# name-pattern sweep: plugin reloads orphan the owner=null overlay; a
+	# rebuilt twin gets auto-renamed next to it and a single-name lookup then
+	# frees the wrong one (doubled props / undead overlays)
+	for c in root.get_children():
+		if String(c.name).contains(NODE):
+			root.remove_child(c)
+			c.queue_free()
+	_cells.clear()
 	# drop the in-RAM caches so a re-apply re-reads the on-disk files (picks up
 	# prop textures / terrain layers updated since the last apply)
 	_mesh_cache.clear()
+	_mesh_stat.clear()     # refresh bookkeeping follows the mesh cache
+	_prop_by_src.clear()
 	_layer_cache.clear()
 	_splat_cache.clear()   # re-read baked splat data on the next apply
 	# remove the maptile decal (editor-only)
-	var dec := root.get_node_or_null(DECAL_NODE)
-	if dec: root.remove_child(dec); dec.queue_free()
+	_remove_maptile(root)
 
 # ---------- SDK maptile (top-down satellite) ----------
 # Inject a Decal (owner=null) that projects the shipped maptile jpg straight
@@ -395,6 +461,33 @@ func _apply_maptile(root: Node, map: String) -> int:
 	dec.position = d["pos"]
 	root.add_child(dec); dec.owner = null
 	return 1
+
+# Remove EVERY maptile decal under the root — matched by name prefix, not just
+# the exact name, so a stray auto-renamed duplicate (add_child name collision)
+# can't survive an exact-name lookup and linger forever.
+func _remove_maptile(root: Node) -> void:
+	for c in root.get_children():
+		if c is Decal and String(c.name).contains(DECAL_NODE):
+			root.remove_child(c)
+			c.queue_free()
+
+# Instant "Maptile decal" toggle (dock checkbox). ACTIVE add/remove — no
+# overlay rebuild, no _clear(), no generation bump, so a running props build
+# keeps going. Off: the decal is pulled from the scene right now (before any
+# await could supersede a re-apply). On: re-added immediately when the last
+# apply() ran textured without splat coverage (_maptile_ok); otherwise the
+# static preference simply takes effect on the next textured apply.
+func set_maptile(root: Node, on: bool) -> String:
+	maptile_enabled = on
+	if root == null or map_of(root) == "":
+		return "Maptile decal %s (takes effect on MP_… scenes)" % ("on" if on else "off")
+	_remove_maptile(root)
+	if not on:
+		return "Maptile decal off"
+	if _maptile_ok:
+		return "Maptile decal on" if _apply_maptile(root, map_of(root)) > 0 \
+			else "No maptile for %s" % map_of(root)
+	return "Maptile decal on (shows in textured, non-splat mode)"
 
 # ---------- near-exact detail terrain (real game ground-layer textures) ----------
 # The maptile gives the real large-scale colour; the game's own tiling ground
@@ -625,30 +718,329 @@ func _load_data(map: String) -> bool:
 	var w: Dictionary = d.get("world", {})
 	_world_min = float(w.get("min", -2048))
 	_cell_size = float(w.get("cell", 64))
+	_load_prop_layers(map)
 	return true
+
+# ---------- per-layer prop attribution (prop_layers.json) ----------
+# Mined per-instance layer tags: 89.9% of placements are always-on; the rest
+# belong to event layers (default summer vs winter dressing, gauntlet) or
+# per-gamemode containers (Rush barriers...). The builder splits those
+# instances into layer GROUPS whose visibility follows the Variant dropdown —
+# so the variant genuinely controls object placements, instantly.
+var _prop_layers: Dictionary = {}       # mesh -> {int i -> "layerKey[,layerKey]"}
+var _mode_map: Dictionary = {}          # ModeName -> {show_layers:[...]}
+var _variant_layer_groups: Dictionary = {}   # layerKey -> Node3D
+var _variant_mode := "Off"
+
+func _load_prop_layers(map: String) -> void:
+	_prop_layers = {}
+	_mode_map = {}
+	var p := "%s/%s/prop_layers.json" % [CACHE, map]
+	if not FileAccess.file_exists(p): return
+	var d: Variant = JSON.parse_string(FileAccess.get_file_as_string(p))
+	if not (d is Dictionary): return
+	for rec in d.get("props", []):
+		if not (rec is Dictionary): continue
+		var mesh := str(rec.get("mesh", ""))
+		var lv: Variant = rec.get("layer")
+		var key: String
+		if lv is Array:
+			var arr: Array = []
+			for x in lv: arr.append(str(x))
+			arr.sort()
+			key = ",".join(arr)
+		else:
+			key = str(lv)
+		if not _prop_layers.has(mesh): _prop_layers[mesh] = {}
+		(_prop_layers[mesh] as Dictionary)[int(rec.get("i", -1))] = key
+	_mode_map = d.get("mode_map", {})
+
+func _active_variant_layers(mode: String) -> Dictionary:
+	# "Off"/unknown = the normal game look: default-event dressing only
+	var act := {"default_event": true}
+	var mm: Dictionary = _mode_map.get(mode, {})
+	if not mm.is_empty():
+		act = {}
+		for l in mm.get("show_layers", ["default_event"]):
+			act[str(l)] = true
+	return act
+
+func _variant_key_visible(key: String, act: Dictionary) -> bool:
+	for part in key.split(","):
+		if act.has(part):
+			return true
+	return false
+
+# live layer switch — pure visibility flips, no rebuild
+func set_variant_layers(mode: String) -> String:
+	_variant_mode = mode
+	var act := _active_variant_layers(mode)
+	var n := 0
+	for k in _variant_layer_groups:
+		var g: Node3D = _variant_layer_groups[k]
+		if is_instance_valid(g):
+			g.visible = _variant_key_visible(str(k), act)
+			n += 1
+	return "%s: %d placement layer group(s) switched" % [
+		mode if mode != "" else "Off", n]
+
+func _variant_group(props_root: Node3D, key: String) -> Node3D:
+	if _variant_layer_groups.has(key):
+		var g0: Node3D = _variant_layer_groups[key]
+		if is_instance_valid(g0):
+			return g0
+	var g := Node3D.new()
+	g.name = "V_" + key.replace(",", "+")
+	props_root.add_child(g)
+	g.owner = null
+	g.visible = _variant_key_visible(key, _active_variant_layers(_variant_mode))
+	_variant_layer_groups[key] = g
+	return g
+
+# source file a prop entry's mesh loads from: `mesh` = SHARED prop cache
+# (preferred), `glb` = legacy per-map bundle. "" = res:// SDK proxy / none —
+# those aren't file-refreshable.
+func _prop_path(e: Dictionary, dir: String) -> String:
+	if e.has("mesh"): return "%s/%s.glb" % [PROPS_CACHE, e["mesh"]]
+	if e.has("glb"): return "%s/%s" % [dir, e["glb"]]
+	return ""
+
+static func _file_size(p: String) -> int:
+	var f := FileAccess.open(p, FileAccess.READ)
+	if f == null: return -1
+	var n := int(f.get_length())
+	f.close()
+	return n
 
 # A prop's mesh: the EXACT extracted game mesh from the downloaded per-map props
 # bundle (`glb`) when available — the accurate path — else the res:// SDK proxy
 # (`model`) fallback for meshes we haven't extracted yet.
 func _prop_mesh(e: Dictionary, dir: String) -> Mesh:
-	# `mesh` = exact game mesh from the SHARED prop cache (preferred); `glb` =
-	# legacy per-map bundle; `model` = res:// SDK proxy fallback.
-	var gp := ""
-	if e.has("mesh"): gp = "%s/%s.glb" % [PROPS_CACHE, e["mesh"]]
-	elif e.has("glb"): gp = "%s/%s" % [dir, e["glb"]]
-	elif e.has("model"): return _mesh_for(str(e["model"]))
-	else: return null
+	var gp := _prop_path(e, dir)
+	if gp == "":
+		return _mesh_for(str(e["model"])) if e.has("model") else null
 	if _mesh_cache.has(gp): return _mesh_cache[gp]
-	var m: Mesh = null
-	if FileAccess.file_exists(gp):
-		var g := _load_external_glb(gp)
-		if g:
-			var inst := g.instantiate()
-			var pair := _first_mesh_and_xf(inst, Transform3D())
-			if not pair.is_empty(): m = _bake_mesh(pair[0], pair[1])
-			inst.queue_free()
+	# stamp the source BEFORE parsing: if the background re-bake overwrites the
+	# file mid-parse, the recorded (pre-write) stamp differs from the new one
+	# and refresh_changed_props still catches it. Missing files stamp mt=0, so
+	# a mesh that APPEARS later counts as changed too.
+	_mesh_stat[gp] = {
+		"mt": FileAccess.get_modified_time(gp) if FileAccess.file_exists(gp) else 0,
+		"sz": _file_size(gp),
+	}
+	var m := _parse_prop_file(gp)
 	_mesh_cache[gp] = m
 	return m
+
+# "Fast startup cache" (Storage section): after the first parse each finished
+# mesh is saved as a binary sidecar (<x>.glb.baked.res) and loaded directly on
+# later builds — skipping the glTF parse + texture recompress + merge that made
+# every editor/plugin restart re-chew ~2k GLBs for minutes. A sidecar older
+# than its GLB (re-download / re-bake) is stale and re-parses, so updated
+# models flow through exactly like Check for Updates. Costs ~the model cache's
+# size again on disk; per-map purge removes sidecars with their GLBs.
+static var mesh_cache_enabled := false
+
+# Parse a prop GLB from disk into one baked/merged Mesh — NO cache interaction,
+# so the refresh path can build-then-swap (parse first, only then evict).
+# Returns null for missing/torn/unparseable files.
+func _parse_prop_file(gp: String) -> Mesh:
+	# v2 suffix: v1 sidecars predate runtime LOD generation — regenerate once
+	var baked := gp + ".baked2.res"
+	if mesh_cache_enabled and FileAccess.file_exists(baked) \
+			and FileAccess.get_modified_time(baked) >= FileAccess.get_modified_time(gp):
+		var bm := ResourceLoader.load(baked, "Mesh", ResourceLoader.CACHE_MODE_REPLACE)
+		if bm is Mesh:
+			return bm
+	var m: Mesh = null
+	var g := _load_external_glb(gp)
+	if g:
+		var inst := g.instantiate()
+		# merge ALL mesh nodes — multi-part GLBs (one node per material part,
+		# e.g. dump-extracted window units: glass part + wall part) used to
+		# render only their FIRST part via _first_mesh_and_xf, which showed
+		# floating glass panes with the wall part silently dropped
+		var pairs: Array = []
+		_all_meshes_and_xf(inst, Transform3D(), pairs)
+		if pairs.size() == 1:
+			m = _bake_mesh(pairs[0][0], pairs[0][1])
+		elif pairs.size() > 1:
+			m = _merge_meshes(pairs)
+		inst.queue_free()
+	_fx_animate_materials(m)
+	_wind_swap_materials(m)
+	_parallax_materials(m)
+	m = _with_lods(m)
+	if mesh_cache_enabled and m != null:
+		if ResourceSaver.save(m, baked, ResourceSaver.FLAG_COMPRESS) != OK:
+			DirAccess.remove_absolute(baked)   # never leave a torn cache file
+	return m
+
+# ---------- Configure Shaders (dock dialog) ----------
+# live-tunable overlay shader prefs, persisted by the dock:
+#   water    – multiplier on each water body's AUTHORED ripple_speed (0 = still)
+#   flip     – multiplier on flipbook-card animation speed (smoke; 0 = static)
+#   wind     – subtle foliage sway on leaf-card materials
+static var shader_prefs := {"water": 1.0, "flip": 1.0, "wind": false, "wind_str": 0.08}
+const FLIP_BASE_SPEED := 0.25          # fx_smoke.gdshader authored default
+
+# Backdrop-FX flipbook cards (smoke plumes): the baker tags materials whose
+# sheet packs 3 animation-time samples in R/G/B with "__fxanim3" and keeps the
+# packed data. Swap those for fx_smoke.gdshader, which crossfades the channels
+# live — the smoke billows in the editor using the game's own texture data.
+static var _fx_smoke_shader: Shader = null
+static var _wind_shader: Shader = null
+const WIND_MAT_PAT := "leaf|leaves|frond|foliage|grass|weed|plant|fern|bush"
+
+static func _fx_animate_materials(m: Mesh) -> void:
+	if not (m is ArrayMesh): return
+	var am := m as ArrayMesh
+	for i in range(am.get_surface_count()):
+		var mat := am.surface_get_material(i)
+		if mat is BaseMaterial3D and String(mat.resource_name).contains("__fxanim3"):
+			if _fx_smoke_shader == null:
+				_fx_smoke_shader = load((HighpolyMapContext as Script)
+						.resource_path.get_base_dir() + "/fx_smoke.gdshader")
+			if _fx_smoke_shader == null: return
+			var sm := ShaderMaterial.new()
+			sm.shader = _fx_smoke_shader
+			sm.set_shader_parameter("packed_tex", (mat as BaseMaterial3D).albedo_texture)
+			sm.set_shader_parameter("speed", FLIP_BASE_SPEED * float(shader_prefs.get("flip", 1.0)))
+			am.surface_set_material(i, sm)
+
+# Foliage Wind: swap leaf-card materials (name matches WIND_MAT_PAT AND the
+# material is alpha-cutout — trunks/bark stay put) for foliage_wind.gdshader.
+# Always swapped; wind_strength 0 renders identical to the original, so the
+# dock toggle is a pure live uniform change.
+static func _wind_swap_materials(m: Mesh) -> void:
+	if not (m is ArrayMesh): return
+	var rx := RegEx.create_from_string("(?i)(" + WIND_MAT_PAT + ")")
+	var am := m as ArrayMesh
+	for i in range(am.get_surface_count()):
+		var mat := am.surface_get_material(i)
+		if not (mat is BaseMaterial3D): continue
+		var bm := mat as BaseMaterial3D
+		if bm.transparency == BaseMaterial3D.TRANSPARENCY_DISABLED: continue
+		if bm.albedo_texture == null: continue
+		if rx.search(String(bm.resource_name)) == null: continue
+		if _wind_shader == null:
+			_wind_shader = load((HighpolyMapContext as Script)
+					.resource_path.get_base_dir() + "/foliage_wind.gdshader")
+		if _wind_shader == null: return
+		var sm := ShaderMaterial.new()
+		sm.shader = _wind_shader
+		sm.resource_name = bm.resource_name
+		sm.set_shader_parameter("albedo_tex", bm.albedo_texture)
+		sm.set_shader_parameter("albedo_mul", bm.albedo_color)
+		sm.set_shader_parameter("alpha_cut", bm.alpha_scissor_threshold
+				if bm.transparency == BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR else 0.5)
+		sm.set_shader_parameter("wind_strength",
+				float(shader_prefs.get("wind_str", 0.08)) if bool(shader_prefs.get("wind", false)) else 0.0)
+		am.surface_set_material(i, sm)
+
+# push the current shader_prefs onto every live overlay material (water plane,
+# flipbook cards, foliage) — called by the dock's Configure Shaders dialog and
+# after builds finish (sidecar-cached meshes carry the params they were saved
+# with). Walk is cheap: materials only, no geometry.
+func apply_shader_prefs(root: Node) -> String:
+	var ctx := root.get_node_or_null(NODE) if root != null else null
+	if ctx == null: return "Map Context off"
+	var counts := {"water": 0, "flip": 0, "wind": 0}
+	_prefs_walk(ctx, counts)
+	return "Shaders: %d water, %d flipbook, %d foliage material(s) updated" % [
+		counts["water"], counts["flip"], counts["wind"]]
+
+func _prefs_walk(n: Node, counts: Dictionary) -> void:
+	if n is GeometryInstance3D:
+		var gi := n as GeometryInstance3D
+		_prefs_mat(gi.material_override, counts)
+		var mesh: Mesh = null
+		if gi is MeshInstance3D: mesh = (gi as MeshInstance3D).mesh
+		elif gi is MultiMeshInstance3D and (gi as MultiMeshInstance3D).multimesh != null:
+			mesh = (gi as MultiMeshInstance3D).multimesh.mesh
+		if mesh != null:
+			# meshes loaded from pre-wind sidecar caches still carry their
+			# BaseMaterial3D foliage — swap them here so Foliage Wind reaches
+			# them live (no-op on already-swapped/non-foliage surfaces)
+			_wind_swap_materials(mesh)
+			for i in range(mesh.get_surface_count()):
+				_prefs_mat(mesh.surface_get_material(i), counts)
+	for c in n.get_children():
+		_prefs_walk(c, counts)
+
+func _prefs_mat(mat: Material, counts: Dictionary) -> void:
+	if not (mat is ShaderMaterial): return
+	var sm := mat as ShaderMaterial
+	if sm.shader == null: return
+	var sp := String(sm.shader.resource_path)
+	# water: HighpolyWater builds its Shader from TEXT (no resource_path — a
+	# path match can NEVER hit it; that was "the water slider does nothing").
+	# Detect it by its own parameter instead: every water material sets
+	# ripple_speed explicitly from its kind preset.
+	if sm.get_shader_parameter("ripple_speed") != null:
+		if not sm.has_meta("base_ripple"):
+			sm.set_meta("base_ripple", float(sm.get_shader_parameter("ripple_speed")))
+		sm.set_shader_parameter("ripple_speed",
+				float(sm.get_meta("base_ripple")) * float(shader_prefs.get("water", 1.0)))
+		counts["water"] += 1
+	elif sp.ends_with("/fx_smoke.gdshader"):
+		sm.set_shader_parameter("speed", FLIP_BASE_SPEED * float(shader_prefs.get("flip", 1.0)))
+		counts["flip"] += 1
+	elif sp.ends_with("/foliage_wind.gdshader"):
+		sm.set_shader_parameter("wind_strength",
+				float(shader_prefs.get("wind_str", 0.08)) if bool(shader_prefs.get("wind", false)) else 0.0)
+		counts["wind"] += 1
+
+# VISTA PARALLAX: the size-adaptive skyline bake tags wall materials
+# "__vtrparallax" and carries the facade's WINDOW DEPTH MASK in the albedo
+# alpha (rendered opaque, so the channel is a free data carrier). Build a
+# heightmap from it and enable deep parallax — the "massive depth fixes" the
+# game's backdrop shader applies to distant facades.
+static var _pxheights: Dictionary = {}    # texture RID -> heightmap ImageTexture
+static func _parallax_materials(m: Mesh) -> void:
+	if not (m is ArrayMesh): return
+	var am := m as ArrayMesh
+	for i in range(am.get_surface_count()):
+		var mat := am.surface_get_material(i)
+		if not (mat is BaseMaterial3D): continue
+		var bm := mat as BaseMaterial3D
+		if not String(bm.resource_name).contains("__vtrparallax"): continue
+		if bm.albedo_texture == null: continue
+		var key: Variant = bm.albedo_texture.get_rid()
+		if not _pxheights.has(key):
+			var img := bm.albedo_texture.get_image()
+			if img == null: continue
+			if img.is_compressed(): img.decompress()
+			img.convert(Image.FORMAT_RGBA8)
+			var h := Image.create(img.get_width(), img.get_height(), false, Image.FORMAT_L8)
+			for y in range(img.get_height()):
+				for x in range(img.get_width()):
+					# windows (alpha=1) sit LOW; walls high
+					h.set_pixel(x, y, Color.from_hsv(0, 0, 1.0 - img.get_pixel(x, y).a))
+			_pxheights[key] = ImageTexture.create_from_image(h)
+		bm.heightmap_enabled = true
+		bm.heightmap_texture = _pxheights[key]
+		bm.heightmap_scale = 0.35          # ~35 cm window recess at vista scale
+		bm.heightmap_deep_parallax = true
+		bm.heightmap_min_layers = 4
+		bm.heightmap_max_layers = 8
+
+# RUNTIME MESH LODs: Godot only auto-generates LODs during editor import —
+# runtime-loaded GLBs render FULL detail at any distance, which is why flying
+# was vertex-bound even on a 4080. Rebuild each merged mesh through
+# ImporterMesh.generate_lods(); the result (mesh + LOD chain) is what the
+# fast-startup sidecar caches, so the generation cost is paid once.
+static func _with_lods(m: Mesh) -> Mesh:
+	if not (m is ArrayMesh): return m
+	var am := m as ArrayMesh
+	if am.get_surface_count() == 0: return m
+	var im := ImporterMesh.new()
+	for s in range(am.get_surface_count()):
+		im.add_surface(Mesh.PRIMITIVE_TRIANGLES, am.surface_get_arrays(s),
+				[], {}, am.surface_get_material(s))
+	im.generate_lods(25.0, 60.0, [])
+	var out := im.get_mesh()
+	return out if out != null and out.get_surface_count() > 0 else m
 
 # names of prop meshes this map needs that aren't in the shared cache yet
 func _props_missing() -> Array:
@@ -987,6 +1379,8 @@ func _flipped_mesh(mesh: Mesh) -> Mesh:
 			for k in range(nrm.size()): nn[k] = -nrm[k]
 			arr[Mesh.ARRAY_NORMAL] = nn
 		out.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr)
+		var mat := mesh.surface_get_material(s)   # keep materials on the flipped copy
+		if mat != null: out.surface_set_material(out.get_surface_count() - 1, mat)
 	_flip_cache[mesh] = out
 	return out
 
@@ -1010,10 +1404,16 @@ func _add_multimesh(parent: Node3D, mesh: Mesh, xf: Array, textured: bool, flat_
 # Build the _MAP_CONTEXT subtree. Everything owner=null.
 #   enabled      – Map Context on at all (terrain + surroundings baseline)
 #   show_objects – add the game's original object placements (props layer)
-#   textured     – real textures instead of the flat green/orange study colours
-func apply(root: Node, enabled: bool, show_objects: bool, textured: bool) -> String:
+#   tex          – detail mode, following the dock's Detail Mode dropdown:
+#                  0 = flat SDK study colours (green land, orange objects),
+#                  1 = untextured grey high-poly (clay), 2 = textured.
+#                  Legacy bool callers (PhotoMatch): false = 0, true = 2.
+func apply(root: Node, enabled: bool, show_objects: bool, tex = true) -> String:
+	var tex_mode: int = (2 if tex else 0) if tex is bool else int(tex)
+	var textured := tex_mode == 2
 	_active = enabled
 	_show_objects = show_objects
+	_ctx_tex_mode = tex_mode
 	if root == null: return "No scene open"
 	var map := map_of(root)
 	if map == "": return "Open a level scene (MP_…) first"
@@ -1043,6 +1443,7 @@ func apply(root: Node, enabled: bool, show_objects: bool, textured: bool) -> Str
 	#     ground-layer albedo/normal, slope-selected, so it's no longer pixelated.
 	var tmat: ShaderMaterial = null
 	var sdk_overlaid := 0
+	_maptile_ok = false                # set true below when a decal would show
 	if textured:
 		tmat = _terrain_shader_mat(map)               # detail material for our extended terrain
 		# With REAL splat data the extended terrain (which underlies the whole
@@ -1053,12 +1454,17 @@ func apply(root: Node, enabled: bool, show_objects: bool, textured: bool) -> Str
 		# decal exactly as before.
 		var splat_covers: bool = _splat_active and tmat != null and enabled \
 			and have_data and (_data.get("heightmap", {}) as Dictionary).has("file")
-		if not splat_covers:
+		# manual "Maptile decal" override: skip the decal entirely when off (it
+		# tints buildings/props — fights the re-baked real prop textures).
+		# _maptile_ok remembers the mode so set_maptile can re-add instantly.
+		_maptile_ok = not splat_covers
+		if not splat_covers and maptile_enabled:
 			sdk_overlaid = _apply_maptile(root, map)  # decal on SDK terrain + assets
 
 	if not enabled and not show_objects:
 		if not textured: return "Map Context off"
-		return "SDK terrain textured (decal)" if sdk_overlaid > 0 else "No maptile for %s" % map
+		if sdk_overlaid > 0: return "SDK terrain textured (decal)"
+		return "Maptile decal off" if not maptile_enabled else "No maptile for %s" % map
 	if not have_data:
 		return "%s not downloaded (hit Reload map data)" % map
 
@@ -1118,51 +1524,518 @@ func apply(root: Node, enabled: bool, show_objects: bool, textured: bool) -> Str
 			if e.has("glb"):
 				var gp := "%s/%s" % [dir, e["glb"]]
 				if FileAccess.file_exists(gp):
-					var g := _load_external_glb(gp)
-					if g:
-						var gi := g.instantiate()
-						mesh = _extract_mesh(gi)
-						gi.queue_free()
+					# merge ALL mesh nodes like the props path — the rebuilt
+					# skyline GLBs carry one node per material section (Roof,
+					# Walls...); _extract_mesh took only the FIRST, which
+					# rendered the distant buildings as floating rooftops
+					mesh = _parse_prop_file(gp)
 			elif e.has("model"):
 				mesh = _mesh_for(str(e["model"]))
 			if mesh:
-				_add_multimesh(bd_root, mesh, e.get("xf", []), textured, green)
+				_add_multimesh(bd_root, mesh, e.get("xf", []), textured,
+						_clay_mat() if tex_mode == 1 else green)
 				bd_ok += 1
+
+	# --- status summary base (computed BEFORE the props build launches, so the
+	# background builder's very first progress report already carries it) ---
+	var mt := ""
+	if textured:
+		if tmat != null and _splat_active:
+			mt = ", SPLAT terrain (%d layer slices, no decal)" % _splat_n
+		elif tmat != null:
+			mt = ", decal + detail terrain" if maptile_enabled else ", detail terrain (decal off)"
+		else:
+			mt = ", maptile decal (no layer set)" if maptile_enabled else ", decal off (no layer set)"
+	var tex_lbl := "textured" if textured else ("clay" if tex_mode == 1 else "flat colour")
+	var surr := ", surroundings %d/%d" % [bd_ok, bd_total]
+	var sct := ", %d scatter types" % _scatter_n if _scatter_n > 0 else ""
+	_build_status_base = "%s: terrain %s%s%s%s" % [map, tex_lbl, surr, sct, mt]
 
 	# --- objects: "Original map objects" — independent of the terrain context, so
 	# you can drop them onto the SDK's own playable terrain alone. Untextured, they
 	# use the SDK's M_LevelAssets (shiny orange) placeholder to match the shipped
 	# assets; textured, they keep their own material.
-	var n_props := 0
 	if show_objects:
 		var orange: Material = _sdk_assets_material(root, map)
 		if orange is BaseMaterial3D:
 			var od := (orange as BaseMaterial3D).duplicate() as BaseMaterial3D
 			od.cull_mode = BaseMaterial3D.CULL_DISABLED
 			orange = od
+		if tex_mode == 1:
+			orange = _clay_mat()          # grey clay instead of the SDK orange
 		var props_root := Node3D.new(); props_root.name = "Props"
 		ctx.add_child(props_root); props_root.owner = null
-		for e in _data.get("props", []):
-			if not (e is Dictionary): continue
-			var mesh := _prop_mesh(e, dir)
-			if mesh == null: continue
-			_add_cell_multimeshes(props_root, mesh, e.get("xf", []), textured, orange)
-			n_props += 1
-		_apply_radius()
-
-	var mt := ""
-	if textured:
-		if tmat != null and _splat_active:
-			mt = ", SPLAT terrain (%d layer slices, no decal)" % _splat_n
-		elif tmat != null:
-			mt = ", decal + detail terrain"
+		# NON-BLOCKING: parsing ~2k unique GLBs + building their MultiMeshes
+		# inline froze the editor for minutes. Queue the mesh groups
+		# nearest-first from the editor camera and hand them to an incremental
+		# builder (small time budget per frame) — the editor stays responsive
+		# and props appear from the camera OUTWARD. apply() itself stays
+		# synchronous; callers that need the COMPLETE overlay (PhotoMatch)
+		# wait on is_build_done().
+		_props_dir = dir              # remembered for refresh_changed_props
+		_props_textured = textured
+		_props_mat = orange
+		_props_tex_mode = tex_mode    # set_objects_shown fast path key
+		_variant_layer_groups = {}    # groups rebuild under the fresh Props node
+		var entries := _sorted_prop_entries(_data.get("props", []))
+		_build_total = entries.size()
+		_build_done = 0
+		_build_props = 0
+		_last_report = 0
+		_building = _build_total > 0
+		if _building:
+			_build_props_async(props_root, entries, dir, textured, orange, _build_gen)   # fire-and-forget
 		else:
-			mt = ", maptile decal (no layer set)"
-	var tex := "textured" if textured else "flat colour"
-	var surr := ", surroundings %d/%d" % [bd_ok, bd_total]
-	var objs := ", %d object meshes" % n_props if show_objects else ""
-	var sct := ", %d scatter types" % _scatter_n if _scatter_n > 0 else ""
-	return "%s: terrain %s%s%s%s%s" % [map, tex, surr, objs, sct, mt]
+			_apply_radius()
+
+	var objs := ""
+	if show_objects:
+		if _building:
+			objs = ", building %d object meshes…" % _build_total
+		else:
+			objs = ", %d object meshes" % _build_props
+	_last_status = "%s: terrain %s%s%s%s%s" % [map, tex, surr, objs, sct, mt]
+	return _last_status
+
+# ---------- non-blocking props build ----------
+# True once the background props build has finished (or none is running).
+# Batch consumers (PhotoMatch's render hook) poll this before rendering so
+# they always shoot a COMPLETE overlay.
+func is_build_done() -> bool:
+	return not _building
+
+# Live one-line progress for hosts that own their own status label; the full
+# apply() summary once the build is done.
+func build_progress_text() -> String:
+	if not _building:
+		return _last_status
+	return "%s, objects %d/%d…" % [_build_status_base, _build_done, _build_total]
+
+# Prop entries sorted nearest-first from the editor camera (distance of each
+# mesh group's CLOSEST placement), so props appear from the camera outward.
+# `src` = any list of prop entries (the full _data set, or a refresh subset).
+func _sorted_prop_entries(src: Array) -> Array:
+	var cpos := Vector3.ZERO
+	var cam := _editor_cam()
+	if cam: cpos = cam.global_transform.origin
+	var order: Array = []
+	for e in src:
+		if not (e is Dictionary): continue
+		var xf: Array = e.get("xf", [])
+		if xf.is_empty(): continue
+		order.append([_min_d2(xf, cpos), e])
+	order.sort_custom(func(a, b): return a[0] < b[0])
+	var out: Array = []
+	for p in order: out.append(p[1])
+	return out
+
+# squared distance from cpos to the NEAREST placement origin in a 12-float-
+# stride transform array (INF for an empty array)
+static func _min_d2(xf: Array, cpos: Vector3) -> float:
+	var d2 := INF
+	var count := int(xf.size() / 12)
+	for i in range(count):
+		var o := i * 12
+		var dx := float(xf[o + 9]) - cpos.x
+		var dy := float(xf[o + 10]) - cpos.y
+		var dz := float(xf[o + 11]) - cpos.z
+		var dd := dx * dx + dy * dy + dz * dz
+		if dd < d2: d2 = dd
+	return d2
+
+# Incremental builder — launched WITHOUT await from apply() (fire-and-forget).
+# Spends BUILD_FRAME_MS of GLB parsing + MultiMesh building per frame, then
+# yields a frame. gen is compared against _build_gen after EVERY await: a new
+# apply()/_clear() bumps the generation and this pass stops dead — its nodes
+# were already freed with _MAP_CONTEXT, and it must never touch the state a
+# newer pass now owns (so no _building/_report writes on that path).
+func _build_props_async(props_root: Node3D, entries: Array, dir: String,
+		textured: bool, flat_mat: Material, gen: int) -> void:
+	var frame_start := Time.get_ticks_msec()
+	for e in entries:
+		var gp := _prop_path(e, dir)
+		var mesh := _prop_mesh(e, dir)      # the expensive part (GLB parse; cached)
+		if gp != "":
+			# refresh bookkeeping: which entries this source file built (recorded
+			# even when the parse failed, so a file that lands later refreshes in)
+			if not _prop_by_src.has(gp): _prop_by_src[gp] = []
+			(_prop_by_src[gp] as Array).append(e)
+		if mesh != null:
+			var xf: Array = e.get("xf", [])
+			var em: Dictionary = _prop_layers.get(str(e.get("mesh", "")), {})
+			if em.is_empty():
+				_add_cell_multimeshes(props_root, mesh, xf, textured, flat_mat, gp)
+			else:
+				# split layer-gated instances (winter dressing, Rush barriers…)
+				# into visibility groups the Variant dropdown flips live.
+				# (refresh_changed_props re-merges a refreshed mesh's instances
+				# into the base group until the next full build — minor drift.)
+				var base: Array = []
+				var bux: Dictionary = {}
+				var n := int(xf.size() / 12)
+				for i in range(n):
+					if em.has(i):
+						var k: String = em[i]
+						if not bux.has(k): bux[k] = []
+						for j in range(12): (bux[k] as Array).append(xf[i * 12 + j])
+					else:
+						for j in range(12): base.append(xf[i * 12 + j])
+				if not base.is_empty():
+					_add_cell_multimeshes(props_root, mesh, base, textured, flat_mat, gp)
+				for k in bux:
+					_add_cell_multimeshes(_variant_group(props_root, str(k)),
+							mesh, bux[k], textured, flat_mat, gp)
+			_build_props += 1
+		_build_done += 1
+		if Time.get_ticks_msec() - frame_start >= BUILD_FRAME_MS:
+			_apply_radius()                 # freshly added cells obey the range slider
+			_report_progress()
+			if not is_inside_tree():        # host removed us mid-build: no tree to await
+				if gen == _build_gen:
+					_building = false
+					build_finished.emit(_build_props)
+				return
+			await get_tree().process_frame  # keep the editor smooth
+			if gen != _build_gen:
+				return                      # superseded by a new apply()/_clear()
+			if not is_instance_valid(props_root):
+				_building = false           # scene/ctx freed underneath us
+				build_finished.emit(_build_props)
+				return
+			frame_start = Time.get_ticks_msec()
+	_apply_radius()
+	_building = false
+	_report_progress(true)
+	build_finished.emit(_build_props)
+
+# Progress: emit the signal (the toggle dock drives a ProgressBar off it) and
+# write the host's status label when one was injected; without a label, fall
+# back to print() + a tail-able user://mapcontext/build_progress.txt, both at
+# a ~BUILD_REPORT_EVERY-mesh cadence so the Output panel isn't flooded.
+func _report_progress(final := false) -> void:
+	build_progress.emit(_build_done, _build_total)
+	var msg: String
+	if final:
+		msg = "%s, %d object meshes" % [_build_status_base, _build_props]
+	else:
+		msg = "%s, objects %d/%d…" % [_build_status_base, _build_done, _build_total]
+	var l: Label = null
+	if status_label != null and is_instance_valid(status_label):
+		l = status_label
+	if l != null:
+		l.text = msg
+	if final or _build_done - _last_report >= BUILD_REPORT_EVERY:
+		_last_report = _build_done
+		if l == null:
+			print("MapContext: %s" % msg)
+		var f := FileAccess.open(CACHE + "/build_progress.txt", FileAccess.WRITE)
+		if f:
+			f.store_string("%d/%d%s" % [_build_done, _build_total, " done" if final else ""])
+			f.close()
+
+# ---------- incremental props refresh ("Check for Updates") ----------
+# The background re-bake overwrites GLBs in the shared props cache file-by-file
+# while the user works. Rescan every source file this overlay parsed (mtime +
+# size stamped at parse); changed files are handed to _refresh_props_async,
+# which BUILD-THEN-SWAPs each one — the old mesh/MultiMeshes stay live until
+# the replacement parsed successfully (camera-out order, same progress bar/
+# signals/label as a full build). Returns the number of changed files queued,
+# 0 when nothing changed, and -1 while a build is still running — the running
+# pass owns all build state, so the caller should simply try again after.
+func refresh_changed_props(root: Node) -> int:
+	if _building: return -1
+	if root == null or not _show_objects: return 0
+	var ctx := root.get_node_or_null(NODE)
+	if ctx == null: return 0
+	var props_root := ctx.get_node_or_null("Props") as Node3D
+	if props_root == null: return 0
+	# camera-out ordered jobs: [min_d2, path, entries] for every stamped source
+	# whose on-disk file changed. NOTHING is evicted or freed here — the async
+	# refresh swaps each mesh only AFTER its replacement parsed successfully.
+	var cpos := Vector3.ZERO
+	var cam := _editor_cam()
+	if cam: cpos = cam.global_transform.origin
+	var jobs: Array = []
+	for gp in _mesh_stat.keys():
+		var rec: Dictionary = _mesh_stat[gp]
+		var mt: int = FileAccess.get_modified_time(gp) if FileAccess.file_exists(gp) else 0
+		if mt == int(rec.get("mt", -1)) and _file_size(gp) == int(rec.get("sz", -2)):
+			continue
+		var entries: Array = _prop_by_src.get(gp, [])
+		if entries.is_empty(): continue        # stamped but unused by this map
+		var d2 := INF
+		for e in entries:
+			var dd := _min_d2(e.get("xf", []), cpos)
+			if dd < d2: d2 = dd
+		jobs.append([d2, gp, entries])
+	if jobs.is_empty(): return 0
+	jobs.sort_custom(func(a, b): return a[0] < b[0])
+	_build_total = jobs.size()
+	_build_done = 0
+	_build_props = 0
+	_last_report = 0
+	_building = true
+	# same generation as the surrounding overlay: a later full apply()/_clear()
+	# bumps it and cancels this refresh exactly like a full build
+	_refresh_props_async(props_root, jobs, _build_gen)
+	return _build_total
+
+# Incremental REFRESH builder (fire-and-forget, like _build_props_async): one
+# job per changed source file, strictly BUILD-THEN-SWAP —
+#   1. parse the replacement mesh (atomic byte snapshot, no cache writes)
+#   2. only on success: swap the caches, build the NEW MultiMeshes, then
+#      queue_free exactly the OLD ones (collected before the add — old and new
+#      share the same "src" tag)
+#   3. on failure (e.g. caught the re-bake mid-write): keep the old mesh AND
+#      the old stamp, count it, continue — the next Check retries that file.
+# Same per-frame budget, progress reporting and generation-cancel rules as the
+# full builder.
+func _refresh_props_async(props_root: Node3D, jobs: Array, gen: int) -> void:
+	var failed := 0
+	var frame_start := Time.get_ticks_msec()
+	for job in jobs:
+		var gp: String = job[1]
+		var entries: Array = job[2]
+		# stamp BEFORE reading: a file replaced between stamp and read still
+		# differs from the stored stamp on the next Check — never missed
+		var stamp := {
+			"mt": FileAccess.get_modified_time(gp) if FileAccess.file_exists(gp) else 0,
+			"sz": _file_size(gp),
+		}
+		var mesh := _parse_prop_file(gp)
+		if mesh == null:
+			failed += 1
+		else:
+			var old = _mesh_cache.get(gp, null)    # untyped: may be null
+			if old != null:
+				_flip_cache.erase(old)             # its mirrored twin came from the old mesh
+			_mesh_cache[gp] = mesh
+			_mesh_stat[gp] = stamp
+			var old_mmis := _collect_prop_mmis(gp)
+			for e in entries:
+				_add_cell_multimeshes(props_root, mesh, e.get("xf", []),
+					_props_textured, _props_mat, gp)
+			_free_mmi_list(old_mmis)               # replacement is live — drop the old
+			_build_props += 1
+		_build_done += 1
+		if Time.get_ticks_msec() - frame_start >= BUILD_FRAME_MS:
+			_apply_radius()                 # swapped cells obey the range slider
+			_report_progress()
+			if not is_inside_tree():        # host removed us mid-refresh
+				if gen == _build_gen:
+					_building = false
+					build_finished.emit(_build_props)
+				return
+			await get_tree().process_frame  # keep the editor smooth
+			if gen != _build_gen:
+				return                      # superseded by a new apply()/_clear()
+			if not is_instance_valid(props_root):
+				_building = false           # scene/ctx freed underneath us
+				build_finished.emit(_build_props)
+				return
+			frame_start = Time.get_ticks_msec()
+	_apply_radius()
+	_building = false
+	if failed > 0:
+		print("MapContext: %d changed prop file(s) failed to parse (mid-write?) — kept the old meshes; run Check for Updates again" % failed)
+	_report_progress(true)
+	build_finished.emit(_build_props)
+
+# every live props MultiMesh built from `src` (checked BEFORE adding its
+# replacements, which carry the same tag)
+func _collect_prop_mmis(src: String) -> Array:
+	var out: Array = []
+	for key in _cells.keys():
+		for mmi in _cells[key]:
+			if is_instance_valid(mmi) and str(mmi.get_meta("src", "")) == src:
+				out.append(mmi)
+	return out
+
+# queue_free (never free()) EXACTLY these MultiMeshes and forget them from the
+# cell index — the renderer may still reference them this frame
+func _free_mmi_list(list: Array) -> void:
+	if list.is_empty(): return
+	var kill: Dictionary = {}
+	for m in list: kill[m] = true
+	for key in _cells.keys():
+		var kept: Array = []
+		for mmi in _cells[key]:
+			if not is_instance_valid(mmi):
+				continue                           # freed externally: just forget it
+			if kill.has(mmi):
+				var par := (mmi as Node).get_parent()
+				if par != null: par.remove_child(mmi)
+				mmi.queue_free()
+			else:
+				kept.append(mmi)
+		if kept.is_empty(): _cells.erase(key)
+		else: _cells[key] = kept
+
+# ---------- storage / purge ----------
+# maps with downloaded data: user://mapcontext subfolders carrying a
+# placements.json (the shared _props store is not a map)
+static func downloaded_maps() -> Array:
+	var out: Array = []
+	var da := DirAccess.open(CACHE)
+	if da == null: return out
+	var subs := da.get_directories()
+	subs.sort()
+	for sub in subs:
+		if sub == "_props": continue
+		if FileAccess.file_exists("%s/%s/placements.json" % [CACHE, sub]):
+			out.append(sub)
+	return out
+
+# every shared-cache mesh name a downloaded map references (props placements +
+# vegetation scatter kits) — the reference sets purge safety is built on
+static func map_prop_refs(map: String) -> Dictionary:
+	var out: Dictionary = {}
+	var pj := "%s/%s/placements.json" % [CACHE, map]
+	if FileAccess.file_exists(pj):
+		var d: Variant = JSON.parse_string(FileAccess.get_file_as_string(pj))
+		if d is Dictionary:
+			for e in (d as Dictionary).get("props", []):
+				if e is Dictionary and e.has("mesh"):
+					out[str(e["mesh"])] = true
+	var sj := "%s/%s/scatter.json" % [CACHE, map]
+	if FileAccess.file_exists(sj):
+		var d2: Variant = JSON.parse_string(FileAccess.get_file_as_string(sj))
+		if d2 is Dictionary:
+			for e in (d2 as Dictionary).get("entries", []):
+				if e is Dictionary and e.has("mesh"):
+					out[str(e["mesh"])] = true
+	return out
+
+# async recursive [file count, bytes] for a folder — chunk-yields so multi-GB
+# walks never block the editor; callers re-check their own state after awaits
+func dir_usage_async(path: String) -> Array:
+	var files := 0
+	var bytes := 0
+	var since := 0
+	var stack: Array = [path]
+	while not stack.is_empty():
+		var d: String = stack.pop_back()
+		var da := DirAccess.open(d)
+		if da == null: continue
+		for sub in da.get_directories():
+			stack.append("%s/%s" % [d, sub])
+		for f in da.get_files():
+			bytes += maxi(0, _file_size("%s/%s" % [d, f]))
+			files += 1
+			since += 1
+			if since >= 256:
+				since = 0
+				if not is_inside_tree(): return [files, bytes]
+				await get_tree().process_frame   # keep the editor smooth
+	return [files, bytes]
+
+# What purging `map` would delete — real sizes + sharing, computed BEFORE the
+# confirmation dialog so it shows true numbers:
+#   excl        shared-cache meshes referenced ONLY by this map among the
+#               downloaded maps (deletable)
+#   shared      count referenced by at least one OTHER downloaded map (KEPT —
+#               purging must never silently break another map)
+#   excl_bytes  bytes of the deletable shared-cache glbs
+#   map_bytes   bytes of the map's own folder
+func purge_info(map: String) -> Dictionary:
+	var refs := map_prop_refs(map)
+	var others: Dictionary = {}
+	for m in downloaded_maps():
+		if str(m) == map: continue
+		for nm in map_prop_refs(str(m)).keys():
+			others[nm] = true
+		if is_inside_tree():
+			await get_tree().process_frame   # placements parses are chunky
+	var excl: Array = []
+	var shared := 0
+	var excl_bytes := 0
+	var i := 0
+	for nm in refs.keys():
+		if others.has(nm):
+			shared += 1
+			continue
+		var p := "%s/%s.glb" % [PROPS_CACHE, nm]
+		if FileAccess.file_exists(p):
+			excl.append(nm)
+			excl_bytes += maxi(0, _file_size(p))
+		i += 1
+		if i % 400 == 0 and is_inside_tree():
+			await get_tree().process_frame
+	var mu: Array = await dir_usage_async("%s/%s" % [CACHE, map])
+	return {"excl": excl, "shared": shared, "excl_bytes": excl_bytes,
+		"map_bytes": int(mu[1])}
+
+# Execute the purge: delete the map's folder + its exclusive shared-cache
+# glbs, scrub them from the props index and the in-RAM caches, and forget the
+# map's session state so a future re-enable re-downloads cleanly. The CALLER
+# turns the overlay off first when purging the currently open map.
+func purge_map(map: String, info: Dictionary) -> void:
+	var idx := _props_index()
+	var idx_changed := false
+	var n := 0
+	for nm in info.get("excl", []):
+		var p := "%s/%s.glb" % [PROPS_CACHE, str(nm)]
+		if FileAccess.file_exists(p):
+			DirAccess.remove_absolute(p)
+		for sfx in [".baked.res", ".baked2.res"]:
+			if FileAccess.file_exists(p + sfx):
+				DirAccess.remove_absolute(p + sfx)   # fast-startup sidecars
+		if idx.has(nm):
+			idx.erase(nm)
+			idx_changed = true
+		_mesh_cache.erase(p)
+		_mesh_stat.erase(p)
+		_prop_by_src.erase(p)
+		n += 1
+		if n % 256 == 0 and is_inside_tree():
+			await get_tree().process_frame   # keep the editor smooth
+	if idx_changed:
+		_save_props_index(idx)
+	_rm_dir_recursive("%s/%s" % [CACHE, map])
+	_session_checked.erase(map)
+	_props_verified.erase(map)
+	_props_refresh.erase(map)
+	_splat_cache.erase(map)
+	if _map == map:
+		_data = {}
+		_map = ""
+
+# UPDATE-BUTTON CLEANUP: sweep stale cache artifacts so "Check for Updates"
+# both delivers the new files AND reclaims what this release obsoleted —
+# v1 mesh sidecars (pre-LOD), torn .tmp.glb leftovers, and orphaned sidecars
+# whose source GLB is gone. Never touches live GLBs or map data.
+func cleanup_stale(map: String) -> int:
+	var removed := 0
+	var dirs := [ProjectSettings.globalize_path(PROPS_CACHE)]
+	if map != "":
+		dirs.append(ProjectSettings.globalize_path("%s/%s" % [CACHE, map]))
+		dirs.append(ProjectSettings.globalize_path("%s/%s/backdrop" % [CACHE, map]))
+	for d in dirs:
+		var da := DirAccess.open(d)
+		if da == null: continue
+		for f in da.get_files():
+			var p := "%s/%s" % [d, f]
+			var kill := false
+			if f.ends_with(".baked.res"):
+				kill = true                     # v1 sidecar (pre-LOD)
+			elif f.ends_with(".tmp.glb"):
+				kill = true                     # torn mid-write leftover
+			elif f.ends_with(".baked2.res"):
+				kill = not FileAccess.file_exists(p.trim_suffix(".baked2.res"))
+			if kill:
+				DirAccess.remove_absolute(p)
+				removed += 1
+	return removed
+
+# recursive delete — DirAccess has no rm -r
+static func _rm_dir_recursive(path: String) -> void:
+	var da := DirAccess.open(path)
+	if da == null: return
+	for sub in da.get_directories():
+		_rm_dir_recursive("%s/%s" % [path, sub])
+	for f in da.get_files():
+		da.remove(f)
+	DirAccess.remove_absolute(path)
 
 # Water: exact flat plane(s) from the extracted WaterEntityData / placed water
 # quads in placements.json. "water" is either one {height, center, size} dict (a
@@ -1274,14 +2147,30 @@ func _load_external_glb(abs_or_res: String) -> PackedScene:
 	# user:// glbs aren't imported; load via runtime GLTF; res:// via normal loader
 	if abs_or_res.begins_with("res://"):
 		return load(abs_or_res) if ResourceLoader.exists(abs_or_res) else null
+	HighpolyStore._ensure_webp_ext()   # webp-embedded basecolors (whole prop cache)
+	# ONE-SHOT byte snapshot + append_from_buffer, NOT append_from_file: the
+	# background re-bake rewrites these cache files continuously, and Godot's
+	# Windows FileAccess opens share-all — a file-based parse can read a file
+	# MID-OVERWRITE (torn chunk lengths → native crash in the glTF parser,
+	# 0xc0000005). A single read sees one consistent byte snapshot, and a
+	# malformed snapshot FAILS the parse instead of crashing it.
+	var bytes := FileAccess.get_file_as_bytes(ProjectSettings.globalize_path(abs_or_res))
+	# glb sanity: 12-byte header starting with the "glTF" magic — every file we
+	# load here is a .glb; a short/other prefix = missing or torn mid-write
+	if bytes.size() < 12 or bytes.decode_u32(0) != 0x46546C67:
+		return null
 	var doc := GLTFDocument.new(); var st := GLTFState.new()
+	# buffer loads have no filename, and trimesh GLBs carry no scenes[0].name —
+	# generate_scene would set_name("") on the root ("p_name.is_empty()" error
+	# spam, one per GLB). Naming the state names the root instead.
+	st.filename = abs_or_res.get_file()
 	# embed textures directly instead of routing them through the editor's
-	# reimport system (which fails on user:// webp and made append_from_file
+	# reimport system (which fails on user:// webp and made the parse
 	# return an error → whole mesh dropped). We build the scene regardless of
 	# the return code because the geometry is valid even when textures don't
 	# fully resolve.
 	st.set_handle_binary_image(GLTFState.HANDLE_BINARY_EMBED_AS_UNCOMPRESSED)
-	doc.append_from_file(ProjectSettings.globalize_path(abs_or_res), st)
+	doc.append_from_buffer(bytes, ProjectSettings.globalize_path(abs_or_res).get_base_dir(), st)
 	var scene := doc.generate_scene(st)
 	if scene == null: return null
 	# raw embedded textures are a memory bomb at scale — recompress to S3TC
@@ -1289,7 +2178,7 @@ func _load_external_glb(abs_or_res: String) -> PackedScene:
 	var ps := PackedScene.new(); ps.pack(scene); scene.queue_free()
 	return ps
 
-func _add_cell_multimeshes(parent: Node3D, mesh: Mesh, xf: Array, textured: bool, flat_mat: Material) -> void:
+func _add_cell_multimeshes(parent: Node3D, mesh: Mesh, xf: Array, textured: bool, flat_mat: Material, src := "") -> void:
 	# split placements into world cells (for distance streaming), and within each
 	# cell split normal vs mirrored (negative-determinant) instances — the game
 	# legitimately mirror-instances props and a MultiMesh renders those inside-out
@@ -1315,6 +2204,7 @@ func _add_cell_multimeshes(parent: Node3D, mesh: Mesh, xf: Array, textured: bool
 				if flipped == null: flipped = _flipped_mesh(mesh)
 				msh = flipped
 			var mmi := _build_mmi(msh, gxf, textured, flat_mat)
+			if src != "": mmi.set_meta("src", src)   # refresh: find MMIs by source file
 			parent.add_child(mmi); mmi.owner = null
 			if not _cells.has(key): _cells[key] = []
 			_cells[key].append(mmi)
@@ -1325,8 +2215,67 @@ func _build_mmi(mesh: Mesh, xf: Array, textured: bool, flat_mat: Material) -> Mu
 	for i in range(count): mm.set_instance_transform(i, _xform(xf, i * 12))
 	var mmi := MultiMeshInstance3D.new(); mmi.multimesh = mm
 	if not textured: mmi.material_override = flat_mat
-	mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	# props/backdrop CAST shadows (the flat no-shadow overlay was an old
+	# study-mode perf choice — with game lighting it read as "shadows don't
+	# render"). Follows the dock's Shadows sub-checkbox so meshes built while
+	# it's unchecked stay light. Grass scatter is always shadow-off (GPU cost).
+	mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON \
+		if HighpolyLighting.cast_shadows else GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	# VISIBILITY RANGES (Godot's per-instance HLOD): small props stop being
+	# drawn long before the Range slider would cull their cell — the single
+	# biggest draw-call saver when flying (a trash can 1.5 km out was a full
+	# draw call). Sized from the mesh's own AABB; fades instead of popping.
+	var _sz := mesh.get_aabb().get_longest_axis_size()
+	if _sz < 3.0:
+		mmi.visibility_range_end = 400.0
+	elif _sz < 12.0:
+		mmi.visibility_range_end = 1200.0
+	if mmi.visibility_range_end > 0.0:
+		mmi.visibility_range_end_margin = 60.0
+		mmi.visibility_range_fade_mode = GeometryInstance3D.VISIBILITY_RANGE_FADE_SELF
 	return mmi
+
+# Fast path for the "Original map objects" toggle: SHOW/HIDE the already-built
+# props subtree instead of tearing the whole overlay down and re-parsing ~2k
+# GLBs (7+ GB — the "feels like it's redownloading" wait was that rebuild).
+# Returns false when there is no live props layer for this detail mode — the
+# caller must run the full apply() then.
+func set_objects_shown(root: Node, on: bool, tex_mode := -1) -> bool:
+	if root == null: return false
+	var ctx := root.get_node_or_null(NODE)
+	if ctx == null: return false
+	var props := ctx.get_node_or_null("Props")
+	if props == null: return false
+	if tex_mode >= 0 and tex_mode != _props_tex_mode:
+		return false                   # detail mode changed → needs a rebuild
+	_show_objects = on
+	(props as Node3D).visible = on
+	if on:
+		_apply_radius()                # re-cull for wherever the camera is now
+	return true
+
+# Fast path for the "Show whole map" toggle: hide/show the already-built
+# terrain/backdrop/water/scatter layers instead of tearing the WHOLE overlay
+# down — the full apply() also regenerated every map object ("why do all the
+# original map objects regenerate when toggling Show Whole Map").
+# Returns false when the context layers were never built for this detail
+# mode — the caller runs the full apply() then.
+func set_context_shown(root: Node, on: bool, tex_mode := -1) -> bool:
+	if root == null: return false
+	var ctx := root.get_node_or_null(NODE)
+	if ctx == null: return false
+	if tex_mode >= 0 and _ctx_tex_mode >= 0 and tex_mode != _ctx_tex_mode:
+		return false                   # detail mode changed → needs a rebuild
+	var found := false
+	for c in ctx.get_children():
+		if c.name == "Props" or not (c is Node3D):
+			continue
+		found = true
+		(c as Node3D).visible = on
+	if on and not found:
+		return false                   # terrain/backdrop never built → full apply
+	_active = on
+	return true
 
 # ---------- distance streaming (called by the dock on a timer) ----------
 func set_radius(r: float) -> void:
@@ -1341,11 +2290,28 @@ func _apply_radius() -> void:
 		var p := cam.global_transform.origin; cx = p.x; cz = p.z
 	for key in _cells.keys():
 		var parts: PackedStringArray = String(key).split(",")
-		var kx: float = int(parts[0]) * _cell_size + _world_min
-		var kz: float = int(parts[1]) * _cell_size + _world_min
-		var near: bool = abs(kx - cx) <= radius + _cell_size and abs(kz - cz) <= radius + _cell_size
+		# Euclidean distance to the cell CENTRE, margin = half the cell
+		# diagonal. The old test used the cell's min corner with a square
+		# metric and a whole-cell margin — at a 100 m slider it kept content
+		# out to ~230 m, which read as "culling not working".
+		var ckx: float = int(parts[0]) * _cell_size + _world_min + _cell_size * 0.5
+		var ckz: float = int(parts[1]) * _cell_size + _world_min + _cell_size * 0.5
+		var dx := ckx - cx
+		var dz := ckz - cz
+		var dist := sqrt(dx * dx + dz * dz)
+		var near: bool = dist <= radius + _cell_size * 0.7071
+		# shadow-caster LOD: only cells near the camera join the sun-shadow
+		# pass (the pass re-renders every caster per split — with GI + map
+		# lights on, whole-map casting was THE lag). 350 m covers everything
+		# a shadow is visible on at street scale.
+		var casts: bool = near and dist <= 350.0 + _cell_size * 0.7071 \
+			and HighpolyLighting.cast_shadows
 		for mmi in _cells[key]:
-			if is_instance_valid(mmi): mmi.visible = near
+			if is_instance_valid(mmi):
+				mmi.visible = near
+				(mmi as GeometryInstance3D).cast_shadow = \
+					GeometryInstance3D.SHADOW_CASTING_SETTING_ON if casts \
+					else GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 
 func _editor_cam() -> Camera3D:
 	var vp := EditorInterface.get_editor_viewport_3d(0)
@@ -1367,10 +2333,15 @@ func set_scatter_range(v: float) -> void:
 	_scatter.set_range(v, cam.global_transform.origin if cam else Vector3.ZERO)
 
 func tick() -> void:
-	# called by the dock timer while objects are shown (streamed by distance)
-	if _active and _show_objects:
+	# called by the dock timer while objects are shown (streamed by distance).
+	# Gate on _show_objects ALONE: objects can be shown without "Show whole
+	# map" (_active), and the old `_active and` gate froze their culling —
+	# the radius only applied once at slider-change instead of following the
+	# camera.
+	if _show_objects:
 		_apply_radius()
-	# vegetation scatter follows the camera (regenerates on 32 m cell crossings)
-	if _scatter != null and _scatter.active:
+	# vegetation scatter follows the camera (regenerates on 32 m cell crossings);
+	# frozen while the context layers are hidden (set_context_shown fast path)
+	if _active and _scatter != null and _scatter.active:
 		var cam := _editor_cam()
 		if cam: _scatter.tick(cam.global_transform.origin)

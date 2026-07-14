@@ -34,9 +34,23 @@ const NODE := "_GAME_LIGHTING"
 const TABLE := {
 	"MP_Abbasid": {"az": 225.00, "el": 44.00, "lux": 120000,
 		"sun": Color(1, 0.878, 0.759), "top": Color(0.5728, 0.737, 1), "hor": Color(0.7936, 0.903, 1), "gnd": Color(0.6265, 0.7848, 1)},
-	"MP_Aftermath": {"az": 237.90, "el": 12.90, "lux": 24000,
+	# Aftermath: the level's active VE preset is ve_mp_aftermath_sunsetovercast_03
+	# (sun az/el/lux/colour below are ITS values). The sky the game shows is the
+	# preset's PanoramicTexture import t_mp_aftermath_panoramicsky_sunsetovercast_07
+	# (BC6H 8192x2048 equirect, GUID-verified) — "pano" swaps the gradient
+	# ProceduralSky for that real panorama. "fog" 0.0 = photo-verified (the 21
+	# PhotoMatch references show no atmospheric fog; the el<16 haze formula below
+	# is a fallback heuristic, not Aftermath data).
+	# "pano_lum" = the panorama's MEASURED mean luminance (BC6H decode, 65k
+	# samples): the game's sky is authored in physical HDR units (~8,900 —
+	# real overcast-sky cd/m²) and auto-exposed in-game; the editor renders it
+	# raw, which read as a PURE WHITE screen. Normalizing by the measured mean
+	# puts the sky on the same ~1.0 scale the exp calibration was built on.
+	"MP_Aftermath": {"az": 237.90, "el": 12.90, "lux": 24000, "exp": 0.45,
+		"pano": "mp_aftermath_panoramicsky.dds", "pano_lum": 8923.0, "fog": 0.0,
 		"sun": Color(1, 0.5033, 0.2633), "top": Color(0.9995, 1, 0.9522), "hor": Color(1, 0.8774, 0.8688), "gnd": Color(0.7943, 0.797, 1)},
-	"MP_Aftermath_Portal": {"az": 237.90, "el": 12.90, "lux": 24000,
+	"MP_Aftermath_Portal": {"az": 237.90, "el": 12.90, "lux": 24000, "exp": 0.45,
+		"pano": "mp_aftermath_panoramicsky.dds", "pano_lum": 8923.0, "fog": 0.0,
 		"sun": Color(1, 0.5033, 0.2633), "top": Color(0.9995, 1, 0.9522), "hor": Color(1, 0.8774, 0.8688), "gnd": Color(0.7943, 0.797, 1)},
 	"MP_Badlands": {"az": 354.00, "el": 10.00, "lux": 45860,
 		"sun": Color(1, 0.21, 0), "top": Color(0.6117, 0.6912, 1), "hor": Color(1, 0.7093, 0.5486), "gnd": Color(0.9184, 0.8495, 1)},
@@ -98,8 +112,14 @@ static func sun_energy(lux: float) -> float:
 		return 0.0        # indoor maps (Subsurface): no meaningful sun
 	return clampf(1.7 * pow(lux / 120000.0, 0.45), 0.15, 2.2)
 
+# overlay meshes built while this is false stay shadow-off (the background
+# builder consults it) — kept in sync by apply()/set_shadows()
+static var cast_shadows := true
+
 # Build + inject the lighting rig. Idempotent (clears any previous rig first).
-static func apply(root: Node, map: String) -> String:
+# gi/shadows: the dock's sub-checkboxes (PhotoMatch renders keep full quality
+# via the defaults).
+static func apply(root: Node, map: String, gi := true, shadows := true) -> String:
 	if root == null:
 		return "No scene open"
 	clear(root)
@@ -119,23 +139,45 @@ static func apply(root: Node, map: String) -> String:
 	sun.light_color = e["sun"]
 	sun.light_energy = sun_energy(float(e["lux"]))
 	sun.visible = sun.light_energy > 0.0
-	sun.shadow_enabled = true
-	sun.directional_shadow_max_distance = 600.0
+	sun.shadow_enabled = shadows
+	# 1500 m: shadows previously cut off 600 m out — on city-scale maps whole
+	# blocks past the street you were on rendered shadowless ("shadows don't
+	# show very well"). Note the Aftermath preset is a 24,000-lux overcast sun
+	# vs a full-sky ambient: its shadows ARE soft/shallow in the game photos
+	# too — depth here should match the references, not a clear-noon look.
+	sun.directional_shadow_max_distance = 1500.0
 	sun.directional_shadow_mode = DirectionalLight3D.SHADOW_PARALLEL_4_SPLITS
 	sun.directional_shadow_blend_splits = true
 	sun.light_angular_distance = 0.5      # soft-edged sun shadows (sun disc size)
 	rig.add_child(sun)
 
 	# --- sky + environment ---
-	var mat := ProceduralSkyMaterial.new()
-	mat.sky_top_color = e["top"]
-	mat.sky_horizon_color = e["hor"]
-	mat.ground_horizon_color = e["hor"]
-	mat.ground_bottom_color = e["gnd"]
-	mat.sun_angle_max = 20.0              # generous halo — reads like the game's glow
-	mat.sun_curve = 0.12
+	# Maps with a "pano" entry use the REAL sky: the VE preset's PanoramicTexture
+	# (equirect BC6H HDR, extracted from the dump into addons/highpoly_toggle/sky/).
+	# That texture IS what the game renders behind the level — clouds, glow and
+	# horizon come from data, not from gradient-colour approximation.
 	var sky := Sky.new()
-	sky.sky_material = mat
+	var pano_tex: Texture2D = null
+	if e.has("pano"):
+		var pp := "res://addons/highpoly_toggle/sky/" + str(e["pano"])
+		if ResourceLoader.exists(pp):
+			pano_tex = load(pp)
+	if pano_tex != null:
+		var pmat := PanoramaSkyMaterial.new()
+		pmat.panorama = pano_tex
+		pmat.filter = true
+		# physical-HDR normalization (see the TABLE "pano_lum" note)
+		pmat.energy_multiplier = 1.0 / maxf(float(e.get("pano_lum", 1.0)), 0.001)
+		sky.sky_material = pmat
+	else:
+		var mat := ProceduralSkyMaterial.new()
+		mat.sky_top_color = e["top"]
+		mat.sky_horizon_color = e["hor"]
+		mat.ground_horizon_color = e["hor"]
+		mat.ground_bottom_color = e["gnd"]
+		mat.sun_angle_max = 20.0          # generous halo — reads like the game's glow
+		mat.sun_curve = 0.12
+		sky.sky_material = mat
 
 	var env := Environment.new()
 	env.background_mode = Environment.BG_SKY
@@ -145,18 +187,43 @@ static func apply(root: Node, map: String) -> String:
 	env.ambient_light_energy = 1.0 if sun.visible else 1.6   # indoor maps live off ambient
 	env.tonemap_mode = Environment.TONE_MAPPER_ACES
 	env.tonemap_white = 6.0
+	# PhotoMatch-calibrated exposure. The sky-gradient extraction loses the
+	# game's absolute HDR scale (BC6H values normalised; the game auto-exposes,
+	# the editor doesn't), so maps with near-white gradients render 2-3x hot.
+	# "exp" per map = tonemap exposure calibrated against paired in-game
+	# reference photos (median-luminance match, _DevTools/photomatch) — game
+	# data, not taste. Maps without a calibrated value keep 1.0.
+	env.tonemap_exposure = float(e.get("exp", 1.0))
 	env.glow_enabled = true
 	env.glow_intensity = 0.45
 	env.glow_bloom = 0.03
 	env.glow_hdr_threshold = 1.1
-	# depth fog tinted with the map's horizon colour: this is what carries the
-	# "golden haze" reading on sunset maps (the sky panorama itself is blue away
-	# from the sun; the warmth in-game comes from scattering/fog)
-	env.fog_enabled = true
-	env.fog_light_color = e["hor"]
-	env.fog_density = 0.0009 if float(e["el"]) < 16.0 else 0.0003
-	env.fog_sky_affect = 0.12
-	env.fog_aerial_perspective = 0.5
+	# GI: the game's VE runs full GI + GTAO (both components present in the
+	# preset dumps). Editor equivalents that work on the runtime-injected
+	# overlay (no baking, no saved scenes): SDFGI for bounce light + sky
+	# occlusion, SSAO for the contact darkening GTAO gives in-game. Both are
+	# part of the same PhotoMatch exposure calibration.
+	env.sdfgi_enabled = gi
+	env.sdfgi_use_occlusion = true
+	env.sdfgi_min_cell_size = 0.4      # coarser voxels: ~same diffuse bounce,
+	                                   # roughly half the SDFGI cost + more reach
+	env.ssao_enabled = gi
+	if gi:
+		# half-resolution GI buffers — near-identical look for diffuse GI,
+		# large GPU savings. Runtime call: doesn't touch project settings.
+		RenderingServer.gi_set_use_half_resolution(true)
+	# depth fog: per-map "fog" density when photo/VE-verified (0.0 = the map has
+	# none — e.g. Aftermath, confirmed against all 21 PhotoMatch references).
+	# Maps without a mined value keep the old horizon-haze heuristic until they
+	# get their own PhotoMatch pass.
+	var fog_density: float = float(e["fog"]) if e.has("fog") \
+		else (0.0009 if float(e["el"]) < 16.0 else 0.0003)
+	env.fog_enabled = fog_density > 0.0
+	if env.fog_enabled:
+		env.fog_light_color = e["hor"]
+		env.fog_density = fog_density
+		env.fog_sky_affect = 0.12
+		env.fog_aerial_perspective = 0.5
 	var wenv := WorldEnvironment.new()
 	wenv.name = "GameEnvironment"
 	wenv.environment = env
@@ -166,13 +233,141 @@ static func apply(root: Node, map: String) -> String:
 	rig.owner = null           # editor-only: never saved, never exported
 	for c in rig.get_children():
 		c.owner = null
+	# sync the overlay's shadow casting with the checkbox — flips the built
+	# meshes live, no rebuild (grass scatter stays shadow-off: GPU cost)
+	cast_shadows = shadows
+	var ctx := root.get_node_or_null("_MAP_CONTEXT")
+	if ctx != null:
+		_set_shadows(ctx, shadows)
 	return "%s game lighting: sun az %.0f° el %.0f°, %s lux" % [
 		map, float(e["az"]), float(e["el"]), String.num_uint64(int(e["lux"]))]
+
+# live sub-toggles (dock checkboxes under "Game lighting") — operate on the
+# existing rig/overlay, nothing rebuilds
+static func set_gi(root: Node, on: bool) -> String:
+	var rig := root.get_node_or_null(NODE) if root != null else null
+	var we := (rig.get_node_or_null("GameEnvironment") as WorldEnvironment) if rig != null else null
+	if we == null or we.environment == null:
+		return "Game lighting is off"
+	we.environment.sdfgi_enabled = on
+	we.environment.ssao_enabled = on
+	return "Global illumination " + ("on" if on else "off")
+
+static func set_shadows(root: Node, on: bool) -> String:
+	cast_shadows = on
+	var rig := root.get_node_or_null(NODE) if root != null else null
+	if rig == null:
+		return "Game lighting is off"
+	var sun := rig.get_node_or_null("Sun") as DirectionalLight3D
+	if sun != null:
+		sun.shadow_enabled = on
+	var ctx := root.get_node_or_null("_MAP_CONTEXT")
+	if ctx != null:
+		_set_shadows(ctx, on)
+	return "Shadows " + ("on" if on else "off")
+
+static func _set_shadows(n: Node, on: bool) -> void:
+	if n.name == "_SCATTER":
+		return                 # grass never casts (cost >> visual gain)
+	if n is MultiMeshInstance3D or n is MeshInstance3D:
+		(n as GeometryInstance3D).cast_shadow = \
+			GeometryInstance3D.SHADOW_CASTING_SETTING_ON if on \
+			else GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	for c in n.get_children():
+		_set_shadows(c, on)
 
 static func clear(root: Node) -> void:
 	if root == null:
 		return
-	var old := root.get_node_or_null(NODE)
-	if old:
-		root.remove_child(old)
-		old.queue_free()
+	for c in root.get_children():
+		if String(c.name).contains(NODE):   # orphan-proof (see HighpolyFx.clear)
+			root.remove_child(c)
+			c.queue_free()
+	clear_map_lights(root)     # the map-lights sub-option rides Game Lighting
+
+# ---------- map lights (mined placements: user://mapcontext/<map>/lights.json) ----------
+# 3,716 real light entities on Aftermath (PbrSpot/Sphere/Rect/Tube, positions +
+# colour + intensity + radius + cones decoded from the level EBX). Too many to
+# run at once — the dock timer culls to the nearest `lights_range` metres.
+const LIGHTS_NODE := "_MAP_LIGHTS"
+static var lights_range := 150.0
+
+static func clear_map_lights(root: Node) -> void:
+	if root == null: return
+	for c in root.get_children():
+		if String(c.name).contains(LIGHTS_NODE):   # orphan-proof
+			root.remove_child(c)
+			c.queue_free()
+
+static func set_map_lights(root: Node, on: bool, map: String) -> String:
+	clear_map_lights(root)
+	if root == null: return "No scene open"
+	if not on: return "Map lights off"
+	var p := "user://mapcontext/%s/lights.json" % map
+	if not FileAccess.file_exists(p):
+		return "No light data for %s" % map
+	var d: Variant = JSON.parse_string(FileAccess.get_file_as_string(p))
+	if not (d is Dictionary):
+		return "lights.json unreadable"
+	var holder := Node3D.new()
+	holder.name = LIGHTS_NODE
+	root.add_child(holder)
+	holder.owner = null
+	var n := 0
+	for L in d.get("lights", []):
+		if not (L is Dictionary): continue
+		if str(L.get("layer", "base")) != "base":
+			continue                    # winter/gauntlet-only lights stay off
+		var pos: Array = L.get("pos", [0, 0, 0])
+		var lt: Light3D
+		if bool(L.get("spot", false)):
+			var sp := SpotLight3D.new()
+			sp.spot_range = maxf(float(L.get("radius", 10.0)), 1.0)
+			# mined OuterAngle = FULL cone in degrees; Godot spot_angle = half
+			sp.spot_angle = clampf(float(L.get("angle", 60.0)) * 0.5, 1.0, 89.0)
+			lt = sp
+		else:
+			var om := OmniLight3D.new()
+			om.omni_range = maxf(float(L.get("radius", 8.0)), 1.0)
+			lt = om
+		var c: Array = L.get("color", [1, 1, 1])
+		var cmax: float = maxf(maxf(float(c[0]), float(c[1])), maxf(float(c[2]), 1.0))
+		lt.light_color = Color(float(c[0]) / cmax, float(c[1]) / cmax, float(c[2]) / cmax)
+		# raw Frostbite photometric intensity -> relative energy (empirical
+		# divisors from the mining report; PhotoMatch refines later). Cap at
+		# 2.2: a handful of outlier fixtures carry huge raw values the game's
+		# auto-exposure absorbs — uncapped they out-shone the sun.
+		var unit := int(L.get("unit", 0))
+		lt.light_energy = clampf(float(L.get("intensity", 1000.0))
+				/ (20000.0 if unit == 0 else 4000.0) * cmax, 0.02, 2.2)
+		lt.shadow_enabled = false
+		# GPU-side fade: shaded pixels skip faded lights entirely and the
+		# 150 m culling boundary stops popping
+		lt.distance_fade_enabled = true
+		lt.distance_fade_begin = 90.0
+		lt.distance_fade_length = 40.0
+		lt.position = Vector3(pos[0], pos[1], pos[2])
+		if lt is SpotLight3D and L.get("dir") is Array:
+			var dva: Array = L["dir"]
+			var dv := Vector3(dva[0], dva[1], dva[2])
+			if dv.length() > 0.01:
+				var up := Vector3.UP
+				if absf(dv.normalized().dot(up)) > 0.99:
+					up = Vector3.FORWARD
+				lt.basis = Basis.looking_at(dv.normalized(), up)
+		lt.visible = false              # tick_lights enables the near ones
+		holder.add_child(lt)
+		lt.owner = null
+		n += 1
+	return "Map lights: %d loaded (nearest %d m lit)" % [n, int(lights_range)]
+
+# dock-timer culling: only lights near the editor camera render
+static func tick_lights(root: Node, cam_pos: Vector3) -> void:
+	if root == null: return
+	var holder := root.get_node_or_null(LIGHTS_NODE)
+	if holder == null: return
+	var r2 := lights_range * lights_range
+	for c in holder.get_children():
+		if c is Light3D:
+			var l := c as Light3D
+			l.visible = l.position.distance_squared_to(cam_pos) <= r2

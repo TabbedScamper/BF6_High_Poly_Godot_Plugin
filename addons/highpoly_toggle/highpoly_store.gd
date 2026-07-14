@@ -163,7 +163,45 @@ static func load_scene(name: String) -> PackedScene:
 	_scene_cache[name] = ps
 	return ps
 
+# GLTF WebP texture support. trimesh-exported GLBs (the whole dump-extracted
+# prop cache: ~4,000 files) embed their basecolor as EXT/KHR_texture_webp —
+# an extension Godot's GLTFDocument does not resolve, so every such texture
+# silently dropped and the prop rendered flat white. Godot's Image decodes
+# WebP natively; this extension just wires the mime type + the texture's
+# extension-source indirection through. Registered once per session.
+class _WebPTexExt extends GLTFDocumentExtension:
+	func _get_supported_extensions() -> PackedStringArray:
+		return PackedStringArray(["EXT_texture_webp", "KHR_texture_webp"])
+	func _parse_image_data(_state: GLTFState, image_data: PackedByteArray,
+			mime_type: String, ret_image: Image) -> Error:
+		if mime_type == "image/webp":
+			return ret_image.load_webp_from_buffer(image_data)
+		# handle the standard mimes too: returning ERR_SKIP here still loads
+		# them (core falls through to its own decoders) but logs a bogus
+		# "glTF: Encountered error 45 when parsing image" per PNG/JPEG — the
+		# error spam users saw on "Show whole map" was exactly that.
+		if mime_type == "image/png":
+			return ret_image.load_png_from_buffer(image_data)
+		if mime_type == "image/jpeg":
+			return ret_image.load_jpg_from_buffer(image_data)
+		return ERR_SKIP
+	func _parse_texture_json(_state: GLTFState, texture_json: Dictionary,
+			ret_gltf_texture: GLTFTexture) -> Error:
+		var ext: Dictionary = texture_json.get("extensions", {})
+		var w: Dictionary = ext.get("EXT_texture_webp", ext.get("KHR_texture_webp", {}))
+		if w.has("source"):
+			ret_gltf_texture.src_image = int(w["source"])
+		return OK
+
+static var _webp_ext_registered := false
+
+static func _ensure_webp_ext() -> void:
+	if _webp_ext_registered: return
+	_webp_ext_registered = true
+	GLTFDocument.register_gltf_document_extension(_WebPTexExt.new(), true)
+
 static func load_external_glb(user_path: String) -> PackedScene:
+	_ensure_webp_ext()
 	var doc := GLTFDocument.new()
 	var st := GLTFState.new()
 	# embed textures directly instead of routing them through the editor's
