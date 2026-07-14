@@ -360,6 +360,31 @@ func _enter_tree() -> void:
 		else:
 			_save_mapctx_state())
 
+	# mesh LOD aggressiveness: the editor viewports' mesh_lod_threshold — how
+	# many pixels of screen-space error Godot tolerates before dropping a mesh
+	# to a lower baked LOD. 1 px = engine default (sharpest); higher sheds
+	# triangles sooner on everything. Live, per-viewport, no rebuild needed.
+	var ml_row := HBoxContainer.new(); dock.add_child(ml_row)
+	var ml_lbl := Label.new(); ml_lbl.text = "Mesh LOD"
+	ml_row.add_child(ml_lbl)
+	var ml := HSlider.new()
+	ml.min_value = 1.0; ml.max_value = 32.0; ml.step = 1.0; ml.value = 1.0
+	ml.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	ml.tooltip_text = "Model detail vs performance: how much simplification (in pixels of on-screen error) is allowed before a model drops to a lower level of detail. 1 px = sharpest (engine default). Higher values make everything shed triangles sooner — a large speed-up on dense maps that is hard to spot visually until ~8-16 px. Applies instantly."
+	ml_row.add_child(ml)
+	var ml_val := Label.new(); ml_val.text = "1 px"
+	ml_row.add_child(ml_val)
+	ml.value_changed.connect(func(v: float):
+		ml_val.text = "%d px" % int(v)
+		for i in range(4):
+			var vp3 := EditorInterface.get_editor_viewport_3d(i)
+			if vp3 != null: vp3.mesh_lod_threshold = v
+		EditorInterface.get_editor_settings().set_project_metadata(
+			"highpoly_mapctx", "mesh_lod_px", v))
+	var ml_saved: float = float(EditorInterface.get_editor_settings()
+		.get_project_metadata("highpoly_mapctx", "mesh_lod_px", 1.0))
+	if ml_saved > 1.0: ml.value = ml_saved   # restore fires the handler
+
 	var gd_row := HBoxContainer.new(); dock.add_child(gd_row)
 	var gd_lbl := Label.new(); gd_lbl.text = "Grass"
 	gd_row.add_child(gd_lbl)

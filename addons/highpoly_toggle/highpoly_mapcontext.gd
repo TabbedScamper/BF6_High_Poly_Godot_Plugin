@@ -332,7 +332,7 @@ func _purge_terrain_cache(map: String) -> void:
 	var da := DirAccess.open(dir)
 	if da == null: return
 	for f in da.get_files():
-		if f.begins_with("terrain_s") and f.ends_with(".res"):
+		if f.begins_with("terrain_") and f.ends_with(".res"):
 			DirAccess.remove_absolute("%s/%s" % [dir, f])
 
 # Download a map's data as ONE zip (terrain + placements + backdrop glbs) and
@@ -1498,7 +1498,7 @@ func apply(root: Node, enabled: bool, show_objects: bool, tex = true) -> String:
 			green_tiled = gt
 		var terrain_lift := 0.0
 		if hm.has("file"):
-			var tmi := _build_terrain_from_heightmap(dir, hm)   # full-accuracy mesh from raw 16-bit heights
+			var tmi := _build_terrain_from_heightmap(dir, hm)   # chunked full-accuracy mesh from raw 16-bit heights
 			if tmi:
 				# exact data height, no sink (was -0.5 to dodge z-fighting under
 				# the SDK bowl: read as "terrain a meter low" — the heightmap is
@@ -1509,8 +1509,12 @@ func apply(root: Node, enabled: bool, show_objects: bool, tex = true) -> String:
 				if textured and tmat != null and _splat_active:
 					terrain_lift = SPLAT_LIFT
 				tmi.position.y = terrain_lift
-				tmi.material_override = tmat if (textured and tmat != null) else green_tiled
-				tmi.layers = EXT_TERRAIN_LAYER                   # keep the SDK maptile decal off it
+				for tc in tmi.get_children():
+					if tc is MeshInstance3D:
+						var tcm := tc as MeshInstance3D
+						tcm.material_override = tmat if (textured and tmat != null) else green_tiled
+						tcm.layers = EXT_TERRAIN_LAYER           # keep the SDK maptile decal off it
+						_bd_list.append(tcm)                     # terrain tiles follow the Range slider
 				ctx.add_child(tmi); tmi.owner = null
 			_add_water_plane(ctx)
 			# vegetation scatter: grass/shrub kits placed procedurally around the
@@ -2087,44 +2091,71 @@ func _add_water_plane(ctx: Node3D) -> void:
 
 # ---------- full-accuracy terrain from the raw 16-bit heightmap ----------
 # Godot downsamples 16-bit PNGs to 8-bit, so heights ship as a raw uint16 blob
-# (row-major, little-endian). Built at `terrain_step` metres/vertex and cached
-# to user:// so the (slow) build only happens once per detail level.
-func _build_terrain_from_heightmap(dir: String, meta: Dictionary) -> MeshInstance3D:
-	var step: int = max(1, terrain_step)
-	var cache := "%s/terrain_s%d.res" % [dir, step]
-	var mesh: ArrayMesh = null
-	if ResourceLoader.exists(cache):
-		mesh = ResourceLoader.load(cache)
-	if mesh == null:
-		var raw := FileAccess.get_file_as_bytes("%s/%s" % [dir, meta.get("file", "height.r16")])
-		if raw.is_empty(): return null
-		mesh = _heightmap_mesh(raw, int(meta.get("res", 4097)), step, meta)
-		if mesh: ResourceSaver.save(mesh, cache)
-	if mesh == null: return null
-	var mi := MeshInstance3D.new(); mi.name = "Terrain"; mi.mesh = mesh
-	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	return mi
+# (row-major, little-endian). Built at `terrain_step` metres/vertex as a grid of
+# TERRAIN_CHUNKS x TERRAIN_CHUNKS tiles (so each tile can follow the Range
+# slider like the backdrop) and cached to user:// as one PackedScene so the
+# (slow) build only happens once per detail level.
+const TERRAIN_CHUNKS := 16   # tiles per side (512 m tiles on an 8 km map)
 
-func _heightmap_mesh(raw: PackedByteArray, res: int, step: int, meta: Dictionary) -> ArrayMesh:
+func _build_terrain_from_heightmap(dir: String, meta: Dictionary) -> Node3D:
+	var step: int = max(1, terrain_step)
+	var cache := "%s/terrain_ck%d_s%d.res" % [dir, TERRAIN_CHUNKS, step]
+	if ResourceLoader.exists(cache):
+		var cached: Variant = ResourceLoader.load(cache)
+		if cached is PackedScene:
+			var inst := (cached as PackedScene).instantiate()
+			if inst is Node3D: return inst as Node3D
+	var raw := FileAccess.get_file_as_bytes("%s/%s" % [dir, meta.get("file", "height.r16")])
+	if raw.is_empty(): return null
+	var res: int = int(meta.get("res", 4097))
+	# heightmap px per tile, aligned to the vertex step so tile edges share verts
+	var cpx := int(ceil(float(res - 1) / float(TERRAIN_CHUNKS)))
+	cpx = int(ceil(float(cpx) / float(step))) * step
+	var troot := Node3D.new(); troot.name = "Terrain"
+	for cz in range(TERRAIN_CHUNKS):
+		for cx in range(TERRAIN_CHUNKS):
+			var m := _heightmap_mesh(raw, res, step, meta, cx * cpx, cz * cpx, cpx)
+			if m == null: continue
+			var mi := MeshInstance3D.new()
+			mi.name = "T%d_%d" % [cx, cz]
+			mi.mesh = m
+			mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+			troot.add_child(mi)
+			mi.owner = troot                  # PackedScene.pack needs the owner chain
+	var packed := PackedScene.new()
+	if packed.pack(troot) == OK:
+		ResourceSaver.save(packed, cache)
+	DirAccess.remove_absolute("%s/terrain_s%d.res" % [dir, step])   # legacy single-mesh cache
+	return troot
+
+func _heightmap_mesh(raw: PackedByteArray, res: int, step: int, meta: Dictionary,
+		px0 := 0, pz0 := 0, npx := 0) -> ArrayMesh:
 	var wmin: float = float(meta.get("world_min", -2048))
 	var wspan: float = float(meta.get("world_max", 2048)) - wmin
 	var base: float = float(meta.get("base", 0.0))
 	var scale: float = float(meta.get("scale", 1.0)) / 65535.0
-	var n := (res - 1) / step + 1
+	if npx <= 0: npx = res - 1
+	var pxe := mini(px0 + npx, res - 1)
+	var pze := mini(pz0 + npx, res - 1)
+	@warning_ignore("integer_division")
+	var nx := (pxe - px0) / step + 1
+	@warning_ignore("integer_division")
+	var nz := (pze - pz0) / step + 1
+	if nx < 2 or nz < 2: return null
 	var inv := 1.0 / float(res - 1)
-	var verts := PackedVector3Array(); verts.resize(n * n)
-	var norms := PackedVector3Array(); norms.resize(n * n)
-	var uvs := PackedVector2Array(); uvs.resize(n * n)
+	var verts := PackedVector3Array(); verts.resize(nx * nz)
+	var norms := PackedVector3Array(); norms.resize(nx * nz)
+	var uvs := PackedVector2Array(); uvs.resize(nx * nz)
 	var world_step := float(step) * inv * wspan
-	for gz in range(n):
-		var py := gz * step
+	for gz in range(nz):
+		var py := pz0 + gz * step
 		var rowoff := py * res
 		var pym := (maxi(0, py - step)) * res
 		var pyp := (mini(res - 1, py + step)) * res
-		for gx in range(n):
-			var px := gx * step
+		for gx in range(nx):
+			var px := px0 + gx * step
 			var wy := base + float(raw.decode_u16((rowoff + px) * 2)) * scale
-			var i := gz * n + gx
+			var i := gz * nx + gx
 			verts[i] = Vector3(wmin + float(px) * inv * wspan, wy, wmin + float(py) * inv * wspan)
 			uvs[i] = Vector2(float(px) * inv, float(py) * inv)
 			var hxm := float(raw.decode_u16((rowoff + maxi(0, px - step)) * 2)) * scale
@@ -2132,14 +2163,14 @@ func _heightmap_mesh(raw: PackedByteArray, res: int, step: int, meta: Dictionary
 			var hzm := float(raw.decode_u16((pym + px) * 2)) * scale
 			var hzp := float(raw.decode_u16((pyp + px) * 2)) * scale
 			norms[i] = Vector3(-(hxp - hxm), 2.0 * world_step, -(hzp - hzm)).normalized()
-	var indices := PackedInt32Array(); indices.resize((n - 1) * (n - 1) * 6)
+	var indices := PackedInt32Array(); indices.resize((nx - 1) * (nz - 1) * 6)
 	var k := 0
-	for gz in range(n - 1):
-		var ro := gz * n
-		for gx in range(n - 1):
+	for gz in range(nz - 1):
+		var ro := gz * nx
+		for gx in range(nx - 1):
 			var a := ro + gx
-			indices[k] = a; indices[k+1] = a + n; indices[k+2] = a + 1
-			indices[k+3] = a + 1; indices[k+4] = a + n; indices[k+5] = a + n + 1
+			indices[k] = a; indices[k+1] = a + nx; indices[k+2] = a + 1
+			indices[k+3] = a + 1; indices[k+4] = a + nx; indices[k+5] = a + nx + 1
 			k += 6
 	var arr := []; arr.resize(Mesh.ARRAY_MAX)
 	arr[Mesh.ARRAY_VERTEX] = verts
