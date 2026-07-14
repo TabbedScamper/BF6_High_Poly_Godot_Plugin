@@ -7,6 +7,7 @@ extends EditorPlugin
 # map data re-download themselves. The dock shows one progress bar + pause.
 
 var dock: VBoxContainer
+var dock_scroll: ScrollContainer   # dock wrapper: collapses the VBox's huge min height
 var lbl: Label
 var mode_btn: OptionButton
 var ovr_chk: CheckBox          # per-selection detail override (live, contextual label)
@@ -82,7 +83,7 @@ func _range_label(v: float) -> String:
 
 func _enter_tree() -> void:
 	dock = VBoxContainer.new()
-	dock.name = "High-Poly"
+	dock.name = "HighPolyContent"   # tab title comes from the scroll wrapper
 
 	# plugin self-update: hidden unless the registry advertises a newer version
 	update_btn = Button.new()
@@ -470,7 +471,19 @@ func _enter_tree() -> void:
 	ver_lbl.add_theme_color_override("font_color", Color(1, 1, 1, 0.35))
 	dock.add_child(ver_lbl)
 
-	add_control_to_dock(DOCK_SLOT_RIGHT_UL, dock)
+	# Dock the VBox inside a ScrollContainer. Raw, the ~40 stacked controls
+	# give the VBox a multi-thousand-pixel MINIMUM height; that minimum
+	# propagates through the dock containers into the editor's main layout and
+	# pushes the bottom panel (Output, Object Library, ...) off-window on load
+	# (verified: dock min was 3707 px in a 1360 px window). Wrapped, the dock
+	# scrolls when its area is short instead of deforming the editor.
+	dock_scroll = ScrollContainer.new()
+	dock_scroll.name = "High-Poly"
+	dock_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	dock.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	dock.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	dock_scroll.add_child(dock)
+	add_control_to_dock(DOCK_SLOT_RIGHT_UL, dock_scroll)
 	_auto_perf_settings.call_deferred()
 	_check_plugin_update.call_deferred()
 	_refresh_storage.call_deferred()   # async walk; mapctx exists by deferred time
@@ -563,9 +576,9 @@ func _exit_tree() -> void:
 		LightingScript.clear(r)                          # frees _GAME_LIGHTING
 		HighpolyLib.apply(r, HighpolyLib.Tier.LOW, true)   # hide hi-poly overlays, show proxies
 	HighpolyStore.save()
-	if dock:
-		remove_control_from_docks(dock)
-		dock.queue_free()
+	if dock_scroll:
+		remove_control_from_docks(dock_scroll)
+		dock_scroll.queue_free()   # frees the inner VBox with it
 
 # ---------- startup: migration -> scope -> sync ----------
 func _startup() -> void:
