@@ -375,8 +375,10 @@ func _enter_tree() -> void:
 	mapctx_optimize.tooltip_text = "Distance-cull the props YOU place (your custom map content) so a densely-built map stays fast — far ones stop drawing while near ones stay full-quality and fully editable. Follows the Range slider. Nothing is hidden or changed on export; turn it off for full range."
 	mapctx_optimize.toggled.connect(func(on: bool):
 		var _r := EditorInterface.get_edited_scene_root()
-		var _rad: float = (1.0e9 if int(mapctx_range.value) >= 3500 else mapctx_range.value) if mapctx_range else 800.0
-		PlacedCull.apply(_r, _rad, on)
+		var _rad := 800.0
+		if mapctx_range:
+			_rad = 1.0e9 if int(mapctx_range.value) >= 3500 else mapctx_range.value
+		lbl.text = PlacedCull.apply(_r, _rad, on)   # visible feedback: "N culled at X m"
 		_save_mapctx_state())
 	dock.add_child(mapctx_optimize)
 
@@ -1210,6 +1212,9 @@ func _mode_changed() -> void:
 		ovr_chk.text = _override_label()
 	previews.tier = _mode()
 	_apply_scene()
+	# a mode switch rebuilds every preview — re-apply the placed-object cull so
+	# your custom map content keeps distance-culling in the new detail mode
+	_reapply_placed_cull()
 	# whatever this scene needs but doesn't have yet: front of the queue, and
 	# swapped in automatically as it lands (no prompt, no re-apply button)
 	if _mode() != HighpolyLib.Tier.LOW and not HighpolyLib.use_legacy:
@@ -1229,6 +1234,21 @@ func _apply_scene() -> void:
 		lbl.text = "No scene open"; return
 	var n := HighpolyLib.apply(r, _mode(), _textured())
 	lbl.text = "%s: %d piece(s)" % [mode_btn.get_item_text(mode_btn.selected), n]
+
+# current placed-object cull distance from the Range slider (mirrors the slider
+# handler: the far end of the slider disables culling)
+func _cull_radius() -> float:
+	if mapctx_range == null: return 800.0
+	return 1.0e9 if int(mapctx_range.value) >= 3500 else mapctx_range.value
+
+# re-apply the placed-object distance-cull across the whole scene at the current
+# range — only when "Optimize placed objects" is on. Called after anything that
+# rebuilds the high-poly previews, so your placed content keeps culling.
+func _reapply_placed_cull() -> void:
+	if mapctx_optimize == null or not mapctx_optimize.button_pressed: return
+	var r := EditorInterface.get_edited_scene_root()
+	if r != null:
+		PlacedCull.apply(r, _cull_radius(), true)
 
 # ---------- per-selection detail override (live) ----------
 func _override_label() -> String:
@@ -1417,3 +1437,7 @@ func _swap_deferred(node: Node) -> void:
 		if not HighpolyLib.use_legacy and sync != null:
 			HighpolyLib.take_wanted()
 			sync.prioritize_one(k)
+	# a piece placed while optimization is on should distance-cull right away, like
+	# the rest of your map content (O(1): only this node's own meshes are touched)
+	if mapctx_optimize != null and mapctx_optimize.button_pressed:
+		PlacedCull.apply(node as Node3D, _cull_radius(), true)

@@ -301,7 +301,7 @@ func _save_etag(map: String, key: String, val: String) -> void:
 	if val == "": return
 	var d := _etags(map)
 	d[key] = val
-	DirAccess.make_dir_recursive_absolute("%s/%s" % [CACHE, map])
+	HighpolyStore.ensure_dir("%s/%s" % [CACHE, map])
 	var f := FileAccess.open(_etags_path(map), FileAccess.WRITE)
 	if f: f.store_string(JSON.stringify(d)); f.close()
 
@@ -342,7 +342,7 @@ func _purge_terrain_cache(map: String) -> void:
 func download_map(host: Node, map: String, status: Callable, force := false) -> bool:
 	var b := base_url() + "maps/%s/" % map
 	var dir := "%s/%s" % [CACHE, map]
-	DirAccess.make_dir_recursive_absolute(dir)
+	HighpolyStore.ensure_dir(dir)
 	# self-heal: on first touch this session, compare package ETags; a
 	# republished mapdata.zip forces a fresh pull (incl. rebuilding the cached
 	# terrain meshes), a republished props.zip flags an overwrite-all extract
@@ -382,7 +382,7 @@ func download_map(host: Node, map: String, status: Callable, force := false) -> 
 	for f in zr.get_files():
 		if f.ends_with("/"): continue
 		var dest := "%s/%s" % [dir, f]
-		DirAccess.make_dir_recursive_absolute(dest.get_base_dir())
+		HighpolyStore.ensure_dir(dest.get_base_dir())
 		var out := FileAccess.open(dest, FileAccess.WRITE)
 		if out: out.store_buffer(zr.read_file(f)); out.close(); n += 1
 	zr.close()
@@ -1045,7 +1045,7 @@ static func _with_lods(m: Mesh) -> Mesh:
 
 # names of prop meshes this map needs that aren't in the shared cache yet
 func _props_missing() -> Array:
-	DirAccess.make_dir_recursive_absolute(PROPS_CACHE)
+	HighpolyStore.ensure_dir(PROPS_CACHE)
 	var miss: Array = []
 	var seen: Dictionary = {}
 	for e in _data.get("props", []):
@@ -1093,7 +1093,7 @@ func ensure_props(host: Node, map: String, status: Callable) -> bool:
 		status.call("Downloading %d prop meshes…" % miss.size())
 	var b := base_url() + "maps/%s/" % map
 	var tmp := "%s/%s/_props.zip" % [CACHE, map]
-	DirAccess.make_dir_recursive_absolute("%s/%s" % [CACHE, map])
+	HighpolyStore.ensure_dir("%s/%s" % [CACHE, map])
 	var ok := await _download_with_progress(host, b + "props.zip", tmp, status,
 		"Downloading prop meshes:")
 	if not ok:
@@ -1128,7 +1128,7 @@ func _props_index() -> Dictionary:
 	return {}
 
 func _save_props_index(d: Dictionary) -> void:
-	DirAccess.make_dir_recursive_absolute(PROPS_CACHE)
+	HighpolyStore.ensure_dir(PROPS_CACHE)
 	var f := FileAccess.open("%s/index.json" % PROPS_CACHE, FileAccess.WRITE)
 	if f: f.store_string(JSON.stringify(d)); f.close()
 

@@ -151,7 +151,7 @@ func _load_manifest_cache() -> Dictionary:
 	return {}
 
 func _save_manifest_cache(body: PackedByteArray) -> void:
-	DirAccess.make_dir_recursive_absolute(HighpolyStore.ROOT)
+	HighpolyStore.ensure_dir(HighpolyStore.ROOT)
 	var f := FileAccess.open(MANIFEST_CACHE, FileAccess.WRITE)
 	if f: f.store_buffer(body); f.close()
 
@@ -306,7 +306,7 @@ func _extract_bundle(tmp: String) -> bool:
 	var zr := ZIPReader.new()
 	if zr.open(ProjectSettings.globalize_path(tmp)) != OK:
 		return false
-	DirAccess.make_dir_recursive_absolute(HighpolyStore.MODELS_DIR)
+	HighpolyStore.ensure_dir(HighpolyStore.MODELS_DIR)
 	var files := zr.get_files()
 	var side: Dictionary = {}   # name -> {hash, nofit}
 	for f in files:
