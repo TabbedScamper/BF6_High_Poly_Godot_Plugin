@@ -35,6 +35,15 @@ static var remote: Dictionary = {}       # proxy name -> {glb, hash, nofit}
 # the site: a model swapped on the site under the same name re-downloads here
 static var mesh_remote: Dictionary = {}  # mesh name -> {glb, hash}
 
+# ---------- fs ----------
+# make_dir_recursive_absolute prints "Could not create directory" (dir_access.cpp)
+# for every existing path component — during a bulk sync that's one noisy error
+# per model (hundreds of them). Only create when the dir is actually missing so
+# the Output log stays clean.
+static func ensure_dir(path: String) -> void:
+	if not DirAccess.dir_exists_absolute(path):
+		DirAccess.make_dir_recursive_absolute(path)
+
 # ---------- index ----------
 static func _load() -> void:
 	if _loaded: return
@@ -53,7 +62,7 @@ static func save(force := true) -> void:
 	if not force and _dirty < FLUSH_EVERY:
 		return
 	_dirty = 0
-	DirAccess.make_dir_recursive_absolute(ROOT)
+	ensure_dir(ROOT)
 	var f := FileAccess.open(INDEX_PATH, FileAccess.WRITE)
 	if f:
 		f.store_string(JSON.stringify(_index))
@@ -120,7 +129,7 @@ static func record(name: String, h: String, nofit_flag: bool) -> void:
 	_invalidate(name)
 
 static func ingest_bytes(name: String, data: PackedByteArray, h: String, nofit_flag: bool) -> bool:
-	DirAccess.make_dir_recursive_absolute(MODELS_DIR)
+	ensure_dir(MODELS_DIR)
 	var f := FileAccess.open(model_path(name), FileAccess.WRITE)
 	if f == null: return false
 	f.store_buffer(data)

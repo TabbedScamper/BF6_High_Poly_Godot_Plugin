@@ -189,7 +189,7 @@ func _render_one(nm: String) -> void:
 	if img == null:
 		_pending.erase(nm)
 		return
-	DirAccess.make_dir_recursive_absolute(HighpolyStore.THUMBS_DIR)
+	HighpolyStore.ensure_dir(HighpolyStore.THUMBS_DIR)
 	img.save_png(ProjectSettings.globalize_path(tp))
 	_finish(nm, ImageTexture.create_from_image(img))
 

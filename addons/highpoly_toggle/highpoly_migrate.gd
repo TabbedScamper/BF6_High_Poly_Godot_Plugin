@@ -56,7 +56,7 @@ static func run(host: Node, status: Callable) -> Dictionary:
 	var moved := 0
 	var deleted := 0
 	var redl: Array = []
-	DirAccess.make_dir_recursive_absolute(HighpolyStore.MODELS_DIR)
+	HighpolyStore.ensure_dir(HighpolyStore.MODELS_DIR)
 	var da := DirAccess.open(LEGACY_DIR)
 	if da == null:
 		return {"moved": 0, "deleted": 0, "redownload": redl}

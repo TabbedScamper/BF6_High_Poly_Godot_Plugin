@@ -124,7 +124,7 @@ static func update_plugin(host: Node, status: Callable) -> bool:
 		if path.ends_with("/") or not path.begins_with("addons/highpoly_toggle/"):
 			continue
 		var dest := "%s/%s" % [pdir, path.trim_prefix("addons/highpoly_toggle/")]
-		DirAccess.make_dir_recursive_absolute(dest.get_base_dir())
+		HighpolyStore.ensure_dir(dest.get_base_dir())
 		var out := FileAccess.open(dest, FileAccess.WRITE)
 		if out:
 			out.store_buffer(zr.read_file(path)); out.close(); n += 1
