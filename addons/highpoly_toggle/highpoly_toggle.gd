@@ -21,6 +21,7 @@ const HighpolyCollision = preload("highpoly_collision.gd")
 const HighpolyDoors = preload("highpoly_doors.gd")
 const HighpolyVariants = preload("highpoly_variants.gd")
 const LightingScript = preload("highpoly_lighting.gd")
+const PlacedCull = preload("highpoly_placedcull.gd")
 var previews: Node
 var mapctx: Node
 var sync: Node
@@ -38,6 +39,7 @@ var mapctx_light: CheckBox     # game lighting (sun/sky/fog from the real map VE
 var mapctx_gi: CheckBox        # sub-toggle: SDFGI + SSAO (visible while lighting is on)
 var mapctx_shadows: CheckBox   # sub-toggle: sun shadows + overlay casting
 var mapctx_maplights: CheckBox # sub-toggle: the map's mined light entities
+var mapctx_optimize: CheckBox  # distance-cull the user's PLACED objects (their custom map content)
 var mapctx_variant_row: HBoxContainer  # "Variant" gamemode dropdown (visible with objects)
 var mapctx_variant: OptionButton
 var mapctx_bar: ProgressBar    # background props-build progress (hidden when idle)
@@ -356,49 +358,27 @@ func _enter_tree() -> void:
 		LightingScript.lights_range = clampf(_rad, 0.0, 300.0)
 		if _rr != null:
 			HighpolyFx.set_range(_rr, _rad)
+			if mapctx_optimize and mapctx_optimize.button_pressed:
+				PlacedCull.apply(_rr, _rad, true)   # placed props ride the slider too
 		if int(v) == 0 and mapctx_objects.button_pressed:
 			mapctx_objects.button_pressed = false    # fires _mapctx_changed
 		else:
 			_save_mapctx_state())
 
-	# mesh LOD aggressiveness: the editor viewports' mesh_lod_threshold — how
-	# many pixels of screen-space error Godot tolerates before dropping a mesh
-	# to a lower baked LOD. 1 px = engine default (sharpest); higher sheds
-	# triangles sooner on everything. Live, per-viewport, no rebuild needed.
-	var ml_row := HBoxContainer.new(); dock.add_child(ml_row)
-	var ml_lbl := Label.new(); ml_lbl.text = "Mesh LOD"
-	ml_row.add_child(ml_lbl)
-	var ml := HSlider.new()
-	ml.min_value = 1.0; ml.max_value = 32.0; ml.step = 1.0; ml.value = 1.0
-	ml.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	ml.tooltip_text = "Model detail vs performance: how much simplification (in pixels of on-screen error) is allowed before a model drops to a lower level of detail. 1 px = sharpest (engine default). Higher values make everything shed triangles sooner — a large speed-up on dense maps that is hard to spot visually until ~8-16 px. Applies instantly."
-	ml_row.add_child(ml)
-	var ml_val := Label.new(); ml_val.text = "1 px"
-	ml_row.add_child(ml_val)
-	ml.value_changed.connect(func(v: float):
-		ml_val.text = "%d px" % int(v)
-		for i in range(4):
-			var vp3 := EditorInterface.get_editor_viewport_3d(i)
-			if vp3 != null: vp3.mesh_lod_threshold = v
-		EditorInterface.get_editor_settings().set_project_metadata(
-			"highpoly_mapctx", "mesh_lod_px", v))
-	var ml_saved: float = float(EditorInterface.get_editor_settings()
-		.get_project_metadata("highpoly_mapctx", "mesh_lod_px", 1.0))
-	if ml_saved > 1.0: ml.value = ml_saved   # restore fires the handler
-
-	var gd_row := HBoxContainer.new(); dock.add_child(gd_row)
-	var gd_lbl := Label.new(); gd_lbl.text = "Grass"
-	gd_row.add_child(gd_lbl)
-	var gd := HSlider.new()
-	gd.min_value = 0.0; gd.max_value = 300.0; gd.step = 10.0; gd.value = 0.0
-	gd.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	gd.tooltip_text = "How far from the camera vegetation scatter grows (carpet density is fixed to match the game). 0 = grass off. Bigger = prettier vistas, heavier regeneration when flying."
-	gd_row.add_child(gd)
-	var gd_val := Label.new(); gd_val.text = "off"
-	gd_row.add_child(gd_val)
-	gd.value_changed.connect(func(v: float):
-		gd_val.text = "off" if v <= 0.0 else "%dm" % int(v)
-		mapctx.set_scatter_range(v))
+	# Optimize placed objects: distance-cull the props the USER places (their custom
+	# map content — not the backdrop) so a densely-built map stays fast. Near props
+	# stay full-quality and fully selectable/editable; distant ones stop drawing.
+	# Follows the Range slider. Editor-only — nothing hidden, export untouched.
+	mapctx_optimize = CheckBox.new()
+	mapctx_optimize.text = "Optimize placed objects"
+	mapctx_optimize.button_pressed = true
+	mapctx_optimize.tooltip_text = "Distance-cull the props YOU place (your custom map content) so a densely-built map stays fast — far ones stop drawing while near ones stay full-quality and fully editable. Follows the Range slider. Nothing is hidden or changed on export; turn it off for full range."
+	mapctx_optimize.toggled.connect(func(on: bool):
+		var _r := EditorInterface.get_edited_scene_root()
+		var _rad: float = (1.0e9 if int(mapctx_range.value) >= 3500 else mapctx_range.value) if mapctx_range else 800.0
+		PlacedCull.apply(_r, _rad, on)
+		_save_mapctx_state())
+	dock.add_child(mapctx_optimize)
 
 	var td_row := HBoxContainer.new(); dock.add_child(td_row)
 	var td_lbl := Label.new(); td_lbl.text = "Terrain"
@@ -1095,6 +1075,7 @@ func _save_mapctx_state() -> void:
 		"gi": mapctx_gi.button_pressed if mapctx_gi else true,
 		"shadows": mapctx_shadows.button_pressed if mapctx_shadows else true,
 		"maplights": mapctx_maplights.button_pressed if mapctx_maplights else false,
+		"optimize": mapctx_optimize.button_pressed if mapctx_optimize else true,
 		"fx": mapctx_fx.button_pressed if mapctx_fx else false,
 		"variant": mapctx_variant.get_item_text(mapctx_variant.selected)
 				if mapctx_variant and mapctx_variant.selected >= 0 else "Off",
@@ -1120,6 +1101,12 @@ func _restore_mapctx_state() -> void:
 			"highpoly_mapctx", map, {})
 	if not (st is Dictionary): return
 	var d: Dictionary = st
+	# placed-object optimization is independent of the backdrop overlay — restore it
+	# even when the overlay itself was off (the user's props exist without a backdrop)
+	if mapctx_optimize != null and r != null:
+		var _opt := bool(d.get("optimize", true))
+		mapctx_optimize.set_pressed_no_signal(_opt)
+		PlacedCull.apply(r, float(d.get("range", 800.0)), _opt)
 	if not (bool(d.get("on", false)) or bool(d.get("objects", false))):
 		return                              # overlay was off — stay light
 	if mapctx_range != null:

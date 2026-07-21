@@ -2265,10 +2265,14 @@ func _build_mmi(mesh: Mesh, xf: Array, textured: bool, flat_mat: Material) -> Mu
 	# draw call). Sized from the mesh's own AABB; fades instead of popping.
 	var _sz := mesh.get_aabb().get_longest_axis_size()
 	if _sz < 3.0:
+		# small props: HARD cull with a hysteresis buffer. Dither-fade (FADE_SELF)
+		# stipples badly on small objects and reads as flicker while flying — a
+		# clean on/off with a margin is smoother for clutter this size.
 		mmi.visibility_range_end = 400.0
+		mmi.visibility_range_end_margin = 40.0
+		mmi.visibility_range_fade_mode = GeometryInstance3D.VISIBILITY_RANGE_FADE_DISABLED
 	elif _sz < 12.0:
 		mmi.visibility_range_end = 1200.0
-	if mmi.visibility_range_end > 0.0:
 		mmi.visibility_range_end_margin = 60.0
 		mmi.visibility_range_fade_mode = GeometryInstance3D.VISIBILITY_RANGE_FADE_SELF
 	return mmi
