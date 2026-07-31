@@ -196,6 +196,23 @@ const MAPTILE_DECALS := {
 const DECAL_NODE := "_MAPTILE_DECAL"
 const WATER_NODE := "_WATER"
 
+# WHERE the maptile jpg actually lives — it moved, and the SDK no longer ships it:
+#   <= 1.3.3.0  res://raw/maptiles/<Level>.jpg, shipped with the SDK
+#   >= 1.4.1.0  those files are GONE; the stock terrain_decal plugin downloads
+#               per-level tiles on demand into addons/bf_portal/terrain_decal/textures/
+# Upgraded projects are worse than missing: they keep a stale raw/maptiles/*.import
+# whose imported .ctex was never built (1.4.1.0 ships a .gdignore in raw/), so
+# ResourceLoader.exists() answers TRUE and load() then fails with three errors per
+# call. So we never ask the import system anything: find the jpg ON DISK, newest
+# location first, and decode the bytes ourselves (same trick as _layer_tex).
+# Nothing on disk anywhere = fetch it from the same official CDN the SDK's own
+# "Download Texture" button uses (see ensure_maptile).
+const TILE_CACHE := "user://mapcontext/_maptiles"
+const SDK_TILE_DIR := "res://addons/bf_portal/terrain_decal/textures/"
+const LEGACY_TILE_DIR := "res://raw/maptiles/"
+const SDK_CONFIG := "res://addons/bf_portal/bf_portal.config.json"
+const TILE_URL_FALLBACK := "https://download.portal.battlefield.com/"
+
 # Water is a flat surface entity (WaterEntityData), not a mesh placement. Its
 # exact plane (surface height Y, world centre, X/Z extent) is EXTRACTED per map
 # from the level's water.ebx and shipped in placements.json ("water"). A flat
@@ -343,6 +360,9 @@ func download_map(host: Node, map: String, status: Callable, force := false) -> 
 	var b := base_url() + "maps/%s/" % map
 	var dir := "%s/%s" % [CACHE, map]
 	HighpolyStore.ensure_dir(dir)
+	# the maptile is no longer shipped with the SDK — make sure we have one
+	# before anything textured is built (quiet no-op when it's already there)
+	await ensure_maptile(host, map, status)
 	# self-heal: on first touch this session, compare package ETags; a
 	# republished mapdata.zip forces a fresh pull (incl. rebuilding the cached
 	# terrain meshes), a republished props.zip flags an overwrite-all extract
@@ -433,21 +453,79 @@ func _clear(root: Node) -> void:
 	_mesh_stat.clear()     # refresh bookkeeping follows the mesh cache
 	_prop_by_src.clear()
 	_layer_cache.clear()
+	_tile_cache.clear()    # re-look-up the maptile (the SDK may have just downloaded one)
 	_splat_cache.clear()   # re-read baked splat data on the next apply
 	# remove the maptile decal (editor-only)
 	_remove_maptile(root)
 
+# ---------- maptile lookup ----------
+# The jpg basename this map draws with — "tile" lets a variant map (e.g.
+# MP_Aftermath_Portal) reuse another map's tile.
+func _tile_name(map: String) -> String:
+	return str(MAPTILE_DECALS[map].get("tile", map)) if MAPTILE_DECALS.has(map) else map
+
+# First maptile jpg present ON DISK for this map ("" = none). Deliberately
+# FileAccess, not ResourceLoader: a stale .import with no imported .ctex passes
+# ResourceLoader.exists() and then fails inside load().
+func _maptile_path(map: String) -> String:
+	var nm := _tile_name(map)
+	for p in [SDK_TILE_DIR + nm + ".jpg", "%s/%s.jpg" % [TILE_CACHE, nm], LEGACY_TILE_DIR + nm + ".jpg"]:
+		if FileAccess.file_exists(p): return p
+	return ""
+
+# Decode it ourselves — bypasses Godot's import system entirely, so it works
+# from res://, user://, and inside .gdignore'd folders alike.
+func _maptile_tex(map: String) -> Texture2D:
+	var nm := _tile_name(map)
+	if _tile_cache.has(nm): return _tile_cache[nm]
+	var t: Texture2D = null
+	var p := _maptile_path(map)
+	if p != "":
+		var img := Image.load_from_file(ProjectSettings.globalize_path(p))
+		if img != null:
+			img.generate_mipmaps()
+			t = ImageTexture.create_from_image(img)
+	_tile_cache[nm] = t
+	return t
+
+# Make sure this map's tile exists locally, pulling it from the same official
+# CDN the SDK's own "Download Texture" button uses (1.4.1.0 stopped shipping
+# them). No-op once a tile is on disk. Failure is quiet — the overlay just
+# falls back to the flat study colours.
+func ensure_maptile(host: Node, map: String, status: Callable = Callable()) -> bool:
+	if _maptile_path(map) != "": return true
+	var nm := _tile_name(map)
+	var root := TILE_URL_FALLBACK
+	if FileAccess.file_exists(SDK_CONFIG):
+		var cfg: Variant = JSON.parse_string(FileAccess.get_file_as_string(SDK_CONFIG))
+		if cfg is Dictionary and str((cfg as Dictionary).get("downloadUrl", "")) != "":
+			root = str((cfg as Dictionary)["downloadUrl"])
+	HighpolyStore.ensure_dir(TILE_CACHE)
+	var dest := "%s/%s.jpg" % [TILE_CACHE, nm]
+	var ok := await _download_with_progress(host, "%smaptiles/%s.jpg" % [root, nm], dest,
+		status if status.is_valid() else func(_s: String): pass,
+		"Downloading %s map texture:" % nm)
+	# the CDN answers 200 with a short text body for a request it doesn't like,
+	# so only a real JPEG counts — never leave a poisoned file in the cache
+	if ok:
+		var f := FileAccess.open(dest, FileAccess.READ)
+		var magic := f.get_buffer(3) if f != null else PackedByteArray()
+		if f != null: f.close()
+		ok = magic.size() == 3 and magic[0] == 0xFF and magic[1] == 0xD8 and magic[2] == 0xFF
+	if not ok:
+		if FileAccess.file_exists(dest): DirAccess.remove_absolute(dest)
+		return false
+	_tile_cache.erase(nm)
+	return true
+
 # ---------- SDK maptile (top-down satellite) ----------
-# Inject a Decal (owner=null) that projects the shipped maptile jpg straight
-# down onto whatever terrain is beneath it — the SDK's own terrain AND our
-# extended terrain — using the community pack's hand-tuned per-map placement.
+# Inject a Decal (owner=null) that projects the maptile jpg straight down onto
+# whatever terrain is beneath it — the SDK's own terrain AND our extended
+# terrain — using the community pack's hand-tuned per-map placement.
 # Reversible, never saved. Works with or without extended map data downloaded.
 func _apply_maptile(root: Node, map: String) -> int:
 	if not MAPTILE_DECALS.has(map): return 0
-	# "tile" lets a variant map (e.g. MP_Aftermath_Portal) reuse another map's jpg
-	var img_path := "res://raw/maptiles/%s.jpg" % MAPTILE_DECALS[map].get("tile", map)
-	if not ResourceLoader.exists(img_path): return 0
-	var tex = load(img_path)
+	var tex := _maptile_tex(map)
 	if tex == null: return 0
 	var d: Dictionary = MAPTILE_DECALS[map]
 	var dec := Decal.new()
@@ -600,6 +678,7 @@ void fragment() {
 """
 static var _tshader: Shader = null
 static var _layer_cache: Dictionary = {}   # "<map>/<name>" -> Texture2D (or null)
+static var _tile_cache: Dictionary = {}    # tile name -> Texture2D (null = no tile anywhere)
 # ---------- exact splat data (baked from the game's terrain layer masks) ----------
 # user://mapcontext/<map>/splat/{idx.png, w.png, layers.json, lNN_alb/_nrm.png,
 # grass_mask.png} — produced by the pipeline's splat_build.py. Maps without the
@@ -678,8 +757,8 @@ func _layer_tex(map: String, nm: String) -> Texture2D:
 # ground-layer set isn't available (→ caller falls back to the flat decal).
 func _terrain_shader_mat(map: String) -> ShaderMaterial:
 	if not MAPTILE_DECALS.has(map): return null
-	var img := "res://raw/maptiles/%s.jpg" % MAPTILE_DECALS[map].get("tile", map)
-	if not ResourceLoader.exists(img): return null
+	var tile := _maptile_tex(map)
+	if tile == null: return null
 	var ga := _layer_tex(map, "ground_alb"); var gn := _layer_tex(map, "ground_nrm")
 	var ca := _layer_tex(map, "cliff_alb"); var cn := _layer_tex(map, "cliff_nrm")
 	if ga == null or gn == null or ca == null or cn == null: return null
@@ -689,7 +768,7 @@ func _terrain_shader_mat(map: String) -> ShaderMaterial:
 	var pos: Vector3 = d["pos"]; var sz: Vector3 = d["size"]
 	var m := ShaderMaterial.new()
 	m.shader = _tshader
-	m.set_shader_parameter("maptile", load(img))
+	m.set_shader_parameter("maptile", tile)
 	m.set_shader_parameter("map_bounds", Vector4(pos.x - sz.x * 0.5, pos.z - sz.z * 0.5, sz.x, sz.z))
 	m.set_shader_parameter("ground_alb", ga); m.set_shader_parameter("ground_nrm", gn)
 	m.set_shader_parameter("cliff_alb", ca); m.set_shader_parameter("cliff_nrm", cn)
@@ -2397,8 +2476,8 @@ func _editor_cam() -> Camera3D:
 # detail-terrain shader uses); {} when the map has no tile — scatter still works
 func _scatter_tile(map: String) -> Dictionary:
 	if not MAPTILE_DECALS.has(map): return {}
-	var img := "res://raw/maptiles/%s.jpg" % MAPTILE_DECALS[map].get("tile", map)
-	if not ResourceLoader.exists(img): return {}
+	var img := _maptile_path(map)
+	if img == "": return {}
 	var d: Dictionary = MAPTILE_DECALS[map]
 	var pos: Vector3 = d["pos"]; var sz: Vector3 = d["size"]
 	return {"img": img, "bounds": Vector4(pos.x - sz.x * 0.5, pos.z - sz.z * 0.5, sz.x, sz.z)}
