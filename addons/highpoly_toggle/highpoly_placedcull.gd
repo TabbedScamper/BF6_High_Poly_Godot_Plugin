@@ -67,8 +67,14 @@ static func status(cam_pos: Vector3) -> String:
 		if bool(e["hid"]):
 			far += 1
 			if not (mi as Node3D).get_gizmos().is_empty(): stale += 1
-	return ("%d mesh(es) culling, %d currently past their range, %d of those "
-		+ "STILL carrying a gizmo, %d rebuilt by the editor so far") 		% [live, far, stale, _regrown]
+			for c in e.get("co", []):
+				if is_instance_valid(c) and not (c as Node3D).get_gizmos().is_empty():
+					stale += 1
+	var comps := 0
+	for e in _managed:
+		comps += (e.get("co", []) as Array).size()
+	return ("%d mesh(es) culling (+%d collision nodes), %d past their range, %d "
+		+ "STILL carrying a gizmo, %d rebuilt by the editor so far") 		% [live, comps, far, stale, _regrown]
 
 static func _remember(mi: GeometryInstance3D) -> void:
 	var id := mi.get_instance_id()
@@ -102,6 +108,29 @@ static func _set_gizmos_hidden(n3: Node3D, hide: bool) -> int:
 	return k
 
 # Track a mesh that will cull, at whatever distance it actually culls at.
+# The mesh is not the only thing drawing. A CollisionShape3D gizmo is a cyan
+# wireframe of the same object, and CollisionShape3D is NOT a GeometryInstance3D
+# — visibility_range cannot touch it. So culling the mesh leaves the collision
+# outline standing in empty space, which is the wireframe that survived every
+# previous attempt at this.
+#
+# Companions are found under the mesh's own parent: a placed object is
+# typically StaticBody3D -> [CollisionShape3D, MeshInstance3D], so the parent's
+# subtree holds the collision nodes belonging to this mesh and nothing else's.
+static func _companions(mi: Node) -> Array:
+	var out: Array = []
+	var p := mi.get_parent()
+	if p == null: return out
+	var stack: Array = [p]
+	while not stack.is_empty():
+		var n: Node = stack.pop_back()
+		if n != mi and (n is CollisionShape3D or n is CollisionPolygon3D):
+			out.append(n)
+		for c in n.get_children():
+			if c is MeshInstance3D: continue     # another mesh: its own business
+			stack.append(c)
+	return out
+
 static func _record(mi: MeshInstance3D) -> void:
 	var d := mi.visibility_range_end
 	if d <= 0.0: return                # never culls, so its gizmo never hides
@@ -110,7 +139,7 @@ static func _record(mi: MeshInstance3D) -> void:
 		if e["n"] == mi:
 			e["d"] = d
 			return
-	_managed.append({"n": mi, "d": d, "hid": false})
+	_managed.append({"n": mi, "d": d, "hid": false, "co": _companions(mi)})
 
 static func tick_gizmos(cam_pos: Vector3) -> int:
 	var changed := 0
@@ -125,11 +154,19 @@ static func tick_gizmos(cam_pos: Vector3) -> int:
 			# The editor rebuilds gizmos by itself — on a transform change, on
 			# selection. One that is meant to be gone can therefore come back,
 			# so a still-culled mesh is re-cleared rather than assumed clean.
-			if far and not (mi as Node3D).get_gizmos().is_empty():
-				(mi as Node3D).clear_gizmos()
-				_regrown += 1
+			if far:
+				if not (mi as Node3D).get_gizmos().is_empty():
+					(mi as Node3D).clear_gizmos()
+					_regrown += 1
+				for c in e.get("co", []):
+					if is_instance_valid(c) and not (c as Node3D).get_gizmos().is_empty():
+						(c as Node3D).clear_gizmos()
+						_regrown += 1
 			continue                                    # already in that state
 		_gizmos_seen += _set_gizmos_hidden(mi as Node3D, far)
+		for c in e.get("co", []):
+			if is_instance_valid(c):
+				_gizmos_seen += _set_gizmos_hidden(c as Node3D, far)
 		e["hid"] = far
 		changed += 1
 	if dead:
@@ -173,6 +210,9 @@ static func show_all_gizmos() -> void:
 		var mi = e["n"]
 		if is_instance_valid(mi) and mi is Node3D:
 			_set_gizmos_hidden(mi as Node3D, false)
+		for c in e.get("co", []):
+			if is_instance_valid(c):
+				_set_gizmos_hidden(c as Node3D, false)
 	_managed.clear()
 
 # Hand a scene back exactly as we found it: every visibility range restored to
