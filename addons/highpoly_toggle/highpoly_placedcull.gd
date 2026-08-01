@@ -48,9 +48,27 @@ static var _managed: Array = []    # [{"n": MeshInstance3D, "d": float, "hid": b
 # strip the author's own culling out of the user's scene.
 static var _orig: Dictionary = {}  # instance id -> [end, margin, fade_mode]
 static var _gizmos_seen := 0
+static var _regrown := 0           # gizmos the editor rebuilt while still culled
 
 static func managed_count() -> int: return _managed.size()
 static func gizmos_seen() -> int: return _gizmos_seen
+
+# A live snapshot, for when the one-shot line at startup is not enough: how many
+# meshes are tracked, how many are currently beyond their range, and how many of
+# those still have a gizmo attached (which should be none).
+static func status(cam_pos: Vector3) -> String:
+	var far := 0
+	var stale := 0
+	var live := 0
+	for e in _managed:
+		var mi = e["n"]
+		if not is_instance_valid(mi): continue
+		live += 1
+		if bool(e["hid"]):
+			far += 1
+			if not (mi as Node3D).get_gizmos().is_empty(): stale += 1
+	return ("%d mesh(es) culling, %d currently past their range, %d of those "
+		+ "STILL carrying a gizmo, %d rebuilt by the editor so far") 		% [live, far, stale, _regrown]
 
 static func _remember(mi: GeometryInstance3D) -> void:
 	var id := mi.get_instance_id()
@@ -67,12 +85,20 @@ static func _restore_range(mi: GeometryInstance3D) -> void:
 	mi.visibility_range_fade_mode = int(o[2])
 	_orig.erase(id)
 
+# set_hidden() alone did not remove the wireframe — the plugin reported gizmos
+# hidden while they stayed on screen. So the gizmo is REMOVED when the mesh is
+# culled and rebuilt when it comes back. set_hidden is still called first: it is
+# the cheaper operation and costs nothing if it does work.
 static func _set_gizmos_hidden(n3: Node3D, hide: bool) -> int:
 	var k := 0
 	for g in n3.get_gizmos():
 		if g is EditorNode3DGizmo:
 			(g as EditorNode3DGizmo).set_hidden(hide)
 			k += 1
+	if hide:
+		n3.clear_gizmos()
+	else:
+		n3.update_gizmos()          # ask the plugins to build it again
 	return k
 
 # Track a mesh that will cull, at whatever distance it actually culls at.
@@ -96,6 +122,12 @@ static func tick_gizmos(cam_pos: Vector3) -> int:
 			continue                                    # scene closed under us
 		var far: bool = (mi as Node3D).global_position.distance_to(cam_pos) 			> float(e["d"]) * GIZMO_MARGIN
 		if far == bool(e["hid"]):
+			# The editor rebuilds gizmos by itself — on a transform change, on
+			# selection. One that is meant to be gone can therefore come back,
+			# so a still-culled mesh is re-cleared rather than assumed clean.
+			if far and not (mi as Node3D).get_gizmos().is_empty():
+				(mi as Node3D).clear_gizmos()
+				_regrown += 1
 			continue                                    # already in that state
 		_gizmos_seen += _set_gizmos_hidden(mi as Node3D, far)
 		e["hid"] = far

@@ -578,6 +578,19 @@ func _enter_tree() -> void:
 		lbl.text = "Saved %s" % p
 		OS.shell_show_in_file_manager(p))
 	log_row.add_child(save_log)
+	var check_out := Button.new()
+	check_out.text = "Check outlines"
+	check_out.tooltip_text = "Reports, right now, how many objects are past their draw distance and whether any of them still has an outline attached. Useful if you can see outlines that should have gone."
+	check_out.pressed.connect(func():
+		var vp := EditorInterface.get_editor_viewport_3d(0)
+		var cam := vp.get_camera_3d() if vp else null
+		if cam == null:
+			Log.warn("No 3D viewport camera — open a level first")
+			return
+		PlacedCull.tick_gizmos(cam.global_position)
+		Log.info("Outlines: " + PlacedCull.status(cam.global_position)))
+	log_row.add_child(check_out)
+
 	var clear_log := Button.new()
 	clear_log.text = "Clear"
 	clear_log.tooltip_text = "Empties the list below. Does not undo anything."
