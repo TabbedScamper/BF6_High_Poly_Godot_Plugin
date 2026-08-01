@@ -44,8 +44,14 @@ Costs are contained rather than assumed away:
   through to your editor theme, and the rest of the SDK is untouched.
 
 All of it is data, replaceable without a plugin release:
-`theme.json` (palette), `logo.png` (the flash), `waves.ogv` (the backdrop).
-Delete any of them and that stage is simply skipped.
+`theme.json` (palette and backdrop dim), `logo.png` (the flash),
+`waves.ogv` (the backdrop), `ui_font.ttf` (the face).
+Delete any of them and that part is simply skipped — no font falls back to your
+editor's, no video leaves a flat dark panel.
+
+The font keeps a fallback chain (editor font, then Godot's built-in), because a
+display face is cut for headlines and doesn't carry every character a settings
+panel prints.
 
 ## Viewport double-click
 

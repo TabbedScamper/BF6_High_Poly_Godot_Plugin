@@ -14,6 +14,38 @@ class_name HighpolyTheme
 # the SDK is never touched.
 
 const PALETTE_PATH := "res://addons/highpoly_toggle/theme.json"
+const FONT_PATH := "res://addons/highpoly_toggle/ui_font.ttf"
+
+static var _font: FontFile = null
+static var _font_tried := false
+
+# The season face, if one is installed. Loaded straight off disk rather than
+# through the import system, so it can be swapped without a reimport.
+static func ui_font() -> FontFile:
+	if _font_tried: return _font
+	_font_tried = true
+	if not FileAccess.file_exists(FONT_PATH): return null
+	var f := FontFile.new()
+	if f.load_dynamic_font(ProjectSettings.globalize_path(FONT_PATH)) != OK: return null
+	# A display face is drawn for headlines, not for a settings panel, so it is
+	# missing characters this UI uses — the multiplication sign in "map data x2",
+	# for one. Without a fallback those render as empty boxes.
+	#
+	# The editor's own font goes first: it is the widest coverage on hand, and
+	# Godot's built-in fallback does not carry everything (it has no arrow), so
+	# relying on that alone would leave real gaps.
+	var fbs: Array[Font] = []
+	if Engine.is_editor_hint():
+		var et := EditorInterface.get_editor_theme()
+		if et != null:
+			for n in ["main", "bold", "source"]:
+				if et.has_font(n, "EditorFonts"):
+					fbs.append(et.get_font(n, "EditorFonts"))
+					break
+	fbs.append(ThemeDB.fallback_font)
+	f.fallbacks = fbs
+	_font = f
+	return _font
 
 # The SDK's own logo colour, so an install with no palette file still looks
 # deliberate rather than defaulting to something invented.
@@ -125,6 +157,11 @@ static func build_ui_theme() -> Theme:
 	var t := Theme.new()
 	var white := Color(1, 1, 1)
 	var faded := Color(1, 1, 1, 0.38)
+
+	# default_font covers every control resolving through this theme, so the
+	# face lands on labels, buttons, dropdowns and tooltips in one assignment
+	var f := ui_font()
+	if f != null: t.default_font = f
 
 	# Buttons wear the mask. Checkboxes deliberately do NOT — a mask behind every
 	# checkbox turns a settings list into a wall of boxes; they just go white.
