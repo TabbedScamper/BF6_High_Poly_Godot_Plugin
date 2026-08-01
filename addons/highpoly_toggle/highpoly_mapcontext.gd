@@ -1667,8 +1667,12 @@ func apply(root: Node, enabled: bool, show_objects: bool, tex = true) -> String:
 	if enabled:
 		# untextured "study" material = the SDK's own M_LevelTerrain (shiny lime green
 		# + its 12 m grid), matching the shipped terrain. DUPLICATE it (never touch the
-		# shared SDK material) + CULL_DISABLED: our heightmap mesh winds opposite to the
-		# SDK mesh, so the SDK material's back-face culling would black out the top.
+		# shared SDK material). CULL_DISABLED originally hid a real bug — our heightmap
+		# mesh was wound inside-out, so back-face culling blacked out the top and Godot
+		# flipped the normal on every ground fragment, lighting the centre chunk
+		# inverted next to the SDK's own terrain. The winding is correct as of v1.19.7;
+		# this now only keeps the ground visible when you drop the camera below it.
+		# Switching to CULL_BACK would halve the terrain's fill cost — untested.
 		# `green` = backdrop; `green_tiled` = re-tiled to the SDK 12 m grid.
 		var green_base: Material = _sdk_terrain_material(root, map)
 		var green: Material = green_base
@@ -2286,7 +2290,10 @@ const TERRAIN_CHUNKS := 16   # tiles per side (512 m tiles on an 8 km map)
 
 func _build_terrain_from_heightmap(dir: String, meta: Dictionary) -> Node3D:
 	var step: int = max(1, terrain_step)
-	var cache := "%s/terrain_ck%d_s%d.res" % [dir, TERRAIN_CHUNKS, step]
+	# v2 = corrected triangle winding. The cached mesh is the geometry itself, so
+	# anyone with a v1 cache would keep their inside-out terrain forever — the
+	# version goes in the filename and the old file is deleted below.
+	var cache := "%s/terrain_ck%d_s%d_v2.res" % [dir, TERRAIN_CHUNKS, step]
 	if ResourceLoader.exists(cache):
 		var cached: Variant = ResourceLoader.load(cache)
 		if cached is PackedScene:
@@ -2313,6 +2320,8 @@ func _build_terrain_from_heightmap(dir: String, meta: Dictionary) -> Node3D:
 	if packed.pack(troot) == OK:
 		ResourceSaver.save(packed, cache)
 	DirAccess.remove_absolute("%s/terrain_s%d.res" % [dir, step])   # legacy single-mesh cache
+	# v1 chunk cache: same chunking, inside-out winding — reclaim the space
+	DirAccess.remove_absolute("%s/terrain_ck%d_s%d.res" % [dir, TERRAIN_CHUNKS, step])
 	return troot
 
 func _heightmap_mesh(raw: PackedByteArray, res: int, step: int, meta: Dictionary,
@@ -2350,14 +2359,23 @@ func _heightmap_mesh(raw: PackedByteArray, res: int, step: int, meta: Dictionary
 			var hzm := float(raw.decode_u16((pym + px) * 2)) * scale
 			var hzp := float(raw.decode_u16((pyp + px) * 2)) * scale
 			norms[i] = Vector3(-(hxp - hxm), 2.0 * world_step, -(hzp - hzm)).normalized()
+	# WINDING: these triangles used to be wound the other way round, which made
+	# every face point DOWN (confirmed against SurfaceTool.generate_normals,
+	# which returns (0,-1,0) for the old order and (0,+1,0) for this one) while
+	# the normals supplied above point UP. The ground was therefore drawn
+	# back-facing: the SDK terrain material's culling blacked out the top, which
+	# was worked around with CULL_DISABLED, and the detail shader built its
+	# tangent frame from the normal Godot flips on back faces — so the centre
+	# chunk lit inside-out next to the SDK's own terrain. Wind it correctly and
+	# geometry, normals and lighting finally agree.
 	var indices := PackedInt32Array(); indices.resize((nx - 1) * (nz - 1) * 6)
 	var k := 0
 	for gz in range(nz - 1):
 		var ro := gz * nx
 		for gx in range(nx - 1):
 			var a := ro + gx
-			indices[k] = a; indices[k+1] = a + nx; indices[k+2] = a + 1
-			indices[k+3] = a + 1; indices[k+4] = a + nx; indices[k+5] = a + nx + 1
+			indices[k] = a; indices[k+1] = a + 1; indices[k+2] = a + nx
+			indices[k+3] = a + 1; indices[k+4] = a + nx + 1; indices[k+5] = a + nx
 			k += 6
 	var arr := []; arr.resize(Mesh.ARRAY_MAX)
 	arr[Mesh.ARRAY_VERTEX] = verts
