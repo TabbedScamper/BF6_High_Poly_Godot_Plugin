@@ -17,18 +17,15 @@ class_name HighpolySplash
 # with neither the panel simply appears - so the plugin still works exactly as
 # before on an install with no artwork.
 #
-# Plays once per editor session and once more after a plugin update: the two
-# moments where a boot animation is information rather than decoration. A click
-# anywhere skips straight to the end, because the fourth time you open the panel
-# in a session you want the buttons, not the show.
+# Plays on every open. The panel is opened deliberately from a toolbar button
+# rather than sitting there as a dock, so each open is a fresh entrance and
+# worth the five seconds. A click anywhere skips straight to the end for the
+# times you just want the buttons.
 
 # preload rather than the global class name: a brand-new class_name is not in
 # the registry until the editor rescans, which breaks on a fresh install
 const Pal = preload("highpoly_theme.gd")
 const LOGO := "res://addons/highpoly_toggle/logo.png"
-const PLUGIN_CFG := "res://addons/highpoly_toggle/plugin.cfg"
-# outside res:// so it survives the plugin update that triggers it
-const SEEN_PATH := "user://highpoly_splash_seen.txt"
 
 const WAVES_SECS := 1.30       # backdrop alone before the logo arrives
 const LOGO_IN := 0.30
@@ -40,8 +37,6 @@ const UI_SECS := 0.85
 const LOGO_MAX_FILL := 0.62    # the logo never touches the panel edges
 
 enum { S_WAVES, S_LOGO, S_SETTLE }
-
-static var _played_this_session := false
 
 # set by the panel before setup(); this node animates them and then frees itself
 var tint: ColorRect = null
@@ -55,26 +50,6 @@ var _t := 0.0
 
 static func available() -> bool:
 	return FileAccess.file_exists(LOGO)
-
-static func _version() -> String:
-	var cf := ConfigFile.new()
-	if cf.load(PLUGIN_CFG) != OK: return ""
-	return str(cf.get_value("plugin", "version", ""))
-
-# Is there anything to play right now? The caller instantiates — a script cannot
-# refer to its own class_name before the editor has registered it.
-static func should_play(force := false) -> bool:
-	var v := _version()
-	var seen := ""
-	if FileAccess.file_exists(SEEN_PATH):
-		seen = FileAccess.get_file_as_string(SEEN_PATH).strip_edges()
-	var updated := v != "" and v != seen
-	if _played_this_session and not updated and not force: return false
-	_played_this_session = true
-	if updated:
-		var f := FileAccess.open(SEEN_PATH, FileAccess.WRITE)
-		if f: f.store_string(v)
-	return true
 
 # has_video tells the sequence whether stage 1 has anything to show.
 # Returns false when there is nothing to play at all; caller should discard.
