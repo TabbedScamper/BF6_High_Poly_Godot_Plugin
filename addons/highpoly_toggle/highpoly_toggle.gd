@@ -19,7 +19,7 @@ var boot: Node                     # the running boot sequence, if one is playin
 var _vid_size := Vector2(480, 800) # encoded video size, for cover-scaling
 var lbl: Label
 var mode_btn: OptionButton
-var ovr_chk: CheckBox          # per-selection detail override (live, contextual label)
+var ovr_chk: Button          # per-selection detail override (live, contextual label)
 var _override: Array = []      # nodes currently carrying the override
 # relative preloads: the plugin works from ANY folder under addons/ (users
 # often drop the whole repo zip in, nesting the plugin one level deeper)
@@ -37,21 +37,21 @@ const Theme_ = preload("highpoly_theme.gd")
 var previews: Node
 var mapctx: Node
 var sync: Node
-var col_chk: CheckBox          # Show collisions overlay
-var iso_chk: CheckBox          # Isolate selected: collision only (live w/ selection)
+var col_chk: Button          # Show collisions overlay
+var iso_chk: Button          # Isolate selected: collision only (live w/ selection)
 var col_pick: ColorPickerButton
 var col_alpha: HSlider
-var mapctx_on: CheckBox        # Map Context enabled
-var mapctx_objects: CheckBox   # show original map objects
+var mapctx_on: Button        # Map Context enabled
+var mapctx_objects: Button   # show original map objects
 var mapctx_range: HSlider      # object render distance; 0 = objects off, 3500 = no culling
 var mapctx_range_val: Label    # live "%dm" / "No Culling" readout next to the slider
-var mapctx_maptile: CheckBox   # project the maptile decal over SDK terrain+assets
-var mapctx_fx: CheckBox        # live GPU particles at the map's mined FX spawns
-var mapctx_light: CheckBox     # game lighting (sun/sky/fog from the real map VE)
-var mapctx_gi: CheckBox        # sub-toggle: SDFGI + SSAO (visible while lighting is on)
-var mapctx_shadows: CheckBox   # sub-toggle: sun shadows + overlay casting
-var mapctx_maplights: CheckBox # sub-toggle: the map's mined light entities
-var mapctx_optimize: CheckBox  # distance-cull the user's PLACED objects (their custom map content)
+var mapctx_maptile: Button   # project the maptile decal over SDK terrain+assets
+var mapctx_fx: Button        # live GPU particles at the map's mined FX spawns
+var mapctx_light: Button     # game lighting (sun/sky/fog from the real map VE)
+var mapctx_gi: Button        # sub-toggle: SDFGI + SSAO (visible while lighting is on)
+var mapctx_shadows: Button   # sub-toggle: sun shadows + overlay casting
+var mapctx_maplights: Button # sub-toggle: the map's mined light entities
+var mapctx_optimize: Button  # distance-cull the user's PLACED objects (their custom map content)
 var mapctx_variant_row: HBoxContainer  # "Variant" gamemode dropdown (visible with objects)
 var mapctx_variant: OptionButton
 var mapctx_bar: ProgressBar    # background props-build progress (hidden when idle)
@@ -76,7 +76,7 @@ var _swap_timer: Timer
 # ---- storage section (dock) ----
 var storage_lbl: Label         # disk usage summary (computed async)
 var purge_maps: OptionButton   # downloaded maps eligible for purge
-var storage_cache_chk: CheckBox  # "Fast startup cache" (baked mesh sidecars)
+var storage_cache_chk: Button  # "Fast startup cache" (baked mesh sidecars)
 var purge_btn: Button
 var _storage_gen := 0          # supersedes an in-flight usage scan
 
@@ -163,28 +163,27 @@ func _enter_tree() -> void:
 	mode_btn.item_selected.connect(func(_i): _mode_changed())
 	dock.add_child(mode_btn)
 
-	ovr_chk = CheckBox.new()
-	ovr_chk.text = "Preview selected in High-Poly"
+	var detail_chips := _chip_row()
+	ovr_chk = Theme_.chip(_override_label())
 	ovr_chk.tooltip_text = "Per-object override of the Detail Mode above — follows your selection live while checked. In Low-Poly mode: selected objects show high-poly (work light, inspect in detail). In High-Poly mode: selected objects drop to their proxies (reclaim FPS in heavy areas). Uncheck to restore everything to the scene's mode."
 	ovr_chk.toggled.connect(_override_toggled)
-	dock.add_child(ovr_chk)
+	detail_chips.add_child(ovr_chk)
 
 	var sepc := Theme_.separator(HSeparator.new()); dock.add_child(sepc)
 	var col_title := Theme_.heading(Label.new()); col_title.text = "Collision"
 	dock.add_child(col_title)
 
-	col_chk = CheckBox.new()
-	col_chk.text = "Show collisions"
+	var col_chips := _chip_row()
+	col_chk = Theme_.chip("Collisions")
 	col_chk.tooltip_text = "Editor-only overlay (never saved). Draws each object's ACTUAL in-game collision in transparent red: the object's own geometry scaled uniformly from the X axis — an object scaled (10, 20, 20) collides as (10, 10, 10)."
 	col_chk.toggled.connect(func(_v): _collision_changed())
-	dock.add_child(col_chk)
+	col_chips.add_child(col_chk)
 
-	iso_chk = CheckBox.new()
-	iso_chk.text = "Isolate selected collision"
+	iso_chk = Theme_.chip("Isolate selected")
 	iso_chk.disabled = true
 	iso_chk.tooltip_text = "Selected object(s) show ONLY their collision; everything else keeps its model (plus collision). Follows the selection live. Needs \"Show collisions\" on."
 	iso_chk.toggled.connect(_isolate_toggled)
-	dock.add_child(iso_chk)
+	col_chips.add_child(iso_chk)
 
 	var cc_row := HBoxContainer.new(); dock.add_child(cc_row)
 	var cc_lbl := Label.new(); cc_lbl.text = "Color"
@@ -219,8 +218,11 @@ func _enter_tree() -> void:
 	var mc_title := Theme_.heading(Label.new()); mc_title.text = "Map Context"
 	dock.add_child(mc_title)
 
-	mapctx_on = CheckBox.new()
-	mapctx_on.text = "Show whole map"
+	var mc_chips := _chip_row()
+	# sub-toggles of "Lighting", indented under the main row and only
+	# visible while it is on
+	var mc_sub := _chip_row(14)
+	mapctx_on = Theme_.chip("Whole map")
 	mapctx_on.tooltip_text = "Editor-only overlay (never saved). Adds the real out-of-bounds terrain + surrounding landscape around the SDK's playable area, so you see the whole map instead of just the playable bowl."
 	mapctx_on.toggled.connect(func(v: bool):
 		# fast show/hide of the built terrain/backdrop/water layers — the full
@@ -232,10 +234,9 @@ func _enter_tree() -> void:
 			_save_mapctx_state()
 			return
 		_mapctx_changed())
-	dock.add_child(mapctx_on)
+	mc_chips.add_child(mapctx_on)
 
-	mapctx_objects = CheckBox.new()
-	mapctx_objects.text = "Original map objects"
+	mapctx_objects = Theme_.chip("Map objects")
 	mapctx_objects.tooltip_text = "Also inject the game's original object placements (vehicles, props, antennas, chairs…). The distant terrain/landscape comes in with \"Show whole map\". Their look follows the Detail Mode dropdown; the Range slider is their render distance (0 = off)."
 	mapctx_objects.toggled.connect(func(v: bool):
 		# checkbox and Range slider are one control pair: turning objects ON
@@ -254,7 +255,7 @@ func _enter_tree() -> void:
 			_save_mapctx_state()
 			return
 		_mapctx_changed())
-	dock.add_child(mapctx_objects)
+	mc_chips.add_child(mapctx_objects)
 
 	# "Map variant": draw one gamemode's real gameplay layout (capture rings,
 	# objectives, spawn clusters, zones + that mode's own gated props) — data
@@ -292,8 +293,7 @@ func _enter_tree() -> void:
 	# Mode dropdown: Low-Poly = flat SDK orange, High-Poly no textures = grey
 	# clay, High-Poly textured = real textures. See _mapctx_tex_mode().)
 
-	mapctx_maptile = CheckBox.new()
-	mapctx_maptile.text = "Maptile decal"
+	mapctx_maptile = Theme_.chip("Maptile")
 	mapctx_maptile.button_pressed = true   # default CHECKED = current behaviour
 	mapctx_maptile.tooltip_text = "Project the map-tile colour over the SDK terrain + assets. Turn off if it tints buildings/washes out real textures."
 	mapctx_maptile.toggled.connect(func(v: bool):
@@ -302,19 +302,17 @@ func _enter_tree() -> void:
 		# can't outlive an uncheck via a superseded async re-apply
 		lbl.text = mapctx.set_maptile(EditorInterface.get_edited_scene_root(), v)
 		_save_mapctx_state())
-	dock.add_child(mapctx_maptile)
+	mc_chips.add_child(mapctx_maptile)
 
-	mapctx_fx = CheckBox.new()
-	mapctx_fx.text = "FX"
+	mapctx_fx = Theme_.chip("FX")
 	mapctx_fx.tooltip_text = "Live particles at the map's real FX spawn points (fires, smoke columns, electrical sparks — mined from the game data with authored rates/lifetimes and the real flipbook textures). Winter/Gauntlet-only FX stay off. Distance-faded per site."
 	mapctx_fx.toggled.connect(func(v: bool):
 		var _r := EditorInterface.get_edited_scene_root()
 		lbl.text = HighpolyFx.apply(_r, mapctx.map_of(_r), v)
 		_save_mapctx_state())
-	dock.add_child(mapctx_fx)
+	mc_chips.add_child(mapctx_fx)
 
-	mapctx_light = CheckBox.new()
-	mapctx_light.text = "Game lighting"
+	mapctx_light = Theme_.chip("Lighting")
 	mapctx_light.tooltip_text = "Editor-only (never saved). Light the scene like the real map: the game's actual sun direction/colour, sky gradient, ambient and haze — extracted from this map's VisualEnvironment data (e.g. Badlands' low golden sun). Replaces the editor's neutral preview sun/sky while on."
 	mapctx_light.toggled.connect(func(v: bool):
 		if mapctx_gi: mapctx_gi.visible = v
@@ -322,32 +320,29 @@ func _enter_tree() -> void:
 		if mapctx_maplights: mapctx_maplights.visible = v
 		_lighting_changed()
 		_save_mapctx_state())
-	dock.add_child(mapctx_light)
+	mc_chips.add_child(mapctx_light)
 
 	# sub-toggles: only shown while Game lighting is on; both act LIVE on the
 	# injected rig/overlay (no rebuild) and are remembered per map
-	mapctx_gi = CheckBox.new()
-	mapctx_gi.text = "  Global illumination"
+	mapctx_gi = Theme_.chip("Global illumination")
 	mapctx_gi.button_pressed = true
 	mapctx_gi.visible = false
 	mapctx_gi.tooltip_text = "Bounced light + sky occlusion (SDFGI) and contact shadows (SSAO) — the editor equivalents of the game's GI + GTAO. Costs GPU; uncheck if the viewport feels heavy."
 	mapctx_gi.toggled.connect(func(v: bool):
 		lbl.text = LightingScript.set_gi(EditorInterface.get_edited_scene_root(), v)
 		_save_mapctx_state())
-	dock.add_child(mapctx_gi)
+	mc_sub.add_child(mapctx_gi)
 
-	mapctx_shadows = CheckBox.new()
-	mapctx_shadows.text = "  Shadows"
+	mapctx_shadows = Theme_.chip("Shadows")
 	mapctx_shadows.button_pressed = true
 	mapctx_shadows.visible = false
 	mapctx_shadows.tooltip_text = "Sun shadows from the map objects (grass never casts). Costs GPU; uncheck if the viewport feels heavy."
 	mapctx_shadows.toggled.connect(func(v: bool):
 		lbl.text = LightingScript.set_shadows(EditorInterface.get_edited_scene_root(), v)
 		_save_mapctx_state())
-	dock.add_child(mapctx_shadows)
+	mc_sub.add_child(mapctx_shadows)
 
-	mapctx_maplights = CheckBox.new()
-	mapctx_maplights.text = "  Map lights"
+	mapctx_maplights = Theme_.chip("Map lights")
 	mapctx_maplights.button_pressed = false
 	mapctx_maplights.visible = false
 	mapctx_maplights.tooltip_text = "The map's real placed lights (3,700+ on Aftermath: street lights, interiors, signs), mined from the game data with their true colours/intensities/cones. Only lights near the camera render (200 m). Costs GPU."
@@ -356,7 +351,7 @@ func _enter_tree() -> void:
 		lbl.text = LightingScript.set_map_lights(_r,
 				v and mapctx_light.button_pressed, mapctx.map_of(_r))
 		_save_mapctx_state())
-	dock.add_child(mapctx_maplights)
+	mc_sub.add_child(mapctx_maplights)
 
 	var mcr_row := HBoxContainer.new(); dock.add_child(mcr_row)
 	var mcr_lbl := Label.new(); mcr_lbl.text = "Range"
@@ -390,8 +385,7 @@ func _enter_tree() -> void:
 	# map content — not the backdrop) so a densely-built map stays fast. Near props
 	# stay full-quality and fully selectable/editable; distant ones stop drawing.
 	# Follows the Range slider. Editor-only — nothing hidden, export untouched.
-	mapctx_optimize = CheckBox.new()
-	mapctx_optimize.text = "Optimize placed objects"
+	mapctx_optimize = Theme_.chip("Optimize placed")
 	mapctx_optimize.button_pressed = true
 	mapctx_optimize.tooltip_text = "Distance-cull the props YOU place (your custom map content) so a densely-built map stays fast — far ones stop drawing while near ones stay full-quality and fully editable. Follows the Range slider. Nothing is hidden or changed on export; turn it off for full range."
 	mapctx_optimize.toggled.connect(func(on: bool):
@@ -401,7 +395,7 @@ func _enter_tree() -> void:
 			_rad = 1.0e9 if int(mapctx_range.value) >= 3500 else mapctx_range.value
 		lbl.text = PlacedCull.apply(_r, _rad, on)   # visible feedback: "N culled at X m"
 		_save_mapctx_state())
-	dock.add_child(mapctx_optimize)
+	mc_chips.add_child(mapctx_optimize)
 
 	var td_row := HBoxContainer.new(); dock.add_child(td_row)
 	var td_lbl := Label.new(); td_lbl.text = "Terrain"
@@ -434,8 +428,8 @@ func _enter_tree() -> void:
 	storage_lbl.text = "Measuring disk usage…"
 	dock.add_child(storage_lbl)
 
-	storage_cache_chk = CheckBox.new()
-	storage_cache_chk.text = "Fast startup cache"
+	var storage_chips := _chip_row()
+	storage_cache_chk = Theme_.chip("Fast startup cache")
 	storage_cache_chk.tooltip_text = "Save each built map-context mesh to disk so the overlay comes back in seconds after an editor/plugin restart, instead of re-processing every model for minutes. Updated models still swap in automatically (stale entries rebuild). Costs roughly the downloaded models' size again on disk; per-map Purge clears it too."
 	var _es := EditorInterface.get_editor_settings()
 	var _mc_on := bool(_es.get_project_metadata("highpoly_mapctx", "_mesh_cache", false))
@@ -452,7 +446,7 @@ func _enter_tree() -> void:
 				"highpoly_mapctx", "_mesh_cache", v)
 		lbl.text = "Fast startup cache " + ("on — meshes save as they build" if v
 				else "off — existing cache files stay until purged"))
-	dock.add_child(storage_cache_chk)
+	storage_chips.add_child(storage_cache_chk)
 
 	var purge_row := HBoxContainer.new(); dock.add_child(purge_row)
 	purge_maps = OptionButton.new()
@@ -786,6 +780,22 @@ const WAVES_META := "res://addons/highpoly_toggle/waves.json"
 const TINT_DEFAULT := 0.72     # how far the backdrop dims once the controls are up
 const PANEL_PAD := 16          # controls held off the outline, left/right
 const PANEL_PAD_V := 12        # ...and top/bottom
+
+# Toggles sit shoulder-to-shoulder in a wrapping row under their heading rather
+# than one per line. Thirteen stacked checkboxes is mostly empty space, and a
+# filled chip states "on" at a glance where a tick has to be read.
+func _chip_row(indent := 0) -> HFlowContainer:
+	var f := HFlowContainer.new()
+	f.add_theme_constant_override("h_separation", 6)
+	f.add_theme_constant_override("v_separation", 6)
+	if indent > 0:
+		var m := MarginContainer.new()
+		m.add_theme_constant_override("margin_left", indent)
+		m.add_child(f)
+		dock.add_child(m)
+	else:
+		dock.add_child(f)
+	return f
 
 # The panel is layered back-to-front:
 #   bg      opaque, so the panel is legible with no video at all
@@ -1515,8 +1525,8 @@ func _reapply_placed_cull() -> void:
 
 # ---------- per-selection detail override (live) ----------
 func _override_label() -> String:
-	return "Preview selected in High-Poly" if _mode() == HighpolyLib.Tier.LOW \
-			else "Keep selected as Low-Poly"
+	return "Preview selected" if _mode() == HighpolyLib.Tier.LOW \
+			else "Keep as Low-Poly"
 
 func _override_toggled(pressed: bool) -> void:
 	if pressed:
