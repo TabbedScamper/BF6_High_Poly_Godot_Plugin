@@ -22,6 +22,7 @@ const HighpolyDoors = preload("highpoly_doors.gd")
 const HighpolyVariants = preload("highpoly_variants.gd")
 const LightingScript = preload("highpoly_lighting.gd")
 const PlacedCull = preload("highpoly_placedcull.gd")
+const JobBarsScript = preload("highpoly_jobbars.gd")
 var previews: Node
 var mapctx: Node
 var sync: Node
@@ -52,6 +53,9 @@ var update_btn: Button         # "Update Plugin → vX.Y.Z" — hidden until a n
 var banner: Label              # legacy-mode notice ("reorganization pending")
 var progress: ProgressBar
 var sync_lbl: Label
+var job_box: VBoxContainer     # HighpolyJobBars: one stacked bar per in-flight
+                               # download (typed by base, like mapctx/sync — the
+                               # global class name isn't registered until a scan)
 var pause_btn: Button
 var check_btn: Button          # manual "Check for Updates" (forces a registry re-check)
 var scope_btn: OptionButton    # sync scope: current scene only / all models
@@ -98,6 +102,10 @@ func _enter_tree() -> void:
 	banner.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	banner.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
 	dock.add_child(banner)
+
+	# ---- per-download bars, stacked above the sync bar (see _job_row) ----
+	job_box = JobBarsScript.new()
+	dock.add_child(job_box)
 
 	# ---- sync progress (the whole "model management UI" in 1.5) ----
 	progress = ProgressBar.new()
@@ -487,6 +495,9 @@ func _enter_tree() -> void:
 		# with — push the current Configure Shaders prefs over the fresh build
 		var _sr := EditorInterface.get_edited_scene_root()
 		if _sr != null: mapctx.apply_shader_prefs(_sr))
+	# every map-context download (map data, props, maptile) gets its own bar
+	mapctx.download_progress.connect(job_box.progress)
+	mapctx.download_ended.connect(job_box.end)
 	sync = SyncScript.new()
 	dock.add_child(sync)
 	sync.model_ready.connect(_on_model_ready)
@@ -558,6 +569,7 @@ func _exit_tree() -> void:
 		LightingScript.clear(r)                          # frees _GAME_LIGHTING
 		HighpolyLib.apply(r, HighpolyLib.Tier.LOW, true)   # hide hi-poly overlays, show proxies
 	HighpolyStore.save()
+	if job_box: job_box.clear()   # no orphaned rows if a fetch outlives the dock
 	if dock_scroll:
 		remove_control_from_docks(dock_scroll)
 		dock_scroll.queue_free()   # frees the inner VBox with it
@@ -838,7 +850,12 @@ func _check_plugin_update() -> void:
 
 func _do_plugin_update() -> void:
 	update_btn.disabled = true
+	# the updater fetches into memory, so there's no byte stream to track — show
+	# an indeterminate row anyway, so this download isn't the one silent one
+	const JOB := "Downloading plugin update"
+	job_box.progress(JOB, 0, 0)
 	var ok: bool = await HighpolyUpdater.update_plugin(dock, func(msg: String): lbl.text = msg)
+	job_box.end(JOB)
 	if ok:
 		update_btn.text = "Restart editor to finish update"
 	else:

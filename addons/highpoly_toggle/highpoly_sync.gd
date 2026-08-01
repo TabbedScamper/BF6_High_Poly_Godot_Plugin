@@ -24,6 +24,8 @@ var paused := false:
 		progress_changed.emit()
 var bootstrapping := false            # full-library zip download in progress
 var bootstrap_note := ""
+var _boot_done := 0                   # bytes of the bundle fetched so far
+var _boot_total := 0                  # bundle size (0 until the server says)
 
 var _queue: Array = []                # names, front = next to download
 var _queued: Dictionary = {}          # membership mirror of _queue
@@ -259,6 +261,11 @@ func status_text() -> String:
 	return "Syncing library in background · %d left" % p
 
 func progress_ratio() -> float:
+	# During the bootstrap there are no queued models yet, so the model-count
+	# ratio was 0/0 -> 1.0: the bar sat at 100% for the whole multi-GB download.
+	# Report real bytes instead.
+	if bootstrapping:
+		return clampf(float(_boot_done) / float(_boot_total), 0.0, 1.0) if _boot_total > 0 else 0.0
 	var total := _done + pending()
 	return 1.0 if total == 0 else float(_done) / float(total)
 
@@ -277,10 +284,14 @@ func _bootstrap_bundle() -> void:
 			var total_mb := int(int((meta as Dictionary).get("bytes", 0)) / 1048576.0)
 			var tmp := "user://highpoly-library.zip"
 			http.download_file = tmp
+			_boot_total = int((meta as Dictionary).get("bytes", 0))
 			var tick := Timer.new(); tick.wait_time = 1.0
 			add_child(tick); tick.start()
 			tick.timeout.connect(func():
 				var got := http.get_downloaded_bytes()
+				var bsz := http.get_body_size()   # real Content-Length once headers land
+				if bsz > 0: _boot_total = bsz
+				_boot_done = got
 				if got > 0:
 					bootstrap_note = "Downloading library… %d / %d MB" % [got / 1048576, total_mb]
 					progress_changed.emit())

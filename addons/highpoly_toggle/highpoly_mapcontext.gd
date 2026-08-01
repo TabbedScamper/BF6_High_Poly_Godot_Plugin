@@ -58,6 +58,12 @@ var _props_verified: Dictionary = {}    # map -> true (this session)
 # hook) wait for a COMPLETE overlay before shooting.
 signal build_progress(done: int, total: int)   # per work-slice + on completion
 signal build_finished(built: int)              # completed (not emitted when superseded)
+# Every byte this module pulls, so the dock can show it. The label doubles as
+# the job id — several of these can be in flight at once (map data, props and
+# the maptile), and the dock stacks one bar per label.
+# total_bytes = 0 when the server sent no length (bar goes indeterminate).
+signal download_progress(label: String, done_bytes: int, total_bytes: int)
+signal download_ended(label: String)
 const BUILD_FRAME_MS := 40          # per-frame parse budget (always >=1 mesh per frame)
 const BUILD_REPORT_EVERY := 100     # print / progress-file cadence (meshes)
 var _build_gen := 0                 # generation: _clear() bumps it, cancelling in-flight builds
@@ -287,13 +293,24 @@ func _fetch(host: Node, url: String, to_file := "") -> PackedByteArray:
 
 # Large-file download straight to disk with a live "N MB" progress callback
 # (total_mb = 0 hides the total). Returns true on HTTP 200 + file present.
+# Also drives the dock's progress bar via download_progress: every download the
+# plugin performs has to be visible there, not just as a line of status text.
 func _download_with_progress(host: Node, url: String, to_file: String, status: Callable,
 		label: String, total_mb := 0) -> bool:
 	var http := HTTPRequest.new(); host.add_child(http)
 	http.download_file = to_file
+	var total_bytes := total_mb * 1048576
+	# show the bar immediately — the first tick is half a second away, and a
+	# stalled connection must still look like "started", not like nothing happened
+	download_progress.emit(label, 0, total_bytes)
 	var tick := Timer.new(); tick.wait_time = 0.5; host.add_child(tick); tick.start()
 	tick.timeout.connect(func():
 		var d := http.get_downloaded_bytes()
+		# get_body_size() is the real Content-Length once headers land; prefer it
+		# over the manifest's estimate so the bar can't exceed 100%
+		var t := http.get_body_size()
+		if t > 0: total_bytes = t
+		download_progress.emit(label, d, total_bytes)
 		if d > 0:
 			var mb := d / 1048576
 			status.call("%s %d%s MB…" % [label, mb, (" / %d" % total_mb) if total_mb > 0 else ""]))
@@ -302,6 +319,11 @@ func _download_with_progress(host: Node, url: String, to_file: String, status: C
 		var res: Array = await http.request_completed
 		ok = res[0] == HTTPRequest.RESULT_SUCCESS and res[1] == 200 and FileAccess.file_exists(to_file)
 	tick.queue_free(); http.queue_free()
+	# the 0.5 s ticker never lands exactly on the last byte — finish the bar
+	# before removing it, so a completed download doesn't vanish at 88%
+	if ok and total_bytes > 0:
+		download_progress.emit(label, total_bytes, total_bytes)
+	download_ended.emit(label)
 	return ok
 
 # ---------- package freshness (ETags) ----------
