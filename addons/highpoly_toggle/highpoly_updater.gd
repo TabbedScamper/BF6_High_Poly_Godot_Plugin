@@ -116,6 +116,42 @@ static func check_plugin_update(host: Node, cb: Callable) -> void:
 # Download the plugin zip and extract it over addons/highpoly_toggle/. Running
 # scripts stay loaded in memory, so overwriting is safe; the user restarts the
 # editor (or disables/re-enables the plugin) to load the new version.
+# ---------- files that used to be part of the plugin ----------
+# An update overwrites what is in the zip and touches nothing else, so a file
+# that has been REMOVED from the plugin stays on disk forever. None of these do
+# harm — nothing references them and they still parse — but they are litter in
+# a folder people read, and a stale class_name stays registered in the editor.
+#
+# Add a name here whenever one is deleted. The list is explicit rather than
+# "anything not in the zip": this deletes from the user's addons folder, and
+# the blast radius of a wrong answer there is somebody's install.
+const REMOVED_FILES := [
+	"highpoly_jobbars.gd",     # 1.21.0: one universal bar replaced the stacked ones
+	"highpoly_turbo.gd",       # long gone
+]
+
+# Returns how many it removed. Safe by construction: named files only, only
+# inside the plugin's own folder, never directories.
+static func sweep_removed() -> int:
+	var dir := plugin_dir()
+	var n := 0
+	var names: PackedStringArray = []
+	for f in REMOVED_FILES:
+		var p := "%s/%s" % [dir, f]
+		if FileAccess.file_exists(p):
+			DirAccess.remove_absolute(ProjectSettings.globalize_path(p))
+			names.append(f)
+			n += 1
+		# Godot writes a .uid beside every script; it outlives the script it
+		# belonged to and points at nothing
+		var uid := p + ".uid"
+		if FileAccess.file_exists(uid):
+			DirAccess.remove_absolute(ProjectSettings.globalize_path(uid))
+	if n > 0:
+		Log.info("Tidied %d file(s) left behind by an earlier version: %s"
+			% [n, ", ".join(names)])
+	return n
+
 static func update_plugin(host: Node, status: Callable) -> bool:
 	var base := manifest_url().get_base_dir() + "/"
 	var http := HTTPRequest.new(); host.add_child(http)

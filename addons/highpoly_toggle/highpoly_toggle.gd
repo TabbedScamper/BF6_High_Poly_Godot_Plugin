@@ -646,6 +646,7 @@ func _enter_tree() -> void:
 	# the boot sequence is started from the open path, not from visibility_changed:
 	# that signal also fires on close, and every route to opening the panel goes
 	# through the toolbar button's toggle anyway
+	HighpolyUpdater.sweep_removed()   # clear out what an older version left behind
 	_apply_shape_outlines.call_deferred()
 	_restore_section_state.call_deferred()
 	Log.hook(_log_line)
@@ -768,7 +769,13 @@ func _exit_tree() -> void:
 		tools_btn.queue_free()
 		tools_btn = null
 	if win:
-		win.queue_free()           # frees the panel root, scroller and VBox with it
+		# free(), not queue_free(): teardown DOES run at editor shutdown, but the
+		# deferred queue is not flushed before the process exits, so a queued
+		# window is never actually freed. Measured — a leaked Viewport, Camera,
+		# Scenario, Environment, Canvas and CanvasItem at exit, all of which is
+		# one Window. Freeing here takes the panel root, the scroller and
+		# everything under them with it.
+		win.free()
 		win = null
 		dock_root = null
 		dock_scroll = null
