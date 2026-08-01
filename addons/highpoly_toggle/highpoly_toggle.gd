@@ -179,14 +179,14 @@ func _enter_tree() -> void:
 		"Shows the invisible shapes players bump into. They are often not the shape they look like, which is why something can feel wrong to walk past even when it looks right.")
 
 	var col_chips := _chip_row(host)
-	col_chk = Theme_.chip("Bump shapes")
-	col_chk.tooltip_text = "Shows the invisible shape players actually bump into, in see-through red. It often does not match what you see: a stretched object still bumps as though it were square. Preview only — nothing about your map changes."
+	col_chk = Theme_.chip("Collisions")
+	col_chk.tooltip_text = "Shows the invisible collision shape players actually bump into, in see-through red. It often does not match what you see: a stretched object still bumps as though it were square. Preview only — nothing about your map changes."
 	col_chk.toggled.connect(func(_v): _collision_changed())
 	col_chips.add_child(col_chk)
 
 	iso_chk = Theme_.chip("Isolate selected")
 	iso_chk.disabled = true
-	iso_chk.tooltip_text = "Hides everything except the bump shapes of the pieces you have selected, so you can look at one shape without the rest in the way. Needs Collisions switched on."
+	iso_chk.tooltip_text = "Hides everything except the collision shapes of the pieces you have selected, so you can look at one shape without the rest in the way. Needs Collisions switched on."
 	iso_chk.toggled.connect(_isolate_toggled)
 	col_chips.add_child(iso_chk)
 
@@ -198,7 +198,7 @@ func _enter_tree() -> void:
 	col_pick.color = HighpolyCollision.get_color()
 	col_pick.custom_minimum_size = Vector2(48, 0)
 	col_pick.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	col_pick.tooltip_text = "Colour and see-through-ness of the bump shapes."
+	col_pick.tooltip_text = "Colour and see-through-ness of the collision shapes."
 	col_pick.color_changed.connect(func(c: Color):
 		HighpolyCollision.set_color(c)
 		col_alpha.set_value_no_signal(c.a))
@@ -211,7 +211,7 @@ func _enter_tree() -> void:
 	col_alpha.min_value = 0.05; col_alpha.max_value = 1.0; col_alpha.step = 0.05
 	col_alpha.value = HighpolyCollision.get_color().a
 	col_alpha.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	col_alpha.tooltip_text = "How see-through the bump shapes are."
+	col_alpha.tooltip_text = "How see-through the collision shapes are."
 	col_alpha.value_changed.connect(func(v: float):
 		var c := HighpolyCollision.get_color()
 		c.a = v
@@ -226,8 +226,8 @@ func _enter_tree() -> void:
 	# sub-toggles of "Lighting", indented under the main row and only
 	# visible while it is on
 	var mc_sub := _chip_row(host, 14)
-	mapctx_on = Theme_.chip("Whole level")
-	mapctx_on.tooltip_text = "Puts your map back into the real level — the ground, hills and skyline all around the play area — so you can see how your build sits in the world. Preview only: none of it is saved into your map or included when you export."
+	mapctx_on = Theme_.chip("Extended Terrain")
+	mapctx_on.tooltip_text = "Adds the real terrain that surrounds the play area — the ground, hills and skyline all around the play area — so you can see how your build sits in the world. Preview only: none of it is saved into your map or included when you export."
 	mapctx_on.toggled.connect(func(v: bool):
 		# fast show/hide of the built terrain/backdrop/water layers — the full
 		# rebuild also regenerated every map object. Falls back to the full
@@ -259,6 +259,12 @@ func _enter_tree() -> void:
 			_save_mapctx_state()
 			return
 		_mapctx_changed())
+	# Not shown: the Range slider already is this control — zero means no
+	# scenery, anything above it means scenery out to that distance — and how the
+	# scenery LOOKS follows Detail Mode. Two ways to say the same thing was one
+	# too many. Kept as a hidden child because the overlay code reads its state,
+	# and because an unparented Button would simply leak.
+	mapctx_objects.visible = false
 	mc_chips.add_child(mapctx_objects)
 
 	# "Map variant": draw one gamemode's real gameplay layout (capture rings,
@@ -298,7 +304,6 @@ func _enter_tree() -> void:
 	# clay, High-Poly textured = real textures. See _mapctx_tex_mode().)
 
 	mapctx_maptile = Theme_.chip("Ground photo")
-	mapctx_maptile.button_pressed = true   # default CHECKED = current behaviour
 	mapctx_maptile.tooltip_text = "Lays the map's aerial photo over the ground so it looks like the real place instead of flat colour. Turn it off if it makes buildings look muddy."
 	mapctx_maptile.toggled.connect(func(v: bool):
 		# instant ACTIVE add/remove (set_maptile) — no overlay rebuild, no
@@ -306,6 +311,16 @@ func _enter_tree() -> void:
 		# can't outlive an uncheck via a superseded async re-apply
 		lbl.text = mapctx.set_maptile(EditorInterface.get_edited_scene_root(), v)
 		_save_mapctx_state())
+	# Not shown: the SDK ships its own map-texture plugin with an "Apply Texture"
+	# button in the same toolbar, and that one is saved into the scene where this
+	# one was only ever a preview. Two of them darken the ground twice, so this
+	# defers entirely. The control is kept unshown because the overlay code reads
+	# its state in several places.
+	# no_signal: this runs AFTER the toggled handler is connected, and that
+	# handler reaches for `mapctx`, which is not built until later in _enter_tree
+	mapctx_maptile.set_pressed_no_signal(false)
+	HighpolyMapContext.maptile_enabled = false
+	mapctx_maptile.visible = false
 	mc_chips.add_child(mapctx_maptile)
 
 	mapctx_fx = Theme_.chip("FX")
@@ -380,8 +395,11 @@ func _enter_tree() -> void:
 			HighpolyFx.set_range(_rr, _rad)
 			if mapctx_optimize and mapctx_optimize.button_pressed:
 				PlacedCull.apply(_rr, _rad, true)   # placed props ride the slider too
-		if int(v) == 0 and mapctx_objects.button_pressed:
-			mapctx_objects.button_pressed = false    # fires _mapctx_changed
+		# the slider IS the scenery switch now: zero off, anything above it on.
+		# Assigning fires the toggled handler, which does the real show/hide work.
+		var want := int(v) > 0
+		if mapctx_objects and mapctx_objects.button_pressed != want:
+			mapctx_objects.button_pressed = want
 		else:
 			_save_mapctx_state())
 
@@ -389,6 +407,9 @@ func _enter_tree() -> void:
 	# map content — not the backdrop) so a densely-built map stays fast. Near props
 	# stay full-quality and fully selectable/editable; distant ones stop drawing.
 	# Follows the Range slider. Editor-only — nothing hidden, export untouched.
+	# Not shown: this is just what the Range slider means for the pieces you
+	# placed yourself, so it is always on and rides the slider like everything
+	# else. Kept unshown because the overlay code reads its state.
 	mapctx_optimize = Theme_.chip("Hide far pieces")
 	mapctx_optimize.button_pressed = true
 	mapctx_optimize.tooltip_text = "Stops drawing the pieces YOU placed once they are far from the camera, so a busy map keeps running smoothly. They are still there, still selectable, and nothing is left out when you export."
@@ -399,6 +420,7 @@ func _enter_tree() -> void:
 			_rad = 1.0e9 if int(mapctx_range.value) >= 3500 else mapctx_range.value
 		lbl.text = PlacedCull.apply(_r, _rad, on)   # visible feedback: "N culled at X m"
 		_save_mapctx_state())
+	mapctx_optimize.visible = false
 	mc_chips.add_child(mapctx_optimize)
 
 	var td_row := HBoxContainer.new(); host.add_child(td_row)
@@ -1430,12 +1452,12 @@ func _save_mapctx_state() -> void:
 		"on": mapctx_on.button_pressed,
 		"objects": mapctx_objects.button_pressed,
 		"range": mapctx_range.value if mapctx_range else 800.0,
-		"maptile": mapctx_maptile.button_pressed if mapctx_maptile else true,
+		"maptile": false,      # the SDK plugin owns the ground texture now
 		"light": mapctx_light.button_pressed if mapctx_light else false,
 		"gi": mapctx_gi.button_pressed if mapctx_gi else true,
 		"shadows": mapctx_shadows.button_pressed if mapctx_shadows else true,
 		"maplights": mapctx_maplights.button_pressed if mapctx_maplights else false,
-		"optimize": mapctx_optimize.button_pressed if mapctx_optimize else true,
+		"optimize": true,      # always on: it is what the Range slider means
 		"fx": mapctx_fx.button_pressed if mapctx_fx else false,
 		"variant": mapctx_variant.get_item_text(mapctx_variant.selected)
 				if mapctx_variant and mapctx_variant.selected >= 0 else "Off",
@@ -1490,8 +1512,9 @@ func _restore_mapctx_state() -> void:
 		if mapctx_range_val: mapctx_range_val.text = _range_label(mapctx_range.value)
 		mapctx.set_radius(1.0e9 if int(mapctx_range.value) >= 3500 else float(mapctx_range.value))
 	if mapctx_maptile != null:
-		mapctx_maptile.set_pressed_no_signal(bool(d.get("maptile", true)))
-		HighpolyMapContext.maptile_enabled = mapctx_maptile.button_pressed
+		# ignore whatever an older version saved: the SDK plugin owns this now
+		mapctx_maptile.set_pressed_no_signal(false)
+		HighpolyMapContext.maptile_enabled = false
 	_sync_maptile_control()
 	mapctx_on.set_pressed_no_signal(bool(d.get("on", false)))
 	mapctx_objects.set_pressed_no_signal(bool(d.get("objects", false)))
