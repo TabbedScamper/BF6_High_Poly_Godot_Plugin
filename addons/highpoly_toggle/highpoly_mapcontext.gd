@@ -73,6 +73,9 @@ signal build_finished(built: int)              # completed (not emitted when sup
 # the maptile), and the dock stacks one bar per label.
 # total_bytes = 0 when the server sent no length (bar goes indeterminate).
 signal download_progress(label: String, done_bytes: int, total_bytes: int)
+# set by the panel; downloads take turns through it. Null in tests, where
+# there is no queue and nothing to take turns with.
+var job_queue: Node = null
 signal download_ended(label: String)
 const BUILD_FRAME_MS := 40          # per-frame parse budget (always >=1 mesh per frame)
 const BUILD_REPORT_EVERY := 100     # print / progress-file cadence (meshes)
@@ -224,6 +227,7 @@ const WATER_NODE := "_WATER"
 # Nothing on disk anywhere = fetch it from the same official CDN the SDK's own
 # "Download Texture" button uses (see ensure_maptile).
 const TILE_CACHE := "user://mapcontext/_maptiles"
+const Log = preload("highpoly_log.gd")
 const SDK_TILE_DIR := "res://addons/bf_portal/terrain_decal/textures/"
 const LEGACY_TILE_DIR := "res://raw/maptiles/"
 const SDK_CONFIG := "res://addons/bf_portal/bf_portal.config.json"
@@ -321,10 +325,16 @@ func _fetch(host: Node, url: String, to_file := "") -> PackedByteArray:
 func _download_with_progress(host: Node, url: String, to_file: String, status: Callable,
 		label: String, total_mb := 0) -> bool:
 	var total_bytes := total_mb * 1048576
+	# take a turn: one transfer at a time, so the bar describes one thing and the
+	# connection is not split between two
+	var token := 0
+	if job_queue != null:
+		token = await job_queue.acquire(label)
 	# show the bar immediately — the first poll is half a second away, and a
 	# stalled connection must still look like "started", not like nothing happened
 	download_progress.emit(label, 0, total_bytes)
 	var ok := false
+	var why := ""
 	for attempt in range(3):
 		if attempt > 0:
 			if status.is_valid():
@@ -340,7 +350,10 @@ func _download_with_progress(host: Node, url: String, to_file: String, status: C
 			state["done"] = true
 			state["ok"] = res == HTTPRequest.RESULT_SUCCESS and code == 200,
 			CONNECT_ONE_SHOT)
-		if http.request(url) != OK:
+		var rq := http.request(url)
+		if rq != OK:
+			why = "could not start the request (%s)" % error_string(rq)
+			Log.warn("%s: %s — %s" % [label, why, url])
 			http.queue_free()
 			continue
 		var last := 0
@@ -358,6 +371,7 @@ func _download_with_progress(host: Node, url: String, to_file: String, status: C
 			else:
 				idle += POLL_SECS
 			download_progress.emit(label, d, total_bytes)
+			if job_queue != null: job_queue.report(d, total_bytes)
 			if d > 0 and status.is_valid():
 				status.call("%s %d%s MB…" % [label, d / 1048576, (" / %d" % total_mb) if total_mb > 0 else ""])
 			if idle >= stall_secs and not state["done"]:
@@ -365,8 +379,13 @@ func _download_with_progress(host: Node, url: String, to_file: String, status: C
 				# ourselves — awaiting that signal here would hang forever, which
 				# is the very bug this loop exists to end
 				http.cancel_request()
+				why = "stopped receiving data for %ds" % int(stall_secs)
+				Log.warn("%s: %s (got %s)" % [label, why, String.humanize_size(d)])
 				break
 		ok = state["ok"] and FileAccess.file_exists(to_file)
+		if not ok and why == "":
+			why = "server refused or sent nothing" if not state["ok"] 				else "nothing was written to disk"
+			Log.warn("%s: %s — %s" % [label, why, url])
 		http.queue_free()
 		if ok: break
 	# the poll never lands exactly on the last byte — finish the bar before
@@ -374,6 +393,10 @@ func _download_with_progress(host: Node, url: String, to_file: String, status: C
 	if ok and total_bytes > 0:
 		download_progress.emit(label, total_bytes, total_bytes)
 	download_ended.emit(label)
+	if job_queue != null:
+		job_queue.release(token, ok, why if not ok else String.humanize_size(total_bytes))
+	elif not ok:
+		Log.error("FAILED: %s — %s" % [label, why])
 	return ok
 
 # ---------- package freshness (ETags) ----------

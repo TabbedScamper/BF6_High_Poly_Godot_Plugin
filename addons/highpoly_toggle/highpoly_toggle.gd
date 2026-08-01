@@ -33,8 +33,9 @@ const HighpolyDoors = preload("highpoly_doors.gd")
 const HighpolyVariants = preload("highpoly_variants.gd")
 const LightingScript = preload("highpoly_lighting.gd")
 const PlacedCull = preload("highpoly_placedcull.gd")
-const JobBarsScript = preload("highpoly_jobbars.gd")
 const TipsScript = preload("highpoly_tips.gd")
+const JobsScript = preload("highpoly_jobs.gd")
+const Log = preload("highpoly_log.gd")
 const SectionScript = preload("highpoly_section.gd")
 const SplashScript = preload("highpoly_splash.gd")
 const Theme_ = preload("highpoly_theme.gd")
@@ -68,7 +69,13 @@ var update_btn: Button         # "Update Plugin to vX.Y.Z" — hidden until a ne
 var banner: Label              # legacy-mode notice ("reorganization pending")
 var progress: ProgressBar
 var sync_lbl: Label
-var job_box: VBoxContainer     # HighpolyJobBars: one stacked bar per in-flight
+var jobs: Node                 # HighpolyJobs: the download queue
+var job_row: VBoxContainer     # the one universal bar, in the Check-for-Updates slot
+var job_bar: ProgressBar
+var job_pct: Label             # "45%  1/2"
+var job_what: Label            # what is downloading right now
+var log_view: RichTextLabel
+var log_count: Label
                                # download (typed by base, like mapctx/sync — the
                                # global class name isn't registered until a scan)
 var pause_btn: Button
@@ -118,9 +125,33 @@ func _enter_tree() -> void:
 	banner.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
 	dock.add_child(banner)
 
-	# ---- per-download bars, stacked above the sync bar (see _job_row) ----
-	job_box = JobBarsScript.new()
-	dock.add_child(job_box)
+	# ---- the one download bar, shown in place of "Check for Updates" ----
+	# One bar, not a stack: only one transfer runs at a time now, so a stack
+	# could only ever show one moving row and several idle ones.
+	jobs = JobsScript.new()
+	jobs.name = "HighpolyJobQueue"
+	dock.add_child(jobs)
+	job_row = VBoxContainer.new()
+	job_row.visible = false
+	job_what = Label.new()
+	job_what.add_theme_font_size_override("font_size", Theme_.fs(11))
+	job_what.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	job_row.add_child(job_what)
+	var job_line := HBoxContainer.new()
+	job_row.add_child(job_line)
+	job_bar = ProgressBar.new()
+	job_bar.min_value = 0.0
+	job_bar.max_value = 1.0
+	job_bar.show_percentage = false
+	job_bar.custom_minimum_size = Vector2(0, 10)
+	job_bar.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	Theme_.bar(job_bar)
+	job_line.add_child(job_bar)
+	job_pct = Label.new()
+	job_pct.custom_minimum_size = Vector2(72, 0)
+	job_pct.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	job_line.add_child(job_pct)
+	jobs.changed.connect(_refresh_job_bar)
 
 	# ---- sync progress (the whole "model management UI" in 1.5) ----
 	progress = ProgressBar.new()
@@ -147,6 +178,7 @@ func _enter_tree() -> void:
 	check_btn.tooltip_text = "Checks for newly fixed models straight away. This happens by itself every hour, so you rarely need to press it."
 	check_btn.pressed.connect(_check_updates_now)
 	dock.add_child(_centred(check_btn))
+	dock.add_child(job_row)      # takes the button's place while anything downloads
 
 	scope_btn = OptionButton.new()
 	scope_btn.add_item("Download only what this map needs", 0)
@@ -508,6 +540,46 @@ func _enter_tree() -> void:
 	purge_btn.pressed.connect(_purge_selected)
 	purge_row.add_child(purge_btn)
 
+	host = _section("Log",
+		"A running account of what the plugin is doing, and anything that went wrong. If something breaks, save this and send it — it records which version, which level and which step, which a screenshot cannot.")
+
+	log_count = Label.new()
+	log_count.add_theme_font_size_override("font_size", Theme_.fs(11))
+	log_count.add_theme_color_override("font_color", Color(1, 1, 1, 0.55))
+	log_count.text = "Nothing has gone wrong yet."
+	host.add_child(log_count)
+
+	log_view = RichTextLabel.new()
+	log_view.bbcode_enabled = true
+	log_view.scroll_following = true      # newest line stays in sight
+	log_view.selection_enabled = true     # so a line can be copied on its own
+	log_view.custom_minimum_size = Vector2(0, 190)
+	log_view.add_theme_font_size_override("normal_font_size", Theme_.fs(10))
+	host.add_child(log_view)
+
+	var log_row := HBoxContainer.new()
+	log_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	host.add_child(log_row)
+	var save_log := Button.new()
+	save_log.text = "Save log file"
+	save_log.tooltip_text = "Writes everything below to a text file and opens the folder, so you can attach it to a bug report. It includes your plugin version, Godot version and graphics card, which is usually what the answer depends on."
+	save_log.pressed.connect(func():
+		var p: String = Log.save()
+		if p == "":
+			lbl.text = "Could not write the log file — see Godot's Output panel."
+			return
+		lbl.text = "Saved %s" % p
+		OS.shell_show_in_file_manager(p))
+	log_row.add_child(save_log)
+	var clear_log := Button.new()
+	clear_log.text = "Clear"
+	clear_log.tooltip_text = "Empties the list below. Does not undo anything."
+	clear_log.pressed.connect(func():
+		Log.clear()
+		log_view.clear()
+		_refresh_log_count())
+	log_row.add_child(clear_log)
+
 	host = dock          # back to the panel itself: these two belong to no section
 	lbl = Label.new()
 	lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -553,6 +625,10 @@ func _enter_tree() -> void:
 	# that signal also fires on close, and every route to opening the panel goes
 	# through the toolbar button's toggle anyway
 	_restore_section_state.call_deferred()
+	Log.hook(_log_line)
+	for r in Log.lines():                  # anything logged before the panel opened
+		_log_line(int(r["lvl"]), str(r["m"]))
+	Log.info("Panel opened")
 	_adopt_tips.call_deferred()
 	_first_run_open.call_deferred()
 	_auto_perf_settings.call_deferred()
@@ -577,8 +653,7 @@ func _enter_tree() -> void:
 		var _sr := EditorInterface.get_edited_scene_root()
 		if _sr != null: mapctx.apply_shader_prefs(_sr))
 	# every map-context download (map data, props, maptile) gets its own bar
-	mapctx.download_progress.connect(job_box.progress)
-	mapctx.download_ended.connect(job_box.end)
+	mapctx.job_queue = jobs        # map-context downloads take their turn
 	sync = SyncScript.new()
 	dock.add_child(sync)
 	sync.model_ready.connect(_on_model_ready)
@@ -650,7 +725,8 @@ func _exit_tree() -> void:
 		LightingScript.clear(r)                          # frees _GAME_LIGHTING
 		HighpolyLib.apply(r, HighpolyLib.Tier.LOW, true)   # hide hi-poly overlays, show proxies
 	HighpolyStore.save()
-	if job_box: job_box.clear()   # no orphaned rows if a fetch outlives the panel
+	Log.hook(Callable())         # never call into a freed panel
+	if jobs: jobs.reset()        # release the gate: nobody is left to call release()
 	if tools_btn:
 		remove_control_from_container(CONTAINER_SPATIAL_EDITOR_MENU, tools_btn)
 		tools_btn.queue_free()
@@ -851,6 +927,45 @@ func _adopt_tips() -> void:
 func _centred(b: Button) -> Button:
 	b.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	return b
+
+# The bar stands in for the Check for Updates button while anything is
+# downloading, so the panel never shows both a button and a bar for the same
+# thing. "45%  1/2" is this job's progress and which of the queued jobs it is.
+# Colour carries the level so an error is findable in a long list without
+# reading it. Appended line by line rather than rebuilt, because rebuilding an
+# 800-line view on every message is what makes a log panel stutter.
+func _log_line(lvl: int, msg: String) -> void:
+	if log_view == null or not is_instance_valid(log_view): return
+	var col := "#ffffffb0"
+	if lvl == Log.Level.WARN: col = "#ffc061"
+	elif lvl == Log.Level.ERROR: col = "#ff6b5e"
+	log_view.append_text("[color=%s]%s  %s[/color]
+"
+		% [col, Time.get_time_string_from_system(), msg])
+	_refresh_log_count()
+
+func _refresh_log_count() -> void:
+	if log_count == null or not is_instance_valid(log_count): return
+	var e: int = Log.error_count()
+	var w: int = Log.warning_count()
+	if e == 0 and w == 0:
+		log_count.text = "Nothing has gone wrong yet."
+		log_count.add_theme_color_override("font_color", Color(1, 1, 1, 0.55))
+		return
+	log_count.text = "%d problem%s, %d warning%s — please send this if you need help." 		% [e, "" if e == 1 else "s", w, "" if w == 1 else "s"]
+	log_count.add_theme_color_override("font_color",
+		Color(1.0, 0.42, 0.37) if e > 0 else Color(1.0, 0.75, 0.38))
+
+func _refresh_job_bar() -> void:
+	if jobs == null or job_row == null: return
+	var busy: bool = jobs.busy()
+	job_row.visible = busy
+	if check_btn: check_btn.visible = not busy
+	if not busy: return
+	job_bar.value = jobs.ratio()
+	job_what.text = jobs.active_label()
+	var pct := "%d%%" % int(round(jobs.ratio() * 100.0))
+	job_pct.text = pct if jobs.count() <= 1 else "%s  %d/%d" % [pct, jobs.index(), jobs.count()]
 
 func _tips_hide(_v: float = 0.0) -> void:
 	if tips: tips.hide_now()
@@ -1214,10 +1329,13 @@ func _do_plugin_update() -> void:
 	update_btn.disabled = true
 	# the updater fetches into memory, so there's no byte stream to track — show
 	# an indeterminate row anyway, so this download isn't the one silent one
-	const JOB := "Downloading plugin update"
-	job_box.progress(JOB, 0, 0)
-	var ok: bool = await HighpolyUpdater.update_plugin(dock, func(msg: String): lbl.text = msg)
-	job_box.end(JOB)
+	# the updater fetches into memory, so there is no byte stream to track — it
+	# still takes a turn in the queue so it cannot race a model download
+	var token: int = await jobs.acquire("Plugin update")
+	var ok: bool = await HighpolyUpdater.update_plugin(dock, func(msg: String):
+		lbl.text = msg
+		Log.info(msg))
+	jobs.release(token, ok, "" if ok else "see the log for what failed")
 	if ok:
 		update_btn.text = "Restart editor to finish update"
 	else:

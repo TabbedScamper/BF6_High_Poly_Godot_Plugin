@@ -98,6 +98,7 @@ func _diff_and_queue(first := false, force := false) -> void:
 	progress_changed.emit()
 
 const MANIFEST_CACHE := "user://highpoly/manifest-cache.json"
+const Log = preload("highpoly_log.gd")
 
 # Returns {ok, changed}. The manifest only downloads when its ETag moved;
 # an unchanged manifest at startup loads from the disk cache (no network body,
@@ -245,7 +246,7 @@ func _worker() -> void:
 			_fail_count += 1
 			_write_failures += 1
 			if _write_failures == 1:                      # log once, not 7,670 times
-				push_error("High-Poly Preview: downloaded '%s' but could not write it to %s — "
+				Log.error("downloaded '%s' but could not write it to %s — "
 					% [nm, ProjectSettings.globalize_path(HighpolyStore.MODELS_DIR)]
 					+ "check free disk space and folder permissions.")
 		_scene_want.erase(nm)
@@ -309,7 +310,7 @@ func _no_room_for_bundle(bytes: int) -> bool:
 	if free >= need: return false
 	bootstrap_note = "Not enough disk space for the one-shot library download (%d GB free, ~%d GB needed) — downloading models individually instead." \
 		% [int(free / 1073741824.0), int(need / 1073741824.0)]
-	push_warning("High-Poly Preview: " + bootstrap_note)
+	Log.warn("" + bootstrap_note)
 	progress_changed.emit()
 	return true
 
@@ -422,7 +423,7 @@ func _extract_bundle(tmp: String) -> bool:
 	zr.close()
 	HighpolyStore.save()
 	if _write_failures > 0:
-		push_error("High-Poly Preview: %d of %d models could not be written to %s — "
+		Log.error("%d of %d models could not be written to %s — "
 			% [_write_failures, _write_failures + n, ProjectSettings.globalize_path(HighpolyStore.MODELS_DIR)]
 			+ "the library is incomplete; free up disk space and hit Check for Updates.")
 	# whatever failed to write stays absent from the index, so the per-file queue
