@@ -110,7 +110,7 @@ func _enter_tree() -> void:
 	update_btn = Button.new()
 	update_btn.visible = false
 	update_btn.pressed.connect(_do_plugin_update)
-	dock.add_child(update_btn)
+	dock.add_child(_centred(update_btn))
 
 	banner = Label.new()
 	banner.visible = false
@@ -140,13 +140,13 @@ func _enter_tree() -> void:
 	pause_btn.pressed.connect(func():
 		sync.paused = not sync.paused
 		pause_btn.text = "Resume downloads" if sync.paused else "Pause downloads")
-	dock.add_child(pause_btn)
+	dock.add_child(_centred(pause_btn))
 
 	check_btn = Button.new()
 	check_btn.text = "Check for Updates"
 	check_btn.tooltip_text = "Fetch the latest registry right now (normally automatic: on start + hourly). Handy right after a model fix is published."
 	check_btn.pressed.connect(_check_updates_now)
-	dock.add_child(check_btn)
+	dock.add_child(_centred(check_btn))
 
 	scope_btn = OptionButton.new()
 	scope_btn.add_item("Download: current scene only", 0)
@@ -420,7 +420,7 @@ func _enter_tree() -> void:
 	shader_btn.text = "Configure Shaders…"
 	shader_btn.tooltip_text = "Live overlay shader settings: Water Animation, Flipbook Animations (smoke), Foliage Wind. Applied instantly, remembered across restarts."
 	shader_btn.pressed.connect(_open_shader_dialog)
-	host.add_child(shader_btn)
+	host.add_child(_centred(shader_btn))
 
 	host = _section("Storage",
 		"What the plugin is keeping on disk, and how to get it back. Everything here re-downloads on demand, so purging is always safe.")
@@ -801,16 +801,24 @@ func _adopt_tips() -> void:
 	if vs and not vs.value_changed.is_connected(_tips_hide):
 		vs.value_changed.connect(_tips_hide)
 
+# Sized to its own text and centred, rather than stretched across the panel.
+func _centred(b: Button) -> Button:
+	b.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	return b
+
 func _tips_hide(_v: float = 0.0) -> void:
 	if tips: tips.hide_now()
 
 func _chip_row(into: Node, indent := 0) -> HFlowContainer:
 	var f := HFlowContainer.new()
+	f.alignment = FlowContainer.ALIGNMENT_CENTER
 	f.add_theme_constant_override("h_separation", 6)
 	f.add_theme_constant_override("v_separation", 6)
 	if indent > 0:
 		var m := MarginContainer.new()
+		# inset both sides: a one-sided indent would push a centred row off centre
 		m.add_theme_constant_override("margin_left", indent)
+		m.add_theme_constant_override("margin_right", indent)
 		m.add_child(f)
 		into.add_child(m)
 	else:
