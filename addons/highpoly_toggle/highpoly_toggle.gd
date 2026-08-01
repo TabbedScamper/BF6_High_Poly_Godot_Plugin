@@ -159,19 +159,19 @@ func _enter_tree() -> void:
 	# whichever section's content box is currently being filled, so the existing
 	# build order — which several controls depend on — is untouched.
 	var host: Node = _section("Detail Mode",
-		"Whether you are looking at the simple blocks you actually build and export with, or the real game models dropped over the top of them. Looking at the real models changes nothing about your map — the blocks underneath are still what gets saved.")
+		"Whether you are looking at the Low-Poly pieces you actually build and export with, or the real High-Poly game models laid over the top of them. Switching to High-Poly changes nothing about your map — the Low-Poly underneath is still what gets saved.")
 
 	mode_btn = OptionButton.new()
-	mode_btn.add_item("Simple blocks — what you export", 0)
-	mode_btn.add_item("Real models, no textures", 1)
-	mode_btn.add_item("Real models, full textures", 2)
+	mode_btn.add_item("Low-Poly — what you export", 0)
+	mode_btn.add_item("High-Poly — no textures", 1)
+	mode_btn.add_item("High-Poly — full textures", 2)
 	mode_btn.selected = 0
 	mode_btn.item_selected.connect(func(_i): _mode_changed())
 	host.add_child(mode_btn)
 
 	var detail_chips := _chip_row(host)
 	ovr_chk = Theme_.chip(_override_label())
-	ovr_chk.tooltip_text = "Swaps just the pieces you have selected to the real game models, leaving the rest as simple blocks — handy for lining something up closely. When you are already viewing real models it does the reverse: your selection drops back to blocks so a heavy area stays smooth while you work."
+	ovr_chk.tooltip_text = "Swaps just the pieces you have selected to High-Poly, leaving the rest Low-Poly — handy for lining something up closely. When the whole map is already High-Poly it does the reverse: your selection drops back to Low-Poly so a heavy area stays smooth while you work."
 	ovr_chk.toggled.connect(_override_toggled)
 	detail_chips.add_child(ovr_chk)
 
@@ -1238,7 +1238,7 @@ func _check_scene_change() -> void:
 		iso_chk.set_pressed_no_signal(false)
 		iso_chk.disabled = true
 	_sync_maptile_control()   # the new scene may carry the SDK's own decal
-	if lbl and old != null: lbl.text = "Different map opened — back to simple blocks"
+	if lbl and old != null: lbl.text = "Different map opened — back to Low-Poly"
 	# the new scene's props move to the front of the download queue
 	if r != null and sync != null and not HighpolyLib.use_legacy:
 		sync.prioritize_scene(HighpolyLib.scene_keys(r))
@@ -1627,8 +1627,8 @@ func _reapply_placed_cull() -> void:
 
 # ---------- per-selection detail override (live) ----------
 func _override_label() -> String:
-	return "Show selected for real" if _mode() == HighpolyLib.Tier.LOW \
-			else "Keep selected as blocks"
+	return "Preview in High-Poly" if _mode() == HighpolyLib.Tier.LOW \
+			else "Keep as Low-Poly"
 
 func _override_toggled(pressed: bool) -> void:
 	if pressed:
