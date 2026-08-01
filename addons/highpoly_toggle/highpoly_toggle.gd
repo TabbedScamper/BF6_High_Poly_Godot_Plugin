@@ -897,6 +897,7 @@ func _check_scene_change() -> void:
 	if iso_chk:
 		iso_chk.set_pressed_no_signal(false)
 		iso_chk.disabled = true
+	_sync_maptile_control()   # the new scene may carry the SDK's own decal
 	if lbl and old != null: lbl.text = "Scene changed — reset to Low-Poly"
 	# the new scene's props move to the front of the download queue
 	if r != null and sync != null and not HighpolyLib.use_legacy:
@@ -1106,6 +1107,22 @@ func _save_mapctx_state() -> void:
 # normal background build. Updated models flow in via the standard staleness
 # checks (registry refresh + GLB mtime vs sidecar), i.e. "Check for Updates"
 # semantics without the clicks.
+# The SDK has its own map-texture decal (3D toolbar -> Download/Apply Texture)
+# and it SAVES into the level. When it's there, ours stands down so the ground
+# isn't darkened twice — say so on the control instead of leaving a checkbox that
+# looks broken. Also warn about the one real difference: theirs projects onto
+# everything, high-poly models included.
+func _sync_maptile_control() -> void:
+	if mapctx_maptile == null or mapctx == null: return
+	var theirs: Decal = mapctx.sdk_decal(EditorInterface.get_edited_scene_root())
+	mapctx_maptile.disabled = theirs != null
+	if theirs != null:
+		mapctx_maptile.text = "Maptile decal (the SDK's is applied)"
+		mapctx_maptile.tooltip_text = "This level already has the SDK's own map texture, applied from the 3D toolbar and saved in the scene, so the preview decal stays off — two would darken the ground twice.\n\nNote the SDK's decal projects onto EVERYTHING beneath it, including high-poly models that already have their real textures. Delete the '%s' node under Static to go back to the preview decal, which leaves them alone." % String(theirs.name)
+	else:
+		mapctx_maptile.text = "Maptile decal"
+		mapctx_maptile.tooltip_text = "Project the map-tile colour over the SDK terrain + assets. Skips high-poly models and the extended terrain, which carry their own real textures. Turn off if it still tints something you'd rather see raw."
+
 func _restore_mapctx_state() -> void:
 	var r := EditorInterface.get_edited_scene_root()
 	if r != null:
@@ -1135,6 +1152,7 @@ func _restore_mapctx_state() -> void:
 	if mapctx_maptile != null:
 		mapctx_maptile.set_pressed_no_signal(bool(d.get("maptile", true)))
 		HighpolyMapContext.maptile_enabled = mapctx_maptile.button_pressed
+	_sync_maptile_control()
 	mapctx_on.set_pressed_no_signal(bool(d.get("on", false)))
 	mapctx_objects.set_pressed_no_signal(bool(d.get("objects", false)))
 	if mapctx_gi: mapctx_gi.set_pressed_no_signal(bool(d.get("gi", true)))

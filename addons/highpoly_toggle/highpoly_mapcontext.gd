@@ -229,6 +229,18 @@ const LEGACY_TILE_DIR := "res://raw/maptiles/"
 const SDK_CONFIG := "res://addons/bf_portal/bf_portal.config.json"
 const TILE_URL_FALLBACK := "https://download.portal.battlefield.com/"
 
+# The SDK ships its own map-texture decal (addons/bf_portal/terrain_decal). Its
+# toolbar button SAVES a Decal into the level at Static/<Level>_Decal, and that
+# decal projects onto everything under it — including high-poly models that
+# already carry their real textures. Ours is the editor-only twin: same picture,
+# owner=null, and layer-aware so it can't tint them. When theirs is in the scene
+# we stand down instead of stacking a second projector on the same ground, since
+# two decals means double darkening.
+const SDK_DECAL_SUFFIX := "_Decal"
+const SDK_BOUNDS := "res://addons/bf_portal/terrain_decal/bounds.json"
+static var _sdk_bounds: Dictionary = {}
+static var _sdk_bounds_read := false
+
 # Water is a flat surface entity (WaterEntityData), not a mesh placement. Its
 # exact plane (surface height Y, world centre, X/Z extent) is EXTRACTED per map
 # from the level's water.ebx and shipped in placements.json ("water"). A flat
@@ -524,6 +536,37 @@ func _clear(root: Node) -> void:
 func _tile_name(map: String) -> String:
 	return str(MAPTILE_DECALS[map].get("tile", map)) if MAPTILE_DECALS.has(map) else map
 
+# The SDK's own per-level decal box. Exact matches only — its "_default" entry is
+# a generic 1000 m cube, and a wrongly-sized box would misalign both the decal and
+# the terrain shader's map_bounds, which is worse than showing no tile at all.
+func _sdk_bounds_for(map: String) -> Dictionary:
+	if not _sdk_bounds_read:
+		_sdk_bounds_read = true
+		if FileAccess.file_exists(SDK_BOUNDS):
+			var j: Variant = JSON.parse_string(FileAccess.get_file_as_string(SDK_BOUNDS))
+			if j is Dictionary: _sdk_bounds = j
+	var e: Variant = _sdk_bounds.get(map, null)
+	if not (e is Dictionary): return {}
+	var d: Dictionary = e
+	if not (d.has("size") and d.has("position")): return {}
+	var s: Array = d["size"]; var p: Array = d["position"]
+	return {"pos": Vector3(p[0], p[1], p[2]), "size": Vector3(s[0], s[1], s[2]), "nf": 0.0}
+
+# Placement for this map: our hand-tuned table first (checked against the game
+# over many maps), then the SDK's own bounds.json — so a map added by a future
+# SDK update works immediately instead of waiting on a plugin release.
+func _tile_params(map: String) -> Dictionary:
+	if MAPTILE_DECALS.has(map): return MAPTILE_DECALS[map]
+	return _sdk_bounds_for(map)
+
+# The SDK's saved decal for this level, or null. Its presence means the user
+# pressed "Apply Texture" on the 3D toolbar and the decal lives in their scene.
+func sdk_decal(root: Node) -> Decal:
+	if root == null: return null
+	var st := root.get_node_or_null("Static")
+	if st == null: return null
+	return st.get_node_or_null("%s%s" % [String(root.name), SDK_DECAL_SUFFIX]) as Decal
+
 # First maptile jpg present ON DISK for this map ("" = none). Deliberately
 # FileAccess, not ResourceLoader: a stale .import with no imported .ctex passes
 # ResourceLoader.exists() and then fails inside load().
@@ -584,10 +627,12 @@ func ensure_maptile(host: Node, map: String, status: Callable = Callable()) -> b
 # terrain — using the community pack's hand-tuned per-map placement.
 # Reversible, never saved. Works with or without extended map data downloaded.
 func _apply_maptile(root: Node, map: String) -> int:
-	if not MAPTILE_DECALS.has(map): return 0
+	# the SDK's own decal is already projecting this picture — don't stack ours
+	if sdk_decal(root) != null: return 0
+	var d := _tile_params(map)
+	if d.is_empty(): return 0
 	var tex := _maptile_tex(map)
 	if tex == null: return 0
-	var d: Dictionary = MAPTILE_DECALS[map]
 	var dec := Decal.new()
 	dec.name = DECAL_NODE
 	dec.texture_albedo = tex
@@ -596,7 +641,7 @@ func _apply_maptile(root: Node, map: String) -> int:
 	# hit everything EXCEPT our extended terrain (which carries its own detail
 	# shader) — so the decal only textures the SDK terrain + assets/buildings and
 	# doesn't re-flatten our detailed map-context terrain where they overlap.
-	dec.cull_mask = 0xFFFFF & ~EXT_TERRAIN_LAYER
+	dec.cull_mask = 0xFFFFF & ~EXT_TERRAIN_LAYER & ~TEXTURED_LAYER
 	dec.position = d["pos"]
 	root.add_child(dec); dec.owner = null
 	return 1
@@ -640,6 +685,9 @@ static func _layer_dir() -> String:
 # dedicated render layer for our extended terrain, so the SDK maptile decal can
 # be told to skip it (the decal only textures the SDK's own terrain + assets)
 const EXT_TERRAIN_LAYER := 1 << 19
+# layer 19 — geometry that already carries real textures (high-poly overlay +
+# textured map-context props); the map-tile decal must not project onto it
+const TEXTURED_LAYER := HighpolyLib.TEXTURED_LAYER
 const TERRAIN_SHADER := """
 shader_type spatial;
 render_mode cull_disabled;
@@ -816,7 +864,8 @@ func _layer_tex(map: String, nm: String) -> Texture2D:
 # Build the detail-terrain material for this map, or null if the maptile or the
 # ground-layer set isn't available (→ caller falls back to the flat decal).
 func _terrain_shader_mat(map: String) -> ShaderMaterial:
-	if not MAPTILE_DECALS.has(map): return null
+	var d := _tile_params(map)
+	if d.is_empty(): return null
 	var tile := _maptile_tex(map)
 	if tile == null: return null
 	var ga := _layer_tex(map, "ground_alb"); var gn := _layer_tex(map, "ground_nrm")
@@ -824,7 +873,6 @@ func _terrain_shader_mat(map: String) -> ShaderMaterial:
 	if ga == null or gn == null or ca == null or cn == null: return null
 	if _tshader == null:
 		_tshader = Shader.new(); _tshader.code = TERRAIN_SHADER
-	var d: Dictionary = MAPTILE_DECALS[map]
 	var pos: Vector3 = d["pos"]; var sz: Vector3 = d["size"]
 	var m := ShaderMaterial.new()
 	m.shader = _tshader
@@ -2391,7 +2439,13 @@ func _build_mmi(mesh: Mesh, xf: Array, textured: bool, flat_mat: Material) -> Mu
 	var count := int(xf.size() / 12); mm.instance_count = count
 	for i in range(count): mm.set_instance_transform(i, _xform(xf, i * 12))
 	var mmi := MultiMeshInstance3D.new(); mmi.multimesh = mm
-	if not textured: mmi.material_override = flat_mat
+	if not textured:
+		mmi.material_override = flat_mat
+	else:
+		# real game textures on these meshes — keep the map-tile decal off them
+		# (it exists to colour the SDK's untextured terrain/proxies, not to tint
+		# models that are already correct). See HighpolyLib.TEXTURED_LAYER.
+		mmi.layers = TEXTURED_LAYER
 	# props/backdrop CAST shadows (the flat no-shadow overlay was an old
 	# study-mode perf choice — with game lighting it read as "shadows don't
 	# render"). Follows the dock's Shadows sub-checkbox so meshes built while
@@ -2535,10 +2589,10 @@ func _editor_cam() -> Camera3D:
 # maptile jpg + world bounds for the scatter greenness filter (same source the
 # detail-terrain shader uses); {} when the map has no tile — scatter still works
 func _scatter_tile(map: String) -> Dictionary:
-	if not MAPTILE_DECALS.has(map): return {}
+	var d := _tile_params(map)
+	if d.is_empty(): return {}
 	var img := _maptile_path(map)
 	if img == "": return {}
-	var d: Dictionary = MAPTILE_DECALS[map]
 	var pos: Vector3 = d["pos"]; var sz: Vector3 = d["size"]
 	return {"img": img, "bounds": Vector4(pos.x - sz.x * 0.5, pos.z - sz.z * 0.5, sz.x, sz.z)}
 
