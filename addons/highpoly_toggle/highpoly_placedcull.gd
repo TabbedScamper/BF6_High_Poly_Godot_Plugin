@@ -51,62 +51,6 @@ static func _restore_range(mi: GeometryInstance3D) -> void:
 # stuttered worse than the outlines it removed. They are simply switched off
 # now — see highpoly_shapeviz.gd.)
 
-# Every colour the editor and the project can draw debug geometry with, filtered
-# to the blue ones. The wireframes left behind by a culled object are not
-# gizmos — that was measured — so the next question is which of Godot's own
-# debug drawing they come from, and its colour setting is the way to name it.
-static func blue_debug_settings() -> String:
-	var hits: PackedStringArray = []
-	var es := EditorInterface.get_editor_settings() if Engine.is_editor_hint() else null
-	if es != null:
-		for p in es.get_property_list():
-			var n: String = p.get("name", "")
-			if not (n.begins_with("editors/") or n.contains("debug")): continue
-			var v: Variant = es.get(n)
-			if v is Color and _is_blue(v as Color):
-				hits.append("EDITOR  %s = %s" % [n, _hex(v as Color)])
-	for p in ProjectSettings.get_property_list():
-		var n: String = p.get("name", "")
-		if not (n.begins_with("debug/") or n.contains("navigation")
-				or n.contains("collision")): continue
-		var v: Variant = ProjectSettings.get_setting(n)
-		if v is Color and _is_blue(v as Color):
-			hits.append("PROJECT %s = %s" % [n, _hex(v as Color)])
-	if hits.is_empty(): return "no blue debug colour found in editor or project settings"
-	return "
-           ".join(hits)
-
-# "neon blue": blue clearly dominant, and bright enough to read as neon
-static func _is_blue(c: Color) -> bool:
-	return c.b > 0.45 and c.b > c.r * 1.35 and c.a > 0.05
-
-static func _hex(c: Color) -> String:
-	return "#%02x%02x%02x a=%.2f" % [int(c.r * 255), int(c.g * 255), int(c.b * 255), c.a]
-
-# What kinds of node the scene is actually made of — the wireframe belongs to
-# one of them, and a class that draws itself without being a GeometryInstance3D
-# is the shape of the answer.
-static func class_census(root: Node, top := 12) -> String:
-	if root == null: return "no scene open"
-	var counts: Dictionary = {}
-	var stack: Array = [root]
-	while not stack.is_empty():
-		var n: Node = stack.pop_back()
-		var c := n.get_class()
-		counts[c] = int(counts.get(c, 0)) + 1
-		for k in n.get_children():
-			stack.append(k)
-	var pairs: Array = []
-	for c in counts: pairs.append([int(counts[c]), c])
-	pairs.sort_custom(func(a, b): return a[0] > b[0])
-	var out: PackedStringArray = []
-	for i in range(mini(top, pairs.size())):
-		out.append("%s x%d" % [pairs[i][1], pairs[i][0]])
-	return ", ".join(out)
-
-# Hand a scene back exactly as we found it: every visibility range restored to
-# whatever it was. Call before letting go of a scene —
-# teardown, or opening a different one.
 static func release(root: Node) -> void:
 	var blind := 0
 	if root != null:

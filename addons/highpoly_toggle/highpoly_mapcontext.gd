@@ -263,35 +263,8 @@ static func map_of(root: Node) -> String:
 func base_url() -> String:
 	return HighpolyUpdater.manifest_url().get_base_dir() + "/"
 
-# ---------- data fetch (per-map, cached) ----------
-func _cache_dir() -> String:
-	return "%s/%s" % [CACHE, _map]
-
 func has_data(map: String) -> bool:
 	return FileAccess.file_exists("%s/%s/placements.json" % [CACHE, map])
-
-# Audit what's cached vs. what the manifest needs. Returns a human string and
-# prints to the Output panel so problems are visible without a live debugger.
-func cache_status(map: String) -> String:
-	var dir := "%s/%s" % [CACHE, map]
-	var pjp := "%s/placements.json" % dir
-	if not FileAccess.file_exists(pjp):
-		var s := "MapContext[%s]: NO placements.json in %s (nothing downloaded yet)" % [map, dir]
-		print(s); return s
-	var d: Variant = JSON.parse_string(FileAccess.get_file_as_string(pjp))
-	if not (d is Dictionary):
-		var s := "MapContext[%s]: placements.json unreadable" % map
-		print(s); return s
-	var hm: Dictionary = d.get("heightmap", {})
-	var terr_have := hm.has("file") and FileAccess.file_exists("%s/%s" % [dir, hm["file"]])
-	var need := 0; var have := 0
-	for e in d.get("backdrop", []):
-		if e is Dictionary and e.has("glb"):
-			need += 1
-			if FileAccess.file_exists("%s/%s" % [dir, e["glb"]]): have += 1
-	var s := "MapContext[%s]: terrain=%s, surroundings %d/%d cached, dir=%s" % [
-		map, ("yes" if terr_have else "MISSING"), have, need, ProjectSettings.globalize_path(dir)]
-	print(s); return s
 
 func _fetch_once(host: Node, url: String, to_file := "") -> PackedByteArray:
 	var http := HTTPRequest.new(); host.add_child(http)
@@ -1877,16 +1850,6 @@ func apply(root: Node, enabled: bool, show_objects: bool, tex = true) -> String:
 func is_build_done() -> bool:
 	return not _building
 
-# Live one-line progress for hosts that own their own status label; the full
-# apply() summary once the build is done.
-func build_progress_text() -> String:
-	if not _building:
-		return _last_status
-	return "%s, objects %d/%d…" % [_build_status_base, _build_done, _build_total]
-
-# Prop entries sorted nearest-first from the editor camera (distance of each
-# mesh group's CLOSEST placement), so props appear from the camera outward.
-# `src` = any list of prop entries (the full _data set, or a refresh subset).
 func _sorted_prop_entries(src: Array) -> Array:
 	var cpos := Vector3.ZERO
 	var cam := _editor_cam()
@@ -2720,11 +2683,6 @@ func _scatter_tile(map: String) -> Dictionary:
 	if img == "": return {}
 	var pos: Vector3 = d["pos"]; var sz: Vector3 = d["size"]
 	return {"img": img, "bounds": Vector4(pos.x - sz.x * 0.5, pos.z - sz.z * 0.5, sz.x, sz.z)}
-
-func set_scatter_range(v: float) -> void:
-	if _scatter == null: return
-	var cam := _editor_cam()
-	_scatter.set_range(v, cam.global_transform.origin if cam else Vector3.ZERO)
 
 func tick() -> void:
 	# called by the dock timer while objects are shown (streamed by distance).

@@ -76,4 +76,8 @@ static func restore_all(root: Node) -> void:
 		set_hidden(root, TERRAIN_SUFFIX, false)
 	_saved.clear()
 
+# How many nodes we are holding the original state of. Nothing in the plugin
+# reads it — the tests do, to assert that letting go of a scene leaves nothing
+# behind, which is the invariant that stops a node being restored to a state
+# that belongs to a scene that is already closed.
 static func remembered() -> int: return _saved.size()

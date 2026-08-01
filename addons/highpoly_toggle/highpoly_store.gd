@@ -142,11 +142,6 @@ static func _invalidate(name: String) -> void:
 	if FileAccess.file_exists(thumb_path(name)):
 		DirAccess.remove_absolute(thumb_path(name))
 
-static func clear_scene_cache() -> void:
-	_scene_cache.clear()
-
-# Content hash matching the registry's (publish.py: sha1(bytes)[:12]) — lets
-# any local file be verified against a manifest hash without re-downloading.
 static func file_hash(path: String) -> String:
 	var f := FileAccess.open(path, FileAccess.READ)
 	if f == null: return ""
@@ -388,17 +383,3 @@ static func prune_keep(keep: Dictionary) -> int:
 	save()
 	return n
 
-# ---------- purge ----------
-static func purge_all() -> int:
-	_load()
-	var n := 0
-	for d in [MODELS_DIR, THUMBS_DIR]:
-		var da := DirAccess.open(d)
-		if da == null: continue
-		for f in da.get_files():
-			if DirAccess.remove_absolute("%s/%s" % [d, f]) == OK:
-				n += 1
-	_index["models"] = {}
-	_scene_cache.clear()
-	save()
-	return n
