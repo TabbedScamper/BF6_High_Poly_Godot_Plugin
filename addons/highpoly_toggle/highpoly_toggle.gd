@@ -695,6 +695,9 @@ func _enter_tree() -> void:
 		if _cam3:
 			LightingScript.tick_lights(EditorInterface.get_edited_scene_root(),
 					_cam3.global_position)
+			# gizmos follow the cull: the wireframe of a culled object goes with
+			# the object, instead of hanging in empty space
+			PlacedCull.tick_gizmos(_cam3.global_position)
 		# a CANCELLED scenery build (Extended Terrain switched off, or a new
 		# apply superseding it) ends without a build_finished — without this the
 		# bar would sit there at whatever percent it had reached
@@ -733,6 +736,7 @@ func _exit_tree() -> void:
 	if r != null:
 		HighpolyCollision.release_isolation(HighpolyLib.Tier.LOW, true, false)
 		HighpolyCollision.apply(r, false)                  # frees collision overlays
+		PlacedCull.show_all_gizmos()                       # never leave one unclickable
 		SdkHide.restore_all(r)                             # SDK assets/terrain back as they were
 		if mapctx: mapctx.apply(r, false, false, false)    # frees _MAP_CONTEXT + maptile
 		LightingScript.clear(r)                          # frees _GAME_LIGHTING
