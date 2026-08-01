@@ -17,6 +17,7 @@ var tint: ColorRect                # darkens the backdrop behind the controls
 var border: Panel                  # the outline
 var boot: Node                     # the running boot sequence, if one is playing
 var tips: Control                  # hover descriptions, drawn inside the panel
+var sections: Array = []           # collapsible sections, in dock order
 var _vid_size := Vector2(480, 800) # encoded video size, for cover-scaling
 var lbl: Label
 var mode_btn: OptionButton
@@ -34,6 +35,7 @@ const LightingScript = preload("highpoly_lighting.gd")
 const PlacedCull = preload("highpoly_placedcull.gd")
 const JobBarsScript = preload("highpoly_jobbars.gd")
 const TipsScript = preload("highpoly_tips.gd")
+const SectionScript = preload("highpoly_section.gd")
 const SplashScript = preload("highpoly_splash.gd")
 const Theme_ = preload("highpoly_theme.gd")
 var previews: Node
@@ -153,9 +155,11 @@ func _enter_tree() -> void:
 	scope_btn.item_selected.connect(func(_i): _scope_changed())
 	dock.add_child(scope_btn)
 
-	var title := Theme_.heading(Label.new())
-	title.text = "Detail Mode"
-	dock.add_child(title)
+	# From here down the panel is built into collapsible sections. `host` is
+	# whichever section's content box is currently being filled, so the existing
+	# build order — which several controls depend on — is untouched.
+	var host: Node = _section("Detail Mode",
+		"How the models in your scene are drawn. Low-Poly shows the SDK proxies you actually export; the High-Poly modes swap in the real game models as an editor-only overlay, with or without their textures.")
 
 	mode_btn = OptionButton.new()
 	mode_btn.add_item("Low-Poly (default)", 0)
@@ -163,19 +167,18 @@ func _enter_tree() -> void:
 	mode_btn.add_item("High-Poly — textured", 2)
 	mode_btn.selected = 0
 	mode_btn.item_selected.connect(func(_i): _mode_changed())
-	dock.add_child(mode_btn)
+	host.add_child(mode_btn)
 
-	var detail_chips := _chip_row()
+	var detail_chips := _chip_row(host)
 	ovr_chk = Theme_.chip(_override_label())
 	ovr_chk.tooltip_text = "Per-object override of the Detail Mode above — follows your selection live while checked. In Low-Poly mode: selected objects show high-poly (work light, inspect in detail). In High-Poly mode: selected objects drop to their proxies (reclaim FPS in heavy areas). Uncheck to restore everything to the scene's mode."
 	ovr_chk.toggled.connect(_override_toggled)
 	detail_chips.add_child(ovr_chk)
 
-	var sepc := Theme_.separator(HSeparator.new()); dock.add_child(sepc)
-	var col_title := Theme_.heading(Label.new()); col_title.text = "Collision"
-	dock.add_child(col_title)
+	host = _section("Collision",
+		"See what your objects actually collide with. Draws each object's real in-game collision volume over it, so you can spot where a shape does not match the model players will run into.")
 
-	var col_chips := _chip_row()
+	var col_chips := _chip_row(host)
 	col_chk = Theme_.chip("Collisions")
 	col_chk.tooltip_text = "Editor-only overlay (never saved). Draws each object's ACTUAL in-game collision in transparent red: the object's own geometry scaled uniformly from the X axis — an object scaled (10, 20, 20) collides as (10, 10, 10)."
 	col_chk.toggled.connect(func(_v): _collision_changed())
@@ -187,7 +190,7 @@ func _enter_tree() -> void:
 	iso_chk.toggled.connect(_isolate_toggled)
 	col_chips.add_child(iso_chk)
 
-	var cc_row := HBoxContainer.new(); dock.add_child(cc_row)
+	var cc_row := HBoxContainer.new(); host.add_child(cc_row)
 	var cc_lbl := Label.new(); cc_lbl.text = "Color"
 	cc_row.add_child(cc_lbl)
 	col_pick = ColorPickerButton.new()
@@ -201,7 +204,7 @@ func _enter_tree() -> void:
 		col_alpha.set_value_no_signal(c.a))
 	cc_row.add_child(col_pick)
 
-	var ca_row := HBoxContainer.new(); dock.add_child(ca_row)
+	var ca_row := HBoxContainer.new(); host.add_child(ca_row)
 	var ca_lbl := Label.new(); ca_lbl.text = "Alpha"
 	ca_row.add_child(ca_lbl)
 	col_alpha = HSlider.new()
@@ -216,14 +219,13 @@ func _enter_tree() -> void:
 		col_pick.color = c)
 	ca_row.add_child(col_alpha)
 
-	var sepm := Theme_.separator(HSeparator.new()); dock.add_child(sepm)
-	var mc_title := Theme_.heading(Label.new()); mc_title.text = "Map Context"
-	dock.add_child(mc_title)
+	host = _section("Map Context",
+		"Build inside the real map instead of the SDK's empty bowl: the surrounding terrain, the game's own object placements, its lighting and FX — all editor-only, none of it saved or exported.")
 
-	var mc_chips := _chip_row()
+	var mc_chips := _chip_row(host)
 	# sub-toggles of "Lighting", indented under the main row and only
 	# visible while it is on
-	var mc_sub := _chip_row(14)
+	var mc_sub := _chip_row(host, 14)
 	mapctx_on = Theme_.chip("Whole map")
 	mapctx_on.tooltip_text = "Editor-only overlay (never saved). Adds the real out-of-bounds terrain + surrounding landscape around the SDK's playable area, so you see the whole map instead of just the playable bowl."
 	mapctx_on.toggled.connect(func(v: bool):
@@ -278,7 +280,7 @@ func _enter_tree() -> void:
 				+ " | " + mapctx.set_variant_layers(_mode)
 		_save_mapctx_state())
 	mapctx_variant_row.add_child(mapctx_variant)
-	dock.add_child(mapctx_variant_row)
+	host.add_child(mapctx_variant_row)
 
 	# background props-build progress: the objects layer builds incrementally
 	# (a few meshes per frame, nearest first) so the editor never freezes —
@@ -289,7 +291,7 @@ func _enter_tree() -> void:
 	mapctx_bar.visible = false
 	Theme_.bar(mapctx_bar)
 	mapctx_bar.tooltip_text = "Building map objects in the background (nearest first)…"
-	dock.add_child(mapctx_bar)
+	host.add_child(mapctx_bar)
 
 	# (no "Textures" checkbox any more — the overlay's look follows the Detail
 	# Mode dropdown: Low-Poly = flat SDK orange, High-Poly no textures = grey
@@ -355,7 +357,7 @@ func _enter_tree() -> void:
 		_save_mapctx_state())
 	mc_sub.add_child(mapctx_maplights)
 
-	var mcr_row := HBoxContainer.new(); dock.add_child(mcr_row)
+	var mcr_row := HBoxContainer.new(); host.add_child(mcr_row)
 	var mcr_lbl := Label.new(); mcr_lbl.text = "Range"
 	mcr_row.add_child(mcr_lbl)
 	mapctx_range = HSlider.new()
@@ -399,7 +401,7 @@ func _enter_tree() -> void:
 		_save_mapctx_state())
 	mc_chips.add_child(mapctx_optimize)
 
-	var td_row := HBoxContainer.new(); dock.add_child(td_row)
+	var td_row := HBoxContainer.new(); host.add_child(td_row)
 	var td_lbl := Label.new(); td_lbl.text = "Terrain"
 	td_row.add_child(td_lbl)
 	var td := OptionButton.new()
@@ -418,19 +420,18 @@ func _enter_tree() -> void:
 	shader_btn.text = "Configure Shaders…"
 	shader_btn.tooltip_text = "Live overlay shader settings: Water Animation, Flipbook Animations (smoke), Foliage Wind. Applied instantly, remembered across restarts."
 	shader_btn.pressed.connect(_open_shader_dialog)
-	dock.add_child(shader_btn)
+	host.add_child(shader_btn)
 
-	var sep3 := Theme_.separator(HSeparator.new()); dock.add_child(sep3)
-	var storage_title := Theme_.heading(Label.new()); storage_title.text = "Storage"
-	dock.add_child(storage_title)
+	host = _section("Storage",
+		"What the plugin is keeping on disk, and how to get it back. Everything here re-downloads on demand, so purging is always safe.")
 
 	storage_lbl = Label.new()
 	storage_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	storage_lbl.add_theme_font_size_override("font_size", Theme_.fs(12))
 	storage_lbl.text = "Measuring disk usage…"
-	dock.add_child(storage_lbl)
+	host.add_child(storage_lbl)
 
-	var storage_chips := _chip_row()
+	var storage_chips := _chip_row(host)
 	storage_cache_chk = Theme_.chip("Fast startup cache")
 	storage_cache_chk.tooltip_text = "Save each built map-context mesh to disk so the overlay comes back in seconds after an editor/plugin restart, instead of re-processing every model for minutes. Updated models still swap in automatically (stale entries rebuild). Costs roughly the downloaded models' size again on disk; per-map Purge clears it too."
 	var _es := EditorInterface.get_editor_settings()
@@ -450,7 +451,7 @@ func _enter_tree() -> void:
 				else "off — existing cache files stay until purged"))
 	storage_chips.add_child(storage_cache_chk)
 
-	var purge_row := HBoxContainer.new(); dock.add_child(purge_row)
+	var purge_row := HBoxContainer.new(); host.add_child(purge_row)
 	purge_maps = OptionButton.new()
 	purge_maps.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	purge_maps.tooltip_text = "Downloaded per-map data. Purging deletes the map's own data plus objects no other downloaded map uses; shared objects are kept. Everything re-downloads on demand."
@@ -461,6 +462,7 @@ func _enter_tree() -> void:
 	purge_btn.pressed.connect(_purge_selected)
 	purge_row.add_child(purge_btn)
 
+	host = dock          # back to the panel itself: these two belong to no section
 	lbl = Label.new()
 	lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	dock.add_child(lbl)
@@ -504,6 +506,7 @@ func _enter_tree() -> void:
 	# the boot sequence is started from the open path, not from visibility_changed:
 	# that signal also fires on close, and every route to opening the panel goes
 	# through the toolbar button's toggle anyway
+	_restore_section_state.call_deferred()
 	_adopt_tips.call_deferred()
 	_first_run_open.call_deferred()
 	_auto_perf_settings.call_deferred()
@@ -801,7 +804,7 @@ func _adopt_tips() -> void:
 func _tips_hide(_v: float = 0.0) -> void:
 	if tips: tips.hide_now()
 
-func _chip_row(indent := 0) -> HFlowContainer:
+func _chip_row(into: Node, indent := 0) -> HFlowContainer:
 	var f := HFlowContainer.new()
 	f.add_theme_constant_override("h_separation", 6)
 	f.add_theme_constant_override("v_separation", 6)
@@ -809,10 +812,46 @@ func _chip_row(indent := 0) -> HFlowContainer:
 		var m := MarginContainer.new()
 		m.add_theme_constant_override("margin_left", indent)
 		m.add_child(f)
-		dock.add_child(m)
+		into.add_child(m)
 	else:
-		dock.add_child(f)
+		into.add_child(f)
 	return f
+
+# One collapsible section, appended to the panel. Returns its content box so the
+# controls that follow can be built straight into it.
+func _section(section_title: String, description: String) -> Node:
+	var sec = SectionScript.new()
+	dock.add_child(sec)
+	sec.setup(section_title, description)
+	sec.opened_changed.connect(func(open: bool):
+		_tips_hide()                    # the description answered its question
+		_save_section_state()
+		if open: _scroll_to.call_deferred(sec))
+	sections.append(sec)
+	return sec.content
+
+# Reveal a freshly opened section rather than leaving it to unfold off-screen.
+func _scroll_to(sec: Control) -> void:
+	if dock_scroll == null or not is_instance_valid(sec): return
+	await get_tree().process_frame
+	if not is_instance_valid(sec): return
+	dock_scroll.ensure_control_visible(sec)
+
+func _save_section_state() -> void:
+	var open_names: Array = []
+	for sec in sections:
+		if is_instance_valid(sec) and sec.is_open():
+			open_names.append(sec.title_lbl.text)
+	EditorInterface.get_editor_settings().set_project_metadata(
+		"highpoly", "open_sections", open_names)
+
+func _restore_section_state() -> void:
+	var want: Variant = EditorInterface.get_editor_settings().get_project_metadata(
+		"highpoly", "open_sections", ["Detail Mode"])
+	if not (want is Array): return
+	for sec in sections:
+		if is_instance_valid(sec) and (want as Array).has(sec.title_lbl.text):
+			sec.set_open(true, false)
 
 # The panel is layered back-to-front:
 #   bg      opaque, so the panel is legible with no video at all
