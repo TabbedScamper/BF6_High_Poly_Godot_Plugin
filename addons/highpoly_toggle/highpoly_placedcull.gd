@@ -28,32 +28,88 @@ const SKIP := ["_MAP_CONTEXT", "_MAP_FX", "_MAP_LIGHTS", "_WATER_CHUNKS", "_COLL
 # stops drawing and its wireframe carries on — the neon-blue outline left
 # hanging in empty space.
 #
-# The gizmo does NOT live on the MeshInstance3D. A placed object is an
-# instanced .tscn, and the editor builds gizmos for the node the user actually
-# placed — the instance root. Hiding gizmos on the meshes inside it therefore
-# does nothing at all, which is why the first attempt at this changed nothing
-# on screen. We track the ROOT, and the distance we use is the furthest cull
-# distance of the meshes under it, so a root only goes dark once everything it
-# owns has.
+# The gizmo is on the MeshInstance3D itself. A survey of a real level found
+# 7050 of them carrying one and none on the instance roots above them, so this
+# tracks the mesh, not the object it belongs to.
+#
+# The threshold is the mesh's OWN visibility_range_end, read back after the
+# cull pass rather than taken from our own bookkeeping. An object can arrive
+# with a range already authored into its .tscn, and then it culls — and leaves
+# a wireframe — whether our cull is on or not. Reading the property covers both.
 #
 # Hiding a gizmo also stops it being click-selected. Acceptable ONLY because
 # this follows the cull: an object you cannot see is one you were not going to
 # click, and anything still drawn keeps its gizmo.
 const GIZMO_MARGIN := 1.05         # hide slightly beyond the cull, never before
 
-static var _managed: Array = []    # [{"n": Node3D root, "d": float, "hid": bool}]
-static var _by_root: Dictionary = {}   # instance id -> index into _managed
-# Diagnostics: get_gizmos() only returns gizmos the editor actually built. If
-# this stays zero while objects are being culled, the outline is not a per-node
-# gizmo and no amount of set_hidden() will touch it.
+static var _managed: Array = []    # [{"n": MeshInstance3D, "d": float, "hid": bool}]
+# What each mesh's visibility range was BEFORE we touched it. Restored instead
+# of zeroed: some objects ship with a range authored in, and zeroing it would
+# strip the author's own culling out of the user's scene.
+static var _orig: Dictionary = {}  # instance id -> [end, margin, fade_mode]
 static var _gizmos_seen := 0
 
 static func managed_count() -> int: return _managed.size()
+static func gizmos_seen() -> int: return _gizmos_seen
 
-# When nothing on the placed roots carries a gizmo, the outline is drawn by
-# something else — and the only way to find out what, from outside the editor,
-# is to ask the scene which nodes have gizmos at all. Reports the classes that
-# do, so the carrier can be identified instead of guessed at.
+static func _remember(mi: GeometryInstance3D) -> void:
+	var id := mi.get_instance_id()
+	if _orig.has(id): return           # first touch only: never overwrite
+	_orig[id] = [mi.visibility_range_end, mi.visibility_range_end_margin,
+		mi.visibility_range_fade_mode]
+
+static func _restore_range(mi: GeometryInstance3D) -> void:
+	var id := mi.get_instance_id()
+	if not _orig.has(id): return
+	var o: Array = _orig[id]
+	mi.visibility_range_end = float(o[0])
+	mi.visibility_range_end_margin = float(o[1])
+	mi.visibility_range_fade_mode = int(o[2])
+	_orig.erase(id)
+
+static func _set_gizmos_hidden(n3: Node3D, hide: bool) -> int:
+	var k := 0
+	for g in n3.get_gizmos():
+		if g is EditorNode3DGizmo:
+			(g as EditorNode3DGizmo).set_hidden(hide)
+			k += 1
+	return k
+
+# Track a mesh that will cull, at whatever distance it actually culls at.
+static func _record(mi: MeshInstance3D) -> void:
+	var d := mi.visibility_range_end
+	if d <= 0.0: return                # never culls, so its gizmo never hides
+	# guard against duplicates when apply() runs for a single node
+	for e in _managed:
+		if e["n"] == mi:
+			e["d"] = d
+			return
+	_managed.append({"n": mi, "d": d, "hid": false})
+
+static func tick_gizmos(cam_pos: Vector3) -> int:
+	var changed := 0
+	var dead := false
+	for e in _managed:
+		var mi = e["n"]
+		if not is_instance_valid(mi) or not (mi is Node3D):
+			dead = true
+			continue                                    # scene closed under us
+		var far: bool = (mi as Node3D).global_position.distance_to(cam_pos) 			> float(e["d"]) * GIZMO_MARGIN
+		if far == bool(e["hid"]):
+			continue                                    # already in that state
+		_gizmos_seen += _set_gizmos_hidden(mi as Node3D, far)
+		e["hid"] = far
+		changed += 1
+	if dead:
+		var keep: Array = []
+		for e in _managed:
+			if is_instance_valid(e["n"]): keep.append(e)
+		_managed = keep
+	return changed
+
+# When nothing on the tracked nodes carries a gizmo, the outline is drawn by
+# something else — this reports which classes in the scene DO carry one, so the
+# carrier can be identified instead of guessed at.
 static func gizmo_carriers(root: Node) -> String:
 	if root == null: return "no scene open"
 	var by_class: Dictionary = {}
@@ -78,88 +134,29 @@ static func gizmo_carriers(root: Node) -> String:
 		parts.append("%s x%d" % [c, int(by_class[c])])
 	parts.sort()
 	return "%d gizmo(s) across %d nodes: %s" % [total, nodes, ", ".join(parts)]
-static func gizmos_seen() -> int: return _gizmos_seen
 
-# The node the user placed: the nearest ancestor belonging to the edited scene.
-# Falls back to the mesh itself when there is no such ancestor.
-static func _placed_root(mi: Node) -> Node3D:
-	# EditorInterface only exists inside the editor; outside it (tests, a
-	# headless run) every mesh is simply its own root, which is the same
-	# behaviour with no grouping.
-	var scene: Node = EditorInterface.get_edited_scene_root() 		if Engine.is_editor_hint() else null
-	# Guarded rather than folded into the loop below: with scene == null the
-	# test "owner == scene" is true for every node built in code, and every mesh
-	# in the scene would collapse onto one shared root.
-	if scene == null:
-		return mi as Node3D
-	var n: Node = mi
-	while n != null and n != scene:
-		# the NEAREST owned ancestor is the object the user placed; walking on
-		# past it would group separate objects under a common parent
-		if n is Node3D and n.owner == scene:
-			return n as Node3D
-		n = n.get_parent()
-	return mi as Node3D
-
-static func _set_gizmos_hidden(n3: Node3D, hide: bool) -> int:
-	var k := 0
-	for g in n3.get_gizmos():
-		if g is EditorNode3DGizmo:
-			(g as EditorNode3DGizmo).set_hidden(hide)
-			k += 1
-	return k
-
-# Record one placed root at the furthest distance any of its meshes culls at.
-static func _record(mi: Node3D, d: float) -> void:
-	var root := _placed_root(mi)
-	var id := root.get_instance_id()
-	if _by_root.has(id):
-		var e = _managed[int(_by_root[id])]
-		e["d"] = maxf(float(e["d"]), d)
-		return
-	_by_root[id] = _managed.size()
-	_managed.append({"n": root, "d": d, "hid": false})
-
-static func tick_gizmos(cam_pos: Vector3) -> int:
-	var changed := 0
-	var dead := false
-	for e in _managed:
-		var n3 = e["n"]
-		if not is_instance_valid(n3) or not (n3 is Node3D):
-			dead = true
-			continue                                    # scene closed under us
-		var far: bool = (n3 as Node3D).global_position.distance_to(cam_pos) 			> float(e["d"]) * GIZMO_MARGIN
-		if far == bool(e["hid"]):
-			continue                                    # already in that state
-		_gizmos_seen += _set_gizmos_hidden(n3 as Node3D, far)
-		e["hid"] = far
-		changed += 1
-	if dead:
-		_rebuild_index()
-	return changed
-
-static func _rebuild_index() -> void:
-	var keep: Array = []
-	_by_root.clear()
-	for e in _managed:
-		var n3 = e["n"]
-		if not is_instance_valid(n3): continue
-		_by_root[(n3 as Object).get_instance_id()] = keep.size()
-		keep.append(e)
-	_managed = keep
-
-# Put every gizmo back. Called when the cull is switched off, and on teardown —
-# leaving one hidden would make an object permanently unclickable.
+# Put every gizmo back. Leaving one hidden would make its object unclickable.
 static func show_all_gizmos() -> void:
 	for e in _managed:
-		var n3 = e["n"]
-		if is_instance_valid(n3) and n3 is Node3D:
-			_set_gizmos_hidden(n3 as Node3D, false)
+		var mi = e["n"]
+		if is_instance_valid(mi) and mi is Node3D:
+			_set_gizmos_hidden(mi as Node3D, false)
 	_managed.clear()
-	_by_root.clear()
 
-# Forget the entries for the roots in this pass only, showing their gizmos
-# again first. apply() is also called for a single node when one is added, and
+# Hand a scene back exactly as we found it: every visibility range restored to
+# whatever it was, every gizmo shown. Call before letting go of a scene —
+# teardown, or opening a different one.
+static func release(root: Node) -> void:
+	show_all_gizmos()
+	if root != null:
+		var arr: Array = []
+		_collect(root, arr)
+		for mi in arr:
+			_restore_range(mi)
+	_orig.clear()
+
+# Forget the tracking for the meshes in this pass only, showing their gizmos
+# again first. apply() also runs for a single node when one is added, and
 # clearing everything there would forget the rest of the scene.
 static func _forget(arr: Array, clear_everything: bool) -> void:
 	if clear_everything:
@@ -167,26 +164,16 @@ static func _forget(arr: Array, clear_everything: bool) -> void:
 		return
 	var touched: Dictionary = {}
 	for mi in arr:
-		touched[_placed_root(mi).get_instance_id()] = true
+		touched[(mi as Object).get_instance_id()] = true
 	var keep: Array = []
 	for e in _managed:
-		var n3 = e["n"]
-		if not is_instance_valid(n3): continue
-		if touched.has((n3 as Object).get_instance_id()):
-			if bool(e["hid"]): _set_gizmos_hidden(n3 as Node3D, false)
+		var mi2 = e["n"]
+		if not is_instance_valid(mi2): continue
+		if touched.has((mi2 as Object).get_instance_id()):
+			if bool(e["hid"]): _set_gizmos_hidden(mi2 as Node3D, false)
 			continue
 		keep.append(e)
 	_managed = keep
-	_by_root.clear()
-	for i in range(_managed.size()):
-		_by_root[(_managed[i]["n"] as Object).get_instance_id()] = i
-
-# Hand a scene back exactly as we found it: the cull off, every gizmo shown.
-# Call before letting go of a scene — teardown, or opening a different one.
-static func release(root: Node) -> void:
-	show_all_gizmos()
-	if root != null:
-		apply(root, 0.0, false)
 
 # apply/refresh at render distance `r`; `on=false` clears the cull (full range).
 static func apply(root: Node, r: float, on: bool) -> String:
@@ -195,22 +182,18 @@ static func apply(root: Node, r: float, on: bool) -> String:
 	var arr: Array = []
 	_collect(root, arr)
 	var n := 0
-	# Drop stale entries for the objects in THIS pass only. apply() is also
-	# called for a single node when one is added to the scene, and clearing the
-	# whole list there would forget every other object we are managing.
 	_forget(arr, not on)
 	for mi in arr:
+		_remember(mi)                  # what it had before we touched it
 		var ext: float = (mi as VisualInstance3D).get_aabb().get_longest_axis_size()
 		if not on or ext > 600.0:
 			# off, OR a big structural mesh (terrain / a large building you're
-			# building on) — never distance-cull it, it'd vanish when you fly away.
-			# all three, not just the distance: the margin and the fade mode are
-			# serialized too, so clearing only the distance still leaves our
-			# fingerprints in the user's .tscn
-			mi.visibility_range_end = 0.0
-			mi.visibility_range_end_margin = 0.0
-			mi.visibility_range_fade_mode = GeometryInstance3D.VISIBILITY_RANGE_FADE_DISABLED
-			continue           # never culled, so its gizmo is never hidden
+			# building on) — never distance-cull it, it'd vanish when you fly
+			# away. Restored to what it had, NOT zeroed: an object can ship with
+			# a range authored in, and zeroing would strip that from the scene.
+			_restore_range(mi)
+			_record(mi)                # it may still cull on its own terms
+			continue
 		# smaller = culls closer; keep props you're editing visible up close.
 		var d: float = r if ext >= 12.0 else (r * 0.6 if ext >= 3.0 else r * 0.35)
 		d = maxf(d, 40.0)
@@ -221,12 +204,9 @@ static func apply(root: Node, r: float, on: bool) -> String:
 			mi.visibility_range_end_margin = maxf(d * 0.25, 40.0)
 			mi.visibility_range_fade_mode = GeometryInstance3D.VISIBILITY_RANGE_FADE_SELF
 		else:
-			# small props: hard hysteresis cull — dither-fade flickers on small objects.
 			mi.visibility_range_end_margin = maxf(d * 0.1, 8.0)
 			mi.visibility_range_fade_mode = GeometryInstance3D.VISIBILITY_RANGE_FADE_DISABLED
-		# remember what we culled and how far, so the gizmo tick has no work to
-		# do beyond one distance compare per object
-		_record(mi, d)
+		_record(mi)
 		n += 1
 	if not on:
 		return "Placed objects: full range"
