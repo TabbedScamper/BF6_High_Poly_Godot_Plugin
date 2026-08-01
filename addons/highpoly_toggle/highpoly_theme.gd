@@ -70,15 +70,6 @@ static func _load() -> void:
 		if k != "note" and k != "name":
 			_p[k] = (j as Dictionary)[k]
 
-static func reload() -> void:
-	_loaded = false
-	_load()
-
-static func palette_name() -> String:
-	if not FileAccess.file_exists(PALETTE_PATH): return "built-in"
-	var j: Variant = JSON.parse_string(FileAccess.get_file_as_string(PALETTE_PATH))
-	return str((j as Dictionary).get("name", "custom")) if j is Dictionary else "custom"
-
 static func col(key: String) -> Color:
 	_load()
 	var v := str(_p.get(key, FALLBACK.get(key, "#ffffff")))
@@ -110,11 +101,6 @@ static func num(key: String, def: float) -> float:
 	var v: Variant = _p.get(key, def)
 	return float(v) if (v is float or v is int) else def
 
-# ---------- individual appliers (used where a control needs to differ) ----------
-static func heading(l: Label) -> Label:
-	l.add_theme_color_override("font_color", col("accent"))
-	return l
-
 static func bar(p: ProgressBar) -> ProgressBar:
 	var sb := StyleBoxFlat.new()
 	sb.bg_color = col("accent")
@@ -122,18 +108,6 @@ static func bar(p: ProgressBar) -> ProgressBar:
 	p.add_theme_stylebox_override("fill", sb)
 	return p
 
-static func separator(s: HSeparator) -> HSeparator:
-	var sb := StyleBoxFlat.new()
-	sb.bg_color = Color(1, 1, 1, 0.22)
-	sb.content_margin_top = 1
-	sb.content_margin_bottom = 1
-	s.add_theme_stylebox_override("separator", sb)
-	return s
-
-# A toggle chip: off reads as an outlined mask like any other control, on fills
-# with the accent. Replaces CheckBox everywhere in the panel — a chip states its
-# own state at a glance, packs sideways into a wrapping row, and does not need a
-# tick column reserved down the left of every setting.
 static func chip(text: String, tip := "") -> Button:
 	var b := Button.new()
 	b.text = text

@@ -593,18 +593,6 @@ func _enter_tree() -> void:
 		lbl.text = "Saved %s" % p
 		OS.shell_show_in_file_manager(p))
 	log_row.add_child(save_log)
-	var check_out := Button.new()
-	check_out.text = "Check outlines"
-	check_out.tooltip_text = "Lists every blue debug colour Godot can draw with, and what this level is built from. Use it if you see outlines around objects that are too far away to be drawn — the setting that names a blue colour is the one drawing them."
-	check_out.pressed.connect(func():
-		Log.info("Godot's collision outlines: %s (%d tracked)"
-			% ["HIDDEN" if ShapeViz.is_hidden() else "shown", ShapeViz.count()])
-		Log.info("Blue debug colours:
-           " + PlacedCull.blue_debug_settings())
-		Log.info("Level is made of: " + PlacedCull.class_census(
-			EditorInterface.get_edited_scene_root())))
-	log_row.add_child(check_out)
-
 	var clear_log := Button.new()
 	clear_log.text = "Clear"
 	clear_log.tooltip_text = "Empties the list below. Does not undo anything."

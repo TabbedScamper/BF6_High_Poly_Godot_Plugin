@@ -47,10 +47,6 @@ func clear_activity() -> void:
 	changed.emit()
 func index() -> int: return _completed + 1        # 1-based, for "1/2"
 func count() -> int: return maxi(_batch, 1)
-func queued() -> int: return _waiting.size()
-
-# Wait for the slot. Await this before starting a transfer; hold the returned
-# token and hand it back to release().
 func acquire(name: String) -> int:
 	_next_id += 1
 	var id := _next_id
