@@ -188,6 +188,40 @@ func _enter_tree() -> void:
 	scope_btn.item_selected.connect(func(_i): _scope_changed())
 	dock.add_child(scope_btn)
 
+	# The master control. It switches the borrowed scenery on and off and sets
+	# the draw distance for the scenery, the effects, the map lights and your
+	# own placed pieces — so it belongs at the top, not inside one section.
+	var mcr_row := HBoxContainer.new(); dock.add_child(mcr_row)
+	var mcr_lbl := Label.new(); mcr_lbl.text = "Range"
+	mcr_row.add_child(mcr_lbl)
+	mapctx_range = HSlider.new()
+	mapctx_range.min_value = 0; mapctx_range.max_value = 3500
+	mapctx_range.step = 100; mapctx_range.value = 800
+	mapctx_range.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	mapctx_range.tooltip_text = "The one distance that governs everything: how far away the real level's scenery, its effects and its lights keep drawing, and how far your own placed pieces keep drawing. Pull it down if the view gets choppy. At zero the borrowed scenery switches off entirely, leaving just your map."
+	mcr_row.add_child(mapctx_range)
+	mapctx_range_val = Label.new(); mapctx_range_val.text = _range_label(800.0)
+	mcr_row.add_child(mapctx_range_val)
+	mapctx_range.value_changed.connect(func(v: float):
+		mapctx_range_val.text = _range_label(v)
+		var _rad := 1.0e9 if int(v) >= 3500 else v
+		mapctx.set_radius(_rad)
+		# lights + FX ride the same slider: lights capped at 300 m (the
+		# clustered-lighting GPU budget), FX clamped to their class ranges
+		var _rr := EditorInterface.get_edited_scene_root()
+		LightingScript.lights_range = clampf(_rad, 0.0, 300.0)
+		if _rr != null:
+			HighpolyFx.set_range(_rr, _rad)
+			if mapctx_optimize and mapctx_optimize.button_pressed:
+				PlacedCull.apply(_rr, _rad, true)   # placed props ride the slider too
+		# the slider IS the scenery switch now: zero off, anything above it on.
+		# Assigning fires the toggled handler, which does the real show/hide work.
+		var want := int(v) > 0
+		if mapctx_objects and mapctx_objects.button_pressed != want:
+			mapctx_objects.button_pressed = want
+		else:
+			_save_mapctx_state())
+
 	# From here down the panel is built into collapsible sections. `host` is
 	# whichever section's content box is currently being filled, so the existing
 	# build order — which several controls depend on — is untouched.
@@ -406,36 +440,6 @@ func _enter_tree() -> void:
 		_save_mapctx_state())
 	mc_sub.add_child(mapctx_maplights)
 
-	var mcr_row := HBoxContainer.new(); host.add_child(mcr_row)
-	var mcr_lbl := Label.new(); mcr_lbl.text = "Range"
-	mcr_row.add_child(mcr_lbl)
-	mapctx_range = HSlider.new()
-	mapctx_range.min_value = 0; mapctx_range.max_value = 3500
-	mapctx_range.step = 100; mapctx_range.value = 800
-	mapctx_range.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	mapctx_range.tooltip_text = "How far away you can still see the borrowed scenery. Pull it down if the view gets choppy; drag it to zero to switch the scenery off entirely."
-	mcr_row.add_child(mapctx_range)
-	mapctx_range_val = Label.new(); mapctx_range_val.text = _range_label(800.0)
-	mcr_row.add_child(mapctx_range_val)
-	mapctx_range.value_changed.connect(func(v: float):
-		mapctx_range_val.text = _range_label(v)
-		var _rad := 1.0e9 if int(v) >= 3500 else v
-		mapctx.set_radius(_rad)
-		# lights + FX ride the same slider: lights capped at 300 m (the
-		# clustered-lighting GPU budget), FX clamped to their class ranges
-		var _rr := EditorInterface.get_edited_scene_root()
-		LightingScript.lights_range = clampf(_rad, 0.0, 300.0)
-		if _rr != null:
-			HighpolyFx.set_range(_rr, _rad)
-			if mapctx_optimize and mapctx_optimize.button_pressed:
-				PlacedCull.apply(_rr, _rad, true)   # placed props ride the slider too
-		# the slider IS the scenery switch now: zero off, anything above it on.
-		# Assigning fires the toggled handler, which does the real show/hide work.
-		var want := int(v) > 0
-		if mapctx_objects and mapctx_objects.button_pressed != want:
-			mapctx_objects.button_pressed = want
-		else:
-			_save_mapctx_state())
 
 	# Optimize placed objects: distance-cull the props the USER places (their custom
 	# map content — not the backdrop) so a densely-built map stays fast. Near props
