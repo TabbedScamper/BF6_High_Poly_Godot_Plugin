@@ -16,6 +16,7 @@ var video: VideoStreamPlayer       # looping backdrop; paused whenever the panel
 var tint: ColorRect                # darkens the backdrop behind the controls
 var border: Panel                  # the outline
 var boot: Node                     # the running boot sequence, if one is playing
+var tips: Control                  # hover descriptions, drawn inside the panel
 var _vid_size := Vector2(480, 800) # encoded video size, for cover-scaling
 var lbl: Label
 var mode_btn: OptionButton
@@ -32,6 +33,7 @@ const HighpolyVariants = preload("highpoly_variants.gd")
 const LightingScript = preload("highpoly_lighting.gd")
 const PlacedCull = preload("highpoly_placedcull.gd")
 const JobBarsScript = preload("highpoly_jobbars.gd")
+const TipsScript = preload("highpoly_tips.gd")
 const SplashScript = preload("highpoly_splash.gd")
 const Theme_ = preload("highpoly_theme.gd")
 var previews: Node
@@ -502,6 +504,7 @@ func _enter_tree() -> void:
 	# the boot sequence is started from the open path, not from visibility_changed:
 	# that signal also fires on close, and every route to opening the panel goes
 	# through the toolbar button's toggle anyway
+	_adopt_tips.call_deferred()
 	_first_run_open.call_deferred()
 	_auto_perf_settings.call_deferred()
 	_check_plugin_update.call_deferred()
@@ -784,6 +787,20 @@ const PANEL_PAD_V := 12        # ...and top/bottom
 # Toggles sit shoulder-to-shoulder in a wrapping row under their heading rather
 # than one per line. Thirteen stacked checkboxes is mostly empty space, and a
 # filled chip states "on" at a glance where a tick has to be read.
+# Move every description off Godot's tooltip system and onto our own box.
+# Deferred so it runs after the whole panel is built, and re-run cheaply if a
+# control grows a description later (adopt() is idempotent).
+func _adopt_tips() -> void:
+	if tips == null or dock == null: return
+	tips.adopt(dock)
+	# scrolling moves the controls out from under a shown box
+	var vs := dock_scroll.get_v_scroll_bar() if dock_scroll else null
+	if vs and not vs.value_changed.is_connected(_tips_hide):
+		vs.value_changed.connect(_tips_hide)
+
+func _tips_hide(_v: float = 0.0) -> void:
+	if tips: tips.hide_now()
+
 func _chip_row(indent := 0) -> HFlowContainer:
 	var f := HFlowContainer.new()
 	f.add_theme_constant_override("h_separation", 6)
@@ -840,6 +857,9 @@ func _build_backdrop() -> void:
 	tint.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	dock_root.add_child(tint)
 	dock_root.move_child(tint, 2)
+
+	tips = TipsScript.new()
+	dock_root.add_child(tips)
 
 	border = Panel.new()
 	border.set_anchors_preset(Control.PRESET_FULL_RECT)
@@ -905,6 +925,7 @@ func _set_tools_visible(on: bool) -> void:
 # the boot would carry on animating a panel nobody can see, and the next open
 # would find it already finished.
 func _stop_boot() -> void:
+	_tips_hide()
 	if is_instance_valid(boot):
 		boot.queue_free()
 		boot = null
