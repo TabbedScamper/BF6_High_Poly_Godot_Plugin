@@ -12,6 +12,8 @@ class_name HighpolyJobBars
 # Lives outside highpoly_toggle.gd because EditorPlugin can only be instantiated
 # by the editor, which makes anything defined there impossible to test headlessly.
 
+const Pal = preload("highpoly_theme.gd")
+
 var _rows: Dictionary = {}     # label -> {"bar": ProgressBar, "lbl": Label}
 
 func _init() -> void:
@@ -32,7 +34,7 @@ func progress(label: String, done: int, total: int) -> void:
 		var lb := Label.new()
 		lb.add_theme_font_size_override("font_size", 11)
 		lb.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		var bar := ProgressBar.new()
+		var bar: ProgressBar = Pal.bar(ProgressBar.new())
 		bar.min_value = 0.0
 		bar.max_value = 1.0
 		bar.show_percentage = false

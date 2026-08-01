@@ -1,0 +1,8 @@
+{
+  "name": "Portal SDK (default)",
+  "note": "Placeholder palette taken from the SDK's own Portal logo (#ff3d00). Replace with the season's real colours - run tools/palette_from_image.py over the season logo or key art and drop the result here. No plugin release needed for a colour change; this file is data.",
+  "accent": "#ff3d00",
+  "accent_dim": "#a82800",
+  "heading": "#ffb59e",
+  "splash_bg": "#140a06"
+}

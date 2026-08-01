@@ -8,6 +8,7 @@ extends EditorPlugin
 
 var dock: VBoxContainer
 var dock_scroll: ScrollContainer   # dock wrapper: collapses the VBox's huge min height
+var dock_root: Control             # docked tab root: scroller + the boot overlay
 var lbl: Label
 var mode_btn: OptionButton
 var ovr_chk: CheckBox          # per-selection detail override (live, contextual label)
@@ -23,6 +24,8 @@ const HighpolyVariants = preload("highpoly_variants.gd")
 const LightingScript = preload("highpoly_lighting.gd")
 const PlacedCull = preload("highpoly_placedcull.gd")
 const JobBarsScript = preload("highpoly_jobbars.gd")
+const SplashScript = preload("highpoly_splash.gd")
+const Theme_ = preload("highpoly_theme.gd")
 var previews: Node
 var mapctx: Node
 var sync: Node
@@ -112,6 +115,7 @@ func _enter_tree() -> void:
 	progress.min_value = 0.0
 	progress.max_value = 1.0
 	progress.visible = false
+	Theme_.bar(progress)
 	dock.add_child(progress)
 	sync_lbl = Label.new()
 	sync_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -139,7 +143,7 @@ func _enter_tree() -> void:
 	scope_btn.item_selected.connect(func(_i): _scope_changed())
 	dock.add_child(scope_btn)
 
-	var title := Label.new()
+	var title := Theme_.heading(Label.new())
 	title.text = "Detail Mode"
 	dock.add_child(title)
 
@@ -157,8 +161,8 @@ func _enter_tree() -> void:
 	ovr_chk.toggled.connect(_override_toggled)
 	dock.add_child(ovr_chk)
 
-	var sepc := HSeparator.new(); dock.add_child(sepc)
-	var col_title := Label.new(); col_title.text = "Collision"
+	var sepc := Theme_.separator(HSeparator.new()); dock.add_child(sepc)
+	var col_title := Theme_.heading(Label.new()); col_title.text = "Collision"
 	dock.add_child(col_title)
 
 	col_chk = CheckBox.new()
@@ -203,8 +207,8 @@ func _enter_tree() -> void:
 		col_pick.color = c)
 	ca_row.add_child(col_alpha)
 
-	var sepm := HSeparator.new(); dock.add_child(sepm)
-	var mc_title := Label.new(); mc_title.text = "Map Context"
+	var sepm := Theme_.separator(HSeparator.new()); dock.add_child(sepm)
+	var mc_title := Theme_.heading(Label.new()); mc_title.text = "Map Context"
 	dock.add_child(mc_title)
 
 	mapctx_on = CheckBox.new()
@@ -272,6 +276,7 @@ func _enter_tree() -> void:
 	mapctx_bar.min_value = 0.0
 	mapctx_bar.max_value = 1.0
 	mapctx_bar.visible = false
+	Theme_.bar(mapctx_bar)
 	mapctx_bar.tooltip_text = "Building map objects in the background (nearest first)…"
 	dock.add_child(mapctx_bar)
 
@@ -411,8 +416,8 @@ func _enter_tree() -> void:
 	shader_btn.pressed.connect(_open_shader_dialog)
 	dock.add_child(shader_btn)
 
-	var sep3 := HSeparator.new(); dock.add_child(sep3)
-	var storage_title := Label.new(); storage_title.text = "Storage"
+	var sep3 := Theme_.separator(HSeparator.new()); dock.add_child(sep3)
+	var storage_title := Theme_.heading(Label.new()); storage_title.text = "Storage"
 	dock.add_child(storage_title)
 
 	storage_lbl = Label.new()
@@ -468,12 +473,21 @@ func _enter_tree() -> void:
 	# (verified: dock min was 3707 px in a 1360 px window). Wrapped, the dock
 	# scrolls when its area is short instead of deforming the editor.
 	dock_scroll = ScrollContainer.new()
-	dock_scroll.name = "High-Poly"
 	dock_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	dock_scroll.set_anchors_preset(Control.PRESET_FULL_RECT)
 	dock.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	dock.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	dock_scroll.add_child(dock)
-	add_control_to_dock(DOCK_SLOT_RIGHT_UL, dock_scroll)
+	# The docked control is a plain Control holding the scroller, so the boot
+	# animation can be a SIBLING covering the whole tab. Inside the scroller it
+	# would be sized and clipped by the dock's content instead of covering it.
+	dock_root = Control.new()
+	dock_root.name = "High-Poly"        # the tab title
+	dock_root.add_child(dock_scroll)
+	add_control_to_dock(DOCK_SLOT_RIGHT_UL, dock_root)
+	# playing on every tab click would be charming twice and irritating forever
+	dock_root.visibility_changed.connect(_maybe_play_splash)
+	_maybe_play_splash.call_deferred()
 	_auto_perf_settings.call_deferred()
 	_check_plugin_update.call_deferred()
 	_refresh_storage.call_deferred()   # async walk; mapctx exists by deferred time
@@ -570,9 +584,11 @@ func _exit_tree() -> void:
 		HighpolyLib.apply(r, HighpolyLib.Tier.LOW, true)   # hide hi-poly overlays, show proxies
 	HighpolyStore.save()
 	if job_box: job_box.clear()   # no orphaned rows if a fetch outlives the dock
-	if dock_scroll:
-		remove_control_from_docks(dock_scroll)
-		dock_scroll.queue_free()   # frees the inner VBox with it
+	if dock_root:
+		remove_control_from_docks(dock_root)
+		dock_root.queue_free()     # frees the scroller and the inner VBox with it
+		dock_root = null
+		dock_scroll = null
 
 # ---------- startup: migration -> scope -> sync ----------
 func _startup() -> void:
@@ -731,6 +747,16 @@ func _check_updates_now() -> void:
 		elif n < 0:
 			lbl.text = "Map objects still building — check again when it finishes"
 	_refresh_storage()   # disk usage may have shifted (downloads / re-bake)
+
+# Boot animation, if the artwork exists and it hasn't run yet this session.
+func _maybe_play_splash() -> void:
+	if dock_root == null or not dock_root.is_visible_in_tree(): return
+	if not SplashScript.should_play(): return
+	var s = SplashScript.new()
+	if s.setup():
+		dock_root.add_child(s)
+	else:
+		s.free()
 
 func _update_progress() -> void:
 	if sync == null: return
