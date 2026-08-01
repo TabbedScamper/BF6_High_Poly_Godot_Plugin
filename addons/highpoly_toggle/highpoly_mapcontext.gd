@@ -491,15 +491,29 @@ func download_map(host: Node, map: String, status: Callable, force := false) -> 
 		return false
 	status.call("Extracting %s…" % map)
 	var zr := ZIPReader.new()
-	if zr.open(ProjectSettings.globalize_path(tmp)) != OK:
+	var zerr := zr.open(ProjectSettings.globalize_path(tmp))
+	if zerr != OK:
+		Log.err_code("%s map data downloaded but the archive would not open" % map, zerr)
 		status.call("Map archive unreadable"); return false
 	var n := 0
+	var skipped := 0
 	for f in zr.get_files():
 		if f.ends_with("/"): continue
 		var dest := "%s/%s" % [dir, f]
 		HighpolyStore.ensure_dir(dest.get_base_dir())
 		var out := FileAccess.open(dest, FileAccess.WRITE)
-		if out: out.store_buffer(zr.read_file(f)); out.close(); n += 1
+		if out:
+			out.store_buffer(zr.read_file(f)); out.close(); n += 1
+		else:
+			# a file that cannot be written is the difference between a map that
+			# works and one that half-works; silence here reads as success
+			skipped += 1
+			if skipped == 1:
+				Log.err_code("Could not write %s while unpacking %s map data"
+					% [dest, map], FileAccess.get_open_error())
+	if skipped > 0:
+		Log.error("%s map data: %d of %d files could not be written to %s"
+			% [map, skipped, n + skipped, ProjectSettings.globalize_path(dir)])
 	zr.close()
 	DirAccess.remove_absolute(tmp)
 	await _stamp_etag(host, map, "mapdata", b + "mapdata.zip")
@@ -608,6 +622,9 @@ func _maptile_tex(map: String) -> Texture2D:
 	var p := _maptile_path(map)
 	if p != "":
 		var img := Image.load_from_file(ProjectSettings.globalize_path(p))
+		if img == null:
+			Log.error("Ground image for %s downloaded but could not be read (%s)"
+				% [map, ProjectSettings.globalize_path(p)])
 		if img != null:
 			img.generate_mipmaps()
 			t = ImageTexture.create_from_image(img)
@@ -1309,15 +1326,27 @@ func ensure_props(host: Node, map: String, status: Callable) -> bool:
 	if not ok:
 		status.call("Prop mesh download failed (try again)"); return false
 	var zr := ZIPReader.new()
-	if zr.open(ProjectSettings.globalize_path(tmp)) != OK:
+	var zerr2 := zr.open(ProjectSettings.globalize_path(tmp))
+	if zerr2 != OK:
+		Log.err_code("%s scenery downloaded but the archive would not open" % map, zerr2)
 		status.call("Prop archive unreadable"); return false
 	var want: Dictionary = {}
 	for nm in miss: want["%s.glb" % nm] = true
 	var n := 0
+	var skipped2 := 0
 	for f in zr.get_files():
 		if want.has(f) or (refresh and f.ends_with(".glb") and not f.contains("/")):
 			var out := FileAccess.open("%s/%s" % [PROPS_CACHE, f], FileAccess.WRITE)
-			if out: out.store_buffer(zr.read_file(f)); out.close(); n += 1
+			if out:
+				out.store_buffer(zr.read_file(f)); out.close(); n += 1
+			else:
+				skipped2 += 1
+				if skipped2 == 1:
+					Log.err_code("Could not write %s while unpacking %s scenery"
+						% [f, map], FileAccess.get_open_error())
+	if skipped2 > 0:
+		Log.error("%s scenery: %d of %d pieces could not be written to %s"
+			% [map, skipped2, n + skipped2, ProjectSettings.globalize_path(PROPS_CACHE)])
 	zr.close()
 	DirAccess.remove_absolute(tmp)
 	if refresh:
@@ -1337,10 +1366,18 @@ func _props_index() -> Dictionary:
 		if j is Dictionary: return j
 	return {}
 
+# The index is what stops every scenery piece being re-hashed on the next
+# start. Losing it is slow rather than broken — and silently slow is the kind of
+# problem nobody ever reports, they just think the plugin is like that.
 func _save_props_index(d: Dictionary) -> void:
 	HighpolyStore.ensure_dir(PROPS_CACHE)
 	var f := FileAccess.open("%s/index.json" % PROPS_CACHE, FileAccess.WRITE)
-	if f: f.store_string(JSON.stringify(d)); f.close()
+	if f:
+		f.store_string(JSON.stringify(d)); f.close()
+	else:
+		Log.err_code("Could not save the scenery index to %s — every piece will be "
+			% ProjectSettings.globalize_path(PROPS_CACHE) + "re-checked on the next start",
+			FileAccess.get_open_error())
 
 # Bring this map's registry-published prop meshes in line with the site.
 # Change-only: verified hashes short-circuit via index.json; a file whose hash
@@ -1389,6 +1426,14 @@ func _verify_props_registry(host: Node, map: String, status: Callable) -> void:
 				idx[j[0]] = j[2]
 				_mesh_cache.erase("%s/%s.glb" % [PROPS_CACHE, j[0]])
 				last_verify_updates += 1
+			else:
+				# it downloaded and then went nowhere — without this the piece
+				# just silently stays out of date, forever
+				Log.err_code("Updated scenery piece '%s' could not be saved" % j[0],
+					FileAccess.get_open_error())
+		else:
+			Log.warn("Scenery piece '%s' would not download — it stays on the old version"
+				% j[0])
 		done += 1
 	http.queue_free()
 	_save_props_index(idx)
@@ -1484,7 +1529,10 @@ func _merge_meshes(pairs: Array) -> ArrayMesh:
 	var out := ArrayMesh.new()
 	for key in groups:
 		if out.get_surface_count() >= 255:
-			push_warning("map-context merge: >255 unique materials, dropping remainder")
+			# a visible symptom (some scenery renders untextured) with a cause
+			# nobody could guess from looking at it
+			Log.warn("This level has more than 255 different materials in one batch — "
+				+ "the extra ones are dropped, so some scenery will look untextured")
 			break
 		var g: Dictionary = groups[key]
 		var arr := []; arr.resize(Mesh.ARRAY_MAX)
