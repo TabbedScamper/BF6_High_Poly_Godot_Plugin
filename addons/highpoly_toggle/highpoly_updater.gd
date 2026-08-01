@@ -17,6 +17,7 @@ const DEFAULT_MANIFEST := "https://pub-45114dae448e4a059f488662e3d47b19.r2.dev/p
 # loops below already treat as a normal retryable failure.
 const FETCH_TIMEOUT := 120.0     # a single model GLB / small payload
 const HEAD_TIMEOUT := 30.0       # metadata only
+const Log = preload("highpoly_log.gd")
 
 static func manifest_url() -> String:
 	if ProjectSettings.has_setting(SETTING):
@@ -31,7 +32,9 @@ static func _fetch(http: HTTPRequest, url: String) -> PackedByteArray:
 		if attempt > 0:
 			# 0.4s, 0.8s, 1.6s between retries
 			await http.get_tree().create_timer(0.4 * pow(2, attempt - 1)).timeout
-		if http.request(url) != OK:
+		var rq := http.request(url)
+		if rq != OK:
+			Log.warn("Could not start download of %s — %s" % [url, error_string(rq)])
 			continue
 		var res: Array = await http.request_completed
 		# res = [result, response_code, headers, body]
@@ -46,7 +49,9 @@ static func remote_etag(http: HTTPRequest, url: String) -> String:
 	for attempt in range(3):
 		if attempt > 0:
 			await http.get_tree().create_timer(0.4 * pow(2, attempt - 1)).timeout
-		if http.request(url, PackedStringArray(), HTTPClient.METHOD_HEAD) != OK:
+		var rqh := http.request(url, PackedStringArray(), HTTPClient.METHOD_HEAD)
+		if rqh != OK:
+			Log.warn("Could not check %s for a newer version — %s" % [url, error_string(rqh)])
 			continue
 		var res: Array = await http.request_completed
 		if res[0] != HTTPRequest.RESULT_SUCCESS or res[1] != 200:
@@ -125,7 +130,11 @@ static func update_plugin(host: Node, status: Callable) -> bool:
 		status.call("Cannot write the update file"); return false
 	f.store_buffer(body); f.close()
 	var zr := ZIPReader.new()
-	if zr.open(ProjectSettings.globalize_path(tmp)) != OK:
+	var zerr := zr.open(ProjectSettings.globalize_path(tmp))
+	if zerr != OK:
+		Log.error("Plugin update downloaded but the archive would not open — %s"
+			% error_string(zerr))
+	if zerr != OK:
 		status.call("Update archive unreadable"); return false
 	var pdir := plugin_dir()
 	var n := 0
