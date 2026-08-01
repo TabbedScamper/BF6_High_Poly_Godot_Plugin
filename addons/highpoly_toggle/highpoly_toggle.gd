@@ -129,7 +129,7 @@ func _enter_tree() -> void:
 	dock.add_child(progress)
 	sync_lbl = Label.new()
 	sync_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	sync_lbl.add_theme_font_size_override("font_size", 12)
+	sync_lbl.add_theme_font_size_override("font_size", Theme_.fs(12))
 	dock.add_child(sync_lbl)
 	pause_btn = Button.new()
 	pause_btn.text = "Pause downloads"
@@ -426,7 +426,7 @@ func _enter_tree() -> void:
 
 	storage_lbl = Label.new()
 	storage_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	storage_lbl.add_theme_font_size_override("font_size", 12)
+	storage_lbl.add_theme_font_size_override("font_size", Theme_.fs(12))
 	storage_lbl.text = "Measuring disk usage…"
 	dock.add_child(storage_lbl)
 
@@ -885,8 +885,14 @@ func _build_tool_window() -> void:
 	win.title = "High-Poly Tools"
 	win.min_size = WIN_MIN
 	win.size = WIN_SIZE
-	win.transient = true       # floats above the editor instead of hiding behind it
-	win.exclusive = false      # ...but never blocks it: keep building while it is open
+	# Stays above the editor when you click back into the viewport. It must not
+	# be transient to do that: the platform display server rejects always-on-top
+	# for a window that has a transient parent ("Transient windows can't become
+	# on top of parent"), and transient on its own only raises the panel
+	# alongside its parent, which is what let clicking the viewport bury it.
+	win.transient = false
+	win.always_on_top = true
+	win.exclusive = false      # never blocks the editor: keep building while it is open
 	win.hide()
 	win.close_requested.connect(_close_tools)
 	EditorInterface.get_base_control().add_child(win)

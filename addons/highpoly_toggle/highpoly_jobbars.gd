@@ -32,7 +32,7 @@ func progress(label: String, done: int, total: int) -> void:
 	var row: Dictionary = _rows.get(label, {})
 	if row.is_empty():
 		var lb := Label.new()
-		lb.add_theme_font_size_override("font_size", 11)
+		lb.add_theme_font_size_override("font_size", Pal.fs(11))
 		lb.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		var bar: ProgressBar = Pal.bar(ProgressBar.new())
 		bar.min_value = 0.0

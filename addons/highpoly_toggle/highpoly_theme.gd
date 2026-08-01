@@ -86,6 +86,23 @@ static func col(key: String) -> Color:
 
 static func accent() -> Color: return col("accent")
 
+# The panel runs larger than the editor's own text. Scaled off the editor's size
+# rather than pinned to a number, so it still tracks a user who has already set
+# their editor font larger or smaller.
+const FONT_SCALE := 1.5
+
+static func base_font_size() -> int:
+	if Engine.is_editor_hint():
+		var et := EditorInterface.get_editor_theme()
+		if et != null and et.has_font_size("main_size", "EditorFonts"):
+			return et.get_font_size("main_size", "EditorFonts")
+	return 14
+
+# Scale a font size that was picked relative to the old default (e.g. the 12px
+# used for the storage readout), so those stay proportionally smaller.
+static func fs(base: int) -> int:
+	return int(round(float(base) * FONT_SCALE))
+
 # Numeric palette entries (currently just the backdrop dim). Tunable from
 # theme.json so brighter or darker footage can be balanced without a release.
 static func num(key: String, def: float) -> float:
@@ -185,6 +202,7 @@ static func build_ui_theme() -> Theme:
 	# face lands on labels, buttons, dropdowns and tooltips in one assignment
 	var f := ui_font()
 	if f != null: t.default_font = f
+	t.default_font_size = fs(base_font_size())
 
 	# Buttons wear the mask. Checkboxes deliberately do NOT — a mask behind every
 	# checkbox turns a settings list into a wall of boxes; they just go white.

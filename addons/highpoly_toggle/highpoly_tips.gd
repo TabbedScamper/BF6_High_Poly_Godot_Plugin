@@ -24,7 +24,6 @@ const FADE := 0.16
 const MARGIN := 8.0        # gap to the panel edges
 const PAD := 8.0           # text inset inside the box
 const GAP := 6.0           # gap between the control and its description
-const FONT_SIZE := 12
 
 var _box: Panel
 var _lbl: Label
@@ -45,7 +44,8 @@ func _ready() -> void:
 	_lbl = Label.new()
 	_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_lbl.add_theme_font_size_override("font_size", FONT_SIZE)
+	# no font or size override: the description reads in the same face and size
+	# as the panel it belongs to
 	_lbl.add_theme_color_override("font_color", Color.WHITE)
 	_box.add_child(_lbl)
 	_timer = Timer.new()
@@ -98,15 +98,15 @@ func _on_enter(c: Control) -> void:
 func _on_exit(c: Control) -> void:
 	if _target == c: hide_now()
 
-# Where the box goes and how big it is. Split out from the animation so the
-# geometry can be checked without waiting on a tween.
-func layout_for(target_rect: Rect2, text: String) -> Rect2:
+func text_width() -> float:
+	return maxf(24.0, size.x - MARGIN * 2.0 - PAD * 2.0)
+
+# Where the box goes, given how tall the wrapped text turned out. Pure geometry,
+# separate from measuring and animating so it can be checked directly.
+func layout_for(target_rect: Rect2, text_h: float) -> Rect2:
 	var w: float = maxf(40.0, size.x - MARGIN * 2.0)
-	var font := _lbl.get_theme_font("font")
-	var fs := _lbl.get_theme_font_size("font_size")
-	var text_h := font.get_multiline_string_size(
-		text, HORIZONTAL_ALIGNMENT_LEFT, w - PAD * 2.0, fs).y
-	var h := text_h + PAD * 2.0
+	# clamped to the panel: a description is never worth growing past the edges
+	var h: float = minf(text_h + PAD * 2.0, maxf(40.0, size.y - MARGIN * 2.0))
 	# below the control by default; above it when there is no room below, so a
 	# description never hangs off the bottom of the panel
 	var y := target_rect.end.y + GAP
@@ -116,14 +116,22 @@ func layout_for(target_rect: Rect2, text: String) -> Rect2:
 	return Rect2(MARGIN, y, w, h)
 
 func _present() -> void:
-	if _target == null or not is_instance_valid(_target): return
-	if not _target.is_visible_in_tree(): return
-	var text := str(_target.get_meta("hp_tip", ""))
+	var tgt := _target
+	if tgt == null or not is_instance_valid(tgt) or not tgt.is_visible_in_tree(): return
+	var text := str(tgt.get_meta("hp_tip", ""))
 	if text == "": return
 	_lbl.text = text
-	var origin := get_global_rect().position
-	var r := layout_for(Rect2(_target.get_global_rect().position - origin,
-		_target.size), text)
+	_lbl.size = Vector2(text_width(), 10.0)
+	# A Label reports one line until it has been shaped, which happens on the
+	# next frame — measuring any sooner gives a box less than half the height it
+	# needs and the description gets cut off. Font metrics can't answer this
+	# either: get_multiline_string_size() ignores the label's line spacing and
+	# under-reports by the same margin.
+	await get_tree().process_frame
+	if _target != tgt or not is_instance_valid(tgt): return
+	var r := layout_for(Rect2(
+		tgt.get_global_rect().position - get_global_rect().position, tgt.size),
+		_lbl.get_minimum_size().y)
 	_box.position = Vector2(r.position.x, r.position.y - SLIDE)
 	_box.size = r.size
 	_lbl.position = Vector2(PAD, PAD)
