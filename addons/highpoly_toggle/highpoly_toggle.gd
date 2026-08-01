@@ -15,6 +15,7 @@ var _win_rect: Rect2i              # remembered across sessions; zero = never op
 var video: VideoStreamPlayer       # looping backdrop; paused whenever the panel is shut
 var tint: ColorRect                # darkens the backdrop behind the controls
 var border: Panel                  # the outline
+var boot: Node                     # the running boot sequence, if one is playing
 var _vid_size := Vector2(480, 800) # encoded video size, for cover-scaling
 var lbl: Label
 var mode_btn: OptionButton
@@ -504,8 +505,9 @@ func _enter_tree() -> void:
 	dock_root.add_child(dock_scroll)
 	_build_backdrop()
 	_build_tool_window()
-	# playing on every open would be charming twice and irritating forever
-	win.visibility_changed.connect(_maybe_play_splash)
+	# the boot sequence is started from the open path, not from visibility_changed:
+	# that signal also fires on close, and every route to opening the panel goes
+	# through the toolbar button's toggle anyway
 	_first_run_open.call_deferred()
 	_auto_perf_settings.call_deferred()
 	_check_plugin_update.call_deferred()
@@ -876,6 +878,7 @@ func _set_tools_visible(on: bool) -> void:
 		# a closed panel must not keep a video decoder running: this plugin
 		# exists to buy back frame time, not to spend it on its own scenery
 		if video: video.paused = true
+		_stop_boot()
 		return
 	if video:
 		if video.is_playing(): video.paused = false
@@ -886,6 +889,15 @@ func _set_tools_visible(on: bool) -> void:
 		win.show()
 	else:
 		win.popup_centered(WIN_SIZE)
+	_maybe_play_splash()      # after show(): the sequence needs a visible panel
+
+# Closing mid-sequence drops it. A hidden Window still processes, so left alone
+# the boot would carry on animating a panel nobody can see, and the next open
+# would find it already finished.
+func _stop_boot() -> void:
+	if is_instance_valid(boot):
+		boot.queue_free()
+		boot = null
 
 func _close_tools() -> void:
 	# closing from the window's own X must not re-enter _set_tools_visible
@@ -893,6 +905,7 @@ func _close_tools() -> void:
 	if win and win.visible: _win_rect = Rect2i(win.position, win.size)
 	if win: win.hide()
 	if video: video.paused = true
+	_stop_boot()
 
 # A remembered position is only good while that monitor still exists. Unplug a
 # second screen and a restored panel would open onto coordinates nothing can
@@ -925,10 +938,14 @@ func _set_window_layout(cfg: ConfigFile) -> void:
 	if tools_btn and bool(cfg.get_value("HighPoly", "win_open", false)):
 		tools_btn.button_pressed = true      # fires _set_tools_visible
 
-# Boot animation, if the artwork exists and it hasn't run yet this session.
+# Boot animation, played on every open.
 func _maybe_play_splash() -> void:
 	if win == null or not win.visible or dock_root == null: return
-	if not SplashScript.should_play(): return
+	# a fast close-and-reopen must not leave two sequences fighting over the
+	# tint and the scroller's alpha
+	if is_instance_valid(boot):
+		boot.queue_free()
+		boot = null
 	var s = SplashScript.new()
 	s.tint = tint
 	s.ui = dock_scroll
@@ -936,6 +953,7 @@ func _maybe_play_splash() -> void:
 	if s.setup(video != null):
 		dock_root.add_child(s)
 		dock_root.move_child(s, dock_root.get_child_count() - 2)   # under the border
+		boot = s
 	else:
 		# nothing to play: make sure the panel is left in its finished state
 		s.free()

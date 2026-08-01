@@ -29,10 +29,9 @@ version is published; model fixes and map-data refreshes arrive on their own.
 ## Look
 
 Season 4 (Pacific Front) styling: a looping wave backdrop under white controls
-on translucent white masks, inside a bright blue outline. Opening it for the
-first time in an editor session — or the first time after an update — plays a
+on translucent white masks, inside a bright blue outline. **Every** open plays a
 short boot sequence: waves, then the Portal logo, then the backdrop dims and
-the controls fade in. **Click anywhere to skip it.**
+the controls fade in — about five seconds. **Click anywhere to skip it.**
 
 Costs are contained rather than assumed away:
 
