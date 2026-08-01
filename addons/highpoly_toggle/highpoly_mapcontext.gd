@@ -2210,7 +2210,10 @@ func dir_usage_async(path: String) -> Array:
 #               purging must never silently break another map)
 #   excl_bytes  bytes of the deletable shared-cache glbs
 #   map_bytes   bytes of the map's own folder
-func purge_info(map: String) -> Dictionary:
+# extra_keys lets the caller name the models a level uses when its data was
+# never downloaded — the open scene knows them even when no placements file
+# exists, and without this those models could never be freed.
+func purge_info(map: String, extra_keys: Dictionary = {}) -> Dictionary:
 	var refs := map_prop_refs(map)
 	var others: Dictionary = {}
 	for m in downloaded_maps():
@@ -2234,9 +2237,28 @@ func purge_info(map: String) -> Dictionary:
 		i += 1
 		if i % 400 == 0 and is_inside_tree():
 			await get_tree().process_frame
+	# The high-poly models downloaded for this level's objects live in a separate
+	# folder and were never freed by a purge. Same rule as the scenery: only the
+	# ones no other downloaded level also references, so purging one level can
+	# never break another.
+	var hp_excl: Array = []
+	var hp_bytes := 0
+	i = 0
+	var hp_names: Dictionary = refs.duplicate()
+	for k in extra_keys.keys():
+		hp_names[k] = true
+	for nm in hp_names.keys():
+		if others.has(nm): continue
+		var hp := HighpolyStore.model_path(str(nm))
+		if FileAccess.file_exists(hp):
+			hp_excl.append(nm)
+			hp_bytes += maxi(0, _file_size(hp))
+		i += 1
+		if i % 400 == 0 and is_inside_tree():
+			await get_tree().process_frame
 	var mu: Array = await dir_usage_async("%s/%s" % [CACHE, map])
 	return {"excl": excl, "shared": shared, "excl_bytes": excl_bytes,
-		"map_bytes": int(mu[1])}
+		"hp_excl": hp_excl, "hp_bytes": hp_bytes, "map_bytes": int(mu[1])}
 
 # Execute the purge: delete the map's folder + its exclusive shared-cache
 # glbs, scrub them from the props index and the in-RAM caches, and forget the
@@ -2264,6 +2286,20 @@ func purge_map(map: String, info: Dictionary) -> void:
 			await get_tree().process_frame   # keep the editor smooth
 	if idx_changed:
 		_save_props_index(idx)
+	# the high-poly models for this level's objects, and their thumbnails
+	var hp_n := 0
+	for nm in info.get("hp_excl", []):
+		var hp := HighpolyStore.model_path(str(nm))
+		if FileAccess.file_exists(hp):
+			DirAccess.remove_absolute(hp)
+			hp_n += 1
+		var th := HighpolyStore.thumb_path(str(nm))
+		if FileAccess.file_exists(th):
+			DirAccess.remove_absolute(th)
+		if hp_n % 256 == 0 and is_inside_tree():
+			await get_tree().process_frame
+	if hp_n > 0:
+		Log.info("Purge %s: removed %d high-poly model(s) no other level uses" % [map, hp_n])
 	_rm_dir_recursive("%s/%s" % [CACHE, map])
 	_session_checked.erase(map)
 	_props_verified.erase(map)

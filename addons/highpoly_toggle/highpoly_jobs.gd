@@ -23,10 +23,28 @@ var _ratio := 0.0
 var _completed := 0             # finished so far in this run of work
 var _batch := 0                 # how many the run started out with
 var _next_id := 0
+# Long work that is not a download — building the scenery meshes, for one. It
+# shows on the same bar, because from the outside "it is working on my level"
+# is one idea, and a second bar elsewhere in the panel just splits attention.
+# A real download outranks it: transfers can fail, local work only takes time.
+var _act := ""
+var _act_ratio := 0.0
 
-func busy() -> bool: return _active_id != 0 or not _waiting.is_empty()
-func active_label() -> String: return _active
-func ratio() -> float: return _ratio
+func busy() -> bool:
+	return _active_id != 0 or not _waiting.is_empty() or _act != ""
+func active_label() -> String: return _active if _active != "" else _act
+func ratio() -> float: return _ratio if _active_id != 0 else _act_ratio
+
+func set_activity(label: String, done: int, total: int) -> void:
+	_act = label
+	_act_ratio = clampf(float(done) / float(total), 0.0, 1.0) if total > 0 else 0.0
+	changed.emit()
+
+func clear_activity() -> void:
+	if _act == "": return
+	_act = ""
+	_act_ratio = 0.0
+	changed.emit()
 func index() -> int: return _completed + 1        # 1-based, for "1/2"
 func count() -> int: return maxi(_batch, 1)
 func queued() -> int: return _waiting.size()
@@ -86,4 +104,6 @@ func reset() -> void:
 	_ratio = 0.0
 	_completed = 0
 	_batch = 0
+	_act = ""
+	_act_ratio = 0.0
 	changed.emit()
