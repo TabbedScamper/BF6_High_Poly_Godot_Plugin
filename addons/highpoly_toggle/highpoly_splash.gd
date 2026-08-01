@@ -1,65 +1,60 @@
 @tool
 extends Control
 class_name HighpolySplash
-# The boot animation: covers the whole tab, plays once, fades into the dock.
+# The boot sequence, played over the panel's looping video backdrop.
 #
-#   1. the animation fills the panel                     (splash.png + splash.json)
-#   2. the High-Poly Portal logo flashes over it         (logo.png)
-#   3. it settles to black
-#   4. black fades out, revealing the dock beneath
+#   1. waves fill the panel, alone
+#   2. the Portal logo flashes in, holds, fades out
+#   3. the backdrop settles to a dark tint - the video KEEPS LOOPING under it
+#   4. the controls fade in on top
 #
-# Step 4 is why nothing here touches the dock's own alpha: a black overlay fading
-# out over live controls IS the controls fading in from black, and doing it that
-# way means the dock is never left in a half-transparent state if this node dies
-# early for any reason.
+# This node owns only the logo and the timeline. The video and the tint belong
+# to the panel and outlive the sequence, which is what lets the loop carry on
+# once this frees itself: it animates other people's properties and then gets
+# out of the way, rather than being a curtain that has to stay resident.
 #
-# Godot has no GIF importer, so the animation ships as a SPRITE SHEET - the same
-# trick the FX overlay already uses for fire and smoke. tools/make_splash.py
-# turns any .gif into splash.png + splash.json, tools/make_logo.py trims and
-# sizes logo.png. Every asset is optional: missing stages are skipped, and with
-# none present this is a complete no-op, so the plugin behaves exactly as before
-# until the artwork exists.
+# Every asset is optional. No logo skips stage 2, no video skips stage 1, and
+# with neither the panel simply appears - so the plugin still works exactly as
+# before on an install with no artwork.
 #
-# Plays once per editor session, and once more after a plugin update - the two
-# moments where a boot animation is information rather than decoration. A splash
-# on EVERY tab click is charming twice and irritating forever, and this tab gets
-# clicked a lot.
+# Plays once per editor session and once more after a plugin update: the two
+# moments where a boot animation is information rather than decoration. A click
+# anywhere skips straight to the end, because the fourth time you open the panel
+# in a session you want the buttons, not the show.
 
 # preload rather than the global class name: a brand-new class_name is not in
 # the registry until the editor rescans, which breaks on a fresh install
 const Pal = preload("highpoly_theme.gd")
-const SHEET := "res://addons/highpoly_toggle/splash.png"
-const META := "res://addons/highpoly_toggle/splash.json"
 const LOGO := "res://addons/highpoly_toggle/logo.png"
 const PLUGIN_CFG := "res://addons/highpoly_toggle/plugin.cfg"
-# outside res:// so it survives plugin updates - the updater overwrites the addon
+# outside res:// so it survives the plugin update that triggers it
 const SEEN_PATH := "user://highpoly_splash_seen.txt"
 
-const LOGO_IN := 0.12          # snap in - it is a flash, not a title card
-const LOGO_HOLD := 0.60
-const LOGO_OUT := 0.35
-const BLACK_HOLD := 0.18
-const FADE_SECS := 0.45
-const LOGO_MAX_FILL := 0.7     # logo never touches the panel edges
+const WAVES_SECS := 1.30       # backdrop alone before the logo arrives
+const LOGO_IN := 0.30
+const LOGO_HOLD := 1.50        # "flash it, then fade it out after a few seconds"
+const LOGO_OUT := 0.70
+const SETTLE_SECS := 1.20      # backdrop dimming: slow, it is the mood change
+const UI_DELAY := 0.30         # controls start arriving before the dim finishes
+const UI_SECS := 0.85
+const LOGO_MAX_FILL := 0.62    # the logo never touches the panel edges
 
-enum { S_GIF, S_LOGO, S_BLACK, S_REVEAL }
+enum { S_WAVES, S_LOGO, S_SETTLE }
 
 static var _played_this_session := false
 
-var _tex: Texture2D = null
+# set by the panel before setup(); this node animates them and then frees itself
+var tint: ColorRect = null
+var ui: Control = null
+var tint_max := 0.72
+
 var _logo: Texture2D = null
-var _cols := 1
-var _rows := 1
-var _frames := 1
-var _fps := 20.0
-var _gif_dur := 0.0
-var _stage := S_GIF
+var _has_video := false
+var _stage := S_WAVES
 var _t := 0.0
 
 static func available() -> bool:
-	# either asset alone is a valid show
-	return (FileAccess.file_exists(SHEET) and FileAccess.file_exists(META)) \
-		or FileAccess.file_exists(LOGO)
+	return FileAccess.file_exists(LOGO)
 
 static func _version() -> String:
 	var cf := ConfigFile.new()
@@ -69,7 +64,6 @@ static func _version() -> String:
 # Is there anything to play right now? The caller instantiates — a script cannot
 # refer to its own class_name before the editor has registered it.
 static func should_play(force := false) -> bool:
-	if not available(): return false
 	var v := _version()
 	var seen := ""
 	if FileAccess.file_exists(SEEN_PATH):
@@ -82,41 +76,41 @@ static func should_play(force := false) -> bool:
 		if f: f.store_string(v)
 	return true
 
-# Returns false when no artwork could be decoded; caller should discard.
-func setup() -> bool:
-	# decoded directly rather than through the import system, so assets can be
-	# dropped in and replaced without a reimport (same reason as the map tiles)
-	if FileAccess.file_exists(SHEET) and FileAccess.file_exists(META):
-		var img := Image.load_from_file(ProjectSettings.globalize_path(SHEET))
-		if img != null:
-			_tex = ImageTexture.create_from_image(img)
-			var j: Variant = JSON.parse_string(FileAccess.get_file_as_string(META))
-			if j is Dictionary:
-				var d: Dictionary = j
-				_cols = maxi(1, int(d.get("cols", 1)))
-				_rows = maxi(1, int(d.get("rows", 1)))
-				_frames = maxi(1, int(d.get("frames", _cols * _rows)))
-				_fps = maxf(1.0, float(d.get("fps", 20.0)))
-			_gif_dur = float(_frames) / _fps
+# has_video tells the sequence whether stage 1 has anything to show.
+# Returns false when there is nothing to play at all; caller should discard.
+func setup(has_video: bool) -> bool:
+	_has_video = has_video
 	if FileAccess.file_exists(LOGO):
+		# decoded directly rather than through the import system, so artwork can
+		# be dropped in and replaced without a reimport (as with the map tiles)
 		var li := Image.load_from_file(ProjectSettings.globalize_path(LOGO))
 		if li != null: _logo = ImageTexture.create_from_image(li)
-	if _tex == null and _logo == null: return false
-	_stage = S_GIF
+	if not _has_video and _logo == null: return false
+	if tint: tint.color.a = 0.0
+	if ui: ui.modulate.a = 0.0
+	_stage = S_WAVES
 	_skip_empty()
 	return true
 
 func _init() -> void:
 	set_anchors_preset(Control.PRESET_FULL_RECT)
-	mouse_filter = Control.MOUSE_FILTER_STOP     # swallow clicks while playing
-	z_index = 100
+	mouse_filter = Control.MOUSE_FILTER_STOP     # swallow clicks, and catch the skip
 	set_process(true)
 
-# Step past any stage whose artwork is missing, so a logo-only or animation-only
-# install still gets a clean sequence rather than dead air.
+func _gui_input(e: InputEvent) -> void:
+	if e is InputEventMouseButton and (e as InputEventMouseButton).pressed:
+		_finish()
+
+# Land on the end state directly. Whatever stage we were in, the panel must be
+# left exactly as a completed sequence would leave it.
+func _finish() -> void:
+	if tint: tint.color.a = tint_max
+	if ui: ui.modulate.a = 1.0
+	queue_free()
+
 func _skip_empty() -> void:
-	if _stage == S_GIF and _tex == null: _stage = S_LOGO
-	if _stage == S_LOGO and _logo == null: _stage = S_BLACK
+	if _stage == S_WAVES and not _has_video: _stage = S_LOGO
+	if _stage == S_LOGO and _logo == null: _stage = S_SETTLE
 
 func _advance() -> void:
 	_stage += 1
@@ -126,53 +120,30 @@ func _advance() -> void:
 func _process(delta: float) -> void:
 	_t += delta
 	match _stage:
-		S_GIF:
-			if _t >= _gif_dur: _advance()
-			queue_redraw()
+		S_WAVES:
+			if _t >= WAVES_SECS: _advance()
 		S_LOGO:
 			if _t >= LOGO_IN + LOGO_HOLD + LOGO_OUT: _advance()
 			queue_redraw()
-		S_BLACK:
-			if _t >= BLACK_HOLD: _advance()
-		S_REVEAL:
-			modulate.a = clampf(1.0 - _t / FADE_SECS, 0.0, 1.0)
-			if modulate.a <= 0.0:
-				queue_free()      # dock is fully revealed; stop costing anything
-			else:
-				queue_redraw()
+		S_SETTLE:
+			if tint:
+				tint.color.a = tint_max * clampf(_t / SETTLE_SECS, 0.0, 1.0)
+			if ui:
+				ui.modulate.a = clampf((_t - UI_DELAY) / UI_SECS, 0.0, 1.0)
+			if _t >= maxf(SETTLE_SECS, UI_DELAY + UI_SECS):
+				_finish()
 
 func _logo_alpha() -> float:
 	if _t < LOGO_IN: return _t / LOGO_IN
 	if _t < LOGO_IN + LOGO_HOLD: return 1.0
 	return clampf(1.0 - (_t - LOGO_IN - LOGO_HOLD) / LOGO_OUT, 0.0, 1.0)
 
-# How far we are into settling on black. The backdrop starts as the palette's own
-# deep tone and darkens as the logo leaves, so "fade to black" is one continuous
-# move rather than a cut.
-func _black_mix() -> float:
-	match _stage:
-		S_GIF: return 0.0
-		S_LOGO: return clampf((_t - LOGO_IN - LOGO_HOLD) / LOGO_OUT, 0.0, 1.0)
-		_: return 1.0
-
-# contain: keep the artwork's aspect, centred, never cropped or stretched
-func _fit(w: float, h: float, fill: float) -> Rect2:
-	var s := minf(size.x * fill / w, size.y * fill / h)
-	var d := Vector2(w, h) * s
-	return Rect2((size - d) * 0.5, d)
-
 func _draw() -> void:
-	# solid backdrop so the dock never shows through mid-animation
-	draw_rect(Rect2(Vector2.ZERO, size),
-		Pal.col("splash_bg").lerp(Color.BLACK, _black_mix()))
-	if _stage == S_GIF and _tex != null:
-		var f := clampi(int(_t * _fps), 0, _frames - 1)
-		var fw := float(_tex.get_width()) / float(_cols)
-		var fh := float(_tex.get_height()) / float(_rows)
-		@warning_ignore("integer_division")
-		var src := Rect2(float(f % _cols) * fw, float(f / _cols) * fh, fw, fh)
-		draw_texture_rect_region(_tex, _fit(fw, fh, 1.0), src)
-	elif _stage == S_LOGO and _logo != null:
-		draw_texture_rect(_logo,
-			_fit(float(_logo.get_width()), float(_logo.get_height()), LOGO_MAX_FILL),
-			false, Color(1, 1, 1, _logo_alpha()))
+	if _stage != S_LOGO or _logo == null: return
+	# contain: keep the artwork's aspect, centred, never cropped or stretched
+	var w := float(_logo.get_width())
+	var h := float(_logo.get_height())
+	var s := minf(size.x * LOGO_MAX_FILL / w, size.y * LOGO_MAX_FILL / h)
+	var d := Vector2(w, h) * s
+	draw_texture_rect(_logo, Rect2((size - d) * 0.5, d), false,
+		Color(1, 1, 1, _logo_alpha()))
