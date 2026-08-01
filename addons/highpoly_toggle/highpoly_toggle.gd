@@ -137,20 +137,28 @@ func _enter_tree() -> void:
 	job_what.add_theme_font_size_override("font_size", Theme_.fs(11))
 	job_what.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	job_row.add_child(job_what)
-	var job_line := HBoxContainer.new()
-	job_row.add_child(job_line)
 	job_bar = ProgressBar.new()
 	job_bar.min_value = 0.0
 	job_bar.max_value = 1.0
-	job_bar.show_percentage = false
-	job_bar.custom_minimum_size = Vector2(0, 10)
-	job_bar.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	job_bar.show_percentage = false      # it cannot show "45%  1/2", so we draw it
+	job_bar.custom_minimum_size = Vector2(0, 24)
 	Theme_.bar(job_bar)
-	job_line.add_child(job_bar)
+	job_row.add_child(job_bar)           # no row: the bar spans the panel
+
+	# The reading sits ON the bar. As a child of the bar it is drawn over the
+	# fill, and full-rect anchors keep it centred at any panel width.
 	job_pct = Label.new()
-	job_pct.custom_minimum_size = Vector2(72, 0)
-	job_pct.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	job_line.add_child(job_pct)
+	job_pct.set_anchors_preset(Control.PRESET_FULL_RECT)
+	job_pct.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	job_pct.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	job_pct.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	job_pct.add_theme_font_size_override("font_size", Theme_.fs(11))
+	job_pct.add_theme_color_override("font_color", Color.WHITE)
+	# outlined, because the text crosses the boundary between the filled part of
+	# the bar and the empty part and has to stay readable over both
+	job_pct.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.75))
+	job_pct.add_theme_constant_override("outline_size", 4)
+	job_bar.add_child(job_pct)
 	jobs.changed.connect(_refresh_job_bar)
 
 	# ---- sync progress (the whole "model management UI" in 1.5) ----
