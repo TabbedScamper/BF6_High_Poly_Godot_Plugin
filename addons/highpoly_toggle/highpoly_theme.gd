@@ -125,6 +125,17 @@ static func chip(text: String, tip := "") -> Button:
 	b.theme_type_variation = "HighpolyChip"
 	return b
 
+# The hover-description box. Nearly opaque: it sits over the video, and a
+# translucent panel with waves moving behind the text is unreadable.
+static func tip_box() -> StyleBoxFlat:
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = col("splash_bg")
+	sb.bg_color.a = 0.97
+	sb.border_color = col("accent")
+	sb.set_border_width_all(1)
+	sb.set_corner_radius_all(3)
+	return sb
+
 # The panel's bright outline. draw_center off so the video shows through.
 static func panel_border() -> StyleBoxFlat:
 	var sb := StyleBoxFlat.new()
