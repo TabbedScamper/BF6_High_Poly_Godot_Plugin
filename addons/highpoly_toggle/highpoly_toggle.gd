@@ -7,8 +7,15 @@ extends EditorPlugin
 # map data re-download themselves. The dock shows one progress bar + pause.
 
 var dock: VBoxContainer
-var dock_scroll: ScrollContainer   # dock wrapper: collapses the VBox's huge min height
-var dock_root: Control             # docked tab root: scroller + the boot overlay
+var dock_scroll: ScrollContainer   # panel wrapper: collapses the VBox's huge min height
+var dock_root: Control             # panel root: scroller + the boot overlay
+var win: Window                    # the floating tool panel itself
+var tools_btn: Button              # "High-Poly Tools" in the 3D viewport toolbar
+var _win_rect: Rect2i              # remembered across sessions; zero = never opened
+var video: VideoStreamPlayer       # looping backdrop; paused whenever the panel is shut
+var tint: ColorRect                # darkens the backdrop behind the controls
+var border: Panel                  # the outline
+var _vid_size := Vector2(480, 800) # encoded video size, for cover-scaling
 var lbl: Label
 var mode_btn: OptionButton
 var ovr_chk: CheckBox          # per-selection detail override (live, contextual label)
@@ -478,16 +485,21 @@ func _enter_tree() -> void:
 	dock.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	dock.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	dock_scroll.add_child(dock)
-	# The docked control is a plain Control holding the scroller, so the boot
-	# animation can be a SIBLING covering the whole tab. Inside the scroller it
-	# would be sized and clipped by the dock's content instead of covering it.
+	# The panel root is a plain Control holding the scroller, so the boot
+	# animation can be a SIBLING covering the whole panel. Inside the scroller it
+	# would be sized and clipped by the panel's content instead of covering it.
 	dock_root = Control.new()
-	dock_root.name = "High-Poly"        # the tab title
+	dock_root.name = "High-Poly"
+	dock_root.set_anchors_preset(Control.PRESET_FULL_RECT)
+	# white text on translucent white masks, over the darkened loop; set on the
+	# panel root only, so anything undefined still falls through to the editor
+	dock_root.theme = Theme_.build_ui_theme()
 	dock_root.add_child(dock_scroll)
-	add_control_to_dock(DOCK_SLOT_RIGHT_UL, dock_root)
-	# playing on every tab click would be charming twice and irritating forever
-	dock_root.visibility_changed.connect(_maybe_play_splash)
-	_maybe_play_splash.call_deferred()
+	_build_backdrop()
+	_build_tool_window()
+	# playing on every open would be charming twice and irritating forever
+	win.visibility_changed.connect(_maybe_play_splash)
+	_first_run_open.call_deferred()
 	_auto_perf_settings.call_deferred()
 	_check_plugin_update.call_deferred()
 	_refresh_storage.call_deferred()   # async walk; mapctx exists by deferred time
@@ -583,10 +595,14 @@ func _exit_tree() -> void:
 		LightingScript.clear(r)                          # frees _GAME_LIGHTING
 		HighpolyLib.apply(r, HighpolyLib.Tier.LOW, true)   # hide hi-poly overlays, show proxies
 	HighpolyStore.save()
-	if job_box: job_box.clear()   # no orphaned rows if a fetch outlives the dock
-	if dock_root:
-		remove_control_from_docks(dock_root)
-		dock_root.queue_free()     # frees the scroller and the inner VBox with it
+	if job_box: job_box.clear()   # no orphaned rows if a fetch outlives the panel
+	if tools_btn:
+		remove_control_from_container(CONTAINER_SPATIAL_EDITOR_MENU, tools_btn)
+		tools_btn.queue_free()
+		tools_btn = null
+	if win:
+		win.queue_free()           # frees the panel root, scroller and VBox with it
+		win = null
 		dock_root = null
 		dock_scroll = null
 
@@ -748,15 +764,174 @@ func _check_updates_now() -> void:
 			lbl.text = "Map objects still building — check again when it finishes"
 	_refresh_storage()   # disk usage may have shifted (downloads / re-bake)
 
+# ---------- the floating tool panel ----------
+# The tools live in their own window rather than an editor dock. Level building
+# needs the 3D viewport wide, and a right-hand dock permanently costs ~400px of
+# it; a panel you open, move to a second monitor and close again costs nothing
+# when it is shut. The launcher sits in the 3D viewport toolbar beside the SDK's
+# own "Apply Texture" button, so both plugins are found in the same place.
+const WIN_SIZE := Vector2i(440, 900)
+const WIN_MIN := Vector2i(340, 380)
+const WAVES := "res://addons/highpoly_toggle/waves.ogv"
+const WAVES_META := "res://addons/highpoly_toggle/waves.json"
+const TINT_DEFAULT := 0.72     # how far the backdrop dims once the controls are up
+
+# The panel is layered back-to-front:
+#   bg      opaque, so the panel is legible with no video at all
+#   video   the loop, cover-scaled and clipped
+#   tint    darkens the loop; the boot sequence animates this 0 -> the palette's tint
+#   scroll  the controls; the boot sequence fades this in
+#   boot    the logo flash, on top of everything, then gone
+#   border  the outline, always last so nothing paints over it
+func _build_backdrop() -> void:
+	var bg := ColorRect.new()
+	bg.color = Theme_.col("splash_bg")
+	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
+	bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	dock_root.add_child(bg)
+	dock_root.move_child(bg, 0)
+
+	if FileAccess.file_exists(WAVES):
+		# built directly instead of load()ed: an editor plugin's assets can be
+		# dropped in or replaced without waiting for a reimport, same as the
+		# logo and the map tiles
+		var vs := VideoStreamTheora.new()
+		vs.file = WAVES
+		video = VideoStreamPlayer.new()
+		video.stream = vs
+		video.expand = true          # fills the node; _fit_video sizes the node
+		video.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		if "loop" in video:
+			video.loop = true
+		else:
+			video.finished.connect(func(): if video: video.play())
+		dock_root.add_child(video)
+		dock_root.move_child(video, 1)
+		var j: Variant = JSON.parse_string(FileAccess.get_file_as_string(WAVES_META)) \
+			if FileAccess.file_exists(WAVES_META) else null
+		if j is Dictionary:
+			_vid_size = Vector2(float((j as Dictionary).get("width", 480)),
+				float((j as Dictionary).get("height", 800)))
+
+	tint = ColorRect.new()
+	tint.color = Color(0, 0, 0, Theme_.num("tint", TINT_DEFAULT))
+	tint.set_anchors_preset(Control.PRESET_FULL_RECT)
+	tint.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	dock_root.add_child(tint)
+	dock_root.move_child(tint, 2)
+
+	border = Panel.new()
+	border.set_anchors_preset(Control.PRESET_FULL_RECT)
+	border.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	border.add_theme_stylebox_override("panel", Theme_.panel_border())
+	dock_root.add_child(border)
+
+	dock_root.clip_contents = true      # the cover-scaled video overhangs
+	dock_root.resized.connect(_fit_video)
+	_fit_video()
+
+# Cover, not contain: scale until the video covers the panel and let the excess
+# spill past the edges. Letterboxing a backdrop would put bars inside the border.
+func _fit_video() -> void:
+	if video == null or dock_root == null: return
+	if _vid_size.x <= 0.0 or _vid_size.y <= 0.0: return
+	var s := maxf(dock_root.size.x / _vid_size.x, dock_root.size.y / _vid_size.y)
+	video.size = _vid_size * s
+	video.position = (dock_root.size - video.size) * 0.5
+
+func _build_tool_window() -> void:
+	win = Window.new()
+	win.title = "High-Poly Tools"
+	win.min_size = WIN_MIN
+	win.size = WIN_SIZE
+	win.transient = true       # floats above the editor instead of hiding behind it
+	win.exclusive = false      # ...but never blocks it: keep building while it is open
+	win.hide()
+	win.close_requested.connect(_close_tools)
+	EditorInterface.get_base_control().add_child(win)
+	win.add_child(dock_root)
+
+	tools_btn = Button.new()
+	tools_btn.text = "High-Poly Tools"
+	tools_btn.flat = true
+	tools_btn.toggle_mode = true      # the button IS the panel's open/closed state
+	tools_btn.tooltip_text = "Open the High-Poly preview tools"
+	tools_btn.toggled.connect(_set_tools_visible)
+	add_control_to_container(CONTAINER_SPATIAL_EDITOR_MENU, tools_btn)
+
+func _set_tools_visible(on: bool) -> void:
+	if win == null: return
+	if not on:
+		if win.visible: _win_rect = Rect2i(win.position, win.size)
+		win.hide()
+		# a closed panel must not keep a video decoder running: this plugin
+		# exists to buy back frame time, not to spend it on its own scenery
+		if video: video.paused = true
+		return
+	if video:
+		if video.is_playing(): video.paused = false
+		else: video.play()
+	if _win_rect.size.x > 0 and _usable(_win_rect):
+		win.position = _win_rect.position
+		win.size = _win_rect.size
+		win.show()
+	else:
+		win.popup_centered(WIN_SIZE)
+
+func _close_tools() -> void:
+	# closing from the window's own X must not re-enter _set_tools_visible
+	if tools_btn: tools_btn.set_pressed_no_signal(false)
+	if win and win.visible: _win_rect = Rect2i(win.position, win.size)
+	if win: win.hide()
+	if video: video.paused = true
+
+# A remembered position is only good while that monitor still exists. Unplug a
+# second screen and a restored panel would open onto coordinates nothing can
+# reach, looking exactly like the button doing nothing.
+func _usable(r: Rect2i) -> bool:
+	var probe := r.position + Vector2i(mini(40, r.size.x / 2), 10)
+	for i in range(DisplayServer.get_screen_count()):
+		if DisplayServer.screen_get_usable_rect(i).has_point(probe): return true
+	return false
+
+# Open once on a project that has never seen the plugin, so the panel introduces
+# itself instead of hiding behind a button nobody knows to press. After that the
+# saved layout decides.
+func _first_run_open() -> void:
+	var es := EditorInterface.get_editor_settings()
+	if bool(es.get_project_metadata("highpoly", "tools_seen", false)): return
+	es.set_project_metadata("highpoly", "tools_seen", true)
+	if tools_btn: tools_btn.button_pressed = true
+
+# Godot hands plugins a slice of the editor layout file to persist into, so the
+# panel comes back where it was left — including whether it was open.
+func _get_window_layout(cfg: ConfigFile) -> void:
+	if win == null: return
+	if win.visible: _win_rect = Rect2i(win.position, win.size)
+	cfg.set_value("HighPoly", "win_rect", _win_rect)
+	cfg.set_value("HighPoly", "win_open", win.visible)
+
+func _set_window_layout(cfg: ConfigFile) -> void:
+	_win_rect = cfg.get_value("HighPoly", "win_rect", Rect2i())
+	if tools_btn and bool(cfg.get_value("HighPoly", "win_open", false)):
+		tools_btn.button_pressed = true      # fires _set_tools_visible
+
 # Boot animation, if the artwork exists and it hasn't run yet this session.
 func _maybe_play_splash() -> void:
-	if dock_root == null or not dock_root.is_visible_in_tree(): return
+	if win == null or not win.visible or dock_root == null: return
 	if not SplashScript.should_play(): return
 	var s = SplashScript.new()
-	if s.setup():
+	s.tint = tint
+	s.ui = dock_scroll
+	s.tint_max = Theme_.num("tint", TINT_DEFAULT)
+	if s.setup(video != null):
 		dock_root.add_child(s)
+		dock_root.move_child(s, dock_root.get_child_count() - 2)   # under the border
 	else:
+		# nothing to play: make sure the panel is left in its finished state
 		s.free()
+		if tint: tint.color.a = Theme_.num("tint", TINT_DEFAULT)
+		if dock_scroll: dock_scroll.modulate.a = 1.0
 
 func _update_progress() -> void:
 	if sync == null: return

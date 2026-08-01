@@ -1,8 +1,9 @@
 {
-  "name": "Season 4 — Pacific Front (interim)",
-  "note": "Interim naval palette for BF6 Season 4: Pacific Front (21 Jul 2026) — ocean blue accent, pale foam-white headings, deep-water backdrop dark enough to read as black for the boot fade. NOT sampled from official art. Run tools/palette_from_image.py over the real season logo or key art to replace it. This file is data: a colour change needs no plugin release.",
-  "accent": "#37b6e6",
+  "name": "Season 4 — Pacific Front",
+  "note": "Naval palette for BF6 Season 4: Pacific Front (21 Jul 2026). accent is the panel outline, section headings and progress fills; splash_bg is the opaque floor under the video, and what the panel falls back to when no video is installed. Controls themselves are white-on-translucent-white and take no colour from here. This file is data: a colour change needs no plugin release.",
+  "tint": 0.72,
+  "accent": "#3ab5ff",
   "accent_dim": "#1c6d8f",
   "heading": "#cfe9f5",
-  "splash_bg": "#04141f"
+  "splash_bg": "#04121c"
 }
