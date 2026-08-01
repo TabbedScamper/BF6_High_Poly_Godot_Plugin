@@ -578,9 +578,10 @@ func _enter_tree() -> void:
 		OS.shell_show_in_file_manager(p))
 	log_row.add_child(save_log)
 	var check_out := Button.new()
-	check_out.text = "Find outline setting"
+	check_out.text = "Check outlines"
 	check_out.tooltip_text = "Lists every blue debug colour Godot can draw with, and what this level is built from. Use it if you see outlines around objects that are too far away to be drawn — the setting that names a blue colour is the one drawing them."
 	check_out.pressed.connect(func():
+		Log.info("Outlines: " + PlacedCull.status())
 		Log.info("Blue debug colours:
            " + PlacedCull.blue_debug_settings())
 		Log.info("Level is made of: " + PlacedCull.class_census(
@@ -705,6 +706,9 @@ func _enter_tree() -> void:
 		if _cam3:
 			LightingScript.tick_lights(EditorInterface.get_edited_scene_root(),
 					_cam3.global_position)
+			# the collision outline of a culled object goes with the object,
+			# instead of being left standing in empty space
+			PlacedCull.tick_gizmos(_cam3.global_position)
 		# a CANCELLED scenery build (Extended Terrain switched off, or a new
 		# apply superseding it) ends without a build_finished — without this the
 		# bar would sit there at whatever percent it had reached
