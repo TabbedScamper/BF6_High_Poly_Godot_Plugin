@@ -9,6 +9,15 @@ class_name HighpolyUpdater
 const SETTING := "highpoly/manifest_url"
 const DEFAULT_MANIFEST := "https://pub-45114dae448e4a059f488662e3d47b19.r2.dev/plugin-manifest.json"
 
+# Godot's HTTPRequest.timeout defaults to 0 = wait forever. A connection that is
+# accepted and then goes quiet (dropped wifi, a NAT that forgets the flow, r2.dev
+# holding a throttled socket) never fires request_completed, so `await` never
+# returns and the caller is wedged for the rest of the session. Every request
+# here gets a deadline; a timeout surfaces as RESULT_TIMEOUT, which the retry
+# loops below already treat as a normal retryable failure.
+const FETCH_TIMEOUT := 120.0     # a single model GLB / small payload
+const HEAD_TIMEOUT := 30.0       # metadata only
+
 static func manifest_url() -> String:
 	if ProjectSettings.has_setting(SETTING):
 		return str(ProjectSettings.get_setting(SETTING))
@@ -17,6 +26,7 @@ static func manifest_url() -> String:
 # GET with retry/backoff — the public r2.dev host throttles rapid bursts, so a
 # single failed attempt (403/429/5xx) is usually transient.
 static func _fetch(http: HTTPRequest, url: String) -> PackedByteArray:
+	http.timeout = FETCH_TIMEOUT
 	for attempt in range(4):
 		if attempt > 0:
 			# 0.4s, 0.8s, 1.6s between retries
@@ -32,6 +42,7 @@ static func _fetch(http: HTTPRequest, url: String) -> PackedByteArray:
 # HEAD request returning the response ETag ("" on failure) — used by map
 # context to detect republished map packages without downloading them.
 static func remote_etag(http: HTTPRequest, url: String) -> String:
+	http.timeout = HEAD_TIMEOUT
 	for attempt in range(3):
 		if attempt > 0:
 			await http.get_tree().create_timer(0.4 * pow(2, attempt - 1)).timeout
