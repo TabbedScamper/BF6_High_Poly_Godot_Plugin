@@ -703,10 +703,12 @@ func _enter_tree() -> void:
 				# the outlines do not go away: whether the editor gave us any
 				# gizmo to hide in the first place.
 				_giz_logged = true
-				Log.info("Gizmo culling active: %d placed object(s) tracked, %d gizmo(s) found"
+				# says WHAT it tracked, so a log cannot be mistaken for one from
+				# a build that tracked something else
+				Log.info("Gizmo culling active: %d culling mesh(es) tracked, %d gizmo(s) hidden"
 					% [PlacedCull.managed_count(), PlacedCull.gizmos_seen()])
 				if PlacedCull.gizmos_seen() == 0:
-					Log.warn("No editor gizmos found on the placed objects — the "
+					Log.warn("No editor gizmos found on the culling meshes — the "
 						+ "outline you see is drawn by something else, and hiding "
 						+ "gizmos cannot remove it")
 					# name the carrier rather than guess at it: this walks the
