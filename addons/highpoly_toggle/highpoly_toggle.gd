@@ -35,6 +35,7 @@ const LightingScript = preload("highpoly_lighting.gd")
 const PlacedCull = preload("highpoly_placedcull.gd")
 const TipsScript = preload("highpoly_tips.gd")
 const JobsScript = preload("highpoly_jobs.gd")
+const SdkHide = preload("highpoly_sdkhide.gd")
 const Log = preload("highpoly_log.gd")
 const SectionScript = preload("highpoly_section.gd")
 const SplashScript = preload("highpoly_splash.gd")
@@ -59,7 +60,6 @@ var mapctx_maplights: Button # sub-toggle: the map's mined light entities
 var mapctx_optimize: Button  # distance-cull the user's PLACED objects (their custom map content)
 var mapctx_variant_row: HBoxContainer  # "Variant" gamemode dropdown (visible with objects)
 var mapctx_variant: OptionButton
-var mapctx_bar: ProgressBar    # background props-build progress (hidden when idle)
 var mapctx_timer: Timer
 # generation counter for Map Context toggles: every click supersedes the
 # in-flight handler (which may be awaiting a long download). A superseded
@@ -67,7 +67,6 @@ var mapctx_timer: Timer
 var _mapctx_gen := 0
 var update_btn: Button         # "Update Plugin to vX.Y.Z" — hidden until a newer version exists
 var banner: Label              # legacy-mode notice ("reorganization pending")
-var progress: ProgressBar
 var sync_lbl: Label
 var jobs: Node                 # HighpolyJobs: the download queue
 var job_row: VBoxContainer     # the one universal bar, in the Check-for-Updates slot
@@ -161,13 +160,7 @@ func _enter_tree() -> void:
 	job_bar.add_child(job_pct)
 	jobs.changed.connect(_refresh_job_bar)
 
-	# ---- sync progress (the whole "model management UI" in 1.5) ----
-	progress = ProgressBar.new()
-	progress.min_value = 0.0
-	progress.max_value = 1.0
-	progress.visible = false
-	Theme_.bar(progress)
-	dock.add_child(progress)
+	# (the model sync has no bar of its own — it reports on the universal bar)
 	sync_lbl = Label.new()
 	sync_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	sync_lbl.add_theme_font_size_override("font_size", Theme_.fs(12))
@@ -269,12 +262,20 @@ func _enter_tree() -> void:
 	mapctx_on = Theme_.chip("Extended Terrain")
 	mapctx_on.tooltip_text = "Adds the real terrain that surrounds the play area — the ground, hills and skyline all around the play area — so you can see how your build sits in the world. Preview only: none of it is saved into your map or included when you export."
 	mapctx_on.toggled.connect(func(v: bool):
+		var r0 := EditorInterface.get_edited_scene_root()
+		# Scenery rides the Range slider, so turning the terrain on has to bring
+		# it along. The slider is BUILT at 800 without emitting value_changed,
+		# so without this nothing ever switches the scenery on.
+		var want_objs: bool = v and mapctx_range != null and int(mapctx_range.value) > 0
+		if mapctx_objects: mapctx_objects.set_pressed_no_signal(want_objs)
+		_variant_row_update(want_objs)
+		# the SDK's own terrain slab sits exactly where ours goes
+		_sdk_terrain_hidden(v)
 		# fast show/hide of the built terrain/backdrop/water layers — the full
 		# rebuild also regenerated every map object. Falls back to the full
 		# apply when nothing is built yet or the detail mode changed.
-		if mapctx.set_context_shown(EditorInterface.get_edited_scene_root(),
-				v, _mapctx_tex_mode()):
-			lbl.text = "Map context " + ("shown" if v else "hidden")
+		if mapctx.set_context_shown(r0, v, _mapctx_tex_mode()) 				and mapctx.set_objects_shown(r0, want_objs, _mapctx_tex_mode()):
+			lbl.text = "Extended Terrain " + ("on" if v else "off")
 			_save_mapctx_state()
 			return
 		_mapctx_changed())
@@ -331,13 +332,6 @@ func _enter_tree() -> void:
 	# background props-build progress: the objects layer builds incrementally
 	# (a few meshes per frame, nearest first) so the editor never freezes —
 	# this bar tracks meshes built / total, same style as the download bar
-	mapctx_bar = ProgressBar.new()
-	mapctx_bar.min_value = 0.0
-	mapctx_bar.max_value = 1.0
-	mapctx_bar.visible = false
-	Theme_.bar(mapctx_bar)
-	mapctx_bar.tooltip_text = "Building map objects in the background (nearest first)…"
-	host.add_child(mapctx_bar)
 
 	# (no "Textures" checkbox any more — the overlay's look follows the Detail
 	# Mode dropdown: Low-Poly = flat SDK orange, High-Poly no textures = grey
@@ -651,11 +645,15 @@ func _enter_tree() -> void:
 	# status label + a real progress bar (meshes built / total)
 	mapctx.status_label = lbl
 	mapctx.build_progress.connect(func(done: int, total: int):
-		mapctx_bar.max_value = float(maxi(total, 1))
-		mapctx_bar.value = float(done)
-		mapctx_bar.visible = done < total)
+		# same bar as the downloads: building the scenery is the second half of
+		# "getting the level in", and it was the one long job with its own bar
+		# somewhere else in the panel
+		if done < total:
+			jobs.set_activity("Building the level's scenery", done, total)
+		else:
+			jobs.clear_activity())
 	mapctx.build_finished.connect(func(_built: int):
-		mapctx_bar.visible = false
+		jobs.clear_activity()
 		# sidecar-cached meshes load with the shader params they were SAVED
 		# with — push the current Configure Shaders prefs over the fresh build
 		var _sr := EditorInterface.get_edited_scene_root()
@@ -693,10 +691,12 @@ func _enter_tree() -> void:
 		if _cam3:
 			LightingScript.tick_lights(EditorInterface.get_edited_scene_root(),
 					_cam3.global_position)
-		# a CANCELLED props build (Map Context toggled off / new apply) ends
-		# without a build_finished — hide the stale bar
-		if mapctx_bar.visible and mapctx and mapctx.is_build_done():
-			mapctx_bar.visible = false
+		# a CANCELLED scenery build (Extended Terrain switched off, or a new
+		# apply superseding it) ends without a build_finished — without this the
+		# bar would sit there at whatever percent it had reached
+		if mapctx and mapctx.is_build_done() \
+				and jobs.active_label() == "Building the level's scenery":
+			jobs.clear_activity()
 		# collision overlays follow objects the user moves/rescales
 		if col_chk.button_pressed or HighpolyCollision.has_isolation():
 			HighpolyCollision.refresh_transforms())
@@ -729,6 +729,7 @@ func _exit_tree() -> void:
 	if r != null:
 		HighpolyCollision.release_isolation(HighpolyLib.Tier.LOW, true, false)
 		HighpolyCollision.apply(r, false)                  # frees collision overlays
+		SdkHide.restore_all(r)                             # SDK assets/terrain back as they were
 		if mapctx: mapctx.apply(r, false, false, false)    # frees _MAP_CONTEXT + maptile
 		LightingScript.clear(r)                          # frees _GAME_LIGHTING
 		HighpolyLib.apply(r, HighpolyLib.Tier.LOW, true)   # hide hi-poly overlays, show proxies
@@ -964,6 +965,27 @@ func _refresh_log_count() -> void:
 	log_count.add_theme_color_override("font_color",
 		Color(1.0, 0.42, 0.37) if e > 0 else Color(1.0, 0.75, 0.38))
 
+# The SDK ships a merged low-poly mesh of the level's buildings and a slab of
+# its terrain, both sitting exactly where our versions go. Ours replaces them
+# while it is on; theirs comes back — as they left it — when it is off.
+func _sdk_assets_hidden(hide: bool) -> void:
+	var r := EditorInterface.get_edited_scene_root()
+	if r == null: return
+	var n: int = SdkHide.set_hidden(r, SdkHide.ASSETS_SUFFIX, hide)
+	if n > 0:
+		Log.info("SDK level assets %s (%d node%s)"
+			% ["hidden — High-Poly is showing instead" if hide else "restored",
+				n, "" if n == 1 else "s"])
+
+func _sdk_terrain_hidden(hide: bool) -> void:
+	var r := EditorInterface.get_edited_scene_root()
+	if r == null: return
+	var n: int = SdkHide.set_hidden(r, SdkHide.TERRAIN_SUFFIX, hide)
+	if n > 0:
+		Log.info("SDK terrain %s (%d node%s)"
+			% ["hidden — Extended Terrain is showing instead" if hide else "restored",
+				n, "" if n == 1 else "s"])
+
 func _refresh_job_bar() -> void:
 	if jobs == null or job_row == null: return
 	var busy: bool = jobs.busy()
@@ -973,7 +995,8 @@ func _refresh_job_bar() -> void:
 	job_bar.value = jobs.ratio()
 	job_what.text = jobs.active_label()
 	var pct := "%d%%" % int(round(jobs.ratio() * 100.0))
-	job_pct.text = pct if jobs.count() <= 1 else "%s  %d/%d" % [pct, jobs.index(), jobs.count()]
+	# the "1/2" counts queued DOWNLOADS; local work is not one of a batch
+	job_pct.text = pct if (jobs.count() <= 1 or jobs.active_label() == "") 		else "%s  %d/%d" % [pct, jobs.index(), jobs.count()]
 
 func _tips_hide(_v: float = 0.0) -> void:
 	if tips: tips.hide_now()
@@ -1216,9 +1239,14 @@ func _maybe_play_splash() -> void:
 func _update_progress() -> void:
 	if sync == null: return
 	var busy: bool = sync.pending() > 0 or sync.bootstrapping
-	progress.visible = busy
 	pause_btn.visible = busy or sync.paused
-	progress.value = sync.progress_ratio()
+	# One bar for everything. A real download outranks this, so a transfer in
+	# progress is never hidden behind the background model sync.
+	if busy:
+		jobs.set_activity("Downloading models for this level",
+			int(sync.progress_ratio() * 1000.0), 1000)
+	elif jobs.active_label() == "Downloading models for this level":
+		jobs.clear_activity()
 	sync_lbl.text = sync.status_text() if not HighpolyLib.use_legacy else ""
 
 # ---------- storage (usage + per-map purge) ----------
@@ -1276,25 +1304,56 @@ func _refresh_storage() -> void:
 func _reload_purge_options() -> void:
 	if purge_maps == null: return
 	var maps: Array = MapContextScript.downloaded_maps()
+	# High-poly models arrive as soon as you open a level, whether or not you
+	# ever switched Extended Terrain on. Without this the level never appears
+	# here, and those models can never be freed.
+	var open_map: String = mapctx.map_of(EditorInterface.get_edited_scene_root()) 		if mapctx != null else ""
+	if open_map != "" and not maps.has(open_map) and _scene_model_count() > 0:
+		maps = maps.duplicate()
+		maps.append(open_map)
+		maps.sort()
 	purge_maps.clear()
 	for m in maps:
 		purge_maps.add_item(str(m))
 	purge_maps.disabled = maps.is_empty()
 	purge_btn.disabled = maps.is_empty()
 
+# The models this scene actually has on disk. Also the fallback list of what to
+# free for a level whose data was never downloaded — no placements file exists,
+# but the open scene knows exactly which objects it uses.
+func _scene_keys_on_disk() -> Dictionary:
+	var out: Dictionary = {}
+	var r := EditorInterface.get_edited_scene_root()
+	if r == null: return out
+	for k in HighpolyLib.scene_keys(r):        # an Array of names, not a Dictionary
+		if FileAccess.file_exists(HighpolyStore.model_path(str(k))):
+			out[k] = true
+	return out
+
+func _scene_model_count() -> int:
+	return _scene_keys_on_disk().size()
+
 func _purge_selected() -> void:
 	if purge_maps.selected < 0: return
 	var map := purge_maps.get_item_text(purge_maps.selected)
 	purge_btn.disabled = true
 	storage_lbl.text = "Sizing a %s purge…" % map
-	var info: Dictionary = await mapctx.purge_info(map)
+	# hand over the open scene's models: for a level with no downloaded data
+	# they are the only record of which high-poly models belong to it
+	var extra: Dictionary = _scene_keys_on_disk() 		if map == mapctx.map_of(EditorInterface.get_edited_scene_root()) else {}
+	var info: Dictionary = await mapctx.purge_info(map, extra)
 	purge_btn.disabled = false
 	var open_map: String = mapctx.map_of(EditorInterface.get_edited_scene_root())
-	var freed := int(info.get("map_bytes", 0)) + int(info.get("excl_bytes", 0))
+	var freed := int(info.get("map_bytes", 0)) + int(info.get("excl_bytes", 0)) 		+ int(info.get("hp_bytes", 0))
 	var excl_n: int = (info.get("excl", []) as Array).size()
 	var txt := "Purge downloaded data for %s?\n\nFrees about %s: the map's own data (%s) plus %d objects only %s uses (%s)." % [
 		map, _human_size(freed), _human_size(int(info.get("map_bytes", 0))),
 		excl_n, map, _human_size(int(info.get("excl_bytes", 0)))]
+	var hp_n: int = (info.get("hp_excl", []) as Array).size()
+	if hp_n > 0:
+		txt += "
+Also frees %d high-poly model(s) only %s uses (%s)." % [
+			hp_n, map, _human_size(int(info.get("hp_bytes", 0)))]
 	if int(info.get("shared", 0)) > 0:
 		txt += "\n%d objects are shared with other downloaded maps and will be KEPT — purging never breaks another map." % int(info.get("shared", 0))
 	if open_map == map:
@@ -1385,6 +1444,9 @@ func _check_scene_change() -> void:
 	if iso_chk:
 		iso_chk.set_pressed_no_signal(false)
 		iso_chk.disabled = true
+	# the remembered visibility is keyed by node path, and those paths belong to
+	# the scene that just closed — put that one back before letting go of it
+	SdkHide.restore_all(old)
 	_sync_maptile_control()   # the new scene may carry the SDK's own decal
 	if lbl and old != null: lbl.text = "Different map opened — back to Low-Poly"
 	# the new scene's props move to the front of the download queue
@@ -1735,6 +1797,9 @@ func _mode_changed() -> void:
 		ovr_chk.set_pressed_no_signal(false)
 		ovr_chk.text = _override_label()
 	previews.tier = _mode()
+	# our models stand in for the SDK's merged low-poly asset mesh, so it goes
+	# away while we are showing and comes back — as the user left it — after
+	_sdk_assets_hidden(_mode() != HighpolyLib.Tier.LOW)
 	_apply_scene()
 	# a mode switch rebuilds every preview — re-apply the placed-object cull so
 	# your custom map content keeps distance-culling in the new detail mode
