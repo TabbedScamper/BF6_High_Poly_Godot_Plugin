@@ -20,6 +20,7 @@ class_name HighpolyPlacedCull
 # is on), so it MUST be culled together with them — exactly like the prototype did.
 # We only skip the backdrop, FX, lights, water and the collision debug overlay,
 # because those systems own their own distance handling.
+const Log = preload("highpoly_log.gd")
 const SKIP := ["_MAP_CONTEXT", "_MAP_FX", "_MAP_LIGHTS", "_WATER_CHUNKS", "_COLLISION_VIS"]
 
 # ---------- gizmos follow the cull ----------
@@ -124,7 +125,12 @@ static func _companions(mi: Node) -> Array:
 	var stack: Array = [p]
 	while not stack.is_empty():
 		var n: Node = stack.pop_back()
-		if n != mi and (n is CollisionShape3D or n is CollisionPolygon3D):
+		# CollisionObject3D as well as the shapes: the survey found 1318
+		# StaticBody3D carrying gizmos of their own, and the body's gizmo draws
+		# the same outline as the shapes under it. Includes the mesh's PARENT,
+		# which is usually the body itself and was being skipped entirely.
+		if n != mi and (n is CollisionShape3D or n is CollisionPolygon3D
+				or n is CollisionObject3D):
 			out.append(n)
 		for c in n.get_children():
 			if c is MeshInstance3D: continue     # another mesh: its own business
@@ -220,12 +226,29 @@ static func show_all_gizmos() -> void:
 # teardown, or opening a different one.
 static func release(root: Node) -> void:
 	show_all_gizmos()
+	var blind := 0
 	if root != null:
 		var arr: Array = []
 		_collect(root, arr)
 		for mi in arr:
-			_restore_range(mi)
+			if _orig.has(mi.get_instance_id()):
+				_restore_range(mi)
+			elif mi.visibility_range_end > 0.0:
+				# Nothing remembered. The remembered values live in a static, and
+				# statics are wiped every time the script is re-parsed — which
+				# happens on every plugin reload. Restoring nothing would leave
+				# the scene culled with the plugin disabled, which is worse than
+				# the alternative: a scene where the cull is simply off.
+				mi.visibility_range_end = 0.0
+				mi.visibility_range_end_margin = 0.0
+				mi.visibility_range_fade_mode = GeometryInstance3D.VISIBILITY_RANGE_FADE_DISABLED
+				blind += 1
 	_orig.clear()
+	if blind > 0:
+		Log.warn(("Cleared the draw distance on %d object(s) without knowing what "
+			+ "they started with — the plugin had been reloaded since it set them. "
+			+ "If any of those shipped with their own draw distance, it is off now.")
+			% blind)
 
 # Forget the tracking for the meshes in this pass only, showing their gizmos
 # again first. apply() also runs for a single node when one is added, and
