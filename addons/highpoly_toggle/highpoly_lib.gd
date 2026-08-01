@@ -13,6 +13,13 @@ class_name HighpolyLib
 
 const HP_ROT := Vector3(-90, 0, 0)   # legacy OBJ assets are Z-up; GLB assets are Y-up
 const HP_NODE := "_HIPOLY_PREVIEW"
+# Render layer 19: "this geometry already has its real textures, keep projected
+# decals off it". Shared with the map-context props (highpoly_mapcontext.gd uses
+# the same constant) and excluded from the map-tile decal's cull_mask. Layer 20
+# (EXT_TERRAIN_LAYER) is the matching opt-out for our extended terrain + water.
+# NOTE for render/PhotoMatch cameras: cull_mask must stay 0xFFFFF or anything on
+# these layers silently vanishes from renders only.
+const TEXTURED_LAYER := 1 << 18
 const COL_NODE := "_COLLISION_VIS"   # collision overlay (highpoly_collision.gd)
 const LEGACY_DIR := "res://highpoly"
 # Props whose proxy AABB legitimately disagrees with the real asset's shape
@@ -256,6 +263,13 @@ static func _set_textured(hp: Node, textured: bool) -> void:
 		var n: Node = stack.pop_back()
 		if n is GeometryInstance3D:
 			(n as GeometryInstance3D).material_override = null if textured else gray_material()
+			# Keep the map-tile decal OFF the high-poly overlay. The decal exists
+			# to colour the SDK's own untextured terrain and grey proxy buildings;
+			# projecting it over models that already carry their real game textures
+			# just tints and washes them out. A Decal only affects layers in its
+			# cull_mask, so moving the overlay to its own layer is the one way to
+			# opt out that changes nothing about the models themselves.
+			(n as GeometryInstance3D).layers = TEXTURED_LAYER
 		for c in n.get_children():
 			stack.append(c)
 
