@@ -136,7 +136,7 @@ func _enter_tree() -> void:
 	pause_btn = Button.new()
 	pause_btn.text = "Pause downloads"
 	pause_btn.visible = false
-	pause_btn.tooltip_text = "Pause/resume the background model sync (e.g. on a metered connection)."
+	pause_btn.tooltip_text = "Stops downloading for now — use it if you are on limited internet or need the bandwidth for something else. Nothing is lost; it carries on from where it stopped."
 	pause_btn.pressed.connect(func():
 		sync.paused = not sync.paused
 		pause_btn.text = "Resume downloads" if sync.paused else "Pause downloads")
@@ -144,14 +144,14 @@ func _enter_tree() -> void:
 
 	check_btn = Button.new()
 	check_btn.text = "Check for Updates"
-	check_btn.tooltip_text = "Fetch the latest registry right now (normally automatic: on start + hourly). Handy right after a model fix is published."
+	check_btn.tooltip_text = "Checks for newly fixed models straight away. This happens by itself every hour, so you rarely need to press it."
 	check_btn.pressed.connect(_check_updates_now)
 	dock.add_child(_centred(check_btn))
 
 	scope_btn = OptionButton.new()
-	scope_btn.add_item("Download: current scene only", 0)
-	scope_btn.add_item("Download: all models", 1)
-	scope_btn.tooltip_text = "Current scene only: keep just the models your open scene uses (switching frees the rest from disk; they re-download on demand). All models: the whole library syncs in the background."
+	scope_btn.add_item("Download only what this map needs", 0)
+	scope_btn.add_item("Download everything in the background", 1)
+	scope_btn.tooltip_text = "Only this map: keeps just the pieces your open map needs and frees the rest. Everything: quietly downloads the whole library so nothing keeps you waiting later. Either way, anything missing downloads the moment you need it."
 	scope_btn.item_selected.connect(func(_i): _scope_changed())
 	dock.add_child(scope_btn)
 
@@ -159,34 +159,34 @@ func _enter_tree() -> void:
 	# whichever section's content box is currently being filled, so the existing
 	# build order — which several controls depend on — is untouched.
 	var host: Node = _section("Detail Mode",
-		"How the models in your scene are drawn. Low-Poly shows the SDK proxies you actually export; the High-Poly modes swap in the real game models as an editor-only overlay, with or without their textures.")
+		"Whether you are looking at the simple blocks you actually build and export with, or the real game models dropped over the top of them. Looking at the real models changes nothing about your map — the blocks underneath are still what gets saved.")
 
 	mode_btn = OptionButton.new()
-	mode_btn.add_item("Low-Poly (default)", 0)
-	mode_btn.add_item("High-Poly — no textures", 1)
-	mode_btn.add_item("High-Poly — textured", 2)
+	mode_btn.add_item("Simple blocks — what you export", 0)
+	mode_btn.add_item("Real models, no textures", 1)
+	mode_btn.add_item("Real models, full textures", 2)
 	mode_btn.selected = 0
 	mode_btn.item_selected.connect(func(_i): _mode_changed())
 	host.add_child(mode_btn)
 
 	var detail_chips := _chip_row(host)
 	ovr_chk = Theme_.chip(_override_label())
-	ovr_chk.tooltip_text = "Per-object override of the Detail Mode above — follows your selection live while checked. In Low-Poly mode: selected objects show high-poly (work light, inspect in detail). In High-Poly mode: selected objects drop to their proxies (reclaim FPS in heavy areas). Uncheck to restore everything to the scene's mode."
+	ovr_chk.tooltip_text = "Swaps just the pieces you have selected to the real game models, leaving the rest as simple blocks — handy for lining something up closely. When you are already viewing real models it does the reverse: your selection drops back to blocks so a heavy area stays smooth while you work."
 	ovr_chk.toggled.connect(_override_toggled)
 	detail_chips.add_child(ovr_chk)
 
 	host = _section("Collision",
-		"See what your objects actually collide with. Draws each object's real in-game collision volume over it, so you can spot where a shape does not match the model players will run into.")
+		"Shows the invisible shapes players bump into. They are often not the shape they look like, which is why something can feel wrong to walk past even when it looks right.")
 
 	var col_chips := _chip_row(host)
-	col_chk = Theme_.chip("Collisions")
-	col_chk.tooltip_text = "Editor-only overlay (never saved). Draws each object's ACTUAL in-game collision in transparent red: the object's own geometry scaled uniformly from the X axis — an object scaled (10, 20, 20) collides as (10, 10, 10)."
+	col_chk = Theme_.chip("Bump shapes")
+	col_chk.tooltip_text = "Shows the invisible shape players actually bump into, in see-through red. It often does not match what you see: a stretched object still bumps as though it were square. Preview only — nothing about your map changes."
 	col_chk.toggled.connect(func(_v): _collision_changed())
 	col_chips.add_child(col_chk)
 
 	iso_chk = Theme_.chip("Isolate selected")
 	iso_chk.disabled = true
-	iso_chk.tooltip_text = "Selected object(s) show ONLY their collision; everything else keeps its model (plus collision). Follows the selection live. Needs \"Show collisions\" on."
+	iso_chk.tooltip_text = "Hides everything except the bump shapes of the pieces you have selected, so you can look at one shape without the rest in the way. Needs Collisions switched on."
 	iso_chk.toggled.connect(_isolate_toggled)
 	col_chips.add_child(iso_chk)
 
@@ -198,7 +198,7 @@ func _enter_tree() -> void:
 	col_pick.color = HighpolyCollision.get_color()
 	col_pick.custom_minimum_size = Vector2(48, 0)
 	col_pick.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	col_pick.tooltip_text = "Collision overlay color (alpha included)."
+	col_pick.tooltip_text = "Colour and see-through-ness of the bump shapes."
 	col_pick.color_changed.connect(func(c: Color):
 		HighpolyCollision.set_color(c)
 		col_alpha.set_value_no_signal(c.a))
@@ -211,7 +211,7 @@ func _enter_tree() -> void:
 	col_alpha.min_value = 0.05; col_alpha.max_value = 1.0; col_alpha.step = 0.05
 	col_alpha.value = HighpolyCollision.get_color().a
 	col_alpha.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	col_alpha.tooltip_text = "Collision overlay transparency."
+	col_alpha.tooltip_text = "How see-through the bump shapes are."
 	col_alpha.value_changed.connect(func(v: float):
 		var c := HighpolyCollision.get_color()
 		c.a = v
@@ -220,14 +220,14 @@ func _enter_tree() -> void:
 	ca_row.add_child(col_alpha)
 
 	host = _section("Map Context",
-		"Build inside the real map instead of the SDK's empty bowl: the surrounding terrain, the game's own object placements, its lighting and FX — all editor-only, none of it saved or exported.")
+		"Build inside the real level instead of an empty grey box: the ground, the skyline, the buildings, the lighting and the effects the real place has. All of it is preview only — none of it is saved into your map or exported.")
 
 	var mc_chips := _chip_row(host)
 	# sub-toggles of "Lighting", indented under the main row and only
 	# visible while it is on
 	var mc_sub := _chip_row(host, 14)
-	mapctx_on = Theme_.chip("Whole map")
-	mapctx_on.tooltip_text = "Editor-only overlay (never saved). Adds the real out-of-bounds terrain + surrounding landscape around the SDK's playable area, so you see the whole map instead of just the playable bowl."
+	mapctx_on = Theme_.chip("Whole level")
+	mapctx_on.tooltip_text = "Puts your map back into the real level — the ground, hills and skyline all around the play area — so you can see how your build sits in the world. Preview only: none of it is saved into your map or included when you export."
 	mapctx_on.toggled.connect(func(v: bool):
 		# fast show/hide of the built terrain/backdrop/water layers — the full
 		# rebuild also regenerated every map object. Falls back to the full
@@ -240,8 +240,8 @@ func _enter_tree() -> void:
 		_mapctx_changed())
 	mc_chips.add_child(mapctx_on)
 
-	mapctx_objects = Theme_.chip("Map objects")
-	mapctx_objects.tooltip_text = "Also inject the game's original object placements (vehicles, props, antennas, chairs…). The distant terrain/landscape comes in with \"Show whole map\". Their look follows the Detail Mode dropdown; the Range slider is their render distance (0 = off)."
+	mapctx_objects = Theme_.chip("Real scenery")
+	mapctx_objects.tooltip_text = "Also brings in the buildings, vehicles and clutter the real level has in those places. The Range slider below sets how far away you can still see them."
 	mapctx_objects.toggled.connect(func(v: bool):
 		# checkbox and Range slider are one control pair: turning objects ON
 		# from a 0 range starts them at 100 m (slider 0 unchecks the box below)
@@ -272,7 +272,7 @@ func _enter_tree() -> void:
 	mapctx_variant = OptionButton.new()
 	mapctx_variant.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	mapctx_variant.add_item("Off")
-	mapctx_variant.tooltip_text = "Gamemode overlay: capture rings, objectives, spawn points, zone areas and the mode's own props (e.g. Rush barriers). Additive markers — BF6 modes share all scenery."
+	mapctx_variant.tooltip_text = "Shows one game mode's real layout — capture points, objectives and spawn areas. These are markers laid on top; the scenery itself is the same for every mode."
 	mapctx_variant.item_selected.connect(func(_i):
 		var _r := EditorInterface.get_edited_scene_root()
 		var _mode := mapctx_variant.get_item_text(mapctx_variant.selected)
@@ -297,9 +297,9 @@ func _enter_tree() -> void:
 	# Mode dropdown: Low-Poly = flat SDK orange, High-Poly no textures = grey
 	# clay, High-Poly textured = real textures. See _mapctx_tex_mode().)
 
-	mapctx_maptile = Theme_.chip("Maptile")
+	mapctx_maptile = Theme_.chip("Ground photo")
 	mapctx_maptile.button_pressed = true   # default CHECKED = current behaviour
-	mapctx_maptile.tooltip_text = "Project the map-tile colour over the SDK terrain + assets. Turn off if it tints buildings/washes out real textures."
+	mapctx_maptile.tooltip_text = "Lays the map's aerial photo over the ground so it looks like the real place instead of flat colour. Turn it off if it makes buildings look muddy."
 	mapctx_maptile.toggled.connect(func(v: bool):
 		# instant ACTIVE add/remove (set_maptile) — no overlay rebuild, no
 		# generation bump: a running props build keeps going, and the decal
@@ -309,7 +309,7 @@ func _enter_tree() -> void:
 	mc_chips.add_child(mapctx_maptile)
 
 	mapctx_fx = Theme_.chip("FX")
-	mapctx_fx.tooltip_text = "Live particles at the map's real FX spawn points (fires, smoke columns, electrical sparks — mined from the game data with authored rates/lifetimes and the real flipbook textures). Winter/Gauntlet-only FX stay off. Distance-faded per site."
+	mapctx_fx.tooltip_text = "Adds the fires, smoke columns and sparks the real level has, in the spots it has them. They fade out with distance."
 	mapctx_fx.toggled.connect(func(v: bool):
 		var _r := EditorInterface.get_edited_scene_root()
 		lbl.text = HighpolyFx.apply(_r, mapctx.map_of(_r), v)
@@ -317,7 +317,7 @@ func _enter_tree() -> void:
 	mc_chips.add_child(mapctx_fx)
 
 	mapctx_light = Theme_.chip("Lighting")
-	mapctx_light.tooltip_text = "Editor-only (never saved). Light the scene like the real map: the game's actual sun direction/colour, sky gradient, ambient and haze — extracted from this map's VisualEnvironment data (e.g. Badlands' low golden sun). Replaces the editor's neutral preview sun/sky while on."
+	mapctx_light.tooltip_text = "Lights your map the way the real one is lit — the same sun angle, sun colour, sky and haze. Replaces the editor's plain preview light while it is on."
 	mapctx_light.toggled.connect(func(v: bool):
 		if mapctx_gi: mapctx_gi.visible = v
 		if mapctx_shadows: mapctx_shadows.visible = v
@@ -328,10 +328,10 @@ func _enter_tree() -> void:
 
 	# sub-toggles: only shown while Game lighting is on; both act LIVE on the
 	# injected rig/overlay (no rebuild) and are remembered per map
-	mapctx_gi = Theme_.chip("Global illumination")
+	mapctx_gi = Theme_.chip("Soft shading")
 	mapctx_gi.button_pressed = true
 	mapctx_gi.visible = false
-	mapctx_gi.tooltip_text = "Bounced light + sky occlusion (SDFGI) and contact shadows (SSAO) — the editor equivalents of the game's GI + GTAO. Costs GPU; uncheck if the viewport feels heavy."
+	mapctx_gi.tooltip_text = "Softer, more realistic shading, with light bouncing off surfaces and settling into corners. Looks better, costs frame rate — switch it off if the view gets choppy."
 	mapctx_gi.toggled.connect(func(v: bool):
 		lbl.text = LightingScript.set_gi(EditorInterface.get_edited_scene_root(), v)
 		_save_mapctx_state())
@@ -340,7 +340,7 @@ func _enter_tree() -> void:
 	mapctx_shadows = Theme_.chip("Shadows")
 	mapctx_shadows.button_pressed = true
 	mapctx_shadows.visible = false
-	mapctx_shadows.tooltip_text = "Sun shadows from the map objects (grass never casts). Costs GPU; uncheck if the viewport feels heavy."
+	mapctx_shadows.tooltip_text = "Shadows cast by the sun. Costs frame rate — switch it off if the view gets choppy."
 	mapctx_shadows.toggled.connect(func(v: bool):
 		lbl.text = LightingScript.set_shadows(EditorInterface.get_edited_scene_root(), v)
 		_save_mapctx_state())
@@ -349,7 +349,7 @@ func _enter_tree() -> void:
 	mapctx_maplights = Theme_.chip("Map lights")
 	mapctx_maplights.button_pressed = false
 	mapctx_maplights.visible = false
-	mapctx_maplights.tooltip_text = "The map's real placed lights (3,700+ on Aftermath: street lights, interiors, signs), mined from the game data with their true colours/intensities/cones. Only lights near the camera render (200 m). Costs GPU."
+	mapctx_maplights.tooltip_text = "The street lights, signs and indoor lights the real level has — several thousand on some maps. Only the ones near your camera light up. Costs frame rate."
 	mapctx_maplights.toggled.connect(func(v: bool):
 		var _r := EditorInterface.get_edited_scene_root()
 		lbl.text = LightingScript.set_map_lights(_r,
@@ -364,7 +364,7 @@ func _enter_tree() -> void:
 	mapctx_range.min_value = 0; mapctx_range.max_value = 3500
 	mapctx_range.step = 100; mapctx_range.value = 800
 	mapctx_range.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	mapctx_range.tooltip_text = "Render distance for the overlay: map objects, the skyline/backdrop, FX and map lights all follow it (lights cap at 300 m for GPU safety). 0 turns \"Original map objects\" off; the far end (3500) disables culling entirely."
+	mapctx_range.tooltip_text = "How far away you can still see the borrowed scenery. Pull it down if the view gets choppy; drag it to zero to switch the scenery off entirely."
 	mcr_row.add_child(mapctx_range)
 	mapctx_range_val = Label.new(); mapctx_range_val.text = _range_label(800.0)
 	mcr_row.add_child(mapctx_range_val)
@@ -389,9 +389,9 @@ func _enter_tree() -> void:
 	# map content — not the backdrop) so a densely-built map stays fast. Near props
 	# stay full-quality and fully selectable/editable; distant ones stop drawing.
 	# Follows the Range slider. Editor-only — nothing hidden, export untouched.
-	mapctx_optimize = Theme_.chip("Optimize placed")
+	mapctx_optimize = Theme_.chip("Hide far pieces")
 	mapctx_optimize.button_pressed = true
-	mapctx_optimize.tooltip_text = "Distance-cull the props YOU place (your custom map content) so a densely-built map stays fast — far ones stop drawing while near ones stay full-quality and fully editable. Follows the Range slider. Nothing is hidden or changed on export; turn it off for full range."
+	mapctx_optimize.tooltip_text = "Stops drawing the pieces YOU placed once they are far from the camera, so a busy map keeps running smoothly. They are still there, still selectable, and nothing is left out when you export."
 	mapctx_optimize.toggled.connect(func(on: bool):
 		var _r := EditorInterface.get_edited_scene_root()
 		var _rad := 800.0
@@ -409,7 +409,7 @@ func _enter_tree() -> void:
 	td.add_item("High (2m)", 2)
 	td.add_item("Medium (4m)", 4)
 	td.select(1)   # High is the default (near-native, performant)
-	td.tooltip_text = "Terrain mesh detail, built locally from the full-accuracy heightmap. Full = native 1m (heaviest); built once per level, then cached."
+	td.tooltip_text = "How finely the ground is built. Full is the sharpest and the slowest. It is built once for each map and remembered afterwards, so you only wait the first time."
 	td.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	td_row.add_child(td)
 	td.item_selected.connect(func(_i):
@@ -418,12 +418,12 @@ func _enter_tree() -> void:
 
 	var shader_btn := Button.new()
 	shader_btn.text = "Configure Shaders…"
-	shader_btn.tooltip_text = "Live overlay shader settings: Water Animation, Flipbook Animations (smoke), Foliage Wind. Applied instantly, remembered across restarts."
+	shader_btn.tooltip_text = "Settings for the moving parts: rippling water, drifting smoke and swaying grass."
 	shader_btn.pressed.connect(_open_shader_dialog)
 	host.add_child(_centred(shader_btn))
 
 	host = _section("Storage",
-		"What the plugin is keeping on disk, and how to get it back. Everything here re-downloads on demand, so purging is always safe.")
+		"What has been downloaded to your PC, and how to get the space back. Nothing here belongs to your map, so removing any of it is always safe.")
 
 	storage_lbl = Label.new()
 	storage_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -431,9 +431,33 @@ func _enter_tree() -> void:
 	storage_lbl.text = "Measuring disk usage…"
 	host.add_child(storage_lbl)
 
+	# Where it lives, and the reassurance that belongs with it. The downloads sit
+	# in Godot's own app-data folder, which nobody would find on their own, and
+	# not knowing where several gigabytes went is exactly what makes it alarming.
+	var where := Label.new()
+	where.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	where.add_theme_font_size_override("font_size", Theme_.fs(11))
+	where.add_theme_color_override("font_color", Color(1, 1, 1, 0.55))
+	where.text = "Kept outside your project, so none of it is part of your map or " \
+		+ "your export. Deleting any of it only means it downloads again the next " \
+		+ "time you need it."
+	host.add_child(where)
+
+	var files_btn := Button.new()
+	files_btn.text = "Show me these files"
+	files_btn.tooltip_text = "Opens the folder where the downloads are kept in your " \
+		+ "file browser, so you can see exactly what is there. Nothing in it is part " \
+		+ "of your map."
+	files_btn.pressed.connect(func():
+		var dir := ProjectSettings.globalize_path("user://")
+		DirAccess.make_dir_recursive_absolute(dir)   # first run: may not exist yet
+		OS.shell_show_in_file_manager(dir)
+		lbl.text = "Opened %s" % dir)
+	host.add_child(_centred(files_btn))
+
 	var storage_chips := _chip_row(host)
-	storage_cache_chk = Theme_.chip("Fast startup cache")
-	storage_cache_chk.tooltip_text = "Save each built map-context mesh to disk so the overlay comes back in seconds after an editor/plugin restart, instead of re-processing every model for minutes. Updated models still swap in automatically (stale entries rebuild). Costs roughly the downloaded models' size again on disk; per-map Purge clears it too."
+	storage_cache_chk = Theme_.chip("Faster loading")
+	storage_cache_chk.tooltip_text = "Saves the work of building the scenery so it comes back in seconds next time instead of minutes. Costs roughly as much space again on your PC. Deleting a map's files clears its saved work too."
 	var _es := EditorInterface.get_editor_settings()
 	var _mc_on := bool(_es.get_project_metadata("highpoly_mapctx", "_mesh_cache", false))
 	storage_cache_chk.set_pressed_no_signal(_mc_on)
@@ -447,18 +471,18 @@ func _enter_tree() -> void:
 		HighpolyMapContext.mesh_cache_enabled = v
 		EditorInterface.get_editor_settings().set_project_metadata(
 				"highpoly_mapctx", "_mesh_cache", v)
-		lbl.text = "Fast startup cache " + ("on — meshes save as they build" if v
-				else "off — existing cache files stay until purged"))
+		lbl.text = "Faster loading " + ("on — scenery is saved as it is built" if v
+				else "off — what is already saved stays until you delete it"))
 	storage_chips.add_child(storage_cache_chk)
 
 	var purge_row := HBoxContainer.new(); host.add_child(purge_row)
 	purge_maps = OptionButton.new()
 	purge_maps.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	purge_maps.tooltip_text = "Downloaded per-map data. Purging deletes the map's own data plus objects no other downloaded map uses; shared objects are kept. Everything re-downloads on demand."
+	purge_maps.tooltip_text = "Maps you have downloaded. Deleting one frees its space; anything it shares with another downloaded map is kept."
 	purge_row.add_child(purge_maps)
 	purge_btn = Button.new()
-	purge_btn.text = "Purge"
-	purge_btn.tooltip_text = "Free the selected map's disk space (safe: re-downloads on demand)"
+	purge_btn.text = "Delete"
+	purge_btn.tooltip_text = "Frees this map's space on your PC. Safe — it downloads again the next time you open that map."
 	purge_btn.pressed.connect(_purge_selected)
 	purge_row.add_child(purge_btn)
 
@@ -660,7 +684,7 @@ func _show_migration_wizard() -> void:
 	dlg.canceled.connect(func():
 		# fully usable legacy mode; the wizard re-offers next launch
 		HighpolyLib.use_legacy = true
-		banner.text = "Storage reorganization pending — model sync is paused until it runs (next editor start)."
+		banner.text = "Downloads are paused until the files are tidied up, which happens the next time you start the editor."
 		banner.visible = true
 		lbl.text = "%d high-poly assets available (legacy layout)" % HighpolyLib.known().size()
 		dlg.queue_free())
@@ -742,7 +766,7 @@ func _check_updates_now() -> void:
 		lbl.text = "Run the storage reorganization first (restart the editor)"
 		return
 	check_btn.disabled = true
-	lbl.text = "Checking registry for updates…"
+	lbl.text = "Checking for updated models…"
 	await sync.check_now()
 	# whatever the open scene needs jumps the queue, same as startup
 	var r := EditorInterface.get_edited_scene_root()
@@ -755,7 +779,7 @@ func _check_updates_now() -> void:
 			await mapctx.download_map(dock, _map, func(s: String): lbl.text = s)
 		var _swept: int = mapctx.cleanup_stale(_map)
 		if _swept > 0:
-			lbl.text = "Update check done — %d stale cache file(s) removed" % _swept
+			lbl.text = "Checked for updates — %d out-of-date file(s) cleared" % _swept
 			_refresh_storage()
 	check_btn.disabled = false
 	lbl.text = sync.status_text()
@@ -1093,12 +1117,16 @@ func _refresh_storage() -> void:
 	# carries no per-model byte sizes, so no invented "of X GB" totals
 	var mtot := HighpolyStore.remote.size()
 	var ptot := HighpolyStore.mesh_remote.size()
-	var mpart := "models %s%s (%s)" % [_fmt_n(int(models[0])),
-		("/%s" % _fmt_n(mtot)) if mtot > 0 else "", _human_size(int(models[1]))]
-	var ppart := "map objects %s%s (%s)" % [_fmt_n(int(props[0])),
-		("/%s" % _fmt_n(ptot)) if ptot > 0 else "", _human_size(int(props[1]))]
-	storage_lbl.text = "Downloaded: %s — %s, %s, map data ×%d (%s)" % [
-		_human_size(total), mpart, ppart, nmaps, _human_size(maps_bytes)]
+	# One plain sentence, then a line per thing, in the words a map builder would
+	# use. The old single line packed all of this into one dense string that
+	# never actually said what any of it was.
+	var lines := ["Using %s on your PC" % _human_size(total), ""]
+	lines.append("  Object models — %s%s downloaded  (%s)" % [_fmt_n(int(models[0])),
+		(" of %s" % _fmt_n(mtot)) if mtot > 0 else "", _human_size(int(models[1]))])
+	lines.append("  Level scenery — %s%s pieces  (%s)" % [_fmt_n(int(props[0])),
+		(" of %s" % _fmt_n(ptot)) if ptot > 0 else "", _human_size(int(props[1]))])
+	lines.append("  Levels — %s downloaded  (%s)" % [_fmt_n(nmaps), _human_size(maps_bytes)])
+	storage_lbl.text = "\n".join(lines)
 
 func _reload_purge_options() -> void:
 	if purge_maps == null: return
@@ -1157,7 +1185,7 @@ func _check_plugin_update() -> void:
 	HighpolyUpdater.check_plugin_update(dock, func(new_version: String, _notes: String):
 		if new_version != "" and update_btn != null:
 			update_btn.text = "Update Plugin to v%s" % new_version
-			update_btn.tooltip_text = "A newer plugin version is available. One click downloads it over addons/highpoly_toggle; restart the editor afterwards."
+			update_btn.tooltip_text = "A newer version of this plugin is available. One click installs it; restart the editor afterwards."
 			update_btn.visible = true)
 
 func _do_plugin_update() -> void:
@@ -1210,7 +1238,7 @@ func _check_scene_change() -> void:
 		iso_chk.set_pressed_no_signal(false)
 		iso_chk.disabled = true
 	_sync_maptile_control()   # the new scene may carry the SDK's own decal
-	if lbl and old != null: lbl.text = "Scene changed — reset to Low-Poly"
+	if lbl and old != null: lbl.text = "Different map opened — back to simple blocks"
 	# the new scene's props move to the front of the download queue
 	if r != null and sync != null and not HighpolyLib.use_legacy:
 		sync.prioritize_scene(HighpolyLib.scene_keys(r))
@@ -1315,7 +1343,7 @@ func _open_shader_dialog() -> void:
 	w_sl.min_value = 0.0; w_sl.max_value = 2.0; w_sl.step = 0.05
 	w_sl.value = float(d.get("water", 1.0))
 	w_sl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	w_sl.tooltip_text = "Ripple speed, as a multiplier on each water body's authored speed. 0 = still water, 1 = authored."
+	w_sl.tooltip_text = "How fast the water ripples. 0 is completely still; 1 is the speed the real game uses."
 	w_row.add_child(w_sl)
 	var w_val := Label.new(); w_val.text = "×%.2f" % w_sl.value
 	w_row.add_child(w_val)
@@ -1331,7 +1359,7 @@ func _open_shader_dialog() -> void:
 	f_sl.min_value = 0.0; f_sl.max_value = 2.0; f_sl.step = 0.05
 	f_sl.value = float(d.get("flip", 1.0))
 	f_sl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	f_sl.tooltip_text = "Animation speed of flipbook FX cards (the background smoke plumes). 0 = frozen frame."
+	f_sl.tooltip_text = "How fast the distant smoke plumes billow. 0 freezes them still."
 	f_row.add_child(f_sl)
 	var f_val := Label.new(); f_val.text = "×%.2f" % f_sl.value
 	f_row.add_child(f_val)
@@ -1343,7 +1371,7 @@ func _open_shader_dialog() -> void:
 	var wind_chk := CheckBox.new()
 	wind_chk.text = "Foliage Wind"
 	wind_chk.button_pressed = bool(d.get("wind", false))
-	wind_chk.tooltip_text = "Subtle sway on leaves and grass (trunks stay put). Editor-only eye candy — the game does its own wind."
+	wind_chk.tooltip_text = "Gentle sway on leaves and grass while you build. Trunks stay put. It is just for looks here — the real game does its own wind."
 	box.add_child(wind_chk)
 	var ws_row := HBoxContainer.new(); box.add_child(ws_row)
 	var ws_lbl := Label.new(); ws_lbl.text = "  Strength"
@@ -1429,10 +1457,10 @@ func _sync_maptile_control() -> void:
 	var theirs: Decal = mapctx.sdk_decal(EditorInterface.get_edited_scene_root())
 	mapctx_maptile.disabled = theirs != null
 	if theirs != null:
-		mapctx_maptile.text = "Maptile decal (the SDK's is applied)"
+		mapctx_maptile.text = "Ground photo (the SDK's is on)"
 		mapctx_maptile.tooltip_text = "This level already has the SDK's own map texture, applied from the 3D toolbar and saved in the scene, so the preview decal stays off — two would darken the ground twice.\n\nNote the SDK's decal projects onto EVERYTHING beneath it, including high-poly models that already have their real textures. Delete the '%s' node under Static to go back to the preview decal, which leaves them alone." % String(theirs.name)
 	else:
-		mapctx_maptile.text = "Maptile decal"
+		mapctx_maptile.text = "Ground photo"
 		mapctx_maptile.tooltip_text = "Project the map-tile colour over the SDK terrain + assets. Skips high-poly models and the extended terrain, which carry their own real textures. Turn off if it still tints something you'd rather see raw."
 
 func _restore_mapctx_state() -> void:
@@ -1489,7 +1517,7 @@ func _restore_mapctx_state() -> void:
 				lbl.text = HighpolyGamemode.apply(r, map, _sv, mapctx)
 				mapctx.set_variant_layers(_sv)
 				break
-	lbl.text = "Restoring map overlay for %s…" % map
+	lbl.text = "Bringing back the real level for %s…" % map
 	var saved_tex := int(d.get("tex", 0))
 	if mode_btn != null and saved_tex != mode_btn.get_selected_id():
 		mode_btn.select(mode_btn.get_item_index(saved_tex))
@@ -1599,8 +1627,8 @@ func _reapply_placed_cull() -> void:
 
 # ---------- per-selection detail override (live) ----------
 func _override_label() -> String:
-	return "Preview selected" if _mode() == HighpolyLib.Tier.LOW \
-			else "Keep as Low-Poly"
+	return "Show selected for real" if _mode() == HighpolyLib.Tier.LOW \
+			else "Keep selected as blocks"
 
 func _override_toggled(pressed: bool) -> void:
 	if pressed:
