@@ -113,6 +113,18 @@ static func separator(s: HSeparator) -> HSeparator:
 	s.add_theme_stylebox_override("separator", sb)
 	return s
 
+# A toggle chip: off reads as an outlined mask like any other control, on fills
+# with the accent. Replaces CheckBox everywhere in the panel — a chip states its
+# own state at a glance, packs sideways into a wrapping row, and does not need a
+# tick column reserved down the left of every setting.
+static func chip(text: String, tip := "") -> Button:
+	var b := Button.new()
+	b.text = text
+	b.toggle_mode = true
+	b.tooltip_text = tip
+	b.theme_type_variation = "HighpolyChip"
+	return b
+
 # The panel's bright outline. draw_center off so the video shows through.
 static func panel_border() -> StyleBoxFlat:
 	var sb := StyleBoxFlat.new()
@@ -178,6 +190,32 @@ static func build_ui_theme() -> Theme:
 	t.set_color("font_color", "Label", white)
 	t.set_color("font_color", "RichTextLabel", white)
 	t.set_color("default_color", "RichTextLabel", white)
+
+	# Chips: same mask when off, accent fill when on. Godot draws a toggle
+	# button's "pressed" stylebox for as long as it is switched on, which is
+	# exactly the "active" state we want to colour.
+	var on := StyleBoxFlat.new()
+	on.bg_color = col("accent")
+	on.border_color = white
+	on.set_border_width_all(1)
+	on.set_corner_radius_all(3)
+	on.content_margin_left = 8
+	on.content_margin_right = 8
+	on.content_margin_top = 4
+	on.content_margin_bottom = 4
+	var on_hover := on.duplicate() as StyleBoxFlat
+	on_hover.bg_color = col("accent").lightened(0.15)
+	t.set_type_variation("HighpolyChip", "Button")
+	t.set_stylebox("normal", "HighpolyChip", _mask(0.08, 0.45))
+	t.set_stylebox("hover", "HighpolyChip", _mask(0.18, 0.80))
+	t.set_stylebox("pressed", "HighpolyChip", on)
+	t.set_stylebox("hover_pressed", "HighpolyChip", on_hover)
+	t.set_stylebox("disabled", "HighpolyChip", _mask(0.03, 0.14))
+	t.set_stylebox("focus", "HighpolyChip", _mask(0.0, 0.90))
+	for k in ["font_color", "font_hover_color", "font_pressed_color",
+			"font_hover_pressed_color", "font_focus_color"]:
+		t.set_color(k, "HighpolyChip", white)
+	t.set_color("font_disabled_color", "HighpolyChip", faded)
 
 	# Sliders: pure white.
 	var groove := StyleBoxFlat.new()
