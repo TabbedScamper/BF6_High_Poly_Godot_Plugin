@@ -17,6 +17,7 @@ var tint: ColorRect                # darkens the backdrop behind the controls
 var border: Panel                  # the outline
 var boot: Node                     # the running boot sequence, if one is playing
 var _giz_logged := false           # the gizmo diagnostic is said once, not every tick
+var _giz_followup := 0             # ticks until the settled-state follow-up
 var tips: Control                  # hover descriptions, drawn inside the panel
 var sections: Array = []           # collapsible sections, in dock order
 var _vid_size := Vector2(480, 800) # encoded video size, for cover-scaling
@@ -728,6 +729,15 @@ func _enter_tree() -> void:
 					# whole scene once, only in the case where we found nothing
 					Log.info("Gizmo survey: " + PlacedCull.gizmo_carriers(
 						EditorInterface.get_edited_scene_root()))
+			elif _giz_logged and _giz_followup >= 0:
+				# A follow-up once the scene has settled. The first line fires on
+				# the first tick that changed anything, which says nothing about
+				# the steady state — and waiting for someone to press a button to
+				# find that out is not a diagnostic, it is a hope.
+				_giz_followup += 1
+				if _giz_followup == 20:          # ~10s later
+					_giz_followup = -1
+					Log.info("Outlines: " + PlacedCull.status(_cam3.global_position))
 		# a CANCELLED scenery build (Extended Terrain switched off, or a new
 		# apply superseding it) ends without a build_finished — without this the
 		# bar would sit there at whatever percent it had reached
