@@ -4,8 +4,15 @@ class_name HighpolyPlacedCull
 # Distance-cull the user's OWN placed objects (their custom map content, NOT the
 # map-context backdrop). A densely-built map stays fast because far props stop
 # rendering, while every prop stays fully visible, selectable, and editable up
-# close. Editor-only: it only sets visibility_range on the real nodes — nothing is
-# ever hidden, and the saved/exported scene is untouched. Follows the Range slider.
+# close. Follows the Range slider.
+#
+# NOT free of consequence, despite appearances: visibility_range_end is a real
+# serialized property, and a scene saved while the cull is on carries it into
+# the .tscn (verified — it shows up as "visibility_range_end = 480.0"). So it
+# MUST be cleared when the plugin lets go of a scene: on teardown, and when a
+# different scene is opened. Left behind, the culling keeps running with the
+# plugin disabled, which also leaves the editor gizmos of culled objects drawn
+# with nothing inside them.
 
 # Editor-only overlay subtrees to never descend into. We deliberately do NOT skip
 # _HIPOLY_PREVIEW: that owner=null subtree holds the VISIBLE high-poly meshes of the
@@ -145,6 +152,13 @@ static func _forget(arr: Array, clear_everything: bool) -> void:
 	for i in range(_managed.size()):
 		_by_root[(_managed[i]["n"] as Object).get_instance_id()] = i
 
+# Hand a scene back exactly as we found it: the cull off, every gizmo shown.
+# Call before letting go of a scene — teardown, or opening a different one.
+static func release(root: Node) -> void:
+	show_all_gizmos()
+	if root != null:
+		apply(root, 0.0, false)
+
 # apply/refresh at render distance `r`; `on=false` clears the cull (full range).
 static func apply(root: Node, r: float, on: bool) -> String:
 	if root == null:
@@ -161,7 +175,12 @@ static func apply(root: Node, r: float, on: bool) -> String:
 		if not on or ext > 600.0:
 			# off, OR a big structural mesh (terrain / a large building you're
 			# building on) — never distance-cull it, it'd vanish when you fly away.
+			# all three, not just the distance: the margin and the fade mode are
+			# serialized too, so clearing only the distance still leaves our
+			# fingerprints in the user's .tscn
 			mi.visibility_range_end = 0.0
+			mi.visibility_range_end_margin = 0.0
+			mi.visibility_range_fade_mode = GeometryInstance3D.VISIBILITY_RANGE_FADE_DISABLED
 			continue           # never culled, so its gizmo is never hidden
 		# smaller = culls closer; keep props you're editing visible up close.
 		var d: float = r if ext >= 12.0 else (r * 0.6 if ext >= 3.0 else r * 0.35)

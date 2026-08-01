@@ -747,7 +747,10 @@ func _exit_tree() -> void:
 	if r != null:
 		HighpolyCollision.release_isolation(HighpolyLib.Tier.LOW, true, false)
 		HighpolyCollision.apply(r, false)                  # frees collision overlays
-		PlacedCull.show_all_gizmos()                       # never leave one unclickable
+		# visibility_range_end is SAVED into the scene, so leaving it set means
+		# the cull keeps running with the plugin disabled — and lands in the
+		# user's .tscn if they save
+		PlacedCull.release(r)
 		SdkHide.restore_all(r)                             # SDK assets/terrain back as they were
 		if mapctx: mapctx.apply(r, false, false, false)    # frees _MAP_CONTEXT + maptile
 		LightingScript.clear(r)                          # frees _GAME_LIGHTING
@@ -1465,6 +1468,7 @@ func _check_scene_change() -> void:
 		iso_chk.disabled = true
 	# the remembered visibility is keyed by node path, and those paths belong to
 	# the scene that just closed — put that one back before letting go of it
+	PlacedCull.release(old)      # the cull is a saved property: do not leave it on a scene we are done with
 	SdkHide.restore_all(old)
 	_sync_maptile_control()   # the new scene may carry the SDK's own decal
 	if lbl and old != null: lbl.text = "Different map opened — back to Low-Poly"
