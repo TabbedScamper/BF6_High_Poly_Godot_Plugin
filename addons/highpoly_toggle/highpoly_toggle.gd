@@ -16,6 +16,7 @@ var video: VideoStreamPlayer       # looping backdrop; paused whenever the panel
 var tint: ColorRect                # darkens the backdrop behind the controls
 var border: Panel                  # the outline
 var boot: Node                     # the running boot sequence, if one is playing
+var _giz_logged := false           # the gizmo diagnostic is said once, not every tick
 var tips: Control                  # hover descriptions, drawn inside the panel
 var sections: Array = []           # collapsible sections, in dock order
 var _vid_size := Vector2(480, 800) # encoded video size, for cover-scaling
@@ -697,7 +698,17 @@ func _enter_tree() -> void:
 					_cam3.global_position)
 			# gizmos follow the cull: the wireframe of a culled object goes with
 			# the object, instead of hanging in empty space
-			PlacedCull.tick_gizmos(_cam3.global_position)
+			if PlacedCull.tick_gizmos(_cam3.global_position) > 0 and not _giz_logged:
+				# Said once, because it answers the only question that matters if
+				# the outlines do not go away: whether the editor gave us any
+				# gizmo to hide in the first place.
+				_giz_logged = true
+				Log.info("Gizmo culling active: %d placed object(s) tracked, %d gizmo(s) found"
+					% [PlacedCull.managed_count(), PlacedCull.gizmos_seen()])
+				if PlacedCull.gizmos_seen() == 0:
+					Log.warn("No editor gizmos found on the placed objects — the "
+						+ "outline you see is drawn by something else, and hiding "
+						+ "gizmos cannot remove it")
 		# a CANCELLED scenery build (Extended Terrain switched off, or a new
 		# apply superseding it) ends without a build_finished — without this the
 		# bar would sit there at whatever percent it had reached
