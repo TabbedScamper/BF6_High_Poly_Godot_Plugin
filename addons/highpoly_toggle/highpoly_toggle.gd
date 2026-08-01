@@ -59,7 +59,7 @@ var mapctx_timer: Timer
 # in-flight handler (which may be awaiting a long download). A superseded
 # handler must NEVER apply its captured — now stale — checkbox state.
 var _mapctx_gen := 0
-var update_btn: Button         # "Update Plugin → vX.Y.Z" — hidden until a newer version exists
+var update_btn: Button         # "Update Plugin to vX.Y.Z" — hidden until a newer version exists
 var banner: Label              # legacy-mode notice ("reorganization pending")
 var progress: ProgressBar
 var sync_lbl: Label
@@ -482,6 +482,13 @@ func _enter_tree() -> void:
 	dock_scroll = ScrollContainer.new()
 	dock_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	dock_scroll.set_anchors_preset(Control.PRESET_FULL_RECT)
+	# Inset the controls off the panel edge. Only the scroller is inset — the
+	# video, the tint and the outline stay full-bleed, so the border frames the
+	# backdrop rather than the buttons.
+	dock_scroll.offset_left = PANEL_PAD
+	dock_scroll.offset_right = -PANEL_PAD
+	dock_scroll.offset_top = PANEL_PAD_V
+	dock_scroll.offset_bottom = -PANEL_PAD_V
 	dock.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	dock.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	dock_scroll.add_child(dock)
@@ -775,6 +782,8 @@ const WIN_MIN := Vector2i(340, 380)
 const WAVES := "res://addons/highpoly_toggle/waves.ogv"
 const WAVES_META := "res://addons/highpoly_toggle/waves.json"
 const TINT_DEFAULT := 0.72     # how far the backdrop dims once the controls are up
+const PANEL_PAD := 16          # controls held off the outline, left/right
+const PANEL_PAD_V := 12        # ...and top/bottom
 
 # The panel is layered back-to-front:
 #   bg      opaque, so the panel is legible with no video at all
@@ -1045,7 +1054,7 @@ func _do_purge(map: String, info: Dictionary, was_open: bool) -> void:
 func _check_plugin_update() -> void:
 	HighpolyUpdater.check_plugin_update(dock, func(new_version: String, _notes: String):
 		if new_version != "" and update_btn != null:
-			update_btn.text = "Update Plugin → v%s" % new_version
+			update_btn.text = "Update Plugin to v%s" % new_version
 			update_btn.tooltip_text = "A newer plugin version is available. One click downloads it over addons/highpoly_toggle; restart the editor afterwards."
 			update_btn.visible = true)
 
