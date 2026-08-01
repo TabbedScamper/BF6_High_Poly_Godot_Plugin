@@ -28,13 +28,107 @@ const SKIP := ["_MAP_CONTEXT", "_MAP_FX", "_MAP_LIGHTS", "_WATER_CHUNKS", "_COLL
 # on carries it into the .tscn. So whatever a mesh had before we touched it is
 # remembered and restored when we let go of the scene.
 #
-# (An earlier version of this also cleared the editor gizmos of culled objects,
-# on the theory that the blue wireframes left behind were gizmos. Measured, they
-# are not: with every culled object reporting "0 STILL carrying a gizmo" the
-# wireframes were unchanged. The machinery cost a walk of every object twice a
-# second and stopped culled objects being click-selected, for no effect, so it
-# is gone.)
 static var _orig: Dictionary = {}  # instance id -> [end, margin, fade_mode]
+
+# ---------- the collision outlines follow the cull ----------
+# The blue wireframe left standing where a culled object used to be is its
+# CollisionShape3D gizmo. CollisionShape3D is not a GeometryInstance3D, so
+# visibility_range cannot touch it: the mesh goes, the outline stays.
+#
+# They live INSIDE the mesh's own subtree — the collision comes from the
+# imported .glb, as a child of the Mesh node, not as a sibling. An earlier
+# attempt searched the mesh's PARENT and found none, which is how a correct
+# theory produced a wrong answer.
+#
+# The subtree walk happens once per apply, never per tick. A tick is one
+# distance compare per mesh, and touches gizmos only when the state changes.
+# Clearing a COLLISION gizmo does not affect click-selecting the object — that
+# goes through the mesh — so this does not have the selection cost that made
+# the earlier mesh-gizmo version a bad trade.
+const GIZMO_MARGIN := 1.05         # hide slightly beyond the cull, never before
+
+static var _managed: Array = []    # [{"n": mesh, "d": float, "hid": bool, "co": Array}]
+static var _regrown := 0           # gizmos the editor rebuilt while still culled
+
+static func managed_count() -> int: return _managed.size()
+
+static func _collision_in(mi: Node) -> Array:
+	var out: Array = []
+	var stack: Array = mi.get_children()
+	while not stack.is_empty():
+		var n: Node = stack.pop_back()
+		if n is CollisionShape3D or n is CollisionPolygon3D or n is CollisionObject3D:
+			out.append(n)
+		for c in n.get_children():
+			stack.append(c)
+	return out
+
+static func _set_hidden(n3: Node3D, hide: bool) -> void:
+	for g in n3.get_gizmos():
+		if g is EditorNode3DGizmo:
+			(g as EditorNode3DGizmo).set_hidden(hide)
+	if hide: n3.clear_gizmos()
+	else: n3.update_gizmos()
+
+static func _record(mi: MeshInstance3D) -> void:
+	var d := mi.visibility_range_end
+	if d <= 0.0: return                         # never culls, so nothing to follow
+	for e in _managed:
+		if e["n"] == mi:
+			e["d"] = d
+			return
+	var co := _collision_in(mi)
+	if co.is_empty(): return                    # nothing that would be left behind
+	_managed.append({"n": mi, "d": d, "hid": false, "co": co})
+
+static func tick_gizmos(cam_pos: Vector3) -> int:
+	var changed := 0
+	var dead := false
+	for e in _managed:
+		var mi = e["n"]
+		if not is_instance_valid(mi):
+			dead = true
+			continue
+		var far: bool = (mi as Node3D).global_position.distance_to(cam_pos) 			> float(e["d"]) * GIZMO_MARGIN
+		if far == bool(e["hid"]):
+			# the editor rebuilds gizmos by itself (a transform change, a
+			# selection), so one that is meant to be gone can come back
+			if far:
+				for c in e["co"]:
+					if is_instance_valid(c) and not (c as Node3D).get_gizmos().is_empty():
+						(c as Node3D).clear_gizmos()
+						_regrown += 1
+			continue
+		for c in e["co"]:
+			if is_instance_valid(c): _set_hidden(c as Node3D, far)
+		e["hid"] = far
+		changed += 1
+	if dead:
+		var keep: Array = []
+		for e in _managed:
+			if is_instance_valid(e["n"]): keep.append(e)
+		_managed = keep
+	return changed
+
+static func show_all_gizmos() -> void:
+	for e in _managed:
+		for c in e["co"]:
+			if is_instance_valid(c): _set_hidden(c as Node3D, false)
+	_managed.clear()
+
+static func status(_cam := Vector3.ZERO) -> String:
+	var far := 0
+	var stale := 0
+	var co := 0
+	for e in _managed:
+		co += (e["co"] as Array).size()
+		if not bool(e["hid"]): continue
+		far += 1
+		for c in e["co"]:
+			if is_instance_valid(c) and not (c as Node3D).get_gizmos().is_empty():
+				stale += 1
+	return ("%d object(s) with %d collision outline(s); %d past their range, "
+		+ "%d outline(s) still showing, %d rebuilt by the editor") 		% [_managed.size(), co, far, stale, _regrown]
 
 static func _remember(mi: GeometryInstance3D) -> void:
 	var id := mi.get_instance_id()
@@ -108,6 +202,7 @@ static func class_census(root: Node, top := 12) -> String:
 # whatever it was. Call before letting go of a scene —
 # teardown, or opening a different one.
 static func release(root: Node) -> void:
+	show_all_gizmos()
 	var blind := 0
 	if root != null:
 		var arr: Array = []
@@ -138,6 +233,19 @@ static func apply(root: Node, r: float, on: bool) -> String:
 	var arr: Array = []
 	_collect(root, arr)
 	var n := 0
+	# forget only the meshes in THIS pass: apply() also runs for a single node
+	# when one is added, and clearing everything there would forget the scene
+	var touched: Dictionary = {}
+	for mi in arr: touched[(mi as Object).get_instance_id()] = true
+	var keep: Array = []
+	for e in _managed:
+		if not is_instance_valid(e["n"]): continue
+		if touched.has((e["n"] as Object).get_instance_id()):
+			for c in e["co"]:
+				if is_instance_valid(c) and bool(e["hid"]): _set_hidden(c as Node3D, false)
+			continue
+		keep.append(e)
+	_managed = keep
 	for mi in arr:
 		_remember(mi)                  # what it had before we touched it
 		var ext: float = (mi as VisualInstance3D).get_aabb().get_longest_axis_size()
@@ -147,6 +255,7 @@ static func apply(root: Node, r: float, on: bool) -> String:
 			# away. Restored to what it had, NOT zeroed: an object can ship with
 			# a range authored in, and zeroing would strip that from the scene.
 			_restore_range(mi)
+			_record(mi)                # it may still cull on its own terms
 			continue
 		# smaller = culls closer; keep props you're editing visible up close.
 		var d: float = r if ext >= 12.0 else (r * 0.6 if ext >= 3.0 else r * 0.35)
@@ -160,6 +269,7 @@ static func apply(root: Node, r: float, on: bool) -> String:
 		else:
 			mi.visibility_range_end_margin = maxf(d * 0.1, 8.0)
 			mi.visibility_range_fade_mode = GeometryInstance3D.VISIBILITY_RANGE_FADE_DISABLED
+		_record(mi)
 		n += 1
 	if not on:
 		return "Placed objects: full range"
