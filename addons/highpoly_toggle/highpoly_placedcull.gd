@@ -49,6 +49,35 @@ static var _by_root: Dictionary = {}   # instance id -> index into _managed
 static var _gizmos_seen := 0
 
 static func managed_count() -> int: return _managed.size()
+
+# When nothing on the placed roots carries a gizmo, the outline is drawn by
+# something else — and the only way to find out what, from outside the editor,
+# is to ask the scene which nodes have gizmos at all. Reports the classes that
+# do, so the carrier can be identified instead of guessed at.
+static func gizmo_carriers(root: Node) -> String:
+	if root == null: return "no scene open"
+	var by_class: Dictionary = {}
+	var total := 0
+	var nodes := 0
+	var stack: Array = [root]
+	while not stack.is_empty():
+		var n: Node = stack.pop_back()
+		nodes += 1
+		if n is Node3D:
+			var k: int = (n as Node3D).get_gizmos().size()
+			if k > 0:
+				total += k
+				var c := n.get_class()
+				by_class[c] = int(by_class.get(c, 0)) + k
+		for c2 in n.get_children():
+			stack.append(c2)
+	if total == 0:
+		return "%d nodes walked, NOT ONE carries an editor gizmo" % nodes
+	var parts: Array = []
+	for c in by_class:
+		parts.append("%s x%d" % [c, int(by_class[c])])
+	parts.sort()
+	return "%d gizmo(s) across %d nodes: %s" % [total, nodes, ", ".join(parts)]
 static func gizmos_seen() -> int: return _gizmos_seen
 
 # The node the user placed: the nearest ancestor belonging to the edited scene.
