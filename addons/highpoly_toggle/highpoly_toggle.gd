@@ -36,6 +36,7 @@ const PlacedCull = preload("highpoly_placedcull.gd")
 const TipsScript = preload("highpoly_tips.gd")
 const JobsScript = preload("highpoly_jobs.gd")
 const SdkHide = preload("highpoly_sdkhide.gd")
+const ShapeViz = preload("highpoly_shapeviz.gd")
 const Log = preload("highpoly_log.gd")
 const SectionScript = preload("highpoly_section.gd")
 const SplashScript = preload("highpoly_splash.gd")
@@ -44,6 +45,7 @@ var previews: Node
 var mapctx: Node
 var sync: Node
 var col_chk: Button          # Show collisions overlay
+var shape_chk: Button        # Godot's own collision outlines (off by default)
 var iso_chk: Button          # Isolate selected: collision only (live w/ selection)
 var col_pick: ColorPickerButton
 var col_alpha: HSlider
@@ -256,6 +258,20 @@ func _enter_tree() -> void:
 	iso_chk.tooltip_text = "Hides everything except the collision shapes of the pieces you have selected, so you can look at one shape without the rest in the way. Needs Collisions switched on."
 	iso_chk.toggled.connect(_isolate_toggled)
 	col_chips.add_child(iso_chk)
+
+	# Off by default. Every placed object carries one of Godot's collision
+	# outlines, and on a built-up level that is thousands of extra wireframes
+	# drawn every frame — it stutters, and they are also what stays behind when
+	# an object is too far away to draw.
+	shape_chk = Theme_.chip("Godot shape outlines")
+	shape_chk.tooltip_text = "Godot draws a teal outline around every object's collision shape. On a busy level that is thousands of extra outlines every frame, so the plugin switches them off. Turn this on to get them back."
+	shape_chk.toggled.connect(func(v: bool):
+		var _r := EditorInterface.get_edited_scene_root()
+		var n: int = ShapeViz.apply(_r, not v)
+		lbl.text = "Godot shape outlines %s (%d)" % ["shown" if v else "hidden", n]
+		EditorInterface.get_editor_settings().set_project_metadata(
+			"highpoly", "shape_outlines", v))
+	col_chips.add_child(shape_chk)
 
 	var cc_row := HBoxContainer.new(); host.add_child(cc_row)
 	var cc_lbl := Label.new(); cc_lbl.text = "Color"
@@ -581,7 +597,8 @@ func _enter_tree() -> void:
 	check_out.text = "Check outlines"
 	check_out.tooltip_text = "Lists every blue debug colour Godot can draw with, and what this level is built from. Use it if you see outlines around objects that are too far away to be drawn — the setting that names a blue colour is the one drawing them."
 	check_out.pressed.connect(func():
-		Log.info("Outlines: " + PlacedCull.status())
+		Log.info("Godot's collision outlines: %s (%d tracked)"
+			% ["HIDDEN" if ShapeViz.is_hidden() else "shown", ShapeViz.count()])
 		Log.info("Blue debug colours:
            " + PlacedCull.blue_debug_settings())
 		Log.info("Level is made of: " + PlacedCull.class_census(
@@ -641,6 +658,7 @@ func _enter_tree() -> void:
 	# the boot sequence is started from the open path, not from visibility_changed:
 	# that signal also fires on close, and every route to opening the panel goes
 	# through the toolbar button's toggle anyway
+	_apply_shape_outlines.call_deferred()
 	_restore_section_state.call_deferred()
 	Log.hook(_log_line)
 	for r in Log.lines():                  # anything logged before the panel opened
@@ -706,9 +724,7 @@ func _enter_tree() -> void:
 		if _cam3:
 			LightingScript.tick_lights(EditorInterface.get_edited_scene_root(),
 					_cam3.global_position)
-			# the collision outline of a culled object goes with the object,
-			# instead of being left standing in empty space
-			PlacedCull.tick_gizmos(_cam3.global_position)
+			ShapeViz.tick()      # tidy up any outline the editor rebuilt
 		# a CANCELLED scenery build (Extended Terrain switched off, or a new
 		# apply superseding it) ends without a build_finished — without this the
 		# bar would sit there at whatever percent it had reached
@@ -750,6 +766,7 @@ func _exit_tree() -> void:
 		# visibility_range_end is SAVED into the scene, so leaving it set means
 		# the cull keeps running with the plugin disabled — and lands in the
 		# user's .tscn if they save
+		ShapeViz.release(r)                                # Godot's outlines back
 		PlacedCull.release(r)
 		SdkHide.restore_all(r)                             # SDK assets/terrain back as they were
 		if mapctx: mapctx.apply(r, false, false, false)    # frees _MAP_CONTEXT + maptile
@@ -1019,6 +1036,17 @@ func _refresh_job_bar() -> void:
 	var pct := "%d%%" % int(round(jobs.ratio() * 100.0))
 	# the "1/2" counts queued DOWNLOADS; local work is not one of a batch
 	job_pct.text = pct if (jobs.count() <= 1 or jobs.active_label() == "") 		else "%s  %d/%d" % [pct, jobs.index(), jobs.count()]
+
+# Off unless the user has said otherwise. Stored per project, so someone who
+# wants Godot's outlines back keeps them back.
+func _apply_shape_outlines() -> void:
+	var want_shown: bool = bool(EditorInterface.get_editor_settings()
+		.get_project_metadata("highpoly", "shape_outlines", false))
+	if shape_chk: shape_chk.set_pressed_no_signal(want_shown)
+	var n: int = ShapeViz.apply(EditorInterface.get_edited_scene_root(), not want_shown)
+	if n > 0 and not want_shown:
+		Log.info("Hid %d of Godot's collision outlines — thousands of them drawn "
+			% n + "every frame is what was stuttering")
 
 func _tips_hide(_v: float = 0.0) -> void:
 	if tips: tips.hide_now()
@@ -1468,6 +1496,7 @@ func _check_scene_change() -> void:
 		iso_chk.disabled = true
 	# the remembered visibility is keyed by node path, and those paths belong to
 	# the scene that just closed — put that one back before letting go of it
+	ShapeViz.release(old)
 	PlacedCull.release(old)      # the cull is a saved property: do not leave it on a scene we are done with
 	SdkHide.restore_all(old)
 	_sync_maptile_control()   # the new scene may carry the SDK's own decal
