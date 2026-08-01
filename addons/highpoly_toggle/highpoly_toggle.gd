@@ -709,6 +709,10 @@ func _enter_tree() -> void:
 					Log.warn("No editor gizmos found on the placed objects — the "
 						+ "outline you see is drawn by something else, and hiding "
 						+ "gizmos cannot remove it")
+					# name the carrier rather than guess at it: this walks the
+					# whole scene once, only in the case where we found nothing
+					Log.info("Gizmo survey: " + PlacedCull.gizmo_carriers(
+						EditorInterface.get_edited_scene_root()))
 		# a CANCELLED scenery build (Extended Terrain switched off, or a new
 		# apply superseding it) ends without a build_finished — without this the
 		# bar would sit there at whatever percent it had reached
