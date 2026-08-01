@@ -16,8 +16,6 @@ var video: VideoStreamPlayer       # looping backdrop; paused whenever the panel
 var tint: ColorRect                # darkens the backdrop behind the controls
 var border: Panel                  # the outline
 var boot: Node                     # the running boot sequence, if one is playing
-var _giz_logged := false           # the gizmo diagnostic is said once, not every tick
-var _giz_followup := 0             # ticks until the settled-state follow-up
 var tips: Control                  # hover descriptions, drawn inside the panel
 var sections: Array = []           # collapsible sections, in dock order
 var _vid_size := Vector2(480, 800) # encoded video size, for cover-scaling
@@ -580,16 +578,13 @@ func _enter_tree() -> void:
 		OS.shell_show_in_file_manager(p))
 	log_row.add_child(save_log)
 	var check_out := Button.new()
-	check_out.text = "Check outlines"
-	check_out.tooltip_text = "Reports, right now, how many objects are past their draw distance and whether any of them still has an outline attached. Useful if you can see outlines that should have gone."
+	check_out.text = "Find outline setting"
+	check_out.tooltip_text = "Lists every blue debug colour Godot can draw with, and what this level is built from. Use it if you see outlines around objects that are too far away to be drawn — the setting that names a blue colour is the one drawing them."
 	check_out.pressed.connect(func():
-		var vp := EditorInterface.get_editor_viewport_3d(0)
-		var cam := vp.get_camera_3d() if vp else null
-		if cam == null:
-			Log.warn("No 3D viewport camera — open a level first")
-			return
-		PlacedCull.tick_gizmos(cam.global_position)
-		Log.info("Outlines: " + PlacedCull.status(cam.global_position)))
+		Log.info("Blue debug colours:
+           " + PlacedCull.blue_debug_settings())
+		Log.info("Level is made of: " + PlacedCull.class_census(
+			EditorInterface.get_edited_scene_root())))
 	log_row.add_child(check_out)
 
 	var clear_log := Button.new()
@@ -710,34 +705,6 @@ func _enter_tree() -> void:
 		if _cam3:
 			LightingScript.tick_lights(EditorInterface.get_edited_scene_root(),
 					_cam3.global_position)
-			# gizmos follow the cull: the wireframe of a culled object goes with
-			# the object, instead of hanging in empty space
-			if PlacedCull.tick_gizmos(_cam3.global_position) > 0 and not _giz_logged:
-				# Said once, because it answers the only question that matters if
-				# the outlines do not go away: whether the editor gave us any
-				# gizmo to hide in the first place.
-				_giz_logged = true
-				# says WHAT it tracked, so a log cannot be mistaken for one from
-				# a build that tracked something else
-				Log.info("Gizmo culling active: %d culling mesh(es) tracked, %d gizmo(s) hidden"
-					% [PlacedCull.managed_count(), PlacedCull.gizmos_seen()])
-				if PlacedCull.gizmos_seen() == 0:
-					Log.warn("No editor gizmos found on the culling meshes — the "
-						+ "outline you see is drawn by something else, and hiding "
-						+ "gizmos cannot remove it")
-					# name the carrier rather than guess at it: this walks the
-					# whole scene once, only in the case where we found nothing
-					Log.info("Gizmo survey: " + PlacedCull.gizmo_carriers(
-						EditorInterface.get_edited_scene_root()))
-			elif _giz_logged and _giz_followup >= 0:
-				# A follow-up once the scene has settled. The first line fires on
-				# the first tick that changed anything, which says nothing about
-				# the steady state — and waiting for someone to press a button to
-				# find that out is not a diagnostic, it is a hope.
-				_giz_followup += 1
-				if _giz_followup == 20:          # ~10s later
-					_giz_followup = -1
-					Log.info("Outlines: " + PlacedCull.status(_cam3.global_position))
 		# a CANCELLED scenery build (Extended Terrain switched off, or a new
 		# apply superseding it) ends without a build_finished — without this the
 		# bar would sit there at whatever percent it had reached
