@@ -35,6 +35,7 @@ var _scene_want: Dictionary = {}      # names the current scene is waiting on
 var _workers := 0
 var _done := 0
 var _fail_count := 0
+var _write_failures := 0              # fetched fine but couldn't be stored
 var _started := false
 var _recheck: Timer = null
 
@@ -229,6 +230,19 @@ func _worker() -> void:
 		elif HighpolyStore.ingest_bytes(nm, data, str(e.get("hash", "")), bool(e.get("nofit", false))):
 			_done += 1
 			model_ready.emit(nm)
+		else:
+			# The bytes arrived but could NOT be written (disk full, unwritable
+			# user://, path too long). This used to fall through both branches:
+			# not counted done, not counted failed, no message — the model simply
+			# vanished and re-queued forever on the next diff. Silent, endless,
+			# and invisible to the user. Now it is a first-class failure.
+			_failed[nm] = true
+			_fail_count += 1
+			_write_failures += 1
+			if _write_failures == 1:                      # log once, not 7,670 times
+				push_error("High-Poly Preview: downloaded '%s' but could not write it to %s — "
+					% [nm, ProjectSettings.globalize_path(HighpolyStore.MODELS_DIR)]
+					+ "check free disk space and folder permissions.")
 		_scene_want.erase(nm)
 		progress_changed.emit()
 	http.queue_free()
@@ -252,6 +266,11 @@ func status_text() -> String:
 		return bootstrap_note
 	var p := pending()
 	if p == 0:
+		# a write failure is not a network problem and retrying won't fix it —
+		# say what's actually wrong instead of "retrying next check"
+		if _write_failures > 0:
+			return "%d model(s) could not be saved — check free disk space and permissions on %s" \
+				% [_write_failures, ProjectSettings.globalize_path(HighpolyStore.ROOT)]
 		if _fail_count > 0:
 			return "Library up to date (%d failed — retrying next check)" % _fail_count
 		return "Library up to date · %d models local" % HighpolyStore.count()
@@ -269,6 +288,26 @@ func progress_ratio() -> float:
 	var total := _done + pending()
 	return 1.0 if total == 0 else float(_done) / float(total)
 
+# The bundle lands as a zip AND is then extracted beside itself, so the peak
+# requirement is roughly twice its size. Downloading 5.6 GB onto a disk that
+# can't hold the result used to "succeed" into a half-installed library (see
+# _extract_bundle), so check first and fall back to the per-file queue, which
+# needs only one model's worth of space at a time.
+func _no_room_for_bundle(bytes: int) -> bool:
+	if bytes <= 0: return false
+	HighpolyStore.ensure_dir(HighpolyStore.ROOT)
+	var da := DirAccess.open(HighpolyStore.ROOT)
+	if da == null: return false                      # can't tell — let it try
+	var free := da.get_space_left()
+	if free <= 0: return false
+	var need := int(bytes * 2.1)                     # zip + extracted + slack
+	if free >= need: return false
+	bootstrap_note = "Not enough disk space for the one-shot library download (%d GB free, ~%d GB needed) — downloading models individually instead." \
+		% [int(free / 1073741824.0), int(need / 1073741824.0)]
+	push_warning("High-Poly Preview: " + bootstrap_note)
+	progress_changed.emit()
+	return true
+
 # ---------- full-library bootstrap (one zip instead of thousands of GETs) ----------
 func _bootstrap_bundle() -> void:
 	bootstrapping = true
@@ -280,7 +319,7 @@ func _bootstrap_bundle() -> void:
 	var meta_raw := await HighpolyUpdater._fetch(http, base + "bundles/bundles.json")
 	if not meta_raw.is_empty():
 		var meta: Variant = JSON.parse_string(meta_raw.get_string_from_utf8())
-		if meta is Dictionary:
+		if meta is Dictionary and not _no_room_for_bundle(int((meta as Dictionary).get("bytes", 0))):
 			var total_mb := int(int((meta as Dictionary).get("bytes", 0)) / 1048576.0)
 			var tmp := "user://highpoly-library.zip"
 			http.download_file = tmp
@@ -295,9 +334,20 @@ func _bootstrap_bundle() -> void:
 				if got > 0:
 					bootstrap_note = "Downloading library… %d / %d MB" % [got / 1048576, total_mb]
 					progress_changed.emit())
-			if http.request(base + str((meta as Dictionary).get("file", "bundles/highpoly-library.zip"))) == OK:
+			# Retry like every other fetch does. This is a multi-GB single
+			# request: one transient blip used to abandon the whole bundle and
+			# silently drop the user onto 7,670 individual throttled GETs.
+			var url := base + str((meta as Dictionary).get("file", "bundles/highpoly-library.zip"))
+			for attempt in range(3):
+				if attempt > 0:
+					bootstrap_note = "Library download interrupted — retrying (%d/3)…" % (attempt + 1)
+					progress_changed.emit()
+					await get_tree().create_timer(2.0 * attempt).timeout
+				if http.request(url) != OK:
+					continue
 				var res: Array = await http.request_completed
 				ok = res[0] == HTTPRequest.RESULT_SUCCESS and res[1] == 200
+				if ok: break
 			tick.queue_free()
 			if ok:
 				bootstrap_note = "Installing library…"
@@ -332,7 +382,12 @@ func _extract_bundle(tmp: String) -> bool:
 		if f.ends_with("_med.glb"): continue
 		var nm := f.get_file().get_basename()
 		var out := FileAccess.open(HighpolyStore.model_path(nm), FileAccess.WRITE)
-		if out == null: continue
+		if out == null:
+			# was a bare `continue`: a disk that filled up mid-extract silently
+			# skipped the rest and still reported success, leaving a library that
+			# looked installed but was half empty
+			_write_failures += 1
+			continue
 		out.store_buffer(zr.read_file(f))
 		out.close()
 		var sj: Dictionary = side.get(nm, {})
@@ -344,4 +399,10 @@ func _extract_bundle(tmp: String) -> bool:
 			await get_tree().process_frame
 	zr.close()
 	HighpolyStore.save()
+	if _write_failures > 0:
+		push_error("High-Poly Preview: %d of %d models could not be written to %s — "
+			% [_write_failures, _write_failures + n, ProjectSettings.globalize_path(HighpolyStore.MODELS_DIR)]
+			+ "the library is incomplete; free up disk space and hit Check for Updates.")
+	# whatever failed to write stays absent from the index, so the per-file queue
+	# picks it up on the next diff — but the user now knows why
 	return n > 0
