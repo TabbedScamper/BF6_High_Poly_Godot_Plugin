@@ -13,6 +13,16 @@ class_name HighpolyMapContext
 
 const NODE := "_MAP_CONTEXT"
 const CACHE := "user://mapcontext"
+# Download liveness. A dead connection is the one failure that never resolves
+# itself: HTTPRequest.timeout defaults to 0 (wait forever), so `await
+# request_completed` on a socket that was accepted and then went quiet hangs for
+# the rest of the session. Small fetches get a hard deadline; big streamed
+# packages get a stall watchdog instead, so a slow line is never mistaken for a
+# dead one.
+const FETCH_TIMEOUT := 60.0     # seconds, small JSON payloads
+const POLL_SECS := 0.5          # progress/liveness sampling interval
+const STALL_SECS := 45.0        # no new bytes for this long = give up and retry
+var stall_secs: float = STALL_SECS   # instance-tunable so tests need not wait 45 s
 # shared, deduplicated prop-mesh store — downloaded ONCE and reused across every
 # map (a rock used by 5 maps is stored once), so per-map data stays tiny.
 const PROPS_CACHE := "user://mapcontext/_props"
@@ -269,6 +279,7 @@ func cache_status(map: String) -> String:
 
 func _fetch_once(host: Node, url: String, to_file := "") -> PackedByteArray:
 	var http := HTTPRequest.new(); host.add_child(http)
+	http.timeout = FETCH_TIMEOUT     # 0 (the default) means await-forever
 	if to_file != "": http.download_file = to_file
 	var err := http.request(url)
 	if err != OK: http.queue_free(); return PackedByteArray()
@@ -297,30 +308,57 @@ func _fetch(host: Node, url: String, to_file := "") -> PackedByteArray:
 # plugin performs has to be visible there, not just as a line of status text.
 func _download_with_progress(host: Node, url: String, to_file: String, status: Callable,
 		label: String, total_mb := 0) -> bool:
-	var http := HTTPRequest.new(); host.add_child(http)
-	http.download_file = to_file
 	var total_bytes := total_mb * 1048576
-	# show the bar immediately — the first tick is half a second away, and a
+	# show the bar immediately — the first poll is half a second away, and a
 	# stalled connection must still look like "started", not like nothing happened
 	download_progress.emit(label, 0, total_bytes)
-	var tick := Timer.new(); tick.wait_time = 0.5; host.add_child(tick); tick.start()
-	tick.timeout.connect(func():
-		var d := http.get_downloaded_bytes()
-		# get_body_size() is the real Content-Length once headers land; prefer it
-		# over the manifest's estimate so the bar can't exceed 100%
-		var t := http.get_body_size()
-		if t > 0: total_bytes = t
-		download_progress.emit(label, d, total_bytes)
-		if d > 0:
-			var mb := d / 1048576
-			status.call("%s %d%s MB…" % [label, mb, (" / %d" % total_mb) if total_mb > 0 else ""]))
 	var ok := false
-	if http.request(url) == OK:
-		var res: Array = await http.request_completed
-		ok = res[0] == HTTPRequest.RESULT_SUCCESS and res[1] == 200 and FileAccess.file_exists(to_file)
-	tick.queue_free(); http.queue_free()
-	# the 0.5 s ticker never lands exactly on the last byte — finish the bar
-	# before removing it, so a completed download doesn't vanish at 88%
+	for attempt in range(3):
+		if attempt > 0:
+			if status.is_valid():
+				status.call("%s connection stalled — retrying (%d/3)…" % [label, attempt + 1])
+			await host.get_tree().create_timer(2.0 * attempt).timeout
+		var http := HTTPRequest.new(); host.add_child(http)
+		http.download_file = to_file
+		# Deliberately NOT http.timeout: that caps the whole transfer, and a big
+		# package over a slow line is legitimately long. What we actually care
+		# about is a transfer that stops MOVING, so watch the byte counter.
+		var state := {"done": false, "ok": false}
+		http.request_completed.connect(func(res: int, code: int, _h, _b):
+			state["done"] = true
+			state["ok"] = res == HTTPRequest.RESULT_SUCCESS and code == 200,
+			CONNECT_ONE_SHOT)
+		if http.request(url) != OK:
+			http.queue_free()
+			continue
+		var last := 0
+		var idle := 0.0
+		while not state["done"]:
+			await host.get_tree().create_timer(POLL_SECS).timeout
+			var d := http.get_downloaded_bytes()
+			# get_body_size() is the real Content-Length once headers land; prefer
+			# it over the manifest's estimate so the bar can't exceed 100%
+			var t := http.get_body_size()
+			if t > 0: total_bytes = t
+			if d > last:
+				last = d
+				idle = 0.0
+			else:
+				idle += POLL_SECS
+			download_progress.emit(label, d, total_bytes)
+			if d > 0 and status.is_valid():
+				status.call("%s %d%s MB…" % [label, d / 1048576, (" / %d" % total_mb) if total_mb > 0 else ""])
+			if idle >= stall_secs and not state["done"]:
+				# cancel_request() does NOT emit request_completed, so break out
+				# ourselves — awaiting that signal here would hang forever, which
+				# is the very bug this loop exists to end
+				http.cancel_request()
+				break
+		ok = state["ok"] and FileAccess.file_exists(to_file)
+		http.queue_free()
+		if ok: break
+	# the poll never lands exactly on the last byte — finish the bar before
+	# removing it, so a completed download doesn't vanish at 88%
 	if ok and total_bytes > 0:
 		download_progress.emit(label, total_bytes, total_bytes)
 	download_ended.emit(label)

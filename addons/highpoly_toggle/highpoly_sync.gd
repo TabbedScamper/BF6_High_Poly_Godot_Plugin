@@ -13,6 +13,11 @@ signal manifest_refreshed()           # a NEW manifest was adopted (models chang
 
 const MAX_WORKERS := 2                # r2.dev throttles bursts; 2 is the sweet spot
 const RECHECK_SECS := 3600.0          # re-diff the manifest hourly
+# No new bytes for this long means the transfer is dead, not slow. Needed because
+# HTTPRequest.timeout defaults to 0 (wait forever): a socket that is accepted and
+# then goes quiet never fires request_completed, and with only MAX_WORKERS
+# workers, two such stalls wedge the entire library sync for the session.
+const STALL_SECS := 45.0
 
 var manifest: Dictionary = {}         # name -> {glb, hash, nofit}
 var base := ""                        # registry base url
@@ -322,33 +327,50 @@ func _bootstrap_bundle() -> void:
 		if meta is Dictionary and not _no_room_for_bundle(int((meta as Dictionary).get("bytes", 0))):
 			var total_mb := int(int((meta as Dictionary).get("bytes", 0)) / 1048576.0)
 			var tmp := "user://highpoly-library.zip"
-			http.download_file = tmp
 			_boot_total = int((meta as Dictionary).get("bytes", 0))
-			var tick := Timer.new(); tick.wait_time = 1.0
-			add_child(tick); tick.start()
-			tick.timeout.connect(func():
-				var got := http.get_downloaded_bytes()
-				var bsz := http.get_body_size()   # real Content-Length once headers land
-				if bsz > 0: _boot_total = bsz
-				_boot_done = got
-				if got > 0:
-					bootstrap_note = "Downloading library… %d / %d MB" % [got / 1048576, total_mb]
-					progress_changed.emit())
-			# Retry like every other fetch does. This is a multi-GB single
-			# request: one transient blip used to abandon the whole bundle and
-			# silently drop the user onto 7,670 individual throttled GETs.
+			# Retry like every other fetch does, and never await a signal that a dead
+			# socket will not send. HTTPRequest.timeout is 0 by default (wait forever),
+			# so a connection that is accepted and then abandoned used to hang the
+			# bootstrap for the rest of the session with the bar frozen. A fixed timeout
+			# is wrong for a multi-GB transfer, so the test is whether the byte counter
+			# is still MOVING.
 			var url := base + str((meta as Dictionary).get("file", "bundles/highpoly-library.zip"))
 			for attempt in range(3):
 				if attempt > 0:
-					bootstrap_note = "Library download interrupted — retrying (%d/3)…" % (attempt + 1)
+					bootstrap_note = "Library download stalled — retrying (%d/3)…" % (attempt + 1)
 					progress_changed.emit()
 					await get_tree().create_timer(2.0 * attempt).timeout
-				if http.request(url) != OK:
+				var dl := HTTPRequest.new(); add_child(dl)
+				dl.download_file = tmp
+				var st := {"done": false, "ok": false}
+				dl.request_completed.connect(func(res: int, code: int, _h, _b):
+					st["done"] = true
+					st["ok"] = res == HTTPRequest.RESULT_SUCCESS and code == 200,
+					CONNECT_ONE_SHOT)
+				if dl.request(url) != OK:
+					dl.queue_free()
 					continue
-				var res: Array = await http.request_completed
-				ok = res[0] == HTTPRequest.RESULT_SUCCESS and res[1] == 200
+				var last := 0
+				var idle := 0.0
+				while not st["done"]:
+					await get_tree().create_timer(1.0).timeout
+					var got := dl.get_downloaded_bytes()
+					var bsz := dl.get_body_size()   # real Content-Length once headers land
+					if bsz > 0: _boot_total = bsz
+					_boot_done = got
+					if got > last:
+						last = got
+						idle = 0.0
+						bootstrap_note = "Downloading library… %d / %d MB" % [got / 1048576, total_mb]
+						progress_changed.emit()
+					else:
+						idle += 1.0
+					if idle >= STALL_SECS and not st["done"]:
+						dl.cancel_request()   # does NOT emit request_completed
+						break
+				ok = st["ok"]
+				dl.queue_free()
 				if ok: break
-			tick.queue_free()
 			if ok:
 				bootstrap_note = "Installing library…"
 				progress_changed.emit()
