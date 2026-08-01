@@ -5,9 +5,9 @@ class_name HighpolySection
 #
 #   closed   title centred, both white. Hovering warms them to the accent and
 #            drops a description of what the section is for.
-#   opening  the description goes, the title slides left and settles solid
-#            accent above the line, and the contents rise out from behind the
-#            line as they fade in.
+#   opening  the description goes, the title settles solid accent, and the
+#            contents rise out from behind the line as they fade in, starting a
+#            little below it rather than flush against it.
 #   closing  the same in reverse.
 #
 # The contents live in a clipped box whose height is what actually animates, so
@@ -25,10 +25,10 @@ const LINE_H := 2.0
 const EDGE := 22.0         # the line stops short of the panel edges
 const FADE := 64.0         # length of the fade at each end
 const OPEN_SECS := 0.40
-const SLIDE_SECS := 0.34
 const HL_SECS := 0.28
 const RISE := 24.0         # how far the contents travel on the way out
 const TITLE_PAD := 4.0
+const CONTENT_TOP := 8.0   # breathing room between the line and the contents
 
 signal opened_changed(open: bool)
 
@@ -99,16 +99,18 @@ func _place_title() -> void:
 	if title_lbl == null or head == null: return
 	title_lbl.size = title_lbl.get_minimum_size()
 	title_lbl.position.y = 0.0
-	title_lbl.position.x = _title_x(_open)
+	title_lbl.position.x = _title_x()
 	# Sized here rather than at setup(): a Label reports a smaller height until
 	# it has been shaped, and a header measured off that value is too short to
 	# contain its own line. _place_title runs again on the first resize, by which
 	# point the real height is known.
 	head.custom_minimum_size.y = title_lbl.size.y + LINE_GAP + LINE_H + TITLE_PAD
 
-func _title_x(open: bool) -> float:
+# Centred in both states. Sliding it left on open read worse than it sounded —
+# the title jumping sideways drew the eye away from the contents arriving.
+func _title_x() -> float:
 	if head == null or title_lbl == null: return 0.0
-	return EDGE if open else maxf(EDGE, (head.size.x - title_lbl.size.x) * 0.5)
+	return maxf(EDGE, (head.size.x - title_lbl.size.x) * 0.5)
 
 func _fit_content() -> void:
 	if content == null or body == null: return
@@ -116,7 +118,7 @@ func _fit_content() -> void:
 	if _open:
 		# the panel may have been resized while open; keep the box on the
 		# height the contents now need
-		body.custom_minimum_size.y = content.get_combined_minimum_size().y
+		body.custom_minimum_size.y = content.get_combined_minimum_size().y + CONTENT_TOP
 
 # ---------- drawing ----------
 func _draw_head() -> void:
@@ -170,13 +172,14 @@ func set_open(v: bool, animate := true) -> void:
 		# have been shaped, which happens on the next frame
 		await get_tree().process_frame
 		if not _open: return             # closed again during that frame
-		target = content.get_combined_minimum_size().y
+		target = content.get_combined_minimum_size().y + CONTENT_TOP
 
 	if _tw and _tw.is_valid(): _tw.kill()
 	if _tw_hl and _tw_hl.is_valid(): _tw_hl.kill()
+	var rest := CONTENT_TOP if v else CONTENT_TOP - RISE
 	if not animate:
 		body.custom_minimum_size.y = target
-		content.position.y = 0.0
+		content.position.y = rest
 		content.modulate.a = 1.0 if v else 0.0
 		hl = 1.0 if v else 0.0
 		_place_title()
@@ -185,11 +188,9 @@ func set_open(v: bool, animate := true) -> void:
 	_tw = create_tween().set_parallel(true)
 	_tw.tween_property(body, "custom_minimum_size:y", target, OPEN_SECS) \
 		.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
-	_tw.tween_property(content, "position:y", 0.0 if v else -RISE, OPEN_SECS) \
+	_tw.tween_property(content, "position:y", rest, OPEN_SECS) \
 		.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
 	_tw.tween_property(content, "modulate:a", 1.0 if v else 0.0,
 		OPEN_SECS * (0.9 if v else 0.55))
-	_tw.tween_property(title_lbl, "position:x", _title_x(v), SLIDE_SECS) \
-		.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
 	_tw.tween_property(self, "hl", 1.0 if v else 0.0, HL_SECS)
-	if v: content.position.y = -RISE
+	if v: content.position.y = CONTENT_TOP - RISE
