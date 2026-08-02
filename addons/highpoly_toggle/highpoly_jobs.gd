@@ -27,23 +27,53 @@ var _next_id := 0
 # shows on the same bar, because from the outside "it is working on my level"
 # is one idea, and a second bar elsewhere in the panel just splits attention.
 # A real download outranks it: transfers can fail, local work only takes time.
-var _act := ""
-var _act_ratio := 0.0
+# KEYED by label, not a single slot. Two long jobs can genuinely run at once —
+# building the level's scenery while models download — and with one slot each
+# overwrote the other every frame, so the bar jumped between two unrelated
+# ratios ("going nuts") and either one's clear_activity() wiped the other's
+# display. Each caller now owns its own key and clears only that.
+var _acts: Dictionary = {}        # label -> ratio
 
 func busy() -> bool:
-	return _active_id != 0 or not _waiting.is_empty() or _act != ""
-func active_label() -> String: return _active if _active != "" else _act
-func ratio() -> float: return _ratio if _active_id != 0 else _act_ratio
+	return _active_id != 0 or not _waiting.is_empty() or not _acts.is_empty()
+
+func _shown_activity() -> String:
+	# Deterministic pick: the least-finished job. Whichever is furthest from
+	# done is the one the user is actually waiting on, and a stable choice stops
+	# the label flickering between two jobs on alternate frames.
+	var best := ""
+	var best_r := 2.0
+	for k in _acts.keys():
+		var r: float = _acts[k]
+		if r < best_r:
+			best_r = r
+			best = k
+	return best
+
+func active_label() -> String:
+	if _active != "": return _active
+	var k := _shown_activity()
+	if k == "": return ""
+	return k if _acts.size() <= 1 else "%s  (+%d more)" % [k, _acts.size() - 1]
+
+func ratio() -> float:
+	if _active_id != 0: return _ratio
+	var k := _shown_activity()
+	return float(_acts[k]) if k != "" else 0.0
 
 func set_activity(label: String, done: int, total: int) -> void:
-	_act = label
-	_act_ratio = clampf(float(done) / float(total), 0.0, 1.0) if total > 0 else 0.0
+	_acts[label] = clampf(float(done) / float(total), 0.0, 1.0) if total > 0 else 0.0
 	changed.emit()
 
-func clear_activity() -> void:
-	if _act == "": return
-	_act = ""
-	_act_ratio = 0.0
+# label defaults to clearing EVERYTHING only for teardown; normal callers pass
+# their own label so they cannot cancel somebody else's progress.
+func clear_activity(label := "") -> void:
+	if label == "":
+		if _acts.is_empty(): return
+		_acts.clear()
+	else:
+		if not _acts.has(label): return
+		_acts.erase(label)
 	changed.emit()
 func index() -> int: return _completed + 1        # 1-based, for "1/2"
 func count() -> int: return maxi(_batch, 1)
@@ -100,6 +130,5 @@ func reset() -> void:
 	_ratio = 0.0
 	_completed = 0
 	_batch = 0
-	_act = ""
-	_act_ratio = 0.0
+	_acts.clear()
 	changed.emit()

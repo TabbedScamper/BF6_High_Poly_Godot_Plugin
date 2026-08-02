@@ -85,13 +85,28 @@ func _diff_and_queue(first := false, force := false) -> void:
 		i += 1
 		if i % 2000 == 0:
 			await get_tree().process_frame   # never stall the editor on big diffs
-		var rh := str((manifest[nm] as Dictionary).get("hash", ""))
-		if rh == "": continue
+		var e0: Dictionary = manifest[nm]
+		if str(e0.get("hash", "")) == "" and str(e0.get("hqhash", "")) == "":
+			continue                    # nothing publishable under either tier
 		if HighpolyStore.has_entry(nm):
-			if HighpolyStore.hash_of(nm) != rh:
-				stale.append(nm)        # a community fix landed — always refresh
+			# _needs() is TIER-AWARE; the raw hash compare that used to live here
+			# was not. It only ever asked "does the local file match the web
+			# hash", so a prop already held at web quality looked up to date even
+			# after the user switched to full — the switch queued nothing at all
+			# and the panel sat on "Upgrading…" forever. The tier decision has to
+			# be made HERE, where the queue is built, not only in the worker.
+			if _needs(nm):
+				stale.append(nm)
 		elif full:
 			missing.append(nm)
+	Log.info("check: %d in manifest · %d to refresh · %d missing · tier=%s scope=%s"
+		% [manifest.size(), stale.size(), missing.size(),
+			HighpolyStore.quality(), HighpolyStore.scope()])
+	if stale.is_empty() and missing.is_empty():
+		# Saying "nothing to do" out loud is the difference between a working
+		# no-op and the silence that made the full-quality switch undiagnosable.
+		Log.info("nothing to download — everything local already matches the "
+			+ "requested tier")
 	enqueue(stale, true)
 	enqueue(missing, false)
 	if res.get("changed", false):
@@ -268,16 +283,32 @@ func _worker() -> void:
 			_scene_want.erase(nm)
 			continue
 		var e: Dictionary = manifest[nm]
-		var rend := _rendition(nm, _tier_for(nm))
+		var tier := _tier_for(nm)
+		var rend := _rendition(nm, tier)
+		# Which tier was chosen and which file it maps to. "I asked for full
+		# quality and nothing happened" is unanswerable without this line.
+		Log.debug("fetch %s [%s%s] %s" % [nm, tier,
+			" scene" if _scene_set.has(nm) else "", str(rend["glb"])])
 		_active[nm] = true
 		progress_changed.emit()
+		var t0 := Time.get_ticks_msec()
 		var data := await HighpolyUpdater._fetch(http, base + str(rend["glb"]))
 		_active.erase(nm)
 		if data.is_empty():
 			_failed[nm] = true
 			_fail_count += 1
+			Log.warn("download failed: %s (%s) after %s"
+				% [nm, str(rend["glb"]), Log.human_ms(Time.get_ticks_msec() - t0)])
 		elif HighpolyStore.ingest_bytes(nm, data, str(rend["hash"]), bool(e.get("nofit", false))):
 			_done += 1
+			var ms := Time.get_ticks_msec() - t0
+			# A slow model names itself, with its size, instead of "took forever".
+			var line := "%s %s in %s [%s]" % [nm, Log.human_bytes(data.size()),
+				Log.human_ms(ms), tier]
+			if ms >= 15000 or data.size() >= 100 * 1048576:
+				Log.info("large download — " + line)
+			else:
+				Log.debug("got " + line)
 			model_ready.emit(nm)
 		else:
 			# The bytes arrived but could NOT be written (disk full, unwritable

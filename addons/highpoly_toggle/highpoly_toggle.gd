@@ -686,9 +686,9 @@ func _enter_tree() -> void:
 		if done < total:
 			jobs.set_activity("Building the level's scenery", done, total)
 		else:
-			jobs.clear_activity())
+			jobs.clear_activity("Building the level's scenery"))
 	mapctx.build_finished.connect(func(_built: int):
-		jobs.clear_activity()
+		jobs.clear_activity("Building the level's scenery")
 		# sidecar-cached meshes load with the shader params they were SAVED
 		# with — push the current Configure Shaders prefs over the fresh build
 		var _sr := EditorInterface.get_edited_scene_root()
@@ -730,9 +730,10 @@ func _enter_tree() -> void:
 		# a CANCELLED scenery build (Extended Terrain switched off, or a new
 		# apply superseding it) ends without a build_finished — without this the
 		# bar would sit there at whatever percent it had reached
-		if mapctx and mapctx.is_build_done() \
-				and jobs.active_label() == "Building the level's scenery":
-			jobs.clear_activity()
+		# keyed clear: active_label() may now be showing the OTHER job, so
+		# gating on it would leave this lane stuck at whatever percent it reached
+		if mapctx and mapctx.is_build_done():
+			jobs.clear_activity("Building the level's scenery")
 		# collision overlays follow objects the user moves/rescales
 		if col_chk.button_pressed or HighpolyCollision.has_isolation():
 			HighpolyCollision.refresh_transforms())
@@ -866,13 +867,28 @@ func _start_sync(extra: Array = []) -> void:
 	lbl.text = "%d models local" % HighpolyStore.count()
 	_sync_scope_control()
 	_sync_quality_control()
+	Log.info("startup: %d models local · scope=%s · quality=%s · mode=%s"
+		% [HighpolyStore.count(), HighpolyStore.scope(),
+			HighpolyStore.quality(),
+			"low-poly" if _mode() == HighpolyLib.Tier.LOW else "high-poly"])
 	await sync.start()
 	if not extra.is_empty():
 		sync.enqueue(extra, true)
-	# prefetch whatever the open scene needs so switching to High-Poly is instant
+	# Prefetch the open scene so switching to High-Poly is instant — but ONLY if
+	# High-Poly is actually on. The panel opens in Low-Poly, so this used to pull
+	# the whole scene's models at launch for someone who had asked to see none of
+	# them: a long unexplained download in a mode where nothing it fetched was
+	# even displayed. _mode_changed() queues the same set the moment High-Poly is
+	# switched on, so nothing is lost by waiting to be asked.
+	if _mode() == HighpolyLib.Tier.LOW:
+		Log.info("Low-Poly mode — not prefetching scene models; they download "
+			+ "when you switch to High-Poly")
+		return
 	var r := EditorInterface.get_edited_scene_root()
 	if r != null:
-		sync.prioritize_scene(HighpolyLib.scene_keys(r))
+		var keys := HighpolyLib.scene_keys(r)
+		Log.info("prefetching %d model(s) for the open scene" % keys.size())
+		sync.prioritize_scene(keys)
 
 # ---------- background sync -> auto swap-in ----------
 func _on_model_ready(nm: String) -> void:
@@ -1304,8 +1320,8 @@ func _update_progress() -> void:
 	if busy:
 		jobs.set_activity("Downloading models for this level",
 			int(sync.progress_ratio() * 1000.0), 1000)
-	elif jobs.active_label() == "Downloading models for this level":
-		jobs.clear_activity()
+	else:
+		jobs.clear_activity("Downloading models for this level")
 	sync_lbl.text = sync.status_text() if not HighpolyLib.use_legacy else ""
 
 # ---------- storage (usage + per-map purge) ----------

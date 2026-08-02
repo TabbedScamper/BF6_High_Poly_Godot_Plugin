@@ -1471,12 +1471,13 @@ func _merge_meshes(pairs: Array) -> ArrayMesh:
 			var key := mat.get_rid() if mat != null else RID()
 			if not groups.has(key):
 				groups[key] = {"mat": mat, "v": [], "n": [], "uv": [], "i": [],
-					"has_uv": false}
+					"t": [], "has_uv": false, "has_tan": 0}
 			var g: Dictionary = groups[key]
 			var gv: Array = g["v"]
 			var gn: Array = g["n"]
 			var guv: Array = g["uv"]
 			var gi: Array = g["i"]
+			var gt: Array = g["t"]
 			var base := gv.size()
 			for i in range(V.size()): gv.append(xf * V[i])
 			var N = arr[Mesh.ARRAY_NORMAL]
@@ -1484,6 +1485,26 @@ func _merge_meshes(pairs: Array) -> ArrayMesh:
 				for i in range(N.size()): gn.append((nb * N[i]).normalized())
 			else:
 				for i in range(V.size()): gn.append(Vector3.UP)
+			# Tangents were dropped here entirely: the merged surface was built
+			# from vertex/normal/uv/index only, so every normal-mapped batch made
+			# Godot log "requires tangents ... doesn't contain tangents" on every
+			# draw call — thousands of lines with map context on. They transform
+			# like directions (basis), and the binormal sign in .w flips with a
+			# mirrored transform, exactly as the winding does.
+			var T = arr[Mesh.ARRAY_TANGENT]
+			if T != null and T.size() == V.size() * 4:
+				g["has_tan"] = int(g["has_tan"]) + V.size()
+				for i in range(V.size()):
+					var tv := Vector3(T[i * 4], T[i * 4 + 1], T[i * 4 + 2])
+					tv = (xf.basis * tv).normalized()
+					var w: float = T[i * 4 + 3]
+					gt.append(tv.x); gt.append(tv.y); gt.append(tv.z)
+					gt.append(-w if flip else w)
+			else:
+				# placeholder only — a zero tangent is degenerate, so a group
+				# that ends up with any of these regenerates the whole surface
+				for i in range(V.size()):
+					gt.append(0.0); gt.append(0.0); gt.append(0.0); gt.append(1.0)
 			var UV = arr[Mesh.ARRAY_TEX_UV]
 			if UV != null and UV.size() == V.size():
 				g["has_uv"] = true
@@ -1500,6 +1521,7 @@ func _merge_meshes(pairs: Array) -> ArrayMesh:
 			else:
 				for t in range(V.size()): gi.append(base + t)
 	var out := ArrayMesh.new()
+	var regenerated := 0
 	for key in groups:
 		if out.get_surface_count() >= 255:
 			# a visible symptom (some scenery renders untextured) with a cause
@@ -1509,13 +1531,36 @@ func _merge_meshes(pairs: Array) -> ArrayMesh:
 			break
 		var g: Dictionary = groups[key]
 		var arr := []; arr.resize(Mesh.ARRAY_MAX)
+		var vcount: int = (g["v"] as Array).size()
 		arr[Mesh.ARRAY_VERTEX] = PackedVector3Array(g["v"])
 		arr[Mesh.ARRAY_NORMAL] = PackedVector3Array(g["n"])
 		if g["has_uv"]: arr[Mesh.ARRAY_TEX_UV] = PackedVector2Array(g["uv"])
 		arr[Mesh.ARRAY_INDEX] = PackedInt32Array(g["i"])
+		# Only ship tangents when EVERY source vertex brought one; a partially
+		# zero-filled array is worse than none (a zero tangent renders wrong,
+		# where a missing one at least gets regenerated below).
+		var mat_nm: bool = g["mat"] is BaseMaterial3D \
+			and (g["mat"] as BaseMaterial3D).normal_texture != null
+		var complete: bool = int(g["has_tan"]) == vcount and vcount > 0
+		if complete:
+			arr[Mesh.ARRAY_TANGENT] = PackedFloat32Array(g["t"])
+		elif mat_nm and g["has_uv"]:
+			# Normal-mapped with incomplete tangents: MikkTSpace them ONCE here,
+			# in a scratch mesh, rather than let the renderer warn on every draw
+			# call for the life of the scene.
+			var tmp := ArrayMesh.new()
+			tmp.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr)
+			var st := SurfaceTool.new()
+			st.create_from(tmp, 0)
+			st.generate_tangents()
+			arr = st.commit_to_arrays()
+			regenerated += 1
 		out.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr)
 		if g["mat"] != null:
 			out.surface_set_material(out.get_surface_count() - 1, g["mat"])
+	if regenerated > 0:
+		Log.debug("map context: regenerated tangents for %d merged surface(s)"
+			% regenerated)
 	return out
 
 # first mesh + its transform relative to the scene root (accumulated)
