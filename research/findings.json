@@ -1,0 +1,86 @@
+{
+  "schema": 1,
+  "updated": "2026-08-01",
+  "repo": "TabbedScamper/BF6_High_Poly_Godot_Plugin",
+  "note": "Machine-readable index of reverse-engineering findings. Scrape this file rather than the prose. 'status' is the field that matters: verified findings were tested, retracted ones were WRONG and are kept so nobody re-derives them.",
+  "status_values": {
+    "verified": "tested against game data with a stated method; safe to build on",
+    "probable": "consistent with the data but not independently confirmed",
+    "retracted": "previously claimed here and since DISPROVED - do not use"
+  },
+  "findings": [
+    {
+      "id": "fx-emittergraphparams-field",
+      "title": "Per-effect FX parameters live in EmitterGraphParams (RFL2 field hash 0x4832AD52)",
+      "date": "2026-08-01",
+      "status": "verified",
+      "tags": ["fx", "ebx", "rfl2", "hashes"],
+      "file": "research/fx-emitter-params.md",
+      "summary": "60/60 sampled fx EBX carry it, 4-60 entries each. Name resolved via the reference's sdk_field_names.tsv. Our earlier 'second unnamed GpuExposedParameterInput table (f_512_4832ad52)' and 'an EmitterGraphParams array that is empty' were the SAME field described twice."
+    },
+    {
+      "id": "fx-emittergraphparams-layout",
+      "title": "EmitterGraphParams element layout: float4 value @+0, u32 PropertyId @+32, stride 64",
+      "date": "2026-08-01",
+      "status": "verified",
+      "tags": ["fx", "ebx", "layout"],
+      "file": "research/fx-emitter-params.md",
+      "summary": "Settled by a uniqueness test, not by eyeballing bytes. Stride 48 looks plausible from raw bytes but decodes ids as floats-read-as-ints (0x3F800000 = 1.0f). Test that a candidate id slot is non-zero AND distinct across elements."
+    },
+    {
+      "id": "fx-propertyid-namespace",
+      "title": "FX PropertyIds are GPU-exposed parameter ids, NOT RFL2 field hashes",
+      "date": "2026-08-01",
+      "status": "verified",
+      "tags": ["fx", "hashes"],
+      "file": "research/fx-emitter-params.md",
+      "summary": "Different namespace - the reference's field-name tables cannot resolve them (Color0/Color1 are absent from all of them). 68 names recovered by dictionary lookup with a control run: 68 real named vs 0 fake named.",
+      "data": "research/data/fx_property_ids.json"
+    },
+    {
+      "id": "fx-composition-model",
+      "title": "An fx_* effect is N LAYERS; each layer references an eg_* emitter template",
+      "date": "2026-08-01",
+      "status": "verified",
+      "tags": ["fx", "model"],
+      "file": "research/fx-emitter-params.md",
+      "summary": "eg_* values are DEFAULTS - eg_gs_basicsmoke_01 and eg_gs_basicfire_01 have IDENTICAL named parameters; the sprite is what differs. 247 of 288 sampled fx_* are multi-layer (up to 10). Merging instances destroys the authored variation - read parameters per instance."
+    },
+    {
+      "id": "fx-tints-are-white",
+      "title": "79% of FX tint parameters are near-grey - effect colour comes from the TEXTURE",
+      "date": "2026-08-01",
+      "status": "verified",
+      "tags": ["fx", "colour", "rendering"],
+      "file": "research/fx-emitter-params.md",
+      "summary": "4,921 of 6,218 color0/color1/randomcolormin/randomcolormax values across 471 effects have saturation < 0.10. For each effect's visually dominant layer it is 85% at saturation < 0.02 (pure white). Tint-driven colour previews therefore cannot match the game; the emitter's texture is the real source."
+    },
+    {
+      "id": "fx-video-not-a-colour-oracle",
+      "title": "In-game FX video failed a shuffled-pairing control as a colour oracle",
+      "date": "2026-08-01",
+      "status": "verified",
+      "tags": ["fx", "colour", "method"],
+      "file": "research/fx-emitter-params.md",
+      "summary": "Measured vs manifest hue gave a median error of 15.3 deg, which looks excellent - but shuffling the pairing scored 15.2 deg and 338/400 random pairings BEAT the true one. After excluding sky, 98% of measured hues fall in a 10-50 deg band, so the measurement is a constant; correlation with manifest hue is 0.020. Always run the shuffled control before believing an FX colour-agreement number."
+    },
+    {
+      "id": "pipeline-loop-invariant-indexes",
+      "title": "Three loop-invariant rebuilds cost 12.6x - MeshSet lookup was a full tree walk per mesh",
+      "date": "2026-08-01",
+      "status": "verified",
+      "tags": ["pipeline", "performance"],
+      "file": "research/pipeline-performance.md",
+      "summary": "find_meshset() ran a recursive glob over the whole bundles tree per mesh per prop, measured at ~6s per lookup. Also: MVDB variation resolve rebuilt two guid-index-wide tables per file (2.03s x 17,079 = 9.6h), and every worker re-globbed the same 23,053 blueprints. Assembly went 27.2 -> 342.4 props/min, CPU 30% -> 92%. Diagnose with py-spy dump --pid <pid> --nonblocking."
+    },
+    {
+      "id": "glyph-ocr-no-engine",
+      "title": "Reading burned-in text from frames without an OCR engine",
+      "date": "2026-08-01",
+      "status": "verified",
+      "tags": ["method", "tooling"],
+      "file": "research/fx-emitter-params.md",
+      "summary": "Threshold the band, fit the type's pitch lattice to reject sparks, then SCORE every known candidate name against the glyph bitmaps instead of decoding to text (free decoding confuses F/E, p/c, n/m, w/v at low res). Output can only ever be a name that exists in the game data. 241/533 segments resolved to 122 effects, 238/240 adjacent pairs in correct alphabetical order."
+    }
+  ]
+}

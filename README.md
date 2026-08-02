@@ -156,6 +156,18 @@ Found a broken model? Submit a fix through the
 [BF6 Model Viewer](https://github.com/TabbedScamper/BF6_Model_Viewer) — once
 approved it reaches every user's next **Update Models** click.
 
+## Research notes
+
+[`research/`](research/) publishes what we've worked out about BF6's asset
+formats — field hashes, layout tables, decode methods, and the negative results
+worth not repeating — so it can be shared rather than independently re-derived.
+
+[`research/findings.json`](research/findings.json) is a machine-readable index
+(id, date, status, tags, summary) meant to be scraped and diffed;
+[`research/EXCHANGE.md`](research/EXCHANGE.md) explains how to contribute.
+Findings marked `retracted` are ones we published and later disproved — they
+stay listed deliberately.
+
 ## Requirements & notes
 
 - Battlefield 6 Portal SDK (Godot 4.6.x based).
