@@ -119,6 +119,19 @@ static func set_scope(s: String) -> void:
 	_index["scope"] = s
 	save()
 
+# Texture quality tier for the LIBRARY: "web" (small) or "full" (in-game
+# quality). Independent of scope, and deliberately not applied to the scene you
+# have open — that is always fetched at full quality, because it is the thing
+# you are actually looking at. See HighpolySync._tier_for().
+static func quality() -> String:
+	_load()
+	return str(_index.get("quality", "web"))
+
+static func set_quality(q: String) -> void:
+	_load()
+	_index["quality"] = q
+	save()
+
 # ---------- ingest ----------
 # Record a model already on disk (migration) or write+record bytes (download).
 static func record(name: String, h: String, nofit_flag: bool) -> void:
