@@ -82,6 +82,7 @@ var log_count: Label
 var pause_btn: Button
 var check_btn: Button          # manual "Check for Updates" (forces a registry re-check)
 var scope_btn: OptionButton    # sync scope: current scene only / all models
+var quality_btn: OptionButton  # texture tier for the library: web / full in-game
 var _edited_root: Node = null  # tracks the active scene to detect tab switches
 var _ready_names: Dictionary = {}   # models that landed since the last swap-in pass
 var _swap_timer: Timer
@@ -190,6 +191,18 @@ func _enter_tree() -> void:
 	scope_btn.item_selected.connect(func(_i): _scope_changed())
 	dock.add_child(scope_btn)
 
+	# Texture quality sits with the other DOWNLOAD decision rather than in
+	# Detail Mode: that dropdown selects geometry (proxy / mesh / textured
+	# mesh), and folding a second axis into it turns three entries into a
+	# six-entry matrix. The map you have open is always fetched at full
+	# quality regardless of this — it governs the REST of the library.
+	quality_btn = OptionButton.new()
+	quality_btn.add_item("Textures: web quality (smaller)", 0)
+	quality_btn.add_item("Textures: full in-game quality", 1)
+	quality_btn.tooltip_text = "The map you're editing always uses full in-game textures. This sets quality for the REST of the library: web keeps it small; full matches the game everywhere (a much larger download)."
+	quality_btn.item_selected.connect(func(_i): _quality_changed())
+	dock.add_child(quality_btn)
+
 	# The master control. It switches the borrowed scenery on and off and sets
 	# the draw distance for the scenery, the effects, the map lights and your
 	# own placed pieces — so it belongs at the top, not inside one section.
@@ -249,7 +262,7 @@ func _enter_tree() -> void:
 
 	var col_chips := _chip_row(host)
 	col_chk = Theme_.chip("Collisions")
-	col_chk.tooltip_text = "Shows the invisible collision shape players actually bump into, in see-through red. It often does not match what you see: a stretched object still bumps as though it were square. Preview only — nothing about your map changes."
+	col_chk.tooltip_text = "Rough guide to how solid an object is, in see-through red. It shows the object's own shape scaled the way the game scales collision — a stretched object still bumps as though it were square. It is an approximation, not the game's real collision data, so treat it as a hint rather than an exact answer. Preview only — nothing about your map changes."
 	col_chk.toggled.connect(func(_v): _collision_changed())
 	col_chips.add_child(col_chk)
 
@@ -852,6 +865,7 @@ func _show_scope_prompt(redownload: Array = []) -> void:
 func _start_sync(extra: Array = []) -> void:
 	lbl.text = "%d models local" % HighpolyStore.count()
 	_sync_scope_control()
+	_sync_quality_control()
 	await sync.start()
 	if not extra.is_empty():
 		sync.enqueue(extra, true)
@@ -1997,6 +2011,82 @@ func _on_selection_changed() -> void:
 func _sync_scope_control() -> void:
 	if scope_btn == null: return
 	scope_btn.select(scope_btn.get_item_index(1 if HighpolyStore.scope() == "full" else 0))
+
+func _sync_quality_control() -> void:
+	if quality_btn == null: return
+	quality_btn.select(quality_btn.get_item_index(
+		1 if HighpolyStore.quality() == "full" else 0))
+
+# How many models switching to full quality actually touches, and the extra
+# bytes, measured from the manifest's own per-model sizes rather than a figure
+# baked into the message. Under "only what this map needs" that is the models
+# already on disk; under "everything" it is the whole library.
+# Uses has_entry (index lookup) not has_model (disk stat) — this runs over
+# every manifest row.
+func _quality_estimate() -> Dictionary:
+	var scope_full := HighpolyStore.scope() == "full"
+	var n := 0
+	var extra := 0
+	for nm in HighpolyStore.remote.keys():
+		if not scope_full and not HighpolyStore.has_entry(nm):
+			continue
+		var e: Dictionary = HighpolyStore.remote[nm]
+		var hq := int(e.get("hqkb", 0))
+		if hq == 0: continue          # no hq rendition published for this one yet
+		n += 1
+		extra += maxi(hq - int(e.get("gkb", e.get("kb", 0))), 0)
+	return {"count": n, "extra_kb": extra}
+
+# Only the expensive direction gets a dialog, and it quotes a real figure —
+# a vague "this is large" just trains people to click through.
+func _quality_changed() -> void:
+	var to_full: bool = quality_btn.get_selected_id() == 1
+	if not to_full:
+		# Dropping to web costs nothing and changes nothing already on disk:
+		# hq copies are kept (HighpolySync._needs treats hq as satisfying any
+		# tier), so this only affects what is fetched from here on.
+		HighpolyStore.set_quality("web")
+		lbl.text = "New downloads will use web-quality textures."
+		return
+	var est := _quality_estimate()
+	var n: int = est["count"]
+	var gb: float = float(est["extra_kb"]) / 1048576.0
+	if n == 0:
+		# No hq rendition published yet (or none of the models you hold has one).
+		# Setting it is harmless — _rendition() falls back to the web fields —
+		# but promising a download that cannot happen would be a lie.
+		HighpolyStore.set_quality("full")
+		lbl.text = "Full-quality textures aren't published yet — this takes effect when they are."
+		return
+	var dlg := ConfirmationDialog.new()
+	# Scope and quality are independent: scope decides WHICH models you keep,
+	# quality decides how good they are. Saying "the whole library" while the
+	# user is on "only what this map needs" was simply wrong.
+	if HighpolyStore.scope() == "full":
+		dlg.dialog_text = ("Use full in-game textures for the whole library?\n\n" +
+				"You keep every model, so all %d would re-download at full " +
+				"quality — roughly %.1f GB more than web quality. It runs in " +
+				"the background and you can pause it any time.\n\n" +
+				"The map you're editing already uses full quality, so you only " +
+				"need this if you want every other model to match.") % [n, gb]
+	else:
+		dlg.dialog_text = ("Use full in-game textures?\n\n" +
+				"You're keeping only what your maps need, so this re-downloads " +
+				"the %d model(s) you already have — roughly %.1f GB more than " +
+				"web quality. Other models upgrade as you open the maps that " +
+				"use them.\n\n" +
+				"The map you're editing already uses full quality, so this is " +
+				"for everything else you've collected.") % [n, gb]
+	dlg.ok_button_text = "Use full quality"
+	dlg.cancel_button_text = "Cancel"
+	dlg.confirmed.connect(func():
+		HighpolyStore.set_quality("full")
+		lbl.text = "Upgrading the library to full-quality textures…"
+		await sync.check_now())
+	dlg.canceled.connect(func():
+		_sync_quality_control()        # snap back, nothing changed
+		dlg.queue_free())
+	EditorInterface.popup_dialog_centered(dlg)
 
 func _scope_changed() -> void:
 	var to_full: bool = scope_btn.get_selected_id() == 1

@@ -37,6 +37,7 @@ var _queued: Dictionary = {}          # membership mirror of _queue
 var _active: Dictionary = {}          # names currently downloading
 var _failed: Dictionary = {}          # name -> true (skip this session unless re-prioritized)
 var _scene_want: Dictionary = {}      # names the current scene is waiting on
+var _scene_set: Dictionary = {}       # every name the open scene uses (drives hq tier)
 var _workers := 0
 var _done := 0
 var _fail_count := 0
@@ -139,7 +140,12 @@ func refresh_manifest(force := false) -> Dictionary:
 func _adopt_manifest(props: Dictionary) -> void:
 	manifest = props
 	HighpolyStore.remote = manifest   # lets the overlay matcher see not-yet-local props
-	# same registry keyed by game-mesh name (glb filename) for map context
+	# Same registry keyed by game-mesh name (glb filename) for map context.
+	#
+	# Deliberately the WEB rendition, not hq: these are the surrounding map's
+	# scenery, drawn as distance-streamed MultiMeshes in the thousands. Full
+	# in-game textures there would multiply VRAM for geometry nobody is
+	# inspecting, and the quality setting is about the props you place and edit.
 	var mm: Dictionary = {}
 	var i := 0
 	for prox in manifest.keys():
@@ -164,12 +170,42 @@ func _save_manifest_cache(body: PackedByteArray) -> void:
 	var f := FileAccess.open(MANIFEST_CACHE, FileAccess.WRITE)
 	if f: f.store_buffer(body); f.close()
 
+# ---------- quality tiers ----------
+# Two renditions are published per prop: "web" (small) and "hq" (in-game
+# quality textures — identical geometry, byte for byte). A prop is fetched at
+# hq when the library is set to full quality OR it belongs to the open scene,
+# so the thing you are actually working on always looks right without pulling
+# the whole library at full size.
+func _tier_for(nm: String) -> String:
+	if HighpolyStore.quality() == "full": return "hq"
+	return "hq" if _scene_set.has(nm) else "web"
+
+# glb path + expected hash for a tier, falling back to the web fields so an
+# older manifest without hq entries still works.
+func _rendition(nm: String, tier: String) -> Dictionary:
+	var e: Dictionary = manifest.get(nm, {})
+	if tier == "hq":
+		var hg := str(e.get("hqglb", ""))
+		var hh := str(e.get("hqhash", ""))
+		if hg != "" and hh != "":
+			return {"glb": hg, "hash": hh}
+	return {"glb": str(e.get("glb", "")), "hash": str(e.get("hash", ""))}
+
 # ---------- queue ----------
 func _needs(nm: String) -> bool:
 	if not manifest.has(nm): return false
-	var rh := str((manifest[nm] as Dictionary).get("hash", ""))
-	if rh == "": return false
-	return not (HighpolyStore.has_model(nm) and HighpolyStore.hash_of(nm) == rh)
+	var e: Dictionary = manifest[nm]
+	var web_h := str(e.get("hash", ""))
+	var hq_h := str(e.get("hqhash", ""))
+	if web_h == "" and hq_h == "": return false
+	if not HighpolyStore.has_model(nm): return true
+	var local := HighpolyStore.hash_of(nm)
+	# hq is sticky: holding it satisfies any tier. Without this, closing a
+	# scene would demote its props back to web and re-download them, so every
+	# scene switch would churn the set down and then straight back up.
+	if hq_h != "" and local == hq_h: return false
+	if web_h != "" and local == web_h: return _tier_for(nm) == "hq"
+	return true
 
 func enqueue(names: Array, front := false) -> void:
 	var add: Array = []
@@ -193,6 +229,11 @@ func enqueue(names: Array, front := false) -> void:
 # scene" phase of the progress bar until they've all landed.
 func prioritize_scene(names: Array) -> void:
 	_scene_want.clear()
+	# _scene_set drives the hq tier and must list EVERY prop the scene uses,
+	# not only the ones still pending — _needs() consults it.
+	_scene_set.clear()
+	for nm in names:
+		_scene_set[nm] = true
 	for nm in names:
 		if _needs(nm) or _active.has(nm):
 			_scene_want[nm] = true
@@ -201,6 +242,7 @@ func prioritize_scene(names: Array) -> void:
 
 # A single just-placed prop goes to the very front (swap-in within seconds).
 func prioritize_one(nm: String) -> void:
+	_scene_set[nm] = true          # just-placed props belong to the scene -> hq
 	if not _needs(nm) and not _active.has(nm): return
 	_scene_want[nm] = true
 	if _queued.has(nm):
@@ -226,14 +268,15 @@ func _worker() -> void:
 			_scene_want.erase(nm)
 			continue
 		var e: Dictionary = manifest[nm]
+		var rend := _rendition(nm, _tier_for(nm))
 		_active[nm] = true
 		progress_changed.emit()
-		var data := await HighpolyUpdater._fetch(http, base + str(e.get("glb", "")))
+		var data := await HighpolyUpdater._fetch(http, base + str(rend["glb"]))
 		_active.erase(nm)
 		if data.is_empty():
 			_failed[nm] = true
 			_fail_count += 1
-		elif HighpolyStore.ingest_bytes(nm, data, str(e.get("hash", "")), bool(e.get("nofit", false))):
+		elif HighpolyStore.ingest_bytes(nm, data, str(rend["hash"]), bool(e.get("nofit", false))):
 			_done += 1
 			model_ready.emit(nm)
 		else:
