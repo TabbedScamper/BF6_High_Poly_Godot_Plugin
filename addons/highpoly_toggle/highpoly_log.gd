@@ -14,15 +14,51 @@ class_name HighpolyLog
 # already says which version, which map and which step, instead of a screenshot
 # of a red line with no context.
 
-enum Level { INFO, WARN, ERROR }
+enum Level { DEBUG, INFO, WARN, ERROR }
 
-const MAX_LINES := 800     # ring buffer: a long session must not grow forever
+const MAX_LINES := 800     # ring buffer for the PANEL only; the file keeps all
 const SAVE_DIR := "user://"
+const SESSION_LOG := "user://highpoly-session.log"
+const VERBOSE_SETTING := "highpoly/verbose_log"
 
 static var _lines: Array = []
 static var _errors := 0
 static var _warnings := 0
 static var _on_line: Callable = Callable()
+# Write-through file handle. The old log only existed in memory until Save was
+# pressed, so the two failures worth diagnosing — a hang and a run that quietly
+# did nothing — left no evidence at all. Every line now hits disk as it happens.
+static var _fh: FileAccess = null
+static var _since_flush := 0
+static var _verbose := false
+static var _verbose_loaded := false
+
+
+static func verbose() -> bool:
+	if not _verbose_loaded:
+		_verbose_loaded = true
+		if ProjectSettings.has_setting(VERBOSE_SETTING):
+			_verbose = bool(ProjectSettings.get_setting(VERBOSE_SETTING))
+	return _verbose
+
+
+static func set_verbose(v: bool) -> void:
+	_verbose = v
+	_verbose_loaded = true
+	ProjectSettings.set_setting(VERBOSE_SETTING, v)
+	ProjectSettings.save()
+	info("verbose logging %s" % ("ON" if v else "off"))
+
+
+static func _open_session() -> void:
+	if _fh != null:
+		return
+	# truncate per editor session: one file, always the current run
+	_fh = FileAccess.open(SESSION_LOG, FileAccess.WRITE)
+	if _fh != null:
+		_fh.store_string(header() + "\n")
+		_fh.flush()
+
 
 # The panel registers here so new lines appear as they happen. Cleared on
 # teardown so a freed dock can never be called into.
@@ -30,7 +66,10 @@ static func hook(cb: Callable) -> void:
 	_on_line = cb
 
 static func _add(lvl: int, msg: String) -> void:
-	var row := {"t": Time.get_time_string_from_system(), "lvl": lvl, "m": msg}
+	if lvl == Level.DEBUG and not verbose():
+		return
+	var stamp := Time.get_time_string_from_system()
+	var row := {"t": stamp, "lvl": lvl, "m": msg}
 	_lines.append(row)
 	if _lines.size() > MAX_LINES:
 		_lines = _lines.slice(_lines.size() - MAX_LINES)
@@ -40,12 +79,54 @@ static func _add(lvl: int, msg: String) -> void:
 	elif lvl == Level.WARN:
 		_warnings += 1
 		push_warning("[High-Poly] " + msg)
+	_open_session()
+	if _fh != null:
+		_fh.store_string("%s  %s  %s\n" % [stamp, _tag(lvl), msg])
+		# errors flush immediately (the next thing may be a crash); routine
+		# lines batch, or a busy download loop would fsync per model
+		_since_flush += 1
+		if lvl >= Level.WARN or _since_flush >= 20:
+			_fh.flush()
+			_since_flush = 0
 	if _on_line.is_valid():
 		_on_line.call(lvl, msg)
 
+static func debug(msg: String) -> void: _add(Level.DEBUG, msg)
 static func info(msg: String) -> void: _add(Level.INFO, msg)
 static func warn(msg: String) -> void: _add(Level.WARN, msg)
 static func error(msg: String) -> void: _add(Level.ERROR, msg)
+
+
+# ---------- measuring, not guessing ----------
+# "took forever" is not a diagnosis. Every unit of work that can be slow should
+# say how long it took and how big it was, so a slow run names its own cause.
+static func started(what: String) -> int:
+	debug("> %s" % what)
+	return Time.get_ticks_msec()
+
+
+static func finished(what: String, t0: int, detail := "") -> void:
+	var ms := Time.get_ticks_msec() - t0
+	var s := "< %s in %s" % [what, human_ms(ms)]
+	if detail != "":
+		s += " (%s)" % detail
+	if ms >= 10000:
+		info(s)              # anything over 10 s is worth seeing without verbose
+	else:
+		debug(s)
+
+
+static func human_ms(ms: int) -> String:
+	if ms < 1000: return "%d ms" % ms
+	if ms < 60000: return "%.1f s" % (ms / 1000.0)
+	return "%d m %02d s" % [ms / 60000, (ms / 1000) % 60]
+
+
+static func human_bytes(n: int) -> String:
+	if n < 1024: return "%d B" % n
+	if n < 1048576: return "%.0f KB" % (n / 1024.0)
+	if n < 1073741824: return "%.1f MB" % (n / 1048576.0)
+	return "%.2f GB" % (n / 1073741824.0)
 
 # Record a Godot Error code with its meaning spelled out — "error 7" in a
 # user-sent log is worth almost nothing on its own.
@@ -65,6 +146,7 @@ static func _tag(lvl: int) -> String:
 	match lvl:
 		Level.ERROR: return "ERROR"
 		Level.WARN: return "WARN "
+		Level.DEBUG: return "debug"
 		_: return "info "
 
 static func as_text() -> String:
@@ -95,12 +177,27 @@ static func header() -> String:
 		"Godot      %s" % Engine.get_version_info().get("string", "?"),
 		"OS         %s %s" % [OS.get_name(), OS.get_version()],
 		"video      %s" % RenderingServer.get_video_adapter_name(),
-		"errors     %d      warnings %d" % [_errors, _warnings],
+		# Scoped explicitly: the old header said "errors 0 warnings 0" while the
+		# renderer was logging thousands of its own, which reads as "nothing
+		# went wrong" when the truth was "we are not the one complaining".
+		"our errors %d      our warnings %d" % [_errors, _warnings],
+		"verbose    %s" % ("ON" if verbose() else "off — enable it in the panel for per-model detail"),
 		"data       %s" % ProjectSettings.globalize_path("user://"),
 		"free disk  %s" % _free_space(),
+		"godot log  %s" % _godot_log_hint(),
 		"".rpad(60, "-"),
 	]
 	return "\n".join(lines)
+
+
+# Renderer/engine complaints (missing tangents, shader errors) never reach this
+# log — they are Godot's, not ours. Point at where they DO live rather than
+# leaving a reader to conclude the engine was quiet.
+static func _godot_log_hint() -> String:
+	for p in ["user://logs/godot.log", "user://logs/godot.1.log"]:
+		if FileAccess.file_exists(p):
+			return ProjectSettings.globalize_path(p) + "  (engine messages)"
+	return "engine file logging is off (Project Settings > Debug > File Logging)"
 
 # Returns the saved path, or "" if it could not be written.
 static func save() -> String:
@@ -113,6 +210,18 @@ static func save() -> String:
 		push_error("[High-Poly] could not write %s — %s"
 			% [path, error_string(FileAccess.get_open_error())])
 		return ""
-	f.store_string(header() + "\n" + as_text() + "\n")
+	# Prefer the write-through session file: the in-memory ring holds the last
+	# 800 lines, and the interesting part of a long download run is usually
+	# further back than that.
+	var body := ""
+	if _fh != null:
+		_fh.flush()
+	var sf := FileAccess.open(SESSION_LOG, FileAccess.READ)
+	if sf != null:
+		body = sf.get_as_text()
+		sf.close()
+	if body.strip_edges() == "":
+		body = header() + "\n" + as_text()
+	f.store_string(body + "\n")
 	f.close()
 	return ProjectSettings.globalize_path(path)
