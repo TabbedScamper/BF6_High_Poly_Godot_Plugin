@@ -110,6 +110,20 @@ static func apply(root: Node, r: float, on: bool) -> String:
 	_collect(root, arr)
 	var n := 0
 	for mi in arr:
+		# A near-gate we have no record of is one WE set before a plugin reload:
+		# nothing else in the editor writes visibility_range_begin, statics are
+		# wiped on every re-parse, and the scene keeps the property. Clear it
+		# before remembering, or the stale gate is recorded AS the original and
+		# becomes permanent.
+		#
+		# This is the "prop vanishes but stays selectable" bug: the mesh is gated
+		# so it cannot draw up close, while its node is still there to click.
+		# Swept over EVERY mesh rather than only overlay pairs, because a proxy
+		# whose overlay was freed on reload is not a pair any more and the LOD
+		# pass would never reach it again.
+		if not _orig.has(mi.get_instance_id()) and mi.visibility_range_begin > 0.0:
+			mi.visibility_range_begin = 0.0
+			mi.visibility_range_begin_margin = 0.0
 		_remember(mi)                  # what it had before we touched it
 		var ext: float = (mi as VisualInstance3D).get_aabb().get_longest_axis_size()
 		if not on or ext > 600.0:
@@ -210,10 +224,15 @@ static func _apply_lod(root: Node, r: float, on: bool) -> int:
 # there is no overlay to draw instead.
 static func _unreveal(node: Node3D) -> void:
 	var id := node.get_instance_id()
-	if not _revealed.has(id): return
+	var known := _revealed.has(id)
 	_revealed.erase(id)
 	if not is_instance_valid(node): return
-	HighpolyLib._set_proxy_visible(node, false)
+	# Only RE-HIDE what we know we revealed; apply_one owns proxy visibility
+	# otherwise. But always clear the gate, record or not, for the reload case
+	# above. Hiding without a record could hide a proxy that is legitimately the
+	# only thing drawing.
+	if known:
+		HighpolyLib._set_proxy_visible(node, false)
 	# Clear the near-gate as well as hiding it. Hidden and gated look identical
 	# today, but the two are undone by different code paths -- switching to
 	# High-Poly hides the proxy without touching ranges -- so a `begin` left
