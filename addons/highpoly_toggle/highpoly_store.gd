@@ -18,6 +18,86 @@ class_name HighpolyStore
 const ROOT := "user://highpoly"
 const MODELS_DIR := "user://highpoly/models"
 const THUMBS_DIR := "user://highpoly/thumbs"
+# Detail-Mode suffixes a thumbnail can be cached under (see thumb_path). The
+# bare, unsuffixed name stays in the list of files to invalidate so thumbs
+# written by earlier versions are still cleaned up rather than orphaned.
+# _ctx entries are rendered from the map-context stand-in rather than the
+# library copy, so they must invalidate independently: when the real model
+# lands the stand-in's picture is wrong, and when a props.zip is refreshed the
+# stand-in's picture is wrong the other way round.
+const THUMB_MODES := ["clay", "tex", "clay_ctx", "tex_ctx"]
+
+# ---------- the map context as a second source of geometry ----------
+# "Original map objects" downloads the level's own meshes into this cache, keyed
+# by GAME MESH name. The library is keyed by SDK PROXY name. The same object is
+# therefore capable of being downloaded twice, once per store, and on Dumbo that
+# is 1,055 of 2,595 map-restricted placeable entries (418 MB at the web tier).
+#
+# The two are bridged by the manifest: remote[proxy].glb is "godot/<GameMesh>.glb",
+# so no second lookup table is needed.
+#
+# What the map-context copy IS: a distance-streaming bake. Multi-part meshes are
+# merged into one and the texture policy is `mapweb` (half-res basecolor). It is
+# the right thing to show instead of the SDK's white blockout, and the WRONG thing
+# to leave in place once the user actually places and inspects the object -- so it
+# is served as a stand-in that still queues the library copy behind it.
+#
+# Per-instance variation files carry a __v######## suffix and have no library
+# equivalent. They can never be offered here because names are derived FROM the
+# manifest rather than by scanning the directory for something that looks close.
+const CTX_PROPS := "user://mapcontext/_props"
+
+static var _ctx_names: Dictionary = {}     # lowercase game-mesh basename -> true
+static var _ctx_scanned := false
+static var _ctx_scenes: Dictionary = {}    # ctx path -> PackedScene (null = failed)
+
+# One directory listing rather than a stat per lookup: _asset_id() runs per node
+# on every apply pass, and the Object Library preview tick runs over thousands of
+# rows every two seconds.
+static func ctx_scan(force := false) -> void:
+	if _ctx_scanned and not force: return
+	_ctx_scanned = true
+	_ctx_names.clear()
+	if force:
+		# A refreshed props.zip replaces geometry behind names we may already be
+		# serving, so parsed scenes and their thumbnails both go stale.
+		_ctx_scenes.clear()
+		_drop_ctx_thumbs()
+	var da := DirAccess.open(CTX_PROPS)
+	if da == null: return
+	for f in da.get_files():
+		if f.ends_with(".glb"):
+			_ctx_names[f.get_basename().to_lower()] = true
+
+static func _drop_ctx_thumbs() -> void:
+	var da := DirAccess.open(THUMBS_DIR)
+	if da == null: return
+	for f in da.get_files():
+		if f.ends_with("_ctx.png"):
+			DirAccess.remove_absolute("%s/%s" % [THUMBS_DIR, f])
+
+# Map-context geometry for a PROXY name, or "" when there is none. Never returns
+# a path for a proxy the library already holds: the library copy is the artefact
+# the user actually gets when they place the item, so it always wins.
+static func ctx_model_path(name: String) -> String:
+	if has_model(name): return ""
+	var e = remote.get(name)
+	if not (e is Dictionary): return ""
+	var gm := str((e as Dictionary).get("glb", "")).get_file().get_basename()
+	if gm == "" or not _ctx_names.has(gm.to_lower()): return ""
+	return "%s/%s.glb" % [CTX_PROPS, gm]
+
+# Deliberately NOT _scene_cache: that is keyed by proxy name, so a map-context
+# mesh parked in it would later be handed back AS the library model for the same
+# name, and the upgrade to the real copy would silently never happen.
+static func load_ctx_scene(path: String) -> PackedScene:
+	if _ctx_scenes.has(path):
+		return _ctx_scenes[path]
+	var ps: PackedScene = null
+	if FileAccess.file_exists(path):
+		ps = load_external_glb(path)
+	_ctx_scenes[path] = ps
+	return ps
 const INDEX_PATH := "user://highpoly/store.json"
 const SCHEMA := 1
 const FLUSH_EVERY := 25   # index writes are batched during bulk syncs
@@ -102,8 +182,38 @@ static func nofit(name: String) -> bool:
 static func model_path(name: String) -> String:
 	return "%s/%s.glb" % [MODELS_DIR, name]
 
-static func thumb_path(name: String) -> String:
-	return "%s/%s.png" % [THUMBS_DIR, name]
+# Every downloaded variant of one base model. Variants are stored as
+# <proxy>__<label>.glb and kept out of the index on purpose, so anything that
+# deletes a model has to sweep them explicitly or they are orphaned.
+static func variant_files(name: String) -> Array:
+	var out: Array = []
+	var da := DirAccess.open(MODELS_DIR)
+	if da == null: return out
+	var prefix := name + "__"
+	for f in da.get_files():
+		if f.begins_with(prefix) and f.get_extension() == "glb":
+			out.append("%s/%s" % [MODELS_DIR, f])
+	return out
+
+# Thumbnails are rendered per Detail Mode (clay in Low-Poly, textured in
+# High-Poly), so the mode is part of the cache key. Keyed by name alone, the two
+# renders shared one file and switching modes served the other mode's picture
+# with nothing to signal it was stale -- which reads as "the model downloaded
+# wrong" and costs an hour to chase.
+static func thumb_path(name: String, mode: String = "") -> String:
+	if mode == "":
+		return "%s/%s.png" % [THUMBS_DIR, name]
+	return "%s/%s__%s.png" % [THUMBS_DIR, name, mode]
+
+# Every cached render of one model, whatever the mode. _invalidate() must delete
+# ALL of them: a model that changes on disk invalidates its clay picture exactly
+# as much as its textured one, and a per-mode file the invalidation does not know
+# about is a stale thumbnail that never heals.
+static func thumb_paths(name: String) -> Array:
+	var out: Array = [thumb_path(name)]
+	for m in THUMB_MODES:
+		out.append(thumb_path(name, m))
+	return out
 
 static func count() -> int:
 	return models().size()
@@ -152,8 +262,15 @@ static func ingest_bytes(name: String, data: PackedByteArray, h: String, nofit_f
 
 static func _invalidate(name: String) -> void:
 	_scene_cache.erase(name)
-	if FileAccess.file_exists(thumb_path(name)):
-		DirAccess.remove_absolute(thumb_path(name))
+	for tp in thumb_paths(name):
+		if FileAccess.file_exists(tp):
+			DirAccess.remove_absolute(tp)
+	# The base model changed, so its variants are from the previous build. They
+	# carry no hash in the manifest (only a name), so staleness cannot be
+	# detected later — drop them and let the next double-click re-fetch, which is
+	# the only moment their absence costs anything.
+	for vp in variant_files(name):
+		DirAccess.remove_absolute(vp)
 
 static func file_hash(path: String) -> String:
 	var f := FileAccess.open(path, FileAccess.READ)
@@ -390,6 +507,13 @@ static func prune_keep(keep: Dictionary) -> int:
 		var p := model_path(name)
 		if FileAccess.file_exists(p):
 			if DirAccess.remove_absolute(p) == OK:
+				n += 1
+		# Variant models sit next to the base as <name>__<label>.glb and are
+		# deliberately NOT in the index (discovery is a directory glob), so this
+		# loop walked straight past them and left them on disk with nothing left
+		# to reference them.
+		for vp in variant_files(name):
+			if DirAccess.remove_absolute(vp) == OK:
 				n += 1
 		models.erase(name)
 		_invalidate(name)

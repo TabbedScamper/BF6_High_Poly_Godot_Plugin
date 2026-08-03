@@ -98,7 +98,12 @@ static func _variant_key(node: Node) -> String:
 	if not sfp.begins_with("res://objects/"):
 		return ""
 	var base := sfp.get_file().get_basename()
-	return base if not HighpolyLib.variants_of(base).is_empty() else ""
+	# A prop whose variants are PUBLISHED but not yet downloaded counts as
+	# variant-capable. Requiring local files meant such a prop was not even
+	# recognised as a hit, so the double-click fell through as if it had landed
+	# on nothing: no swap, no message, nothing to suggest a download was needed.
+	if not HighpolyLib.variants_of(base).is_empty(): return base
+	return base if not HighpolyLib.declared_variants(base).is_empty() else ""
 
 # find the nearest variant-capable instance under the cursor and cycle it
 static func click(camera: Camera3D, pos: Vector2, root: Node) -> Dictionary:
@@ -149,6 +154,12 @@ static func cycle(node: Node3D, key: String) -> Dictionary:
 	var map := map_token(EditorInterface.get_edited_scene_root())
 	var names := order(key, map)
 	if names.is_empty():
+		# Published but not on disk. Ask the caller to fetch rather than return
+		# {} , which the dock reads as "nothing was hit" and reports as silence.
+		var decl := HighpolyLib.declared_variants(key)
+		if not decl.is_empty():
+			return {"node": node, "ok": false, "fetch": key,
+					"msg": "%s: fetching %d variant(s)…" % [key, decl.size()]}
 		return {}
 	# position in the ring [base, names...]
 	var cur := String(node.get_meta(HighpolyLib.VARIANT_META, ""))

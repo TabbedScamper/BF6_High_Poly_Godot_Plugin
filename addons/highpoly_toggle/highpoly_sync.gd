@@ -11,7 +11,22 @@ signal model_ready(name: String)      # a model landed in the store (swap it in)
 signal progress_changed()             # queue counters moved (update the bar)
 signal manifest_refreshed()           # a NEW manifest was adopted (models changed server-side)
 
-const MAX_WORKERS := 2                # r2.dev throttles bursts; 2 is the sweet spot
+# Raised from 2 after measuring the host instead of assuming it. The old value
+# carried the note "r2.dev throttles bursts; 2 is the sweet spot"; a cold-object
+# A/B (three disjoint 24-file blocks per level, alternated so neither level got
+# the warmer network) measured 2 workers at 9.9 MB/s and 8 workers at 19.8 MB/s
+# — 2.0x the bytes, ~4x the FILES per second — with zero 403/429 responses at
+# either level. Most models are small enough that the ~140 ms time-to-first-byte
+# dominates the transfer, which is exactly the cost extra connections hide.
+#
+# The 403s that likely motivated "throttles bursts" reproduce with a default
+# Python/urllib User-Agent and vanish with a browser one, so they were about the
+# request, not the rate. _fetch() already retries 403/429/5xx with backoff, so if
+# the host does start pushing back this degrades rather than fails.
+#
+# 8 rather than 16 (which measured faster still) because these are HTTPRequest
+# nodes on the editor's own main loop, and the editor has to stay responsive.
+const MAX_WORKERS := 8
 const RECHECK_SECS := 3600.0          # re-diff the manifest hourly
 # No new bytes for this long means the transfer is dead, not slow. Needed because
 # HTTPRequest.timeout defaults to 0 (wait forever): a socket that is accepted and
@@ -96,16 +111,41 @@ func _diff_and_queue(first := false, force := false) -> void:
 			# and the panel sat on "Upgrading…" forever. The tier decision has to
 			# be made HERE, where the queue is built, not only in the worker.
 			if _needs(nm):
-				stale.append(nm)
-		elif full:
+				# ...but a TIER UPGRADE is not the same as being out of date, and
+				# scope must decide it. Scope "scene" means "only what open
+				# scenes use"; this path ignored that and queued an hq copy of
+				# EVERY model already held. Measured on this install: 1,135 held
+				# models against an hq library averaging 17.4 MB each — ~20 GB
+				# queued by flipping one dropdown, none of it for anything on
+				# screen, because _tier_for() already fetches the OPEN SCENE at
+				# hq whatever this setting says.
+				#
+				# Content staleness (the model was republished, so the local copy
+				# matches neither tier's hash) still refreshes regardless — that
+				# is a wrong file, not a smaller one.
+				if full or not _tier_upgrade_only(nm):
+					stale.append(nm)
+		elif full or bool(e0.get("global", false)):
+			# Globals come down whatever the scope. A globally-placeable prop can
+			# be dropped on ANY map, so "only what this map needs" can never rule
+			# one out — yet under scope=scene they were fetched only after you
+			# placed one, which is the moment you least want to wait. 200 of them,
+			# ~145 MB against a 25.6 GB library: 0.6% of the bytes for the props
+			# that are always reachable. The publisher sets this flag from the
+			# SDK proxy's maps == ["Common"], not the game mesh's own `global`
+			# field; see make_plugin_manifest() for why those two disagree.
 			missing.append(nm)
-	Log.info("check: %d in manifest · %d to refresh · %d missing · tier=%s scope=%s"
-		% [manifest.size(), stale.size(), missing.size(),
+	var n_glob := 0
+	for nm2 in missing:
+		if bool((manifest[nm2] as Dictionary).get("global", false)):
+			n_glob += 1
+	Log.info("check: %d in manifest · %d to refresh · %d missing (%d global) · tier=%s scope=%s"
+		% [manifest.size(), stale.size(), missing.size(), n_glob,
 			HighpolyStore.quality(), HighpolyStore.scope()])
 	if stale.is_empty() and missing.is_empty():
 		# Saying "nothing to do" out loud is the difference between a working
 		# no-op and the silence that made the full-quality switch undiagnosable.
-		Log.info("nothing to download — everything local already matches the "
+		Log.info("nothing to download: everything local already matches the "
 			+ "requested tier")
 	enqueue(stale, true)
 	enqueue(missing, false)
@@ -192,6 +232,18 @@ func _save_manifest_cache(body: PackedByteArray) -> void:
 # so the thing you are actually working on always looks right without pulling
 # the whole library at full size.
 func _tier_for(nm: String) -> String:
+	# Low-Poly renders every model in clay, so an hq texture set is bytes nobody
+	# can see. Geometry is byte-identical between the two renditions, which is
+	# what makes this safe: Low-Poly gets exactly the same accurate silhouette,
+	# just without the maps. This is what keeps Low-Poly the CHEAP option now
+	# that it draws our geometry instead of the SDK's white proxy.
+	#
+	# Downgrading nothing already on disk: _should_fetch() treats hq as sticky
+	# ("holding it satisfies any tier"), so switching to Low-Poly never re-fetches
+	# or discards models already held at full quality. It only makes the NEXT
+	# fetch small. Switching back to High-Poly re-queues the scene as a tier
+	# upgrade, which is the path that already existed for the quality control.
+	if HighpolyLib.detail == HighpolyLib.Tier.LOW: return "web"
 	if HighpolyStore.quality() == "full": return "hq"
 	return "hq" if _scene_set.has(nm) else "web"
 
@@ -207,6 +259,18 @@ func _rendition(nm: String, tier: String) -> Dictionary:
 	return {"glb": str(e.get("glb", "")), "hash": str(e.get("hash", ""))}
 
 # ---------- queue ----------
+# True when the ONLY reason this model is not current is that a bigger-texture
+# rendition exists: the local copy is a valid, matching web build. Distinguishes
+# "you could have a prettier one" from "the file you hold is wrong", so the
+# library-wide sync can act on the second without dragging in the first.
+func _tier_upgrade_only(nm: String) -> bool:
+	if not manifest.has(nm): return false
+	var e: Dictionary = manifest[nm]
+	var web_h := str(e.get("hash", ""))
+	if web_h == "" or not HighpolyStore.has_model(nm): return false
+	return HighpolyStore.hash_of(nm) == web_h
+
+
 func _needs(nm: String) -> bool:
 	if not manifest.has(nm): return false
 	var e: Dictionary = manifest[nm]
@@ -267,6 +331,69 @@ func prioritize_one(nm: String) -> void:
 		enqueue([nm], true)
 	progress_changed.emit()
 
+# ---------- variant models (double-click cycling) ----------
+# Variants are published NEXT TO the base model as godot/<GameMesh>__<label>.glb.
+# Nothing in this file fetched them, ever: 236 proxies declare 586 variant models
+# and the local folder could only ever contain zero of them, so variants_of()
+# always came back empty and double-click silently did nothing for every prop.
+#
+# Fetched per proxy, on demand, rather than joining the main sync diff. 586
+# models is a large download for a feature most props never use, and the moment
+# someone double-clicks a prop is exactly when its handful are wanted.
+#
+# NOT recorded in the store index. The index is the currency record for BASE
+# models and is diffed against the manifest; variant rows in it would look like
+# local models the registry has never heard of. Discovery is a directory glob, so
+# the file on disk is the whole record.
+func fetch_variants(prox: String) -> int:
+	var e = manifest.get(prox)
+	if not (e is Dictionary): return 0
+	var want: Variant = (e as Dictionary).get("variants", [])
+	if not (want is Array) or (want as Array).is_empty(): return 0
+	# The remote name is the GAME MESH; the local name must be the PROXY, because
+	# _scan_store_variants() splits the local filename at the first "__" to
+	# recover which proxy a variant belongs to. Saving under the game-mesh name
+	# would file every variant under a proxy that does not exist, and discovery
+	# would stay empty with the bytes sitting right there on disk.
+	var stem := str((e as Dictionary).get("glb", "")).get_file().get_basename()
+	if stem == "": return 0
+	HighpolyStore.ensure_dir(HighpolyStore.MODELS_DIR)
+	var http := HTTPRequest.new()
+	http.use_threads = true
+	add_child(http)
+	var got := 0
+	var failed := 0
+	for v in (want as Array):
+		if not (v is Dictionary): continue
+		var label := str((v as Dictionary).get("name", ""))
+		if label == "": continue
+		var dst := "%s/%s__%s.glb" % [HighpolyStore.MODELS_DIR, prox, label]
+		if FileAccess.file_exists(dst): continue
+		var url := base + "godot/%s__%s.glb" % [stem, label]
+		var data := await HighpolyUpdater._fetch(http, url)
+		if data.is_empty():
+			failed += 1
+			Log.warn("variant download failed: %s__%s (%s)" % [prox, label, url])
+			continue
+		var f := FileAccess.open(dst, FileAccess.WRITE)
+		if f == null:
+			failed += 1
+			Log.error("downloaded variant '%s__%s' but could not write it to %s"
+				% [prox, label, ProjectSettings.globalize_path(HighpolyStore.MODELS_DIR)])
+			continue
+		f.store_buffer(data)
+		f.close()
+		got += 1
+		Log.debug("variant %s__%s %s" % [prox, label, Log.human_bytes(data.size())])
+	http.queue_free()
+	if got > 0:
+		# variants_of() caches per proxy INCLUDING the empty answer, so without
+		# this the files just written stay invisible until a plugin reload
+		HighpolyLib.forget_variants(prox)
+	if failed > 0 and got == 0:
+		Log.warn("no variants could be fetched for %s (%d failed)" % [prox, failed])
+	return got
+
 func _pump() -> void:
 	if paused or bootstrapping: return
 	while _workers < MAX_WORKERS and not _queue.is_empty():
@@ -275,6 +402,12 @@ func _pump() -> void:
 func _worker() -> void:
 	_workers += 1
 	var http := HTTPRequest.new()
+	# Own thread per worker: HTTPRequest.use_threads defaults to false, which
+	# pumps the socket from _process on the main thread, so model downloads ran
+	# at the speed the editor was rendering. The library sync runs while overlays
+	# are being built and swapped in — precisely when frames are slowest — so the
+	# work being downloaded FOR was starving the download itself.
+	http.use_threads = true
 	add_child(http)
 	while not paused and not _queue.is_empty():
 		var nm: String = _queue.pop_front()
@@ -306,7 +439,7 @@ func _worker() -> void:
 			var line := "%s %s in %s [%s]" % [nm, Log.human_bytes(data.size()),
 				Log.human_ms(ms), tier]
 			if ms >= 15000 or data.size() >= 100 * 1048576:
-				Log.info("large download — " + line)
+				Log.info("large download: " + line)
 			else:
 				Log.debug("got " + line)
 			model_ready.emit(nm)
@@ -320,7 +453,7 @@ func _worker() -> void:
 			_fail_count += 1
 			_write_failures += 1
 			if _write_failures == 1:                      # log once, not 7,670 times
-				Log.error("downloaded '%s' but could not write it to %s — "
+				Log.error("downloaded '%s' but could not write it to %s: "
 					% [nm, ProjectSettings.globalize_path(HighpolyStore.MODELS_DIR)]
 					+ "check free disk space and folder permissions.")
 		_scene_want.erase(nm)
@@ -349,10 +482,10 @@ func status_text() -> String:
 		# a write failure is not a network problem and retrying won't fix it —
 		# say what's actually wrong instead of "retrying next check"
 		if _write_failures > 0:
-			return "%d model(s) could not be saved — check free disk space and permissions on %s" \
+			return "%d model(s) could not be saved: check free disk space and permissions on %s" \
 				% [_write_failures, ProjectSettings.globalize_path(HighpolyStore.ROOT)]
 		if _fail_count > 0:
-			return "Library up to date (%d failed — retrying next check)" % _fail_count
+			return "Library up to date (%d failed: retrying next check)" % _fail_count
 		return "Library up to date · %d models local" % HighpolyStore.count()
 	var sp := scene_pending()
 	if sp > 0:
@@ -382,7 +515,7 @@ func _no_room_for_bundle(bytes: int) -> bool:
 	if free <= 0: return false
 	var need := int(bytes * 2.1)                     # zip + extracted + slack
 	if free >= need: return false
-	bootstrap_note = "Not enough disk space for the one-shot library download (%d GB free, ~%d GB needed) — downloading models individually instead." \
+	bootstrap_note = "Not enough disk space for the one-shot library download (%d GB free, ~%d GB needed): downloading models individually instead." \
 		% [int(free / 1073741824.0), int(need / 1073741824.0)]
 	Log.warn("" + bootstrap_note)
 	progress_changed.emit()
@@ -412,10 +545,11 @@ func _bootstrap_bundle() -> void:
 			var url := base + str((meta as Dictionary).get("file", "bundles/highpoly-library.zip"))
 			for attempt in range(3):
 				if attempt > 0:
-					bootstrap_note = "Library download stalled — retrying (%d/3)…" % (attempt + 1)
+					bootstrap_note = "Library download stalled: retrying (%d/3)…" % (attempt + 1)
 					progress_changed.emit()
 					await get_tree().create_timer(2.0 * attempt).timeout
 				var dl := HTTPRequest.new(); add_child(dl)
+				dl.use_threads = true      # multi-GB: never pump this from _process
 				dl.download_file = tmp
 				var st := {"done": false, "ok": false}
 				dl.request_completed.connect(func(res: int, code: int, _h, _b):
@@ -497,7 +631,7 @@ func _extract_bundle(tmp: String) -> bool:
 	zr.close()
 	HighpolyStore.save()
 	if _write_failures > 0:
-		Log.error("%d of %d models could not be written to %s — "
+		Log.error("%d of %d models could not be written to %s: "
 			% [_write_failures, _write_failures + n, ProjectSettings.globalize_path(HighpolyStore.MODELS_DIR)]
 			+ "the library is incomplete; free up disk space and hit Check for Updates.")
 	# whatever failed to write stays absent from the index, so the per-file queue

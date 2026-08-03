@@ -31,6 +31,12 @@ const NOFIT := ["WreckTank_Abra01"]
 enum Tier { LOW, MEDIUM, HIGH }      # MEDIUM retired in 1.4 (kept for compat)
 
 static var use_legacy := false       # pre-migration installs: read res://highpoly
+# Current Detail Mode, mirrored from the dock's dropdown by _mode(). Read by
+# HighpolySync._tier_for() to pick a rendition: Low-Poly renders clay, so it has
+# no use for hq texture maps and pulls the small web copy of identical geometry.
+# Statics are wiped on every plugin re-parse; the dock rewrites this on its first
+# _mode() call, and LOW is the safe default because it is also the startup mode.
+static var detail: Tier = Tier.LOW
 # props the current tier wants but the store doesn't have yet (drained by the
 # dock into the sync queue after every apply pass)
 static var wanted: Dictionary = {}
@@ -53,6 +59,9 @@ static func gray_material() -> StandardMaterial3D:
 # name -> true when the model is available locally, false when only the
 # registry knows it (still matchable — it gets queued instead of skipped).
 static func known() -> Dictionary:
+	# cheap after the first call; _asset_id() needs the index populated before it
+	# can offer a map-context stand-in
+	HighpolyStore.ctx_scan()
 	var d := {}
 	if use_legacy:
 		var da := DirAccess.open(LEGACY_DIR)
@@ -130,6 +139,51 @@ static func scene_keys(root: Node) -> Array:
 			stack.append(c)
 	return out.keys()
 
+# ---------- teardown ----------
+# Put the scene back to stock: our overlays hidden, the SDK's own proxies shown.
+#
+# This used to be spelled `apply(root, Tier.LOW, true)`, which worked only for as
+# long as Low-Poly happened to mean "draw nothing of ours". It does not any more:
+# Low-Poly now draws our geometry as clay, so the old spelling would LEAVE the
+# overlays in place at exactly the four moments that must not (plugin disable,
+# reset, scene switch, scene-only prune). Those callers never wanted a tier, they
+# wanted off, so they now say off.
+#
+# Deliberately no `known()` guard. apply() returns early when the registry is
+# empty, which is right for applying and wrong for tearing down: after a purge
+# there are no known models and the overlays still need removing.
+static func restore(root: Node) -> int:
+	if root == null: return 0
+	var count := 0
+	var stack: Array = [root]
+	while not stack.is_empty():
+		var node: Node = stack.pop_back()
+		if node.name == "_MAP_CONTEXT" or node.name == COL_NODE:
+			continue
+		if node is Node3D and node.get_node_or_null(HP_NODE) != null:
+			_show_proxy_only(node as Node3D)
+			count += 1
+		for c in node.get_children():
+			if c.name != HP_NODE:
+				stack.append(c)
+	return count
+
+# Hide our overlay, reveal the SDK proxy underneath. The overlay is left parented
+# rather than freed so that switching back does not re-instantiate and re-fit
+# every model; teardown callers that need the files released free the subtree via
+# the owner=null rule when the scene closes.
+#
+# Does NOT touch visibility_range. That property has exactly one owner, and it is
+# HighpolyPlacedCull, which remembers what each mesh started with so an authored
+# draw distance survives. A second writer here would clear ranges PlacedCull
+# still believes it is holding, and strip authored values from the user's .tscn.
+# Every teardown path already calls PlacedCull.release() before this.
+static func _show_proxy_only(node: Node3D) -> void:
+	var hp := node.get_node_or_null(HP_NODE)
+	if hp != null and hp is Node3D:
+		(hp as Node3D).visible = false
+	_set_proxy_visible(node, true)
+
 # ---------- apply ----------
 static func apply(root: Node, tier: Tier, textured: bool = true) -> int:
 	if root == null: return 0
@@ -155,7 +209,10 @@ static func apply(root: Node, tier: Tier, textured: bool = true) -> int:
 # Apply only the props in `names` (the batched swap-in pass after downloads):
 # touches matching nodes that don't already carry a current overlay.
 static func apply_names(root: Node, names: Dictionary, tier: Tier, textured: bool) -> int:
-	if root == null or names.is_empty() or tier == Tier.LOW: return 0
+	# No Tier.LOW gate: Low-Poly draws our geometry too, so a model that finishes
+	# downloading has to swap in whatever the mode. Gated, the first download in
+	# Low-Poly landed on disk and stayed invisible until the user switched modes.
+	if root == null or names.is_empty(): return 0
 	var ks := known()
 	var count := 0
 	var stack: Array = [root]
@@ -185,6 +242,19 @@ static func _asset_id(key: String) -> String:
 		return ""
 	if HighpolyStore.has_model(key):
 		return "store://%s#%s" % [key, HighpolyStore.hash_of(key)]
+	# Map-context stand-in: the level's own copy of this mesh is already on disk
+	# because "Original map objects" pulled it. Showing it beats showing the SDK's
+	# white blockout while the library copy downloads.
+	#
+	# `wanted` is still set, which is the whole point of the pairing: the stand-in
+	# is a distance-streaming bake (merged parts, half-res basecolor) and must not
+	# be the final answer for something the user placed and is inspecting. The id
+	# carries the path, so when the real model lands the id changes to store://
+	# and apply_one's "hp_asset != id" test rebuilds the overlay by itself.
+	var cp := HighpolyStore.ctx_model_path(key)
+	if cp != "":
+		wanted[key] = true
+		return "ctx://%s" % cp
 	return ""
 
 static func _instance_for(key: String, id: String) -> Node3D:
@@ -194,6 +264,9 @@ static func _instance_for(key: String, id: String) -> Node3D:
 	if id.begins_with("store://"):
 		var ps := HighpolyStore.load_scene(key)
 		return ps.instantiate() as Node3D if ps != null else null
+	if id.begins_with("ctx://"):
+		var cs := HighpolyStore.load_ctx_scene(id.trim_prefix("ctx://"))
+		return cs.instantiate() as Node3D if cs != null else null
 	var res = load(id)
 	if res is PackedScene:
 		return (res as PackedScene).instantiate() as Node3D
@@ -214,14 +287,24 @@ static func _nofit_for(key: String) -> bool:
 	return HighpolyStore.nofit(key)
 
 static func apply_one(node: Node3D, key: String, tier: Tier, textured: bool) -> bool:
+	# Detail Mode decides how our geometry is SKINNED, not whether it is used.
+	# Low-Poly used to mean "show the SDK proxy instead", which is why a placed
+	# asset rendered as a solid white block and never improved: the proxy IS the
+	# white block. Low-Poly now draws the same accurate mesh as High-Poly, in
+	# clay. Geometry is byte-identical between the web and hq renditions and only
+	# the texture maps differ, so the accurate silhouette costs a fraction of the
+	# bytes -- Low-Poly stays the cheap option, it just stops being the wrong one.
 	if tier == Tier.LOW:
-		var hp := node.get_node_or_null(HP_NODE)
-		if hp and hp is Node3D: (hp as Node3D).visible = false
-		_set_proxy_visible(node, true)
-		return true
+		textured = false
 	var id := _asset_id(key)
 	if id == "":
 		wanted[key] = true                    # known to the registry, not local yet
+		# Nothing on disk backs this any more, yet an overlay is still drawing.
+		# That happens when a purge removes the map-context stand-in we were
+		# serving, or a prune removes the library model. Fall back to the SDK
+		# proxy instead of leaving geometry up that no file supports.
+		if node.get_node_or_null(HP_NODE) != null:
+			_show_proxy_only(node)
 		return false
 	# per-instance variant selection (double-click cycling, highpoly_variants.gd):
 	# the chosen variant GLB replaces the base model for this node only. A stale
@@ -326,6 +409,22 @@ static func _scan_store_variants() -> void:
 		m[vn] = "%s/%s" % [HighpolyStore.MODELS_DIR, f]
 		_store_vars[prox] = m
 
+# Forget what was discovered so a variant that arrived AFTER the first lookup
+# becomes visible without reloading the plugin.
+#
+# Both caches are permanent statics and nothing used to clear them. The worse
+# half was _var_disc: variants_of() caches its result PER PROXY including the
+# empty one, so the first double-click on a prop whose variants had not
+# downloaded yet poisoned that prop for the rest of the session. Downloading the
+# variants then changed nothing, which reads as "variant cycling is broken".
+static func forget_variants(prox: String = "") -> void:
+	_store_var_scanned = false
+	_store_vars.clear()
+	if prox == "":
+		_var_disc.clear()
+	else:
+		_var_disc.erase(prox)
+
 static func variants_of(prox: String) -> Dictionary:
 	if _var_disc.has(prox):
 		return _var_disc[prox]
@@ -345,6 +444,22 @@ static func variants_of(prox: String) -> Dictionary:
 		found[vn] = sv[vn]
 	_var_disc[prox] = found
 	return found
+
+# Variant labels the REGISTRY advertises for this proxy, whether or not any are
+# on disk. variants_of() answers "what can I cycle right now"; this answers "what
+# does this prop have published", which is what tells the difference between a
+# prop with no variants and one whose variants have simply never been fetched.
+static func declared_variants(prox: String) -> Array:
+	var e = HighpolyStore.remote.get(prox)
+	if not (e is Dictionary): return []
+	var v: Variant = (e as Dictionary).get("variants", [])
+	var out: Array = []
+	if v is Array:
+		for r in v:
+			if r is Dictionary:
+				var n := str((r as Dictionary).get("name", ""))
+				if n != "": out.append(n)
+	return out
 
 static func variant_path(prox: String, vname: String) -> String:
 	return str(variants_of(prox).get(vname, ""))

@@ -179,7 +179,7 @@ func setup(mc: Object, ctx: Node3D, map: String, dir: String, hm: Dictionary, ti
 		clear()
 		return 0
 	if not skipped.is_empty():
-		print("MapContext[%s]: scatter — %d kit meshes not cached yet (%s…)" %
+		print("MapContext[%s]: scatter: %d kit meshes not cached yet (%s…)" %
 			[map, skipped.size(), skipped[0]])
 	active = true
 	return _entries.size()

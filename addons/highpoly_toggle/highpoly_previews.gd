@@ -15,7 +15,12 @@ class_name HighpolyPreviews
 
 const THUMB_SIZE := 128
 
-var tier: int = 0                    # HighpolyLib.Tier; LOW = leave stock icons
+var tier: int = 0                    # HighpolyLib.Tier, mirrored from the dock
+var textured: bool = true            # dock's "High-Poly textured" vs grey
+# Icons follow the Detail Mode rather than switching off in Low-Poly, so the one
+# remaining reason to put the stock icons back is the plugin letting go entirely.
+var active: bool = true
+var _tag: String = "tex"             # render the cache currently holds
 var _cache: Dictionary = {}          # name -> Texture2D
 var _pending: Dictionary = {}        # name (or legacy path) -> true
 var _orig: Dictionary = {}           # proxy path -> stock Texture2D
@@ -28,12 +33,55 @@ var _busy := false
 var _vp: SubViewport = null
 var _cam: Camera3D = null
 
+# ---------- second source of local geometry: the map-context prop cache ----------
+# "Original map objects" downloads the level's own meshes into
+# user://mapcontext/_props, keyed by GAME MESH name. The library is keyed by SDK
+# PROXY name and lives in user://highpoly/models. Those are different stores, so
+# a prop whose geometry was already pulled down by the map context still showed
+# the SDK's stock icon: the thumbnail only appeared once the item was DROPPED into
+# a scene, which is what finally fetched the library copy.
+#
+# The two are bridged by the manifest itself. HighpolyStore.remote[proxy].glb is
+# "godot/<GameMesh>.glb", so the game-mesh name for any proxy is already known
+# without a second lookup table.
+#
+# Measured on this install: 202 proxies renderable from the library, 1,077 more
+# already on disk via the map context and showing a stock icon for no reason.
+#
+# The index and the resolver moved to HighpolyStore once the overlay needed them
+# too (ctx:// stand-ins). One scan, one rule about which store wins, shared.
+
+# The map context finished downloading meshes: re-scan so their proxies stop
+# showing stock icons without waiting for the user to place one.
+func rescan_context() -> void:
+	HighpolyStore.ctx_scan(true)
+	_cache.clear()
+	_pending.clear()
+	_queue.clear()
+
+# Local geometry we can render for this proxy, or "" if there is none.
+func _local_glb(nm: String) -> String:
+	var p := HighpolyStore.model_path(nm)
+	if FileAccess.file_exists(p):
+		return p
+	return HighpolyStore.ctx_model_path(nm)
+
 func _ready() -> void:
 	_timer = Timer.new()
 	_timer.wait_time = 2.0
 	_timer.timeout.connect(_refresh)
 	add_child(_timer)
 	_timer.start()
+
+# The plugin is letting go: put the SDK's own icons back, now, before this node
+# is freed. Low-Poly used to double as "icons off", so teardown got the stock
+# icons back for free by resetting the dropdown. Low-Poly is a real render now,
+# so switching off has to be said explicitly or the Object Library keeps showing
+# our thumbnails with the plugin disabled.
+func shutdown() -> void:
+	active = false
+	if _swapped:
+		_restore()
 
 func clear_cache() -> void:
 	# downloaded models changed on disk (purge/update): drop stale previews
@@ -59,11 +107,28 @@ func _find_lists() -> Array:
 				break
 	return out
 
+# Which render the current Detail Mode wants. Low-Poly draws our geometry in
+# clay, so its thumbnails are clay too: the icon in the Object Library now shows
+# what dropping the item will actually put in the scene, in either mode.
+func _mode_tag() -> String:
+	return "clay" if (tier == HighpolyLib.Tier.LOW or not textured) else "tex"
+
 func _refresh() -> void:
-	if tier == HighpolyLib.Tier.LOW:
+	if not active:
 		if _swapped:
 			_restore()
 		return
+	# A mode switch changes what every icon should look like. The in-memory cache
+	# is keyed by name only, so it is dropped wholesale rather than served across
+	# modes; the on-disk cache IS per mode, so this costs a PNG read, not a
+	# re-render of the whole library.
+	var tag := _mode_tag()
+	if tag != _tag:
+		_tag = tag
+		_cache.clear()
+		_pending.clear()
+		_queue.clear()
+	HighpolyStore.ctx_scan()
 	var ks := HighpolyLib.known()
 	if ks.is_empty():
 		if _swapped:
@@ -75,7 +140,10 @@ func _refresh() -> void:
 			if not (md is Dictionary) or not md.has("path"): continue
 			var key: String = str(md.path).get_file().get_basename()
 			if not ks.has(key): continue
-			if not bool(ks[key]): continue     # registry-only: no local model yet
+			# `ks[key]` is false for registry-only proxies, but that only means the
+			# LIBRARY has not got it. The map context may already hold the same
+			# geometry, so ask for any local source rather than trusting that flag.
+			if not bool(ks[key]) and _local_glb(key) == "": continue
 			if _cache.has(key):
 				var cur: Texture2D = il.get_item_icon(i)
 				if cur != _cache[key]:
@@ -154,13 +222,28 @@ func _render_next() -> void:
 
 func _render_one(nm: String) -> void:
 	# disk cache first (thumbs survive editor restarts; store invalidates on update)
-	var tp := HighpolyStore.thumb_path(nm)
+	# The tag records WHICH STORE the picture came from as well as the mode.
+	# Without the _ctx half, a stand-in render and the real library render share
+	# one file: place an item, the library copy arrives, and the icon keeps
+	# showing the half-res distance bake with nothing to say it is stale.
+	var src0 := _local_glb(nm)
+	var tag := _mode_tag() + ("" if src0 == HighpolyStore.model_path(nm) else "_ctx")
+	var tp := HighpolyStore.thumb_path(nm, tag)
 	if FileAccess.file_exists(tp):
 		var img := Image.load_from_file(ProjectSettings.globalize_path(tp))
 		if img != null:
 			_finish(nm, ImageTexture.create_from_image(img))
 			return
-	var ps := HighpolyStore.load_scene(nm)
+	# Deliberately NOT HighpolyStore.load_scene(): that caches under the proxy
+	# name, so a map-context mesh loaded through it would be served later as the
+	# library model for the same name. Thumbnails are cached as PNGs anyway, so
+	# there is nothing to gain by holding the scene.
+	var src := src0
+	if src == "":
+		_pending.erase(nm)
+		return
+	var ps: PackedScene = HighpolyStore.load_scene(nm) if src == HighpolyStore.model_path(nm) \
+		else HighpolyStore.load_ctx_scene(src)
 	if ps == null:
 		_pending.erase(nm)
 		return
@@ -169,6 +252,16 @@ func _render_one(nm: String) -> void:
 	if inst == null:
 		_pending.erase(nm)
 		return
+	# Skin the render the same way the scene will be skinned, so the icon is a
+	# picture of what dropping this item actually produces.
+	if tag == "clay":
+		var stack: Array = [inst]
+		while not stack.is_empty():
+			var n: Node = stack.pop_back()
+			if n is GeometryInstance3D:
+				(n as GeometryInstance3D).material_override = HighpolyLib.gray_material()
+			for c in n.get_children():
+				stack.append(c)
 	_vp.add_child(inst)
 	var ab := _merged_aabb(inst)
 	if ab.size.length() < 0.001:
