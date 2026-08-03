@@ -131,7 +131,7 @@ static func human_bytes(n: int) -> String:
 # Record a Godot Error code with its meaning spelled out — "error 7" in a
 # user-sent log is worth almost nothing on its own.
 static func err_code(what: String, code: int) -> void:
-	error("%s — %s (code %d)" % [what, error_string(code), code])
+	error("%s: %s (code %d)" % [what, error_string(code), code])
 
 static func lines() -> Array: return _lines
 static func error_count() -> int: return _errors
@@ -148,6 +148,19 @@ static func _tag(lvl: int) -> String:
 		Level.WARN: return "WARN "
 		Level.DEBUG: return "debug"
 		_: return "info "
+
+# The marker report, or "" when there is no scene, no markers, or anything goes
+# wrong building it. Saving the log is what someone does when something is
+# already broken, so this must never be the reason the log fails to write.
+static func _markers_section() -> String:
+	if not Engine.is_editor_hint():
+		return ""
+	var root := EditorInterface.get_edited_scene_root()
+	if root == null:
+		return ""
+	# one rule for the map name, the map context's own
+	return HighpolyMarkers.report(root, HighpolyMapContext.map_of(root))
+
 
 static func as_text() -> String:
 	var out := PackedStringArray()
@@ -171,7 +184,7 @@ static func header() -> String:
 	if cf.load("res://addons/highpoly_toggle/plugin.cfg") == OK:
 		ver = str(cf.get_value("plugin", "version", "?"))
 	var lines := [
-		"BF6 High-Poly Preview — log",
+		"BF6 High-Poly Preview log",
 		"saved      %s" % Time.get_datetime_string_from_system(true),
 		"plugin     v%s" % ver,
 		"Godot      %s" % Engine.get_version_info().get("string", "?"),
@@ -181,7 +194,7 @@ static func header() -> String:
 		# renderer was logging thousands of its own, which reads as "nothing
 		# went wrong" when the truth was "we are not the one complaining".
 		"our errors %d      our warnings %d" % [_errors, _warnings],
-		"verbose    %s" % ("ON" if verbose() else "off — enable it in the panel for per-model detail"),
+		"verbose    %s" % ("ON" if verbose() else "off: enable it in the panel for per-model detail"),
 		"data       %s" % ProjectSettings.globalize_path("user://"),
 		"free disk  %s" % _free_space(),
 		"godot log  %s" % _godot_log_hint(),
@@ -207,7 +220,7 @@ static func save() -> String:
 	if f == null:
 		# deliberately not routed through error(): if the log cannot be written,
 		# recording that fact in the log helps nobody
-		push_error("[High-Poly] could not write %s — %s"
+		push_error("[High-Poly] could not write %s: %s"
 			% [path, error_string(FileAccess.get_open_error())])
 		return ""
 	# Prefer the write-through session file: the in-memory ring holds the last
@@ -222,6 +235,11 @@ static func save() -> String:
 		sf.close()
 	if body.strip_edges() == "":
 		body = header() + "\n" + as_text()
-	f.store_string(body + "\n")
+	# Problem markers ride along with the log, because the log is the thing that
+	# actually gets sent. A marker alone says "something is wrong here"; appended
+	# here it also carries what the package expects at that spot and whether the
+	# files are present, which is the difference between a report and a
+	# diagnosis. Never let this stop the log being written.
+	f.store_string(body + "\n" + _markers_section() + "\n")
 	f.close()
 	return ProjectSettings.globalize_path(path)

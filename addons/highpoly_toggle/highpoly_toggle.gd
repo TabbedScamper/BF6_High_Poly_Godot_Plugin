@@ -50,7 +50,10 @@ var iso_chk: Button          # Isolate selected: collision only (live w/ selecti
 var col_pick: ColorPickerButton
 var col_alpha: HSlider
 var mapctx_on: Button        # Map Context enabled
-var mapctx_objects: Button   # show original map objects
+var mapctx_objects: Button   # show original map objects (lives under Detail Mode)
+var mapctx_backdrop: Button  # show the distant skyline / out-of-bounds vista
+var mapctx_water: Button     # show the level's rivers / harbour / sea
+var _detail_chips: Node      # Detail Mode's chip row (hosts "Original map objects")
 var mapctx_range: HSlider      # object render distance; 0 = objects off, 3500 = no culling
 var mapctx_range_val: Label    # live "%dm" / "No Culling" readout next to the slider
 var mapctx_maptile: Button   # project the maptile decal over SDK terrain+assets
@@ -94,9 +97,17 @@ var purge_btn: Button
 var _storage_gen := 0          # supersedes an in-flight usage scan
 
 # dropdown ids: 0 = Low-Poly, 1 = High-Poly grey, 2 = High-Poly textured
+#
+# Mirrors the answer onto HighpolyLib.detail on every read. HighpolySync has to
+# know the detail mode to choose a rendition (_tier_for), and it has no path to
+# this dock. Writing the mirror HERE rather than in the handful of places that
+# change the dropdown means it cannot go stale: every consumer of the mode goes
+# through this function, so the mirror is refreshed by the same call that reads it.
 func _mode() -> int:
 	if mode_btn == null: return HighpolyLib.Tier.LOW
-	return HighpolyLib.Tier.LOW if mode_btn.get_selected_id() == 0 else HighpolyLib.Tier.HIGH
+	var t: int = HighpolyLib.Tier.LOW if mode_btn.get_selected_id() == 0 else HighpolyLib.Tier.HIGH
+	HighpolyLib.detail = t
+	return t
 
 func _textured() -> bool:
 	return mode_btn.get_selected_id() == 2 if mode_btn else true
@@ -171,7 +182,7 @@ func _enter_tree() -> void:
 	pause_btn = Button.new()
 	pause_btn.text = "Pause downloads"
 	pause_btn.visible = false
-	pause_btn.tooltip_text = "Stops downloading for now — use it if you are on limited internet or need the bandwidth for something else. Nothing is lost; it carries on from where it stopped."
+	pause_btn.tooltip_text = "Stops downloading for now. Use it if you are on limited internet, or need the bandwidth for something else. Nothing is lost. It carries on from where it stopped."
 	pause_btn.pressed.connect(func():
 		sync.paused = not sync.paused
 		pause_btn.text = "Resume downloads" if sync.paused else "Pause downloads")
@@ -229,31 +240,37 @@ func _enter_tree() -> void:
 			HighpolyFx.set_range(_rr, _rad)
 			if mapctx_optimize and mapctx_optimize.button_pressed:
 				PlacedCull.apply(_rr, _rad, true)   # placed props ride the slider too
-		# the slider IS the scenery switch now: zero off, anything above it on.
-		# Assigning fires the toggled handler, which does the real show/hide work.
-		var want := int(v) > 0
-		if mapctx_objects and mapctx_objects.button_pressed != want:
-			mapctx_objects.button_pressed = want
-		else:
-			_save_mapctx_state())
+		# The slider is a VIEW DISTANCE control, nothing more. It used to double
+		# as the on/off switch for the objects layer, and assigning
+		# button_pressed fires the toggled handler, so dragging it off zero ran
+		# the whole apply path and started DOWNLOADING prop meshes. That made
+		# sense while the objects chip was hidden; now that it is a real switch
+		# of its own, the slider must never load anything, only decide how far
+		# out what is already built stays visible. mapctx.set_radius() above has
+		# already re-culled; nothing else here may touch a toggle.
+		_save_mapctx_state())
 
 	# From here down the panel is built into collapsible sections. `host` is
 	# whichever section's content box is currently being filled, so the existing
 	# build order — which several controls depend on — is untouched.
 	var host: Node = _section("Detail Mode",
-		"Whether you are looking at the Low-Poly pieces you actually build and export with, or the real High-Poly game models laid over the top of them. Switching to High-Poly changes nothing about your map — the Low-Poly underneath is still what gets saved.")
+		"Whether you are looking at the Low-Poly pieces you actually build and export with, or the real High-Poly game models laid over the top of them. Switching to High-Poly changes nothing about your map: the Low-Poly underneath is still what gets saved.")
 
 	mode_btn = OptionButton.new()
-	mode_btn.add_item("Low-Poly — what you export", 0)
-	mode_btn.add_item("High-Poly — no textures", 1)
-	mode_btn.add_item("High-Poly — full textures", 2)
+	mode_btn.add_item("Low-Poly (what you export)", 0)
+	mode_btn.add_item("High-Poly (no textures)", 1)
+	mode_btn.add_item("High-Poly (full textures)", 2)
 	mode_btn.selected = 0
 	mode_btn.item_selected.connect(func(_i): _mode_changed())
 	host.add_child(mode_btn)
 
-	var detail_chips := _chip_row(host)
+	# held on the instance: "Original map objects" is created later, with the rest
+	# of the map-context controls, but belongs in THIS row — Detail Mode is what
+	# governs how it looks.
+	_detail_chips = _chip_row(host)
+	var detail_chips: Node = _detail_chips
 	ovr_chk = Theme_.chip(_override_label())
-	ovr_chk.tooltip_text = "Swaps just the pieces you have selected to High-Poly, leaving the rest Low-Poly — handy for lining something up closely. When the whole map is already High-Poly it does the reverse: your selection drops back to Low-Poly so a heavy area stays smooth while you work."
+	ovr_chk.tooltip_text = "Swaps just the pieces you have selected to High-Poly, leaving the rest Low-Poly. Handy for lining something up closely. When the whole map is already High-Poly it does the reverse: your selection drops back to Low-Poly so a heavy area stays smooth while you work."
 	ovr_chk.toggled.connect(_override_toggled)
 	detail_chips.add_child(ovr_chk)
 
@@ -262,7 +279,7 @@ func _enter_tree() -> void:
 
 	var col_chips := _chip_row(host)
 	col_chk = Theme_.chip("Collisions")
-	col_chk.tooltip_text = "Rough guide to how solid an object is, in see-through red. It shows the object's own shape scaled the way the game scales collision — a stretched object still bumps as though it were square. It is an approximation, not the game's real collision data, so treat it as a hint rather than an exact answer. Preview only — nothing about your map changes."
+	col_chk.tooltip_text = "Rough guide to how solid an object is, in see-through red. It shows the object's own shape scaled the way the game scales collision, so a stretched object still bumps as though it were square. It is an approximation, not the game's real collision data, so treat it as a hint rather than an exact answer. Preview only. Nothing about your map changes."
 	col_chk.toggled.connect(func(_v): _collision_changed())
 	col_chips.add_child(col_chk)
 
@@ -316,36 +333,72 @@ func _enter_tree() -> void:
 	ca_row.add_child(col_alpha)
 
 	host = _section("Map Context",
-		"Build inside the real level instead of an empty grey box: the ground, the skyline, the buildings, the lighting and the effects the real place has. All of it is preview only — none of it is saved into your map or exported.")
+		"Build inside the real level instead of an empty grey box: the ground, the skyline, the buildings, the lighting and the effects the real place has. All of it is preview only: none of it is saved into your map or exported.")
 
 	var mc_chips := _chip_row(host)
 	# sub-toggles of "Lighting", indented under the main row and only
 	# visible while it is on
 	var mc_sub := _chip_row(host, 14)
 	mapctx_on = Theme_.chip("Extended Terrain")
-	mapctx_on.tooltip_text = "Adds the real terrain that surrounds the play area — the ground, hills and skyline all around the play area — so you can see how your build sits in the world. Preview only: none of it is saved into your map or included when you export."
+	mapctx_on.tooltip_text = "Adds the real ground and water that surround the play area, so you can see how your build sits in the world. The distant skyline has its own switch, and the level's own objects live under Detail Mode. Preview only: none of it is saved into your map or included when you export."
 	mapctx_on.toggled.connect(func(v: bool):
 		var r0 := EditorInterface.get_edited_scene_root()
-		# Scenery rides the Range slider, so turning the terrain on has to bring
-		# it along. The slider is BUILT at 800 without emitting value_changed,
-		# so without this nothing ever switches the scenery on.
-		var want_objs: bool = v and mapctx_range != null and int(mapctx_range.value) > 0
-		if mapctx_objects: mapctx_objects.set_pressed_no_signal(want_objs)
-		_variant_row_update(want_objs)
+		# Extended Terrain used to force the objects layer ON with it, so there
+		# was no way to see the surrounding ground without also pulling in every
+		# object the real level has — which is what "the extended terrain is
+		# including the objects within the map" was. The three layers are
+		# independent now; Original map objects has its own switch.
 		# the SDK's own terrain slab sits exactly where ours goes
 		_sdk_terrain_hidden(v)
 		# fast show/hide of the built terrain/backdrop/water layers — the full
 		# rebuild also regenerated every map object. Falls back to the full
 		# apply when nothing is built yet or the detail mode changed.
-		if mapctx.set_context_shown(r0, v, _mapctx_tex_mode()) 				and mapctx.set_objects_shown(r0, want_objs, _mapctx_tex_mode()):
+		if mapctx.set_context_shown(r0, v, _mapctx_tex_mode()):
 			lbl.text = "Extended Terrain " + ("on" if v else "off")
 			_save_mapctx_state()
 			return
 		_mapctx_changed())
 	mc_chips.add_child(mapctx_on)
 
-	mapctx_objects = Theme_.chip("Real scenery")
-	mapctx_objects.tooltip_text = "Also brings in the buildings, vehicles and clutter the real level has in those places. The Range slider below sets how far away you can still see them."
+	# The distant skyline is its own layer: it is what you see PAST the edge of
+	# the play area, and wanting the horizon is a different question from wanting
+	# the ground underfoot or the level's own props.
+	mapctx_backdrop = Theme_.chip("Backdrops")
+	mapctx_backdrop.tooltip_text = "The distant skyline and out-of-bounds scenery the level is surrounded by: bridges, city facades and hills a kilometre or more out. Off by default, because it is heavy and sits well outside the area you build in. Draws whether or not the extended terrain is on."
+	mapctx_backdrop.toggled.connect(func(v: bool):
+		var r0 := EditorInterface.get_edited_scene_root()
+		if v and mapctx.ensure_layer(r0, "backdrop", _mapctx_tex_mode()):
+			mapctx.set_backdrop_shown(r0, true, _mapctx_tex_mode())
+			lbl.text = "Backdrops shown"
+			_save_mapctx_state()
+			return
+		if mapctx.set_backdrop_shown(r0, v, _mapctx_tex_mode()):
+			lbl.text = "Backdrops " + ("shown" if v else "hidden")
+			_save_mapctx_state()
+			return
+		_mapctx_changed())
+	mc_chips.add_child(mapctx_backdrop)
+
+	mapctx_water = Theme_.chip("Water")
+	mapctx_water.tooltip_text = "The rivers, harbours and sea the real level has, at the real height, so you can see what your build sits above. Speed of the ripples follows the water setting in Configure Shaders, where zero holds it still. Maps with no water body simply have nothing to show."
+	mapctx_water.toggled.connect(func(v: bool):
+		var r0 := EditorInterface.get_edited_scene_root()
+		# flip it if it exists; if not, build JUST this layer. Only a scene with
+		# no overlay at all needs the full apply.
+		if v and mapctx.ensure_layer(r0, "water", _mapctx_tex_mode()):
+			mapctx.set_water_shown(r0, true)
+			lbl.text = "Water shown"
+			_save_mapctx_state()
+			return
+		if mapctx.set_water_shown(r0, v):
+			lbl.text = "Water " + ("shown" if v else "hidden")
+			_save_mapctx_state()
+			return
+		_mapctx_changed())
+	mc_chips.add_child(mapctx_water)
+
+	mapctx_objects = Theme_.chip("Original map objects")
+	mapctx_objects.tooltip_text = "Swaps the level's shipped assets for the real per-object geometry, so you get the actual buildings, vehicles and clutter instead of the single merged mesh the SDK ships. The merged one is hidden while this is on and comes back exactly as you left it when you turn it off. How they look follows the Detail Mode above; the Range slider in Map Context sets how far away you can still see them."
 	mapctx_objects.toggled.connect(func(v: bool):
 		# checkbox and Range slider are one control pair: turning objects ON
 		# from a 0 range starts them at 100 m (slider 0 unchecks the box below)
@@ -353,23 +406,37 @@ func _enter_tree() -> void:
 			mapctx_range.set_value_no_signal(100.0)
 			if mapctx_range_val: mapctx_range_val.text = _range_label(100.0)
 			mapctx.set_radius(100.0)
+		# This layer REPLACES the level's own shipped assets, so it owns the
+		# SDK's merged MP_<map>_Assets node: bringing in the real per-object
+		# geometry means the merged stand-in should get out of the way, and
+		# turning it back off restores it exactly as the user left it. Detail
+		# Mode used to drive this, which was the wrong owner — it governs the
+		# pieces you place, not the level's shipped ones.
+		_sdk_assets_hidden(v)
 		# fast show/hide of an already-built props layer — a full rebuild
 		# re-parses ~2k GLBs (reads as "redownloading"). Falls back to the
 		# full apply when nothing is built yet or the detail mode changed.
 		_variant_row_update(v)
-		if mapctx.set_objects_shown(EditorInterface.get_edited_scene_root(),
-				v, _mapctx_tex_mode()):
+		var r0 := EditorInterface.get_edited_scene_root()
+		if mapctx.set_objects_shown(r0, v, _mapctx_tex_mode()):
 			lbl.text = "Map objects " + ("shown" if v else "hidden")
 			_save_mapctx_state()
 			return
+		# not built yet: build JUST the props layer into the existing overlay.
+		# The old path fell through to the full apply, which starts by clearing
+		# the terrain and skyline it is about to rebuild identically.
+		if v and mapctx.props_ready(mapctx.map_of(r0)) \
+				and mapctx.ensure_layer(r0, "objects", _mapctx_tex_mode()):
+			lbl.text = "Building the map objects…"
+			_save_mapctx_state()
+			return
 		_mapctx_changed())
-	# Not shown: the Range slider already is this control — zero means no
-	# scenery, anything above it means scenery out to that distance — and how the
-	# scenery LOOKS follows Detail Mode. Two ways to say the same thing was one
-	# too many. Kept as a hidden child because the overlay code reads its state,
-	# and because an unparented Button would simply leak.
-	mapctx_objects.visible = false
-	mc_chips.add_child(mapctx_objects)
+	# Lives under Detail Mode, not in the Map Context row: it is the one layer
+	# whose LOOK the Detail Mode dropdown governs (orange placeholder / clay /
+	# real textures), so it belongs beside the control that governs it. It was
+	# previously hidden entirely and driven implicitly by the Range slider, which
+	# is why there was no way to ask for terrain without objects.
+	_detail_chips.add_child(mapctx_objects)
 
 	# "Map variant": draw one gamemode's real gameplay layout (capture rings,
 	# objectives, spawn clusters, zones + that mode's own gated props) — data
@@ -382,7 +449,7 @@ func _enter_tree() -> void:
 	mapctx_variant = OptionButton.new()
 	mapctx_variant.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	mapctx_variant.add_item("Off")
-	mapctx_variant.tooltip_text = "Shows one game mode's real layout — capture points, objectives and spawn areas. These are markers laid on top; the scenery itself is the same for every mode."
+	mapctx_variant.tooltip_text = "Shows one game mode's real layout: capture points, objectives and spawn areas. These are markers laid on top; the scenery itself is the same for every mode."
 	mapctx_variant.item_selected.connect(func(_i):
 		var _r := EditorInterface.get_edited_scene_root()
 		var _mode := mapctx_variant.get_item_text(mapctx_variant.selected)
@@ -421,15 +488,18 @@ func _enter_tree() -> void:
 	mc_chips.add_child(mapctx_maptile)
 
 	mapctx_fx = Theme_.chip("FX")
-	mapctx_fx.tooltip_text = "Adds the fires, smoke columns and sparks the real level has, in the spots it has them. They fade out with distance."
+	mapctx_fx.tooltip_text = "Adds the fires, smoke columns and sparks the real level has, in the spots it has them. That includes the big distant smoke and haze cards near the skyline, which are effects rather than scenery. They are off by default, because they are hundreds of metres across and sit in front of the surroundings."
 	mapctx_fx.toggled.connect(func(v: bool):
 		var _r := EditorInterface.get_edited_scene_root()
+		# the level's flipbook cards are drawn as props, so they follow this
+		# switch too rather than arriving unbidden with the map objects
+		mapctx.set_fx_cards_shown(_r, v)
 		lbl.text = HighpolyFx.apply(_r, mapctx.map_of(_r), v)
 		_save_mapctx_state())
 	mc_chips.add_child(mapctx_fx)
 
 	mapctx_light = Theme_.chip("Lighting")
-	mapctx_light.tooltip_text = "Lights your map the way the real one is lit — the same sun angle, sun colour, sky and haze. Replaces the editor's plain preview light while it is on."
+	mapctx_light.tooltip_text = "Lights your map the way the real one is lit, with the same sun angle, sun colour, sky and haze. Replaces the editor's plain preview light while it is on."
 	mapctx_light.toggled.connect(func(v: bool):
 		if mapctx_gi: mapctx_gi.visible = v
 		if mapctx_shadows: mapctx_shadows.visible = v
@@ -443,7 +513,7 @@ func _enter_tree() -> void:
 	mapctx_gi = Theme_.chip("Soft shading")
 	mapctx_gi.button_pressed = true
 	mapctx_gi.visible = false
-	mapctx_gi.tooltip_text = "Softer, more realistic shading, with light bouncing off surfaces and settling into corners. Looks better, costs frame rate — switch it off if the view gets choppy."
+	mapctx_gi.tooltip_text = "Softer, more realistic shading, with light bouncing off surfaces and settling into corners. Looks better, but costs frame rate. Switch it off if the view gets choppy."
 	mapctx_gi.toggled.connect(func(v: bool):
 		lbl.text = LightingScript.set_gi(EditorInterface.get_edited_scene_root(), v)
 		_save_mapctx_state())
@@ -452,7 +522,7 @@ func _enter_tree() -> void:
 	mapctx_shadows = Theme_.chip("Shadows")
 	mapctx_shadows.button_pressed = true
 	mapctx_shadows.visible = false
-	mapctx_shadows.tooltip_text = "Shadows cast by the sun. Costs frame rate — switch it off if the view gets choppy."
+	mapctx_shadows.tooltip_text = "Shadows cast by the sun. Costs frame rate. Switch it off if the view gets choppy."
 	mapctx_shadows.toggled.connect(func(v: bool):
 		lbl.text = LightingScript.set_shadows(EditorInterface.get_edited_scene_root(), v)
 		_save_mapctx_state())
@@ -461,7 +531,7 @@ func _enter_tree() -> void:
 	mapctx_maplights = Theme_.chip("Map lights")
 	mapctx_maplights.button_pressed = false
 	mapctx_maplights.visible = false
-	mapctx_maplights.tooltip_text = "The street lights, signs and indoor lights the real level has — several thousand on some maps. Only the ones near your camera light up. Costs frame rate."
+	mapctx_maplights.tooltip_text = "The street lights, signs and indoor lights the real level has, several thousand of them on some maps. Only the ones near your camera light up. Costs frame rate."
 	mapctx_maplights.toggled.connect(func(v: bool):
 		var _r := EditorInterface.get_edited_scene_root()
 		lbl.text = LightingScript.set_map_lights(_r,
@@ -546,9 +616,15 @@ func _enter_tree() -> void:
 
 	var storage_chips := _chip_row(host)
 	storage_cache_chk = Theme_.chip("Faster loading")
-	storage_cache_chk.tooltip_text = "Saves the work of building the scenery so it comes back in seconds next time instead of minutes. Costs roughly as much space again on your PC. Deleting a map's files clears its saved work too."
+	storage_cache_chk.tooltip_text = "Saves the work of building the scenery so it comes back in seconds next time instead of minutes. On by default. Switch it off only if you are short on disk: it stops new scenery being saved, but does not free what is already there. Deleting a map's files clears its saved work too."
 	var _es := EditorInterface.get_editor_settings()
-	var _mc_on := bool(_es.get_project_metadata("highpoly_mapctx", "_mesh_cache", false))
+	# Defaults ON. Without it every scenery build re-parses the whole prop set
+	# from scratch (1,977 meshes / 3.65 GiB on Dumbo at in-game quality), which
+	# is minutes of work repeated every session. Switching it off does not free
+	# any disk either — it only stops FUTURE caching — so leaving it off was a
+	# cost with no benefit. It stays available for anyone genuinely short on
+	# space, which is the only reason to pick it.
+	var _mc_on := bool(_es.get_project_metadata("highpoly_mapctx", "_mesh_cache", true))
 	storage_cache_chk.set_pressed_no_signal(_mc_on)
 	HighpolyMapContext.mesh_cache_enabled = _mc_on
 	# Configure Shaders prefs persist project-wide (water/flipbook/wind)
@@ -560,8 +636,8 @@ func _enter_tree() -> void:
 		HighpolyMapContext.mesh_cache_enabled = v
 		EditorInterface.get_editor_settings().set_project_metadata(
 				"highpoly_mapctx", "_mesh_cache", v)
-		lbl.text = "Faster loading " + ("on — scenery is saved as it is built" if v
-				else "off — what is already saved stays until you delete it"))
+		lbl.text = "Faster loading " + ("is on. Scenery is saved as it is built" if v
+				else "is off. What is already saved stays until you delete it"))
 	storage_chips.add_child(storage_cache_chk)
 
 	var purge_row := HBoxContainer.new(); host.add_child(purge_row)
@@ -571,12 +647,20 @@ func _enter_tree() -> void:
 	purge_row.add_child(purge_maps)
 	purge_btn = Button.new()
 	purge_btn.text = "Delete"
-	purge_btn.tooltip_text = "Frees this map's space on your PC. Safe — it downloads again the next time you open that map."
+	purge_btn.tooltip_text = "Frees this map's space on your PC. Safe to do, because it downloads again the next time you open that map."
 	purge_btn.pressed.connect(_purge_selected)
 	purge_row.add_child(purge_btn)
 
+	# The fallback when per-map deleting has left something behind (models
+	# arrive by paths no single map owns), or when you just want to start over.
+	var reset_btn := Button.new()
+	reset_btn.text = "Reset everything"
+	reset_btn.tooltip_text = "Deletes everything downloaded: all maps, all scenery and the whole model library. Also puts this panel back to its defaults. Safe to do, because everything downloads again on demand."
+	reset_btn.pressed.connect(_reset_everything)
+	host.add_child(_centred(reset_btn))
+
 	host = _section("Log",
-		"A running account of what the plugin is doing, and anything that went wrong. If something breaks, save this and send it — it records which version, which level and which step, which a screenshot cannot.")
+		"A running account of what the plugin is doing, and anything that went wrong. If something breaks, save this and send it: it records which version, which level and which step, which a screenshot cannot.")
 
 	log_count = Label.new()
 	log_count.add_theme_font_size_override("font_size", Theme_.fs(11))
@@ -592,6 +676,67 @@ func _enter_tree() -> void:
 	log_view.add_theme_font_size_override("normal_font_size", Theme_.fs(10))
 	host.add_child(log_view)
 
+	# ---- problem markers ----
+	# Reporting "something is missing over there" costs a conversation to turn
+	# into a position. A marker carries the position, your note and what the
+	# package expects at that spot, all inside the log file you were going to
+	# send anyway.
+	var mark_lbl := Label.new()
+	mark_lbl.text = "Mark a problem"
+	mark_lbl.add_theme_font_size_override("font_size", Theme_.fs(11))
+	host.add_child(mark_lbl)
+	var mark_note := LineEdit.new()
+	mark_note.placeholder_text = "What is wrong here? e.g. wall missing"
+	mark_note.tooltip_text = "Describe the problem, then press Drop marker. The marker lands in front of the viewport camera and you can drag it onto the exact spot."
+	host.add_child(mark_note)
+	var mark_row := HBoxContainer.new()
+	mark_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	host.add_child(mark_row)
+	var mark_add := Button.new()
+	mark_add.text = "Drop marker"
+	mark_add.tooltip_text = "Places a sphere ahead of the camera with your note attached. Drag it onto the problem. Saving the log records its position and the meshes the map package expects there."
+	mark_add.pressed.connect(func():
+		var r := EditorInterface.get_edited_scene_root()
+		if r == null:
+			lbl.text = "Open a level scene first."
+			return
+		var note: String = mark_note.text.strip_edges()
+		if note == "":
+			lbl.text = "Type what is wrong first, then drop the marker."
+			return
+		var m := HighpolyMarkers.add(r, note, HighpolyMarkers.camera_point())
+		if m == null:
+			lbl.text = "Could not place the marker."
+			return
+		mark_note.text = ""
+		EditorInterface.get_selection().clear()
+		EditorInterface.get_selection().add_node(m)
+		lbl.text = "Marker placed: %s. Drag it onto the spot, then Save log file." % note)
+	mark_row.add_child(mark_add)
+	var mark_import := Button.new()
+	mark_import.text = "Import spheres"
+	mark_import.tooltip_text = "Adopts markers you already placed by hand: every child of a node named Missing-Coordinates becomes a marker, using its node name as the note."
+	mark_import.pressed.connect(func():
+		var r := EditorInterface.get_edited_scene_root()
+		if r == null:
+			lbl.text = "Open a level scene first."
+			return
+		var n: int = HighpolyMarkers.import_from(r, "Missing-Coordinates")
+		lbl.text = ("Imported %d marker(s). Your original node is untouched; "
+			+ "delete it when you are happy.") % n if n > 0 \
+			else "No node named Missing-Coordinates with children was found."
+		)
+	mark_row.add_child(mark_import)
+	var mark_clear := Button.new()
+	mark_clear.text = "Clear markers"
+	mark_clear.tooltip_text = "Removes every marker this panel created. Nothing else in the scene is touched."
+	mark_clear.pressed.connect(func():
+		var r := EditorInterface.get_edited_scene_root()
+		if r == null:
+			return
+		lbl.text = "Removed %d marker(s)." % HighpolyMarkers.clear(r))
+	mark_row.add_child(mark_clear)
+
 	var log_row := HBoxContainer.new()
 	log_row.alignment = BoxContainer.ALIGNMENT_CENTER
 	host.add_child(log_row)
@@ -601,7 +746,7 @@ func _enter_tree() -> void:
 	save_log.pressed.connect(func():
 		var p: String = Log.save()
 		if p == "":
-			lbl.text = "Could not write the log file — see Godot's Output panel."
+			lbl.text = "Could not write the log file. See Godot's Output panel."
 			return
 		lbl.text = "Saved %s" % p
 		OS.shell_show_in_file_manager(p))
@@ -621,7 +766,9 @@ func _enter_tree() -> void:
 	dock.add_child(lbl)
 
 	var ver_lbl := Label.new()
-	ver_lbl.text = "v%s" % HighpolyUpdater.plugin_version()
+	ver_lbl.text = "v%s  ·  TabbedScamper & dfanz0r" % HighpolyUpdater.plugin_version()
+	ver_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	ver_lbl.tooltip_text = "Built by TabbedScamper. Frostbite format research by TabbedScamper and dfanz0r."
 	ver_lbl.add_theme_color_override("font_color", Color(1, 1, 1, 0.35))
 	dock.add_child(ver_lbl)
 
@@ -687,6 +834,13 @@ func _enter_tree() -> void:
 			jobs.set_activity("Building the level's scenery", done, total)
 		else:
 			jobs.clear_activity("Building the level's scenery"))
+	# the skyline gets its own lane; jobs.set_activity is keyed, so it and the
+	# scenery build show as separate bars instead of overwriting each other
+	mapctx.backdrop_progress.connect(func(done: int, total: int):
+		if done < total:
+			jobs.set_activity("Building the skyline", done, total)
+		else:
+			jobs.clear_activity("Building the skyline"))
 	mapctx.build_finished.connect(func(_built: int):
 		jobs.clear_activity("Building the level's scenery")
 		# sidecar-cached meshes load with the shader params they were SAVED
@@ -764,7 +918,7 @@ func _exit_tree() -> void:
 	# shown — as if the plugin was never on
 	var r := EditorInterface.get_edited_scene_root()
 	if r != null:
-		HighpolyCollision.release_isolation(HighpolyLib.Tier.LOW, true, false)
+		HighpolyCollision.release_isolation(_mode(), _textured(), false, false)
 		HighpolyCollision.apply(r, false)                  # frees collision overlays
 		# visibility_range_end is SAVED into the scene, so leaving it set means
 		# the cull keeps running with the plugin disabled — and lands in the
@@ -774,7 +928,8 @@ func _exit_tree() -> void:
 		SdkHide.restore_all(r)                             # SDK assets/terrain back as they were
 		if mapctx: mapctx.apply(r, false, false, false)    # frees _MAP_CONTEXT + maptile
 		LightingScript.clear(r)                          # frees _GAME_LIGHTING
-		HighpolyLib.apply(r, HighpolyLib.Tier.LOW, true)   # hide hi-poly overlays, show proxies
+		HighpolyLib.restore(r)                             # overlays off, SDK proxies back
+	if previews: previews.shutdown()                       # SDK's own icons back
 	HighpolyStore.save()
 	Log.hook(Callable())         # never call into a freed panel
 	if jobs: jobs.reset()        # release the gate: nobody is left to call release()
@@ -814,7 +969,7 @@ func _show_migration_wizard() -> void:
 		"High-Poly Preview 1.5 reorganizes its storage so the editor no longer",
 		"imports every downloaded model (much faster startup + updates).",
 		"",
-		"• Move %d model(s) (%d MB) into the new cache — no re-download" % [s.models, mb],
+		"• Move %d model(s) (%d MB) into the new cache: no re-download" % [s.models, mb],
 		"• Delete %d editor import file(s) and %d retired medium-tier model(s) (frees ~%d MB)" % [s.import_files, s.med_files, freed],
 	]
 	if s.obj_only > 0:
@@ -823,7 +978,7 @@ func _show_migration_wizard() -> void:
 	lines.append("")
 	lines.append("Your scenes, the SDK proxies, and the Portal exporter are not affected.")
 	var dlg := ConfirmationDialog.new()
-	dlg.title = "High-Poly Preview — one-time reorganization"
+	dlg.title = "High-Poly Preview: one-time reorganization"
 	dlg.dialog_text = "\n".join(PackedStringArray(lines))
 	dlg.ok_button_text = "Reorganize now"
 	dlg.cancel_button_text = "Not yet"
@@ -847,7 +1002,7 @@ func _show_migration_wizard() -> void:
 
 func _show_scope_prompt(redownload: Array = []) -> void:
 	var dlg := ConfirmationDialog.new()
-	dlg.title = "High-Poly Preview — model downloads"
+	dlg.title = "High-Poly Preview: model downloads"
 	dlg.dialog_text = "How should models download?\n\n" + \
 		"Full library: everything syncs quietly in the background\n" + \
 		"(one large download, small deltas afterwards). Best if you build a lot.\n\n" + \
@@ -874,16 +1029,13 @@ func _start_sync(extra: Array = []) -> void:
 	await sync.start()
 	if not extra.is_empty():
 		sync.enqueue(extra, true)
-	# Prefetch the open scene so switching to High-Poly is instant — but ONLY if
-	# High-Poly is actually on. The panel opens in Low-Poly, so this used to pull
-	# the whole scene's models at launch for someone who had asked to see none of
-	# them: a long unexplained download in a mode where nothing it fetched was
-	# even displayed. _mode_changed() queues the same set the moment High-Poly is
-	# switched on, so nothing is lost by waiting to be asked.
-	if _mode() == HighpolyLib.Tier.LOW:
-		Log.info("Low-Poly mode — not prefetching scene models; they download "
-			+ "when you switch to High-Poly")
-		return
+	# Prefetch the open scene in BOTH modes. This used to skip Low-Poly on the
+	# reasoning that nothing it fetched would be displayed, which was true when
+	# Low-Poly drew the SDK proxy. Low-Poly now draws our geometry in clay, so
+	# skipping the prefetch is what leaves placed assets as white blocks. The
+	# bytes are not the same bytes either: _tier_for() pulls Low-Poly at the web
+	# rendition, whose geometry is identical to hq and whose textures we do not
+	# render, so the accurate silhouette arrives at a fraction of the size.
 	var r := EditorInterface.get_edited_scene_root()
 	if r != null:
 		var keys := HighpolyLib.scene_keys(r)
@@ -899,7 +1051,7 @@ func _on_model_ready(nm: String) -> void:
 func _swap_in_ready() -> void:
 	var names := _ready_names
 	_ready_names = {}
-	if names.is_empty() or _mode() == HighpolyLib.Tier.LOW:
+	if names.is_empty():
 		return
 	var r := EditorInterface.get_edited_scene_root()
 	if r == null: return
@@ -927,10 +1079,15 @@ func _on_manifest_refreshed() -> void:
 	if map == "": return
 	var gen := _mapctx_gen
 	await mapctx.ensure_props(dock, map, func(s: String): lbl.text = s)
+	# The meshes that just landed are geometry the Object Library can draw icons
+	# from, so tell the previews they exist. Without this the thumbnail for a
+	# downloaded prop stayed the SDK's stock icon until the item was dropped into
+	# a scene, because that placement was what finally fetched the library copy.
+	if previews: previews.rescan_context()
 	if gen != _mapctx_gen:
 		return                         # user toggled Map Context while props re-verified
 	if mapctx.last_verify_updates > 0 and mapctx_objects.button_pressed:
-		lbl.text = mapctx.apply(r, mapctx_on.button_pressed, true, _mapctx_tex_mode())
+		lbl.text = mapctx.apply(r, mapctx_on.button_pressed, true, _mapctx_tex_mode(), mapctx_backdrop != null and mapctx_backdrop.button_pressed, mapctx_water != null and mapctx_water.button_pressed)
 
 func _check_updates_now() -> void:
 	if HighpolyLib.use_legacy:
@@ -939,19 +1096,46 @@ func _check_updates_now() -> void:
 	check_btn.disabled = true
 	lbl.text = "Checking for updated models…"
 	await sync.check_now()
-	# whatever the open scene needs jumps the queue, same as startup
+	# whatever the open scene needs jumps the queue, same as startup — and
+	# "same as startup" no longer carries a Low-Poly exception, because startup
+	# no longer has one. Both modes draw our geometry, so both modes want the
+	# scene's models; they differ only in which rendition _tier_for() picks.
 	var r := EditorInterface.get_edited_scene_root()
 	if r != null:
 		sync.prioritize_scene(HighpolyLib.scene_keys(r))
-		# self-heal the open map's package (new files download via ETag) and
-		# sweep obsoleted cache artifacts — one button = full migration
+	# Self-heal the open map's package (new files download via ETag) and sweep
+	# obsoleted cache artifacts — one button = full migration.
+	#
+	# Deliberately OUTSIDE the mode check, and with the once-per-session ETag
+	# guard cleared first. Both of those made this button lie about what it does:
+	# in Low-Poly it skipped the map package entirely, and in any mode the guard
+	# meant a map already touched this session was declared "ready" without a
+	# single request to the server. So a republished map could not be picked up
+	# by pressing Check for Updates — only by restarting the editor. Refreshing
+	# the map package is cheap (it pulls mapdata.zip, not the multi-GB prop
+	# tiers; those still follow the map-context build and the current mode).
+	if r != null:
 		var _map: String = mapctx.map_of(r)
 		if _map != "" and mapctx.has_data(_map):
+			mapctx.forget_session_check(_map)
 			await mapctx.download_map(dock, _map, func(s: String): lbl.text = s)
+			# The freshness check only FLAGS a republished props.zip; the download
+			# itself lives in ensure_props. Without this the button refreshed the
+			# map data and left every object mesh on the old build until the layer
+			# was toggled off and on again — which is precisely the gap someone
+			# presses this button to close. Only when the layer is actually shown,
+			# so nobody in Low-Poly is handed a multi-GB download they did not ask
+			# for; otherwise the flag simply waits for the layer to come on.
+			if mapctx_objects != null and mapctx_objects.button_pressed \
+					and not mapctx.props_ready(_map):
+				await mapctx.ensure_props(dock, _map, func(s: String): lbl.text = s)
+				if previews: previews.rescan_context()
 		var _swept: int = mapctx.cleanup_stale(_map)
 		if _swept > 0:
-			lbl.text = "Checked for updates — %d out-of-date file(s) cleared" % _swept
+			lbl.text = "Checked for updates. %d out-of-date file(s) cleared." % _swept
 			_refresh_storage()
+			# the sweep can delete prop meshes the preview index thinks are there
+			if previews: previews.rescan_context()
 	check_btn.disabled = false
 	lbl.text = sync.status_text()
 	# incremental map-context refresh: the background re-bake overwrites shared
@@ -965,7 +1149,7 @@ func _check_updates_now() -> void:
 		if n > 0:
 			lbl.text = "%d object meshes refreshed" % n   # subset build: bar + progress follow
 		elif n < 0:
-			lbl.text = "Map objects still building — check again when it finishes"
+			lbl.text = "Map objects are still building. Check again when it finishes."
 	_refresh_storage()   # disk usage may have shifted (downloads / re-bake)
 
 # ---------- the floating tool panel ----------
@@ -1025,7 +1209,7 @@ func _refresh_log_count() -> void:
 		log_count.text = "Nothing has gone wrong yet."
 		log_count.add_theme_color_override("font_color", Color(1, 1, 1, 0.55))
 		return
-	log_count.text = "%d problem%s, %d warning%s — please send this if you need help." 		% [e, "" if e == 1 else "s", w, "" if w == 1 else "s"]
+	log_count.text = "%d problem%s, %d warning%s. Please send this if you need help." 		% [e, "" if e == 1 else "s", w, "" if w == 1 else "s"]
 	log_count.add_theme_color_override("font_color",
 		Color(1.0, 0.42, 0.37) if e > 0 else Color(1.0, 0.75, 0.38))
 
@@ -1038,8 +1222,8 @@ func _sdk_assets_hidden(hide: bool) -> void:
 	var n: int = SdkHide.set_hidden(r, SdkHide.ASSETS_SUFFIX, hide)
 	if n > 0:
 		Log.info("SDK level assets %s (%d node%s)"
-			% ["hidden — High-Poly is showing instead" if hide else "restored",
-				n, "" if n == 1 else "s"])
+			% ["hidden, Original map objects is showing instead" if hide
+				else "restored", n, "" if n == 1 else "s"])
 
 func _sdk_terrain_hidden(hide: bool) -> void:
 	var r := EditorInterface.get_edited_scene_root()
@@ -1047,7 +1231,7 @@ func _sdk_terrain_hidden(hide: bool) -> void:
 	var n: int = SdkHide.set_hidden(r, SdkHide.TERRAIN_SUFFIX, hide)
 	if n > 0:
 		Log.info("SDK terrain %s (%d node%s)"
-			% ["hidden — Extended Terrain is showing instead" if hide else "restored",
+			% ["hidden, Extended Terrain is showing instead" if hide else "restored",
 				n, "" if n == 1 else "s"])
 
 func _refresh_job_bar() -> void:
@@ -1070,7 +1254,7 @@ func _apply_shape_outlines() -> void:
 	if shape_chk: shape_chk.set_pressed_no_signal(want_shown)
 	var n: int = ShapeViz.apply(EditorInterface.get_edited_scene_root(), not want_shown)
 	if n > 0 and not want_shown:
-		Log.info("Hid %d of Godot's collision outlines — thousands of them drawn "
+		Log.info("Hid %d of Godot's collision outlines: thousands of them drawn "
 			% n + "every frame is what was stuttering")
 
 func _tips_hide(_v: float = 0.0) -> void:
@@ -1369,11 +1553,11 @@ func _refresh_storage() -> void:
 	# use. The old single line packed all of this into one dense string that
 	# never actually said what any of it was.
 	var lines := ["Using %s on your PC" % _human_size(total), ""]
-	lines.append("  Object models — %s%s downloaded  (%s)" % [_fmt_n(int(models[0])),
+	lines.append("  Object models: %s%s downloaded  (%s)" % [_fmt_n(int(models[0])),
 		(" of %s" % _fmt_n(mtot)) if mtot > 0 else "", _human_size(int(models[1]))])
-	lines.append("  Level scenery — %s%s pieces  (%s)" % [_fmt_n(int(props[0])),
+	lines.append("  Level scenery: %s%s pieces  (%s)" % [_fmt_n(int(props[0])),
 		(" of %s" % _fmt_n(ptot)) if ptot > 0 else "", _human_size(int(props[1]))])
-	lines.append("  Levels — %s downloaded  (%s)" % [_fmt_n(nmaps), _human_size(maps_bytes)])
+	lines.append("  Levels: %s downloaded  (%s)" % [_fmt_n(nmaps), _human_size(maps_bytes)])
 	storage_lbl.text = "\n".join(lines)
 
 func _reload_purge_options() -> void:
@@ -1415,8 +1599,12 @@ func _purge_selected() -> void:
 	storage_lbl.text = "Sizing a %s purge…" % map
 	# hand over the open scene's models: for a level with no downloaded data
 	# they are the only record of which high-poly models belong to it
-	var extra: Dictionary = _scene_keys_on_disk() 		if map == mapctx.map_of(EditorInterface.get_edited_scene_root()) else {}
-	var info: Dictionary = await mapctx.purge_info(map, extra)
+	var _open: String = mapctx.map_of(EditorInterface.get_edited_scene_root())
+	var extra: Dictionary = _scene_keys_on_disk() if map == _open else {}
+	# purging a DIFFERENT map must not take the open scene's models with it —
+	# that scene may have no downloaded map data, so nothing else vouches for them
+	var keep: Dictionary = {} if map == _open else _scene_keys_on_disk()
+	var info: Dictionary = await mapctx.purge_info(map, extra, keep)
 	purge_btn.disabled = false
 	var open_map: String = mapctx.map_of(EditorInterface.get_edited_scene_root())
 	var freed := int(info.get("map_bytes", 0)) + int(info.get("excl_bytes", 0)) 		+ int(info.get("hp_bytes", 0))
@@ -1430,9 +1618,9 @@ func _purge_selected() -> void:
 Also frees %d high-poly model(s) only %s uses (%s)." % [
 			hp_n, map, _human_size(int(info.get("hp_bytes", 0)))]
 	if int(info.get("shared", 0)) > 0:
-		txt += "\n%d objects are shared with other downloaded maps and will be KEPT — purging never breaks another map." % int(info.get("shared", 0))
+		txt += "\n%d objects are shared with other downloaded maps and will be KEPT: purging never breaks another map." % int(info.get("shared", 0))
 	if open_map == map:
-		txt += "\n\nWARNING: this is the map you currently have OPEN — its Map Context overlay will be removed."
+		txt += "\n\nWARNING: this is the map you currently have OPEN: its Map Context overlay will be removed."
 	txt += "\n\nPurging is always safe: everything re-downloads on demand."
 	var dlg := ConfirmationDialog.new()
 	dlg.dialog_text = txt
@@ -1442,6 +1630,82 @@ Also frees %d high-poly model(s) only %s uses (%s)." % [
 		dlg.queue_free())
 	dlg.canceled.connect(func(): dlg.queue_free())
 	EditorInterface.popup_dialog_centered(dlg)
+
+# Reset: delete everything downloaded and put the panel back to defaults.
+func _reset_everything() -> void:
+	var dlg := ConfirmationDialog.new()
+	dlg.dialog_text = ("Delete ALL downloaded data and reset this panel?\n\n"
+		+ "Removes every map, all level scenery and the entire model library, "
+		+ "and puts the toggles back to their defaults.\n\n"
+		+ "Nothing about your own map is touched: the Low-Poly pieces you "
+		+ "build and export with are untouched, and everything here downloads "
+		+ "again on demand.")
+	dlg.ok_button_text = "Reset everything"
+	dlg.confirmed.connect(func():
+		_do_reset()
+		dlg.queue_free())
+	dlg.canceled.connect(func(): dlg.queue_free())
+	EditorInterface.popup_dialog_centered(dlg)
+
+
+func _do_reset() -> void:
+	# tear the overlay down FIRST so nothing holds the files we are deleting —
+	# same order _do_purge uses, for the same reason
+	var r := EditorInterface.get_edited_scene_root()
+	if r != null:
+		if mapctx: lbl.text = mapctx.apply(r, false, false, false)
+		HighpolyLib.restore(r)
+		SdkHide.restore_all(r)
+	if sync: sync.paused = true
+	storage_lbl.text = "Deleting everything…"
+	# capture BEFORE the delete: afterwards there are no downloaded maps to list,
+	# and their saved toggle state would be stranded describing data that is gone
+	var maps_before: Array = MapContextScript.downloaded_maps()
+	var freed: int = await mapctx.purge_everything()
+	# both stores are gone: forget the map-context index and every icon rendered
+	# from it, or the library keeps offering stand-ins for deleted files
+	HighpolyStore.ctx_scan(true)
+	if previews: previews.rescan_context()
+
+	# --- panel back to defaults ---
+	if mode_btn: mode_btn.select(mode_btn.get_item_index(HighpolyLib.Tier.LOW))
+	if previews: previews.tier = HighpolyLib.Tier.LOW
+	for b in [mapctx_on, mapctx_objects, mapctx_fx, mapctx_light, col_chk,
+			iso_chk, ovr_chk]:
+		if b: b.set_pressed_no_signal(false)
+	if mapctx_backdrop: mapctx_backdrop.set_pressed_no_signal(false)
+	if mapctx_water: mapctx_water.set_pressed_no_signal(false)
+	HighpolyMapContext.show_fx_cards = false
+	if mapctx_gi: mapctx_gi.visible = false
+	if mapctx_shadows: mapctx_shadows.visible = false
+	if mapctx_maplights: mapctx_maplights.visible = false
+	if mapctx_variant_row: mapctx_variant_row.visible = false
+	if ovr_chk: ovr_chk.text = _override_label()
+	_override.clear()
+	# forget the per-map saved state too, or reopening a map restores toggles
+	# describing data that no longer exists
+	var es := EditorInterface.get_editor_settings()
+	for m in maps_before:
+		es.set_project_metadata("highpoly_mapctx", str(m), {})
+	var open_map: String = mapctx.map_of(r) if r != null else ""
+	if open_map != "":
+		es.set_project_metadata("highpoly_mapctx", open_map, {})
+	# library settings back to shipped defaults too — "reset" should not leave
+	# the next download silently running at in-game quality across the whole
+	# library because of a choice made before the reset
+	HighpolyStore.set_scope("")          # "" = not chosen yet
+	HighpolyStore.set_quality("web")
+	_sync_scope_control()
+	_sync_quality_control()
+	if storage_cache_chk:
+		storage_cache_chk.set_pressed_no_signal(true)      # the shipped default
+		HighpolyMapContext.mesh_cache_enabled = true
+		es.set_project_metadata("highpoly_mapctx", "_mesh_cache", true)
+	if sync:
+		sync.paused = false
+	lbl.text = "Reset. %s freed, and everything downloads again on demand." % _human_size(freed)
+	_refresh_storage()
+
 
 func _do_purge(map: String, info: Dictionary, was_open: bool) -> void:
 	if was_open:
@@ -1455,7 +1719,15 @@ func _do_purge(map: String, info: Dictionary, was_open: bool) -> void:
 		if mapctx_objects: mapctx_objects.set_pressed_no_signal(false)
 	storage_lbl.text = "Purging %s…" % map
 	await mapctx.purge_map(map, info)
-	lbl.text = "%s purged — about %s freed (re-downloads on demand)" % [map,
+	# The purge can delete map-context meshes the LIBRARY was being served from
+	# (a name held by only one store is owned by both systems). Re-index, drop the
+	# icons rendered from what is gone, and re-apply so anything that lost its
+	# stand-in falls back to the SDK proxy and queues the real model.
+	HighpolyStore.ctx_scan(true)
+	if previews: previews.rescan_context()
+	if EditorInterface.get_edited_scene_root() != null:
+		_apply_scene()
+	lbl.text = "%s purged. About %s freed, and it re-downloads on demand." % [map,
 		_human_size(int(info.get("map_bytes", 0)) + int(info.get("excl_bytes", 0)))]
 	_refresh_storage()
 
@@ -1497,9 +1769,9 @@ func _check_scene_change() -> void:
 		LightingScript.clear(old)                           # frees _GAME_LIGHTING + _MAP_LIGHTS
 		HighpolyGamemode.clear(old)                         # frees _GAMEMODE markers
 		HighpolyFx.clear(old)                               # frees _MAP_FX particles
-		HighpolyCollision.release_isolation(HighpolyLib.Tier.LOW, true, false)
+		HighpolyCollision.release_isolation(_mode(), _textured(), false, false)
 		HighpolyCollision.apply(old, false)                   # frees collision overlays
-		HighpolyLib.apply(old, HighpolyLib.Tier.LOW, true)    # hide high-poly overlays, show proxies
+		HighpolyLib.restore(old)                              # overlays off, SDK proxies back
 	# reset the dock to default for the newly-active scene (programmatic, no rebuild)
 	if mode_btn: mode_btn.select(mode_btn.get_item_index(HighpolyLib.Tier.LOW))
 	if previews: previews.tier = HighpolyLib.Tier.LOW
@@ -1509,8 +1781,14 @@ func _check_scene_change() -> void:
 		ovr_chk.text = _override_label()
 	if mapctx_on: mapctx_on.set_pressed_no_signal(false)
 	if mapctx_objects: mapctx_objects.set_pressed_no_signal(false)
+	# the other two map-context layers reset with everything else, or the chips
+	# would claim a skyline and a sea that the new scene has not built
+	if mapctx_backdrop: mapctx_backdrop.set_pressed_no_signal(false)
+	if mapctx_water: mapctx_water.set_pressed_no_signal(false)
 	if mapctx_light: mapctx_light.set_pressed_no_signal(false)
-	if mapctx_fx: mapctx_fx.set_pressed_no_signal(false)
+	if mapctx_fx:
+		mapctx_fx.set_pressed_no_signal(false)
+		HighpolyMapContext.show_fx_cards = false   # keep the card layer in step
 	if mapctx_gi: mapctx_gi.visible = false
 	if mapctx_shadows: mapctx_shadows.visible = false
 	if mapctx_maplights: mapctx_maplights.visible = false
@@ -1520,13 +1798,33 @@ func _check_scene_change() -> void:
 		iso_chk.set_pressed_no_signal(false)
 		iso_chk.disabled = true
 	# the remembered visibility is keyed by node path, and those paths belong to
-	# the scene that just closed — put that one back before letting go of it
+	# the scene that just closed — put that one back before letting go of it.
+	# Called even when `old` is already freed: each of these guards its own
+	# restore on `root != null` (which a freed Object does NOT pass — measured on
+	# Godot 4.6.3) but clears its remembered state unconditionally, and that
+	# clearing must happen either way or the next scene inherits bookkeeping
+	# belonging to a closed one.
 	ShapeViz.release(old)
-	PlacedCull.release(old)      # the cull is a saved property: do not leave it on a scene we are done with
+	PlacedCull.release(old)  # a saved property: don't leave it on a scene we're done with
 	SdkHide.restore_all(old)
 	_sync_maptile_control()   # the new scene may carry the SDK's own decal
-	if lbl and old != null: lbl.text = "Different map opened — back to Low-Poly"
-	# the new scene's props move to the front of the download queue
+	# The one thing that SHOULD carry across a swap: the pieces you placed in the
+	# newly-active scene start culled to wherever the Range slider currently sits.
+	# The cull was released from the outgoing scene but never applied to the
+	# incoming one, so after a swap the slider read as active while nothing in the
+	# new scene was actually following it.
+	if r != null and is_instance_valid(r):
+		_reapply_placed_cull()
+	if lbl and old != null: lbl.text = "Different map opened, so everything is back to Low-Poly"
+	# The new scene's props move to the front of the download queue — but ONLY if
+	# High-Poly is actually on, exactly as _start_sync() does at launch.
+	#
+	# A swap resets the dock to Low-Poly a few lines above, and this used to skip
+	# the prefetch on that basis: opening a map in Low-Poly began a large download
+	# of models the mode did not draw. Low-Poly draws them now, so the prefetch is
+	# what makes a freshly-opened scene show real shapes instead of white proxies.
+	# The size objection is answered where it belongs, in _tier_for(): Low-Poly
+	# pulls the web rendition, same geometry, a fraction of the bytes.
 	if r != null and sync != null and not HighpolyLib.use_legacy:
 		sync.prioritize_scene(HighpolyLib.scene_keys(r))
 	# fresh dock instance (editor start / plugin re-enable) — not a scene
@@ -1537,18 +1835,44 @@ func _check_scene_change() -> void:
 # ensure the map's prop meshes are in the shared cache (only when objects are
 # shown), then apply. Prop meshes download once and are reused across maps.
 func _apply_mapctx(r: Node, on: bool, objs: bool, tex: int, gen: int) -> void:
-	if objs:
-		await mapctx.ensure_props(dock, mapctx.map_of(r), func(s: String): lbl.text = s)
+	# Draw what is ALREADY on disk before waiting on anything.
+	#
+	# Terrain, backdrop, water and scatter all come out of mapdata.zip — ~94 MiB,
+	# and apply() builds them synchronously in a moment. The map OBJECTS come out
+	# of a separate package that is measured in gigabytes (Dumbo's in-game tier
+	# is 3.65 GiB). This used to await that download and only then call apply(),
+	# so the fast, already-local terrain was held hostage by the slow one.
+	#
+	# What that looked like: switching Extended Terrain on hid the SDK's own
+	# terrain immediately and then rendered NOTHING for the whole download —
+	# minutes of empty world, and if the transfer was interrupted, forever. The
+	# user-visible bug was "no terrain or backdrops after downloading"; the cause
+	# was ordering, not the terrain.
+	var map: String = mapctx.map_of(r)
+	# Nothing to fetch (the usual case once a map has been opened once), or the
+	# context is being switched off: one build, no intermediate state.
+	var bd: bool = mapctx_backdrop != null and mapctx_backdrop.button_pressed
+	var wt: bool = mapctx_water != null and mapctx_water.button_pressed
+	if not objs or mapctx.props_ready(map):
+		lbl.text = mapctx.apply(r, on, objs, tex, bd, wt)
+		return
+	lbl.text = mapctx.apply(r, on, false, tex, bd, wt)   # terrain, water, backdrop NOW
+	await mapctx.ensure_props(dock, map, func(s: String): lbl.text = s)
+	# The meshes that just landed are geometry the Object Library can draw icons
+	# from, so tell the previews they exist. Without this the thumbnail for a
+	# downloaded prop stayed the SDK's stock icon until the item was dropped into
+	# a scene, because that placement was what finally fetched the library copy.
+	if previews: previews.rescan_context()
 	if gen != _mapctx_gen:
 		return              # user toggled again while props downloaded — stale state
-	lbl.text = mapctx.apply(r, on, objs, tex)
+	lbl.text = mapctx.apply(r, on, true, tex, bd, wt)    # objects on top once here
 
 func _mapctx_rebuild() -> void:
 	# rebuild with current toggles, no re-download (e.g. terrain detail changed)
 	if not mapctx_on.button_pressed: return
 	var r := EditorInterface.get_edited_scene_root()
 	if mapctx.map_of(r) == "": return
-	lbl.text = mapctx.apply(r, true, mapctx_objects.button_pressed, _mapctx_tex_mode())
+	lbl.text = mapctx.apply(r, true, mapctx_objects.button_pressed, _mapctx_tex_mode(), mapctx_backdrop != null and mapctx_backdrop.button_pressed, mapctx_water != null and mapctx_water.button_pressed)
 
 # "Game lighting": inject/remove the real map sun+sky+fog (highpoly_lighting.gd).
 # Independent of the Map Context download (no map data needed — compiled-in table).
@@ -1603,7 +1927,7 @@ func _auto_perf_settings() -> void:
 		changed = true
 	if changed:
 		ProjectSettings.save()
-		banner.text = "Performance settings applied (multi-threaded rendering + shadow atlas) — restart the editor to activate them."
+		banner.text = "Performance settings applied (multi-threaded rendering and shadow atlas). Restart the editor to activate them."
 		banner.visible = true
 
 # ---------- Configure Shaders dialog ----------
@@ -1658,7 +1982,7 @@ func _open_shader_dialog() -> void:
 	var wind_chk := CheckBox.new()
 	wind_chk.text = "Foliage Wind"
 	wind_chk.button_pressed = bool(d.get("wind", false))
-	wind_chk.tooltip_text = "Gentle sway on leaves and grass while you build. Trunks stay put. It is just for looks here — the real game does its own wind."
+	wind_chk.tooltip_text = "Gentle sway on leaves and grass while you build. Trunks stay put. It is just for looks here. The real game does its own wind."
 	box.add_child(wind_chk)
 	var ws_row := HBoxContainer.new(); box.add_child(ws_row)
 	var ws_lbl := Label.new(); ws_lbl.text = "  Strength"
@@ -1716,6 +2040,8 @@ func _save_mapctx_state() -> void:
 	EditorInterface.get_editor_settings().set_project_metadata("highpoly_mapctx", map, {
 		"on": mapctx_on.button_pressed,
 		"objects": mapctx_objects.button_pressed,
+		"backdrop": mapctx_backdrop.button_pressed if mapctx_backdrop else false,
+		"water": mapctx_water.button_pressed if mapctx_water else false,
 		"range": mapctx_range.value if mapctx_range else 800.0,
 		"maptile": false,      # the SDK plugin owns the ground texture now
 		"light": mapctx_light.button_pressed if mapctx_light else false,
@@ -1745,7 +2071,7 @@ func _sync_maptile_control() -> void:
 	mapctx_maptile.disabled = theirs != null
 	if theirs != null:
 		mapctx_maptile.text = "Ground photo (the SDK's is on)"
-		mapctx_maptile.tooltip_text = "This level already has the SDK's own map texture, applied from the 3D toolbar and saved in the scene, so the preview decal stays off — two would darken the ground twice.\n\nNote the SDK's decal projects onto EVERYTHING beneath it, including high-poly models that already have their real textures. Delete the '%s' node under Static to go back to the preview decal, which leaves them alone." % String(theirs.name)
+		mapctx_maptile.tooltip_text = "This level already has the SDK's own map texture, applied from the 3D toolbar and saved in the scene, so the preview decal stays off. Two of them would darken the ground twice.\n\nNote the SDK's decal projects onto EVERYTHING beneath it, including high-poly models that already have their real textures. Delete the '%s' node under Static to go back to the preview decal, which leaves them alone." % String(theirs.name)
 	else:
 		mapctx_maptile.text = "Ground photo"
 		mapctx_maptile.tooltip_text = "Project the map-tile colour over the SDK terrain + assets. Skips high-poly models and the extended terrain, which carry their own real textures. Turn off if it still tints something you'd rather see raw."
@@ -1783,11 +2109,28 @@ func _restore_mapctx_state() -> void:
 	_sync_maptile_control()
 	mapctx_on.set_pressed_no_signal(bool(d.get("on", false)))
 	mapctx_objects.set_pressed_no_signal(bool(d.get("objects", false)))
+	# set_pressed_no_signal skips the toggled handler, so the SDK _Assets node
+	# has to be brought in line here too — otherwise reopening a map with objects
+	# saved ON shows the shipped merged mesh AND our per-object geometry at once.
+	_sdk_assets_hidden(bool(d.get("objects", false)))
+	# defaults OFF, including for saved states written before Backdrops was a
+	# switch. The skyline is heavy geometry a kilometre out, so it should be
+	# something you ask for rather than something that arrives with the map.
+	if mapctx_backdrop:
+		mapctx_backdrop.set_pressed_no_signal(bool(d.get("backdrop", false)))
+	if mapctx_water:
+		mapctx_water.set_pressed_no_signal(bool(d.get("water", false)))
 	if mapctx_gi: mapctx_gi.set_pressed_no_signal(bool(d.get("gi", true)))
 	if mapctx_shadows: mapctx_shadows.set_pressed_no_signal(bool(d.get("shadows", true)))
 	if mapctx_maplights: mapctx_maplights.set_pressed_no_signal(bool(d.get("maplights", false)))
+	# set_pressed_no_signal skips the handler, so the card layer has to be told
+	# separately — otherwise a restore leaves the statics saying "off" while the
+	# chip reads on (or vice versa) and the next build guesses wrong.
+	if mapctx_fx:
+		HighpolyMapContext.show_fx_cards = bool(d.get("fx", false))
 	if mapctx_fx and bool(d.get("fx", false)):
 		mapctx_fx.set_pressed_no_signal(true)
+		mapctx.set_fx_cards_shown(r, true)
 		lbl.text = HighpolyFx.apply(r, map, true)
 	if bool(d.get("light", false)) and mapctx_light != null:
 		mapctx_light.set_pressed_no_signal(true)
@@ -1819,16 +2162,22 @@ func _mapctx_changed() -> void:
 	var gen := _mapctx_gen
 	var on := mapctx_on.button_pressed
 	var objs := mapctx_objects.button_pressed
+	var bd := mapctx_backdrop != null and mapctx_backdrop.button_pressed
+	var wt := mapctx_water != null and mapctx_water.button_pressed
 	var tex := _mapctx_tex_mode()
 	var r := EditorInterface.get_edited_scene_root()
 	var rn := "<none>" if r == null else String(r.name)
 	var map: String = mapctx.map_of(r)
-	if not on and not objs:
-		# neither terrain context nor objects — Textures can still drape the SDK's
-		# shipped maptile over the default terrain (no download needed)
+	# Backdrops counts as a reason to build. Without it in this test, switching
+	# Backdrops on with the terrain and objects off fell into the branch below,
+	# which applies with backdrop=false and returns, so the toggle did nothing
+	# unless Extended Terrain happened to be on as well.
+	if not on and not objs and not bd and not wt:
+		# no layer wanted at all. Textures can still drape the SDK's shipped
+		# maptile over the default terrain (no download needed)
 		lbl.text = mapctx.apply(r, false, false, tex); return
 	if map == "":
-		lbl.text = "Scene root is '%s' — open an MP_… level scene" % rn
+		lbl.text = "Scene root is '%s'. Open an MP_… level scene." % rn
 		mapctx_on.set_pressed_no_signal(false)
 		mapctx_objects.set_pressed_no_signal(false)
 		return
@@ -1874,31 +2223,51 @@ func _mode_changed() -> void:
 		ovr_chk.set_pressed_no_signal(false)
 		ovr_chk.text = _override_label()
 	previews.tier = _mode()
-	# our models stand in for the SDK's merged low-poly asset mesh, so it goes
-	# away while we are showing and comes back — as the user left it — after
-	_sdk_assets_hidden(_mode() != HighpolyLib.Tier.LOW)
+	previews.textured = _textured()
+	# The SDK's merged _Assets mesh is NOT this dropdown's business. Detail Mode
+	# governs the pieces YOU placed; the thing that actually stands in for the
+	# level's own shipped assets is "Original map objects", which brings in the
+	# real per-object geometry. Ownership of that node moved there — hiding it
+	# from here meant switching to High-Poly stripped the level's assets even
+	# with nothing loaded to replace them.
 	_apply_scene()
 	# a mode switch rebuilds every preview — re-apply the placed-object cull so
 	# your custom map content keeps distance-culling in the new detail mode
 	_reapply_placed_cull()
 	# whatever this scene needs but doesn't have yet: front of the queue, and
-	# swapped in automatically as it lands (no prompt, no re-apply button)
-	if _mode() != HighpolyLib.Tier.LOW and not HighpolyLib.use_legacy:
+	# swapped in automatically as it lands (no prompt, no re-apply button).
+	# Both modes, because both draw our geometry. In Low-Poly this is what turns
+	# a just-placed white proxy into the real shape without the user asking.
+	if not HighpolyLib.use_legacy:
 		var missing: Array = HighpolyLib.take_wanted()
 		if not missing.is_empty():
 			sync.prioritize_scene(missing)
-			lbl.text += " — %d downloading in background" % missing.size()
-	# the map-context overlay follows the same dropdown (orange / clay /
-	# textured) — re-apply it so a mode change re-skins the visible overlay
+			lbl.text += ", %d downloading in background" % missing.size()
+	# The map-context overlay follows the same dropdown (orange / clay /
+	# textured). Re-skin what is already built rather than rebuild it: the full
+	# apply() starts with _clear() and re-parses every prop, so changing Detail
+	# Mode made the original map objects VANISH for the length of that rebuild.
+	# Falls back to the rebuild only when there is nothing built to re-skin.
 	if (mapctx_on and mapctx_on.button_pressed) \
-			or (mapctx_objects and mapctx_objects.button_pressed):
-		_mapctx_changed()
+			or (mapctx_objects and mapctx_objects.button_pressed) \
+			or (mapctx_backdrop and mapctx_backdrop.button_pressed):
+		if not mapctx.reskin(EditorInterface.get_edited_scene_root(),
+				_mapctx_tex_mode()):
+			_mapctx_changed()
 
 func _apply_scene() -> void:
 	var r := EditorInterface.get_edited_scene_root()
 	if r == null:
 		lbl.text = "No scene open"; return
 	var n := HighpolyLib.apply(r, _mode(), _textured())
+	# Drain what the pass could not draw from the library. This used to happen
+	# only on a mode switch, which was survivable while "could not draw" meant
+	# "showed the SDK proxy": the user could see something was missing. A
+	# map-context stand-in looks right, so nothing would ever prompt the upgrade.
+	if not HighpolyLib.use_legacy and sync != null:
+		var missing: Array = HighpolyLib.take_wanted()
+		if not missing.is_empty():
+			sync.prioritize_scene(missing)
 	lbl.text = "%s: %d piece(s)" % [mode_btn.get_item_text(mode_btn.selected), n]
 
 # current placed-object cull distance from the Range slider (mirrors the slider
@@ -1958,7 +2327,7 @@ func _reoverride_selection() -> void:
 		if not _override.has(s):
 			_override.append(s)
 	lbl.text = ("%s: %d piece(s)" % [_override_label(), n]) if n > 0 \
-			else "Override: select object(s) — follows the selection live"
+			else "Override: select object(s), follows the selection live"
 	if not HighpolyLib.use_legacy:
 		var missing: Array = HighpolyLib.take_wanted()
 		if not missing.is_empty():
@@ -1980,8 +2349,28 @@ func _forward_3d_gui_input(camera: Camera3D, event: InputEvent) -> int:
 				hit = HighpolyVariants.click(camera, mb.position, r)
 			if not hit.is_empty():
 				lbl.text = str(hit.get("msg", ""))
+				var need := str(hit.get("fetch", ""))
+				if need != "":
+					# published but not on disk: fetch, then cycle for real. Not
+					# awaited here because this handler must return a verdict to
+					# the editor synchronously.
+					_fetch_variants_then_cycle(hit.get("node"), need)
 				return EditorPlugin.AFTER_GUI_INPUT_STOP
 	return EditorPlugin.AFTER_GUI_INPUT_PASS
+
+# Double-clicked a prop whose variants are published but not downloaded: fetch
+# them, then perform the swap the click asked for, so one double-click is still
+# one visible result rather than "click, wait, click again".
+func _fetch_variants_then_cycle(node: Variant, key: String) -> void:
+	if sync == null or HighpolyLib.use_legacy: return
+	var n: int = await sync.fetch_variants(key)
+	if not is_instance_valid(node) or not (node is Node3D):
+		return
+	if n <= 0:
+		lbl.text = "%s: could not download its variants (see the log)" % key
+		return
+	var res: Dictionary = HighpolyVariants.cycle(node as Node3D, key)
+	lbl.text = str(res.get("msg", "%s: %d variant(s) ready" % [key, n]))
 
 # ---------- collision visualization ----------
 func _collision_changed() -> void:
@@ -2015,7 +2404,7 @@ func _reisolate_selection() -> void:
 	var sel := EditorInterface.get_selection().get_selected_nodes()
 	var n := HighpolyCollision.reisolate(sel, _mode(), _textured())
 	lbl.text = ("Isolated collision: %d object(s)" % n) if n > 0 \
-			else "Isolate: select placed object(s) — follows the selection live"
+			else "Isolate: select placed object(s), follows the selection live"
 
 func _on_selection_changed() -> void:
 	if ovr_chk != null and ovr_chk.button_pressed:
@@ -2072,7 +2461,7 @@ func _quality_changed() -> void:
 		# Setting it is harmless — _rendition() falls back to the web fields —
 		# but promising a download that cannot happen would be a lie.
 		HighpolyStore.set_quality("full")
-		lbl.text = "Full-quality textures aren't published yet — this takes effect when they are."
+		lbl.text = "Full-quality textures aren't published yet. This takes effect when they are."
 		return
 	var dlg := ConfirmationDialog.new()
 	# Scope and quality are independent: scope decides WHICH models you keep,
@@ -2081,14 +2470,14 @@ func _quality_changed() -> void:
 	if HighpolyStore.scope() == "full":
 		dlg.dialog_text = ("Use full in-game textures for the whole library?\n\n" +
 				"You keep every model, so all %d would re-download at full " +
-				"quality — roughly %.1f GB more than web quality. It runs in " +
+				"quality: roughly %.1f GB more than web quality. It runs in " +
 				"the background and you can pause it any time.\n\n" +
 				"The map you're editing already uses full quality, so you only " +
 				"need this if you want every other model to match.") % [n, gb]
 	else:
 		dlg.dialog_text = ("Use full in-game textures?\n\n" +
 				"You're keeping only what your maps need, so this re-downloads " +
-				"the %d model(s) you already have — roughly %.1f GB more than " +
+				"the %d model(s) you already have: roughly %.1f GB more than " +
 				"web quality. Other models upgrade as you open the maps that " +
 				"use them.\n\n" +
 				"The map you're editing already uses full quality, so this is " +
@@ -2109,7 +2498,7 @@ func _scope_changed() -> void:
 	if to_full:
 		var missing: int = maxi(HighpolyStore.remote.size() - HighpolyStore.count(), 0)
 		var dlg := ConfirmationDialog.new()
-		dlg.dialog_text = ("Download the whole library?\n\n~%d model(s) still to fetch — this can take a while " +
+		dlg.dialog_text = ("Download the whole library?\n\n~%d model(s) still to fetch. This can take a while " +
 				"on a slow connection. It runs quietly in the background (pause any time), " +
 				"and the editor stays fully usable.") % missing
 		dlg.ok_button_text = "Download all"
@@ -2131,17 +2520,21 @@ func _scope_changed() -> void:
 			keep[k] = true
 	var extra: int = HighpolyStore.count() - keep.size()
 	var dlg := ConfirmationDialog.new()
-	dlg.dialog_text = "Keep only the current scene's models?\nFrees the rest from disk (roughly %d model(s)) — anything you need later re-downloads on demand." % maxi(extra, 0)
+	dlg.dialog_text = "Keep only the current scene's models?\nFrees the rest from disk (roughly %d model(s)). Anything you need later re-downloads on demand." % maxi(extra, 0)
 	dlg.ok_button_text = "Scene only"
 	dlg.confirmed.connect(func():
 		HighpolyStore.set_scope("scene")
 		# drop overlays first so nothing references the files being removed
 		var root := EditorInterface.get_edited_scene_root()
-		if root != null and _mode() != HighpolyLib.Tier.LOW:
-			HighpolyLib.apply(root, HighpolyLib.Tier.LOW, true)
+		# Unconditional now, both sides. The mode check was a proxy for "are there
+		# overlays to drop", and that stopped being true when Low-Poly started
+		# drawing our geometry: in Low-Poly this walked past live overlays and
+		# pruned the files still open underneath them.
+		if root != null:
+			HighpolyLib.restore(root)
 		previews.clear_cache()
 		var n := HighpolyStore.prune_keep(keep)
-		if root != null and _mode() != HighpolyLib.Tier.LOW:
+		if root != null:
 			_apply_scene()
 		lbl.text = "Scene-only: freed %d model(s)" % n)
 	dlg.canceled.connect(func():
@@ -2159,7 +2552,10 @@ func _on_node_added(node: Node) -> void:
 	if col_chk != null and col_chk.button_pressed \
 			and String(node.scene_file_path).begins_with("res://objects/"):
 		_collision_deferred.call_deferred(node)
-	if _mode() == HighpolyLib.Tier.LOW: return
+	# No mode gate: dropping an asset in Low-Poly must still fetch and skin it.
+	# This early return is the whole reason a dragged-in prop stayed the SDK's
+	# white proxy and never updated -- the download-on-place path below was
+	# already built and simply never reached.
 	if HighpolyLib.match_key_public(node) == "": return
 	# defer: let the editor finish placing/naming/positioning the instance
 	_swap_deferred.call_deferred(node)
@@ -2174,10 +2570,16 @@ func _swap_deferred(node: Node) -> void:
 	if node.get_node_or_null(HighpolyLib.HP_NODE) != null: return
 	var k := HighpolyLib.match_key_public(node)
 	if k == "": return
-	if not HighpolyLib.apply_one(node as Node3D, k, _mode(), _textured()):
-		# not local yet: a just-placed prop goes to the VERY front of the queue
-		if not HighpolyLib.use_legacy and sync != null:
-			HighpolyLib.take_wanted()
+	var drew := HighpolyLib.apply_one(node as Node3D, k, _mode(), _textured())
+	if not HighpolyLib.use_legacy and sync != null:
+		# A just-placed prop goes to the VERY front of the queue -- and "drew
+		# something" no longer means "we have the real model". apply_one now
+		# succeeds on a map-context STAND-IN, which is a distance-streaming bake
+		# (merged parts, half-res basecolor). Queueing only on failure would leave
+		# a placed, inspected object showing that bake forever, which is precisely
+		# the artefact this pairing exists to prevent.
+		HighpolyLib.take_wanted()
+		if not drew or not HighpolyStore.has_model(k):
 			sync.prioritize_one(k)
 	# a piece placed while optimization is on should distance-cull right away, like
 	# the rest of your map content (O(1): only this node's own meshes are touched)

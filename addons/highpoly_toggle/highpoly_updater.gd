@@ -27,6 +27,13 @@ static func manifest_url() -> String:
 # GET with retry/backoff — the public r2.dev host throttles rapid bursts, so a
 # single failed attempt (403/429/5xx) is usually transient.
 static func _fetch(http: HTTPRequest, url: String) -> PackedByteArray:
+	# Every fetch in the plugin funnels through here, so this is the one place
+	# worth setting. HTTPRequest.use_threads defaults to false, which services
+	# the socket from _process on the MAIN thread: downloads then run at the rate
+	# the editor renders frames, and the plugin downloads precisely while it is
+	# building overlays and tanking that frame rate. Safe to set here because no
+	# request is in flight yet on this node.
+	http.use_threads = true
 	http.timeout = FETCH_TIMEOUT
 	for attempt in range(4):
 		if attempt > 0:
@@ -34,7 +41,7 @@ static func _fetch(http: HTTPRequest, url: String) -> PackedByteArray:
 			await http.get_tree().create_timer(0.4 * pow(2, attempt - 1)).timeout
 		var rq := http.request(url)
 		if rq != OK:
-			Log.warn("Could not start download of %s — %s" % [url, error_string(rq)])
+			Log.warn("Could not start download of %s: %s" % [url, error_string(rq)])
 			continue
 		var res: Array = await http.request_completed
 		# res = [result, response_code, headers, body]
@@ -51,7 +58,7 @@ static func remote_etag(http: HTTPRequest, url: String) -> String:
 			await http.get_tree().create_timer(0.4 * pow(2, attempt - 1)).timeout
 		var rqh := http.request(url, PackedStringArray(), HTTPClient.METHOD_HEAD)
 		if rqh != OK:
-			Log.warn("Could not check %s for a newer version — %s" % [url, error_string(rqh)])
+			Log.warn("Could not check %s for a newer version: %s" % [url, error_string(rqh)])
 			continue
 		var res: Array = await http.request_completed
 		if res[0] != HTTPRequest.RESULT_SUCCESS or res[1] != 200:
@@ -168,7 +175,7 @@ static func update_plugin(host: Node, status: Callable) -> bool:
 	var zr := ZIPReader.new()
 	var zerr := zr.open(ProjectSettings.globalize_path(tmp))
 	if zerr != OK:
-		Log.error("Plugin update downloaded but the archive would not open — %s"
+		Log.error("Plugin update downloaded but the archive would not open: %s"
 			% error_string(zerr))
 	if zerr != OK:
 		status.call("Update archive unreadable"); return false
@@ -188,5 +195,5 @@ static func update_plugin(host: Node, status: Callable) -> bool:
 	DirAccess.remove_absolute(tmp)
 	if n == 0:
 		status.call("Update archive had no plugin files"); return false
-	status.call("Plugin updated (%d files) — restart the editor to finish" % n)
+	status.call("Plugin updated (%d files). Restart the editor to finish." % n)
 	return true

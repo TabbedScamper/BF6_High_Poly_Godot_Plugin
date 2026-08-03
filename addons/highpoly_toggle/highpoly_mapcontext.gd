@@ -29,6 +29,12 @@ const PROPS_CACHE := "user://mapcontext/_props"
 
 var _active := false               # Map Context enabled at all
 var _show_objects := false         # original map objects (props) layer on
+var _show_backdrop := false        # distant skyline / out-of-bounds vista layer on
+var _show_water := false           # rivers / sea layer on
+var _bd_total := 0                 # skyline build: entries queued
+var _bd_done := 0                  # skyline build: entries processed
+var _bd_ok := 0                    # skyline build: entries that produced a mesh
+var _last_cull_pos := Vector3.ZERO # camera position at the last cull, for pacing
 var radius: float = 768.0          # metres; props beyond this are hidden
 var _map := ""
 var _data: Dictionary = {}
@@ -67,6 +73,7 @@ var _props_verified: Dictionary = {}    # map -> true (this session)
 # in-flight build; is_build_done() lets batch consumers (PhotoMatch's render
 # hook) wait for a COMPLETE overlay before shooting.
 signal build_progress(done: int, total: int)   # per work-slice + on completion
+signal backdrop_progress(done: int, total: int)  # the skyline layer's own lane
 signal build_finished(built: int)              # completed (not emitted when superseded)
 # Every byte this module pulls, so the dock can show it. The label doubles as
 # the job id — several of these can be in flight at once (map data, props and
@@ -105,6 +112,8 @@ var _ctx_tex_mode := -1             # last apply(): detail mode (set_context_sho
 # instance share ONE preference — as a per-instance var, the render hook's
 # fresh instance re-added the decal from its own default on every render.
 static var maptile_enabled := true
+# distant flipbook cards (smoke columns / haze planes) follow the FX switch
+static var show_fx_cards := false
 static var _maptile_ok := false     # last apply(): textured + non-splat (a decal would show)
 
 func reset_props_verification() -> void:
@@ -311,9 +320,18 @@ func _download_with_progress(host: Node, url: String, to_file: String, status: C
 	for attempt in range(3):
 		if attempt > 0:
 			if status.is_valid():
-				status.call("%s connection stalled — retrying (%d/3)…" % [label, attempt + 1])
+				status.call("%s connection stalled, retrying (%d/3)…" % [label, attempt + 1])
 			await host.get_tree().create_timer(2.0 * attempt).timeout
 		var http := HTTPRequest.new(); host.add_child(http)
+		# Transfer on its OWN thread. HTTPRequest.use_threads defaults to false,
+		# which pumps the socket from _process on the main thread — so the
+		# download only advances as fast as the editor renders frames. This
+		# download runs while the map context is building tens of thousands of
+		# nodes, which is exactly when the editor's frame rate collapses, so the
+		# largest transfer the plugin makes was being throttled by the unrelated
+		# work happening beside it. Raw HTTP to this host measures ~49 MB/s
+		# single-stream; that is the ceiling this was nowhere near.
+		http.use_threads = true
 		http.download_file = to_file
 		# Deliberately NOT http.timeout: that caps the whole transfer, and a big
 		# package over a slow line is legitimately long. What we actually care
@@ -326,7 +344,7 @@ func _download_with_progress(host: Node, url: String, to_file: String, status: C
 		var rq := http.request(url)
 		if rq != OK:
 			why = "could not start the request (%s)" % error_string(rq)
-			Log.warn("%s: %s — %s" % [label, why, url])
+			Log.warn("%s: %s: %s" % [label, why, url])
 			http.queue_free()
 			continue
 		var last := 0
@@ -358,7 +376,7 @@ func _download_with_progress(host: Node, url: String, to_file: String, status: C
 		ok = state["ok"] and FileAccess.file_exists(to_file)
 		if not ok and why == "":
 			why = "server refused or sent nothing" if not state["ok"] 				else "nothing was written to disk"
-			Log.warn("%s: %s — %s" % [label, why, url])
+			Log.warn("%s: %s: %s" % [label, why, url])
 		http.queue_free()
 		if ok: break
 	# the poll never lands exactly on the last byte — finish the bar before
@@ -369,7 +387,7 @@ func _download_with_progress(host: Node, url: String, to_file: String, status: C
 	if job_queue != null:
 		job_queue.release(token, ok, why if not ok else String.humanize_size(total_bytes))
 	elif not ok:
-		Log.error("FAILED: %s — %s" % [label, why])
+		Log.error("FAILED: %s: %s" % [label, why])
 	return ok
 
 # ---------- package freshness (ETags) ----------
@@ -400,14 +418,46 @@ func _stamp_etag(host: Node, map: String, key: String, url: String) -> void:
 # Once per session per map: are the published packages newer than our cache?
 # Returns {"mapdata": bool, "props": bool}; network failure = not stale (the
 # cached data keeps working offline, and we re-check next session).
+# Map scenery follows the library quality setting. The default stays the small
+# web rendition — map context draws thousands of distance-streamed instances and
+# full textures there cost VRAM for geometry nobody is inspecting — but asking
+# for in-game quality now applies HERE too instead of being pinned to web.
+# The etag is remembered per tier, so switching quality makes the cached package
+# stale by construction and it re-downloads rather than silently keeping the
+# rendition you just chose to leave.
+func props_file() -> String:
+	return "props_hq.zip" if HighpolyStore.quality() == "full" else "props.zip"
+
+
+func _props_etag_key() -> String:
+	return "props_hq" if HighpolyStore.quality() == "full" else "props"
+
+
+# Drop the once-per-session "already checked this map" flag so the next
+# download_map() re-compares package ETags. The guard exists so that building
+# the map context repeatedly inside one session does not re-check the server
+# every time; it is NOT meant to survive someone explicitly asking for a
+# refresh. Without this, pressing Check for Updates after a map was republished
+# did nothing at all: download_map skipped the freshness compare and then
+# returned early on "map data ready", so a rebuilt map could not be picked up
+# without restarting the editor.
+func forget_session_check(map: String) -> void:
+	if map == "":
+		_session_checked.clear()
+	else:
+		_session_checked.erase(map)
+
+
 func _check_freshness(host: Node, map: String) -> Dictionary:
 	var out := {"mapdata": false, "props": false}
 	var have := _etags(map)
 	var b := base_url() + "maps/%s/" % map
 	var http := HTTPRequest.new(); host.add_child(http)
 	for key in ["mapdata", "props"]:
-		var tag: String = await HighpolyUpdater.remote_etag(http, b + key + ".zip")
-		if tag != "" and tag != str(have.get(key, "")):
+		var file: String = "mapdata.zip" if key == "mapdata" else props_file()
+		var store_key: String = key if key == "mapdata" else _props_etag_key()
+		var tag: String = await HighpolyUpdater.remote_etag(http, b + file)
+		if tag != "" and tag != str(have.get(store_key, "")):
 			out[key] = true
 	http.queue_free()
 	return out
@@ -440,7 +490,7 @@ func download_map(host: Node, map: String, status: Callable, force := false) -> 
 		if fresh.get("props", false):
 			_props_refresh[map] = true
 		if fresh.get("mapdata", false):
-			status.call("%s map data was updated — refreshing…" % map)
+			status.call("%s map data was updated, refreshing…" % map)
 			force = true
 	if force:
 		# force a fresh pull (e.g. the map data format changed): drop the manifest
@@ -454,13 +504,20 @@ func download_map(host: Node, map: String, status: Callable, force := false) -> 
 	var meta_raw := await _fetch(host, b + "mapdata.json")
 	if not meta_raw.is_empty():
 		var meta: Variant = JSON.parse_string(meta_raw.get_string_from_utf8())
-		if meta is Dictionary: total_mb = int(int(meta.get("bytes", 0)) / 1048576.0)
+		# The packager writes mapdata_bytes / props_bytes / props_hq_bytes; there
+		# has never been a plain "bytes" key, so this read always returned 0 and
+		# the download reported no size at all — both in the status line and as
+		# the progress bar's total. This is the mapdata.zip download, so it is
+		# mapdata_bytes that belongs here ("bytes" kept for older packages).
+		if meta is Dictionary:
+			var mb: int = int(meta.get("mapdata_bytes", meta.get("bytes", 0)))
+			total_mb = int(mb / 1048576.0)
 	status.call("Downloading %s map data%s…" % [map, (" (~%d MB)" % total_mb) if total_mb else ""])
 	var tmp := "%s/mapdata.zip" % dir
 	var got_ok := await _download_with_progress(host, b + "mapdata.zip", tmp, status,
 		"Downloading %s map data:" % map, total_mb)
 	if not got_ok:
-		status.call("Map data download failed (server busy — try Reload again)")
+		status.call("Map data download failed. The server is busy, try Reload again.")
 		return false
 	status.call("Extracting %s…" % map)
 	var zr := ZIPReader.new()
@@ -831,19 +888,51 @@ func _splat_set(map: String) -> Dictionary:
 			var w_img := Image.load_from_file(ProjectSettings.globalize_path("%s/w.png" % dir))
 			var albs: Array[Image] = []
 			var nrms: Array[Image] = []
+			var side := 0
 			for i in range(slices):
 				var a := Image.load_from_file(ProjectSettings.globalize_path("%s/l%02d_alb.png" % [dir, i]))
 				var n := Image.load_from_file(ProjectSettings.globalize_path("%s/l%02d_nrm.png" % [dir, i]))
 				if a == null or n == null:
 					albs.clear()
 					break
-				a.convert(Image.FORMAT_RGB8); a.generate_mipmaps(); albs.append(a)
-				n.convert(Image.FORMAT_RGB8); n.generate_mipmaps(); nrms.append(n)
+				side = maxi(side, maxi(a.get_width(), a.get_height()))
+				side = maxi(side, maxi(n.get_width(), n.get_height()))
+				a.convert(Image.FORMAT_RGB8); albs.append(a)
+				n.convert(Image.FORMAT_RGB8); nrms.append(n)
+			# Every slice must be the SAME size. Texture2DArray.create_from_images
+			# rejects a mismatched set outright ("All images must share the same
+			# dimensions") and leaves a 0-layer texture behind — which is NOT null,
+			# so every check downstream passes and the shader samples an EMPTY array
+			# across the whole map. That is the speckled black / flat grey ground.
+			# Dumbo ships l05 at 256 against 512 for l00-l04, so this is a real
+			# package shape, not a hypothetical. Scale the odd slices up to the
+			# largest rather than costing the good ones detail.
+			var resized := 0
+			for arr in [albs, nrms]:
+				for im in arr:
+					if im.get_width() != side or im.get_height() != side:
+						im.resize(side, side, Image.INTERPOLATE_LANCZOS)
+						resized += 1
+					im.generate_mipmaps()
+			if resized > 0:
+				Log.info("%s terrain: %d splat layer image(s) were not %dx%d and were rescaled to match"
+					% [map, resized, side, side])
 			if idx_img != null and w_img != null and albs.size() == slices:
 				idx_img.convert(Image.FORMAT_RGBA8)   # indices: MUST stay unfiltered/no mips
 				w_img.convert(Image.FORMAT_RGBA8)
-				var ta := Texture2DArray.new(); ta.create_from_images(albs)
-				var tn := Texture2DArray.new(); tn.create_from_images(nrms)
+				var ta := Texture2DArray.new()
+				var tn := Texture2DArray.new()
+				var ea := ta.create_from_images(albs)
+				var en := tn.create_from_images(nrms)
+				# A failed array is otherwise completely silent: splat_slices stays
+				# set and the shader paints the entire map from nothing. Drop back to
+				# the slope-blended layers, which at least look like ground.
+				if ea != OK or en != OK or ta.get_layers() == 0 or tn.get_layers() == 0:
+					Log.error(("%s terrain: splat texture arrays could not be built "
+						+ "(albedo err %d, normal err %d): using the slope-blended "
+						+ "layers instead") % [map, ea, en])
+					_splat_cache[map] = {}
+					return {}
 				out = {
 					"idx": ImageTexture.create_from_image(idx_img),
 					"w": ImageTexture.create_from_image(w_img),
@@ -985,6 +1074,100 @@ func set_variant_layers(mode: String) -> String:
 	return "%s: %d placement layer group(s) switched" % [
 		mode if mode != "" else "Off", n]
 
+# The distant flipbook cards — the big camera-facing planes the level uses for
+# smoke columns and haze. They arrive as ordinary props (the baker tags their
+# material "__fxanim3" and _fx_animate_materials swaps it to fx_smoke.gdshader),
+# so nothing gated them: they came in with "Original map objects" and, being
+# hundreds of metres across and drawn near the skyline, they sit in front of the
+# surroundings you actually wanted to look at.
+#
+# They are an EFFECT, not scenery, so they belong to the FX switch. Routed into
+# their own group under Props whose visibility follows it.
+static func _is_fx_card(m: Mesh, asset_name := "") -> bool:
+	# Name first: the material tag is not reliable on its own. Measured on
+	# Dumbo, the level carries 4 of these sheets over 23 placements, and only
+	# ONE of the four has an "__fxanim3" material — so tag-only detection caught
+	# 2 of 23 instances and the rest still arrived with the map objects. The
+	# assets are named for what they are: ob_fx_bd_* is object / FX / backdrop.
+	var n := asset_name.to_lower()
+	if n.begins_with("ob_fx_") or n.contains("_fx_bd_"):
+		return true
+	if not (m is ArrayMesh):
+		return false
+	var am := m as ArrayMesh
+	for i in range(am.get_surface_count()):
+		var mat := am.surface_get_material(i)
+		# post-swap: already a ShaderMaterial running the flipbook shader
+		if mat is ShaderMaterial:
+			var sh: Shader = (mat as ShaderMaterial).shader
+			if sh != null and String(sh.resource_path).ends_with("fx_smoke.gdshader"):
+				return true
+		# pre-swap (or a sidecar baked before the swap existed): the baker's tag
+		elif mat is BaseMaterial3D and String(mat.resource_name).contains("__fxanim3"):
+			return true
+	return false
+
+
+func _fx_cards_group(props_root: Node3D) -> Node3D:
+	var g := props_root.get_node_or_null("FXCards")
+	if g != null:
+		return g as Node3D
+	var n := Node3D.new()
+	n.name = "FXCards"
+	props_root.add_child(n)
+	n.owner = null
+	n.visible = show_fx_cards
+	return n
+
+
+# Flip the flipbook cards without rebuilding. Returns false when no card layer
+# exists yet, so the caller can decide whether a rebuild is warranted.
+func set_fx_cards_shown(root: Node, on: bool) -> bool:
+	show_fx_cards = on
+	var gs := _fx_card_groups(root)
+	if gs.is_empty():
+		return false
+	for g in gs:
+		(g as Node3D).visible = on
+	return true
+
+
+# Flip the water layer without rebuilding, same contract as the others.
+func set_water_shown(root: Node, on: bool) -> bool:
+	_show_water = on
+	if root == null:
+		return false
+	var ctx := root.get_node_or_null(NODE)
+	if ctx == null:
+		return false
+	var w := ctx.get_node_or_null("Water")
+	if w == null:
+		return false
+	(w as Node3D).visible = on
+	return true
+
+
+# Every FXCards group under the overlay, wherever it was parented. Both the
+# props and the backdrop builders can create one, because which layer a level
+# files its smoke sheets under is the level's choice, not ours.
+func _fx_card_groups(root: Node) -> Array:
+	var out: Array = []
+	if root == null:
+		return out
+	var ctx := root.get_node_or_null(NODE)
+	if ctx == null:
+		return out
+	var stack: Array = [ctx]
+	while not stack.is_empty():
+		var n: Node = stack.pop_back()
+		for c in n.get_children():
+			if c.name == "FXCards":
+				out.append(c)
+			else:
+				stack.append(c)
+	return out
+
+
 func _variant_group(props_root: Node3D, key: String) -> Node3D:
 	if _variant_layer_groups.has(key):
 		var g0: Node3D = _variant_layer_groups[key]
@@ -1016,10 +1199,13 @@ static func _file_size(p: String) -> int:
 # A prop's mesh: the EXACT extracted game mesh from the downloaded per-map props
 # bundle (`glb`) when available — the accurate path — else the res:// SDK proxy
 # (`model`) fallback for meshes we haven't extracted yet.
-func _prop_mesh(e: Dictionary, dir: String) -> Mesh:
+func _prop_mesh(e: Dictionary, dir: String) -> Array:
 	var gp := _prop_path(e, dir)
 	if gp == "":
-		return _mesh_for(str(e["model"])) if e.has("model") else null
+		if not e.has("model"):
+			return []
+		var pm := _mesh_for(str(e["model"]))
+		return [pm] if pm != null else []
 	if _mesh_cache.has(gp): return _mesh_cache[gp]
 	# stamp the source BEFORE parsing: if the background re-bake overwrites the
 	# file mid-parse, the recorded (pre-write) stamp differs from the new one
@@ -1042,18 +1228,49 @@ func _prop_mesh(e: Dictionary, dir: String) -> Mesh:
 # size again on disk; per-map purge removes sidecars with their GLBs.
 static var mesh_cache_enabled := false
 
+# Does this mesh still carry real texture pixels? True when it has no textured
+# material at all (an untextured prop has nothing to lose), false only when a
+# material points at a texture that has been reduced to a 0x0 stub. Used to
+# decide whether a cached mesh may be trusted and whether one is worth writing.
+static func _mesh_keeps_textures(m: Mesh) -> bool:
+	if m == null:
+		return false
+	var slots := 0
+	for i in range(m.get_surface_count()):
+		var mat := m.surface_get_material(i)
+		if not (mat is BaseMaterial3D):
+			continue
+		for slot in [BaseMaterial3D.TEXTURE_ALBEDO, BaseMaterial3D.TEXTURE_NORMAL]:
+			var t := (mat as BaseMaterial3D).get_texture(slot)
+			if t == null:
+				continue
+			slots += 1
+			if t.get_width() > 0 and t.get_height() > 0:
+				return true
+	return slots == 0
+
 # Parse a prop GLB from disk into one baked/merged Mesh — NO cache interaction,
 # so the refresh path can build-then-swap (parse first, only then evict).
 # Returns null for missing/torn/unparseable files.
-func _parse_prop_file(gp: String) -> Mesh:
+func _parse_prop_file(gp: String) -> Array:
 	# v2 suffix: v1 sidecars predate runtime LOD generation — regenerate once
 	var baked := gp + ".baked2.res"
 	if mesh_cache_enabled and FileAccess.file_exists(baked) \
 			and FileAccess.get_modified_time(baked) >= FileAccess.get_modified_time(gp):
 		var bm := ResourceLoader.load(baked, "Mesh", ResourceLoader.CACHE_MODE_REPLACE)
+		# Fresh-by-timestamp is not the same as USABLE. Sidecars have been found on
+		# disk holding the right materials with 0x0 textures — the prop then draws
+		# blank, which reads as "the model is bad" rather than "the cache is bad",
+		# and no amount of re-downloading at higher quality fixes it because the
+		# GLB is never consulted again. Verify the pixels survived; a sidecar that
+		# fails is deleted so the next build re-bakes it from the GLB.
+		if bm is Mesh and _mesh_keeps_textures(bm as Mesh):
+			return [bm]
 		if bm is Mesh:
-			return bm
-	var m: Mesh = null
+			Log.warn("%s: cached mesh had empty textures, re-baking from the model"
+				% gp.get_file())
+		DirAccess.remove_absolute(baked)
+	var out: Array = []
 	var g := _load_external_glb(gp)
 	if g:
 		var inst := g.instantiate()
@@ -1064,18 +1281,34 @@ func _parse_prop_file(gp: String) -> Mesh:
 		var pairs: Array = []
 		_all_meshes_and_xf(inst, Transform3D(), pairs)
 		if pairs.size() == 1:
-			m = _bake_mesh(pairs[0][0], pairs[0][1])
+			out = [_bake_mesh(pairs[0][0], pairs[0][1])]
 		elif pairs.size() > 1:
-			m = _merge_meshes(pairs)
+			out = _merge_meshes(pairs)          # one mesh per 255 surfaces
 		inst.queue_free()
-	_fx_animate_materials(m)
-	_wind_swap_materials(m)
-	_parallax_materials(m)
-	m = _with_lods(m)
-	if mesh_cache_enabled and m != null:
-		if ResourceSaver.save(m, baked, ResourceSaver.FLAG_COMPRESS) != OK:
+	var done: Array = []
+	for m in out:
+		if m == null:
+			continue
+		_fx_animate_materials(m)
+		_wind_swap_materials(m)
+		_parallax_materials(m)
+		done.append(_with_lods(m))
+	# Sidecar only for the single-mesh case. A split prop is a handful of files
+	# per map (81 of 155 backdrops on Dumbo) and one .res holds one Resource, so
+	# caching a list would need its own container format; those re-parse instead.
+	if mesh_cache_enabled and done.size() == 1 and done[0] != null \
+			and _mesh_keeps_textures(done[0]):
+		if ResourceSaver.save(done[0], baked, ResourceSaver.FLAG_COMPRESS) != OK:
 			DirAccess.remove_absolute(baked)   # never leave a torn cache file
-	return m
+		elif not _mesh_keeps_textures(ResourceLoader.load(
+				baked, "Mesh", ResourceLoader.CACHE_MODE_IGNORE)):
+			# Writing it is not the same as being able to read it back. Saving a
+			# sidecar whose textures do not survive the round trip is worse than
+			# having no cache at all, because it is preferred forever after.
+			DirAccess.remove_absolute(baked)
+			Log.warn("%s: textures did not survive the mesh cache, not caching it"
+				% gp.get_file())
+	return done
 
 # ---------- Configure Shaders (dock dialog) ----------
 # live-tunable overlay shader prefs, persisted by the dock:
@@ -1280,6 +1513,21 @@ func _scatter_mesh_names() -> Array:
 # overwrites EVERY mesh the zip carries — this is what heals a stale/wrong
 # cached prop (the old rule "file exists = current" pinned it forever).
 # Returns true if everything the map needs is now cached.
+# Is every prop this map needs already in the shared cache?
+#
+# Lets the caller choose between ONE build (nothing to fetch — the common case
+# once a map has been opened before) and a progressive two-phase build (draw the
+# already-local terrain and backdrop first, add objects when the package lands).
+# Cheap: the same in-memory check ensure_props() opens with, no I/O beyond the
+# placements it has already loaded.
+func props_ready(map: String) -> bool:
+	if map == "" or not _load_data(map):
+		return false
+	if bool(_props_refresh.get(map, false)):
+		return false                       # republished package: a refresh is due
+	return _props_missing().is_empty()
+
+
 func ensure_props(host: Node, map: String, status: Callable) -> bool:
 	if not _load_data(map): return false
 	var refresh: bool = _props_refresh.get(map, false)
@@ -1288,14 +1536,29 @@ func ensure_props(host: Node, map: String, status: Callable) -> bool:
 		await _verify_props_registry(host, map, status)
 		return true
 	if refresh:
-		status.call("Prop meshes were updated — refreshing…")
+		status.call("Prop meshes were updated, refreshing…")
 	else:
 		status.call("Downloading %d prop meshes…" % miss.size())
 	var b := base_url() + "maps/%s/" % map
 	var tmp := "%s/%s/_props.zip" % [CACHE, map]
 	HighpolyStore.ensure_dir("%s/%s" % [CACHE, map])
-	var ok := await _download_with_progress(host, b + "props.zip", tmp, status,
-		"Downloading prop meshes:")
+	# Tell the progress bar how big this actually is. This is the largest single
+	# download the plugin makes — Dumbo's in-game tier is measured in GB, not the
+	# hundreds of MB it used to be — and it was started with no total at all, so
+	# it could only ever show bytes ticking up with no end in sight. The size is
+	# per TIER, so the number shown matches the quality actually being fetched.
+	var props_mb := 0
+	var pmeta_raw := await _fetch(host, b + "mapdata.json")
+	if not pmeta_raw.is_empty():
+		var pmeta: Variant = JSON.parse_string(pmeta_raw.get_string_from_utf8())
+		if pmeta is Dictionary:
+			var key: String = "props_hq_bytes" if HighpolyStore.quality() == "full" else "props_bytes"
+			props_mb = int(int(pmeta.get(key, 0)) / 1048576.0)
+	if props_mb > 0:
+		status.call("Downloading %s prop meshes (~%d MB, %s quality)…"
+			% [map, props_mb, "in-game" if HighpolyStore.quality() == "full" else "web"])
+	var ok := await _download_with_progress(host, b + props_file(), tmp, status,
+		"Downloading prop meshes:", props_mb)
 	if not ok:
 		status.call("Prop mesh download failed (try again)"); return false
 	var zr := ZIPReader.new()
@@ -1326,7 +1589,7 @@ func ensure_props(host: Node, map: String, status: Callable) -> bool:
 		_props_refresh.erase(map)
 		_mesh_cache.clear()          # re-parse refreshed meshes on the next build
 		_save_props_index({})        # overwritten files: forget verified hashes, re-verify
-	await _stamp_etag(host, map, "props", b + "props.zip")
+	await _stamp_etag(host, map, _props_etag_key(), b + props_file())
 	await _verify_props_registry(host, map, status)
 	status.call("%d prop meshes ready" % n)
 	return true
@@ -1348,7 +1611,7 @@ func _save_props_index(d: Dictionary) -> void:
 	if f:
 		f.store_string(JSON.stringify(d)); f.close()
 	else:
-		Log.err_code("Could not save the scenery index to %s — every piece will be "
+		Log.err_code("Could not save the scenery index to %s: every piece will be "
 			% ProjectSettings.globalize_path(PROPS_CACHE) + "re-checked on the next start",
 			FileAccess.get_open_error())
 
@@ -1405,7 +1668,7 @@ func _verify_props_registry(host: Node, map: String, status: Callable) -> void:
 				Log.err_code("Updated scenery piece '%s' could not be saved" % j[0],
 					FileAccess.get_open_error())
 		else:
-			Log.warn("Scenery piece '%s' would not download — it stays on the old version"
+			Log.warn("Scenery piece '%s' would not download: it stays on the old version"
 				% j[0])
 		done += 1
 	http.queue_free()
@@ -1430,7 +1693,15 @@ func _mesh_for(model_path: String) -> Mesh:
 			if pairs.size() == 1:
 				m = _bake_mesh(pairs[0][0], pairs[0][1])
 			elif pairs.size() > 1:
-				m = _merge_meshes(pairs)
+				# _merge_meshes splits past 255 surfaces. Proxy models are small
+				# SDK library assets and are not expected to reach that, but say
+				# so rather than drop the remainder in silence if one ever does.
+				var parts := _merge_meshes(pairs)
+				if parts.size() > 1:
+					Log.warn(("%s needs %d meshes to hold its materials; this "
+						+ "proxy path shows only the first")
+						% [model_path.get_file(), parts.size()])
+				m = parts[0] if parts.size() > 0 else null
 			inst.queue_free()
 		elif res is Mesh:
 			m = res
@@ -1453,7 +1724,16 @@ func _all_meshes_and_xf(n: Node, pxf: Transform3D, out: Array) -> void:
 # merge many (mesh, xf) into one ArrayMesh: bake transforms, concatenate
 # surfaces PER MATERIAL (one output surface per unique material) so hundreds
 # of sub-part nodes never exceed RenderingServer::MAX_MESH_SURFACES (256)
-func _merge_meshes(pairs: Array) -> ArrayMesh:
+# Returns a LIST of meshes, not one.
+#
+# Godot caps a Mesh at 255 surfaces, and a merged surface is created per distinct
+# MATERIAL. This used to hit that cap and DROP the rest, which quietly deleted
+# geometry: measured on Dumbo, 81 of the 155 backdrop clusters carry ~700
+# materials each, so roughly two-thirds of the building facades, roofs and bridge
+# sections in more than half the skyline were being thrown away at build time.
+# Splitting across several meshes keeps every surface, with the same batching --
+# the caller adds one MultiMeshInstance per mesh.
+func _merge_meshes(pairs: Array) -> Array:
 	# NOTE: plain Arrays (reference type) as accumulators — packed arrays kept
 	# inside a Dictionary are copy-on-write and `g["v"].append(...)` mutates a
 	# discarded copy (classic GDScript pitfall). Packed at surface build below.
@@ -1520,15 +1800,15 @@ func _merge_meshes(pairs: Array) -> ArrayMesh:
 					for t in range(idx.size()): gi.append(base + idx[t])
 			else:
 				for t in range(V.size()): gi.append(base + t)
+	var meshes: Array = []
 	var out := ArrayMesh.new()
 	var regenerated := 0
 	for key in groups:
 		if out.get_surface_count() >= 255:
-			# a visible symptom (some scenery renders untextured) with a cause
-			# nobody could guess from looking at it
-			Log.warn("This level has more than 255 different materials in one batch — "
-				+ "the extra ones are dropped, so some scenery will look untextured")
-			break
+			# Godot's per-mesh surface ceiling. Start another mesh rather than
+			# discard the remaining materials.
+			meshes.append(out)
+			out = ArrayMesh.new()
 		var g: Dictionary = groups[key]
 		var arr := []; arr.resize(Mesh.ARRAY_MAX)
 		var vcount: int = (g["v"] as Array).size()
@@ -1539,8 +1819,7 @@ func _merge_meshes(pairs: Array) -> ArrayMesh:
 		# Only ship tangents when EVERY source vertex brought one; a partially
 		# zero-filled array is worse than none (a zero tangent renders wrong,
 		# where a missing one at least gets regenerated below).
-		var mat_nm: bool = g["mat"] is BaseMaterial3D \
-			and (g["mat"] as BaseMaterial3D).normal_texture != null
+		var mat_nm: bool = _wants_tangents(g["mat"])
 		var complete: bool = int(g["has_tan"]) == vcount and vcount > 0
 		if complete:
 			arr[Mesh.ARRAY_TANGENT] = PackedFloat32Array(g["t"])
@@ -1558,10 +1837,56 @@ func _merge_meshes(pairs: Array) -> ArrayMesh:
 		out.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr)
 		if g["mat"] != null:
 			out.surface_set_material(out.get_surface_count() - 1, g["mat"])
+	if out.get_surface_count() > 0:
+		meshes.append(out)
 	if regenerated > 0:
 		Log.debug("map context: regenerated tangents for %d merged surface(s)"
 			% regenerated)
-	return out
+	if meshes.size() > 1:
+		Log.debug("map context: %d materials exceeded the 255-surface ceiling, "
+			+ "split across %d meshes (no geometry dropped)"
+			% [groups.size(), meshes.size()])
+	return meshes
+
+# Will this surface be drawn by something that reads TANGENT?
+#
+# Asking "does the material have a normal map" is not enough, because THREE
+# later passes give a surface a tangent requirement it did not have when the
+# mesh was built, and by then the vertex data is fixed:
+#
+#   _parallax_materials()  sets heightmap_enabled + deep parallax on materials
+#                          tagged "__vtrparallax" — the backdrop/vista facades.
+#                          Parallax reads TANGENT. This is the big one: a map
+#                          went from a handful of backdrops to 155, and each
+#                          untangented vista wall warns on every draw call.
+#   _wind_swap_materials() REPLACES alpha-cutout leaf materials matching
+#                          WIND_MAT_PAT with foliage_wind.gdshader.
+#   _fx flipbook swap      REPLACES "__fxanim3" materials with fx_smoke.gdshader.
+#
+# A ShaderMaterial is assumed to want tangents: we cannot introspect a shader's
+# varyings from GDScript, and generating them is cheap next to a per-draw-call
+# renderer warning for the life of the scene. Tested against the same tags the
+# passes above use, so the two cannot drift apart.
+static func _wants_tangents(mat: Variant) -> bool:
+	if mat == null:
+		return false
+	if mat is ShaderMaterial:
+		return true
+	if not (mat is BaseMaterial3D):
+		return false
+	var bm := mat as BaseMaterial3D
+	if bm.normal_texture != null or bm.heightmap_enabled:
+		return true
+	var nm := String(bm.resource_name)
+	if nm.contains("__vtrparallax") or nm.contains("__fxanim3"):
+		return true
+	# foliage wind only swaps alpha-cutout, textured, name-matched materials
+	if bm.transparency != BaseMaterial3D.TRANSPARENCY_DISABLED \
+			and bm.albedo_texture != null \
+			and RegEx.create_from_string("(?i)(" + WIND_MAT_PAT + ")").search(nm) != null:
+		return true
+	return false
+
 
 # first mesh + its transform relative to the scene root (accumulated)
 func _first_mesh_and_xf(n: Node, pxf: Transform3D) -> Array:
@@ -1691,11 +2016,17 @@ func _add_multimesh(parent: Node3D, mesh: Mesh, xf: Array, textured: bool, flat_
 #                  0 = flat SDK study colours (green land, orange objects),
 #                  1 = untextured grey high-poly (clay), 2 = textured.
 #                  Legacy bool callers (PhotoMatch): false = 0, true = 2.
-func apply(root: Node, enabled: bool, show_objects: bool, tex = true) -> String:
+# `backdrop` defaults OFF so the teardown calls — apply(r, false, false, false),
+# used to free the overlay — cannot accidentally build a skyline on their way
+# out. Every call that wants layers passes what its toggles actually say.
+func apply(root: Node, enabled: bool, show_objects: bool, tex = true,
+		backdrop := false, water := false) -> String:
 	var tex_mode: int = (2 if tex else 0) if tex is bool else int(tex)
 	var textured := tex_mode == 2
 	_active = enabled
 	_show_objects = show_objects
+	_show_backdrop = backdrop
+	_show_water = water
 	_ctx_tex_mode = tex_mode
 	if root == null: return "No scene open"
 	var map := map_of(root)
@@ -1703,12 +2034,16 @@ func apply(root: Node, enabled: bool, show_objects: bool, tex = true) -> String:
 	_clear(root)
 
 	# Load map data whenever we need geometry — terrain context OR objects.
-	var need_data := enabled or show_objects
+	var need_data := enabled or show_objects or backdrop or water
 	var have_data := false
 	if need_data:
 		have_data = _load_data(map)
 
-	if not enabled and not textured and not show_objects:
+	# `backdrop` counts here too: the skyline is a layer in its own right, so
+	# wanting it is reason enough to build even with the terrain, the objects and
+	# the textured ground all off.
+	if not enabled and not textured and not show_objects and not backdrop \
+			and not water:
 		return "Map Context off"
 
 	# one owner=null container for all editor-only overlay geometry (never saved)
@@ -1744,7 +2079,7 @@ func apply(root: Node, enabled: bool, show_objects: bool, tex = true) -> String:
 		if not splat_covers and maptile_enabled:
 			sdk_overlaid = _apply_maptile(root, map)  # decal on SDK terrain + assets
 
-	if not enabled and not show_objects:
+	if not enabled and not show_objects and not backdrop and not water:
 		if not textured: return "Map Context off"
 		if sdk_overlaid > 0: return "SDK terrain textured (decal)"
 		return "Maptile decal off" if not maptile_enabled else "No maptile for %s" % map
@@ -1753,29 +2088,45 @@ func apply(root: Node, enabled: bool, show_objects: bool, tex = true) -> String:
 
 	# --- terrain + backdrop: "Show map context" ---
 	var bd_ok := 0; var bd_total := 0
+	# Shared by BOTH the terrain and the backdrop layers, so hoisted out of the
+	# `if enabled:` block: Backdrops is its own toggle now, and the skyline has to
+	# be renderable with the extended terrain switched off — it still needs `green`.
+	#
+	# untextured "study" material = the SDK's own M_LevelTerrain (shiny lime green
+	# + its 12 m grid), matching the shipped terrain. DUPLICATE it (never touch the
+	# shared SDK material). CULL_DISABLED originally hid a real bug — our heightmap
+	# mesh was wound inside-out, so back-face culling blacked out the top and Godot
+	# flipped the normal on every ground fragment, lighting the centre chunk
+	# inverted next to the SDK's own terrain. The winding is correct as of v1.19.7;
+	# this now only keeps the ground visible when you drop the camera below it.
+	# Switching to CULL_BACK would halve the terrain's fill cost — untested.
+	# `green` = backdrop; `green_tiled` = re-tiled to the SDK 12 m grid.
+	var green_base: Material = _sdk_terrain_material(root, map)
+	var green: Material = green_base
+	var green_tiled: Material = green_base
+	var hm: Dictionary = _data.get("heightmap", {})
+	# The SDK's M_LevelAssets placeholder (shiny orange), shared by the props and
+	# the backdrop. Backdrops are ASSETS, not ground: bridges, facades, towers.
+	# They were being drawn in the terrain green, which made the skyline read as
+	# distant hills rather than as the level's own untextured buildings, and made
+	# it inconsistent with the map objects standing right in front of them.
+	var orange: Material = _sdk_assets_material(root, map)
+	if orange is BaseMaterial3D:
+		var od := (orange as BaseMaterial3D).duplicate() as BaseMaterial3D
+		od.cull_mode = BaseMaterial3D.CULL_DISABLED
+		orange = od
+	if tex_mode == 1:
+		orange = _clay_mat()          # grey clay instead of the SDK orange
+	if green_base is BaseMaterial3D:
+		var span: float = float(hm.get("world_max", 2048)) - float(hm.get("world_min", -2048))
+		var gb := (green_base as BaseMaterial3D).duplicate() as BaseMaterial3D
+		gb.cull_mode = BaseMaterial3D.CULL_DISABLED
+		green = gb
+		var gt := (green_base as BaseMaterial3D).duplicate() as BaseMaterial3D
+		gt.cull_mode = BaseMaterial3D.CULL_DISABLED
+		gt.uv1_scale = Vector3(span / SDK_GRID_M, span / SDK_GRID_M, 1.0)
+		green_tiled = gt
 	if enabled:
-		# untextured "study" material = the SDK's own M_LevelTerrain (shiny lime green
-		# + its 12 m grid), matching the shipped terrain. DUPLICATE it (never touch the
-		# shared SDK material). CULL_DISABLED originally hid a real bug — our heightmap
-		# mesh was wound inside-out, so back-face culling blacked out the top and Godot
-		# flipped the normal on every ground fragment, lighting the centre chunk
-		# inverted next to the SDK's own terrain. The winding is correct as of v1.19.7;
-		# this now only keeps the ground visible when you drop the camera below it.
-		# Switching to CULL_BACK would halve the terrain's fill cost — untested.
-		# `green` = backdrop; `green_tiled` = re-tiled to the SDK 12 m grid.
-		var green_base: Material = _sdk_terrain_material(root, map)
-		var green: Material = green_base
-		var green_tiled: Material = green_base
-		var hm: Dictionary = _data.get("heightmap", {})
-		if green_base is BaseMaterial3D:
-			var span: float = float(hm.get("world_max", 2048)) - float(hm.get("world_min", -2048))
-			var gb := (green_base as BaseMaterial3D).duplicate() as BaseMaterial3D
-			gb.cull_mode = BaseMaterial3D.CULL_DISABLED
-			green = gb
-			var gt := (green_base as BaseMaterial3D).duplicate() as BaseMaterial3D
-			gt.cull_mode = BaseMaterial3D.CULL_DISABLED
-			gt.uv1_scale = Vector3(span / SDK_GRID_M, span / SDK_GRID_M, 1.0)
-			green_tiled = gt
 		var terrain_lift := 0.0
 		if hm.has("file"):
 			var tmi := _build_terrain_from_heightmap(dir, hm)   # chunked full-accuracy mesh from raw 16-bit heights
@@ -1796,7 +2147,6 @@ func apply(root: Node, enabled: bool, show_objects: bool, tex = true) -> String:
 						tcm.layers = EXT_TERRAIN_LAYER           # keep the SDK maptile decal off it
 						_bd_list.append(tcm)                     # terrain tiles follow the Range slider
 				ctx.add_child(tmi); tmi.owner = null
-			_add_water_plane(ctx)
 			# vegetation scatter: grass/shrub kits placed procedurally around the
 			# editor camera (highpoly_scatter.gd). Any detail mode — grass reads
 			# fine over the flat green too; no scatter.json → strict no-op.
@@ -1806,26 +2156,63 @@ func apply(root: Node, enabled: bool, show_objects: bool, tex = true) -> String:
 				if _scatter_n > 0:
 					var scam := _editor_cam()
 					if scam: _scatter.tick(scam.global_transform.origin)
+	# Roads and street markings, baked from the level's TerrainDecals and draped
+	# on the heightfield by roads_build.py. They belong with the ground, so they
+	# follow Extended Terrain rather than getting a switch of their own: without
+	# them the map is bare dirt where the street network should be.
+	if enabled:
+		var rp := "%s/roads/roads.glb" % dir
+		if FileAccess.file_exists(rp):
+			var rs := _load_external_glb(rp)
+			if rs != null:
+				var rn := rs.instantiate()
+				rn.name = "Roads"
+				ctx.add_child(rn)
+				rn.owner = null
+				# already lifted by the baker's Y bias; keep the maptile decal
+				# off them so they are not tinted twice
+				var rstack: Array = [rn]
+				while not rstack.is_empty():
+					var rc: Node = rstack.pop_back()
+					for cc in rc.get_children():
+						rstack.append(cc)
+					if rc is GeometryInstance3D:
+						(rc as GeometryInstance3D).layers = EXT_TERRAIN_LAYER
+						(rc as GeometryInstance3D).cast_shadow = \
+							GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+
+	# Water is its own layer too. It is not terrain (plenty of maps have a river
+	# or a harbour you may want to see without the surrounding ground, or the
+	# other way round) and it is not scenery. The Configure Shaders water setting
+	# still drives its ripple speed either way: apply_shader_prefs walks the whole
+	# overlay, so the plane picks the pref up wherever it is parented.
+	if water:
+		_add_water_plane(ctx, textured)
+
+	# The distant skyline / out-of-bounds vista is its OWN layer, not part of the
+	# terrain. Extended Terrain gives you the ground the level sits on, Water the
+	# rivers and sea, Backdrops the horizon around it, and Original map objects
+	# the level's own props. Each is separately switchable because they answer
+	# different questions about a build.
+	if backdrop:
 		var bd_root := Node3D.new(); bd_root.name = "Backdrop"
 		ctx.add_child(bd_root); bd_root.owner = null
-		for e in _data.get("backdrop", []):
-			if not (e is Dictionary): continue
-			bd_total += 1
-			var mesh: Mesh = null
-			if e.has("glb"):
-				var gp := "%s/%s" % [dir, e["glb"]]
-				if FileAccess.file_exists(gp):
-					# merge ALL mesh nodes like the props path — the rebuilt
-					# skyline GLBs carry one node per material section (Roof,
-					# Walls...); _extract_mesh took only the FIRST, which
-					# rendered the distant buildings as floating rooftops
-					mesh = _parse_prop_file(gp)
-			elif e.has("model"):
-				mesh = _mesh_for(str(e["model"]))
-			if mesh:
-				_add_multimesh(bd_root, mesh, e.get("xf", []), textured,
-						_clay_mat() if tex_mode == 1 else green)
-				bd_ok += 1
+		# NON-BLOCKING, for the same reason the props layer is. Each entry is a
+		# _parse_prop_file() — a GLB parse plus a texture decode and S3TC
+		# recompress — and a map can carry well over a hundred of them (Dumbo has
+		# 155). Running that loop inline froze the editor solid the moment
+		# Backdrops was switched on. Hand it to a frame-budgeted builder with its
+		# own progress lane, exactly like the map objects.
+		# nearest-first, same as the props layer: the horizon fills in outward
+		# from wherever the camera is standing rather than in file order
+		var bd_entries: Array = _sorted_prop_entries(_data.get("backdrop", []))
+		bd_total = bd_entries.size()
+		_bd_total = bd_total
+		_bd_done = 0
+		_bd_ok = 0
+		if bd_total > 0:
+			_build_backdrop_async(bd_root, bd_entries, dir, textured, orange,
+					_build_gen)                       # fire-and-forget
 
 	# --- status summary base (computed BEFORE the props build launches, so the
 	# background builder's very first progress report already carries it) ---
@@ -1838,7 +2225,10 @@ func apply(root: Node, enabled: bool, show_objects: bool, tex = true) -> String:
 		else:
 			mt = ", maptile decal (no layer set)" if maptile_enabled else ", decal off (no layer set)"
 	var tex_lbl := "textured" if textured else ("clay" if tex_mode == 1 else "flat colour")
-	var surr := ", surroundings %d/%d" % [bd_ok, bd_total]
+	# the skyline builds in the background now, so this line is written before a
+	# single piece exists — report what was QUEUED, not a completed count that
+	# would sit at 0 for the life of the message
+	var surr := ", %d surroundings" % bd_total if bd_total > 0 else ""
 	var sct := ", %d scatter types" % _scatter_n if _scatter_n > 0 else ""
 	_build_status_base = "%s: terrain %s%s%s%s" % [map, tex_lbl, surr, sct, mt]
 
@@ -1847,13 +2237,6 @@ func apply(root: Node, enabled: bool, show_objects: bool, tex = true) -> String:
 	# use the SDK's M_LevelAssets (shiny orange) placeholder to match the shipped
 	# assets; textured, they keep their own material.
 	if show_objects:
-		var orange: Material = _sdk_assets_material(root, map)
-		if orange is BaseMaterial3D:
-			var od := (orange as BaseMaterial3D).duplicate() as BaseMaterial3D
-			od.cull_mode = BaseMaterial3D.CULL_DISABLED
-			orange = od
-		if tex_mode == 1:
-			orange = _clay_mat()          # grey clay instead of the SDK orange
 		var props_root := Node3D.new(); props_root.name = "Props"
 		ctx.add_child(props_root); props_root.owner = null
 		# NON-BLOCKING: parsing ~2k unique GLBs + building their MultiMeshes
@@ -1930,12 +2313,70 @@ static func _min_d2(xf: Array, cpos: Vector3) -> float:
 # apply()/_clear() bumps the generation and this pass stops dead — its nodes
 # were already freed with _MAP_CONTEXT, and it must never touch the state a
 # newer pass now owns (so no _building/_report writes on that path).
+# Same contract as _build_props_async: spend BUILD_FRAME_MS per frame, yield,
+# and stop dead if _clear() bumped the generation while we were away. Its own
+# counters and signal so it can run alongside the props build without the two
+# fighting over one progress lane.
+func _build_backdrop_async(bd_root: Node3D, entries: Array, dir: String,
+		textured: bool, mat: Material, gen: int) -> void:
+	var frame_start := Time.get_ticks_msec()
+	for e in entries:
+		var meshes: Array = []
+		if e.has("glb"):
+			var gp := "%s/%s" % [dir, e["glb"]]
+			if FileAccess.file_exists(gp):
+				# merge ALL mesh nodes like the props path — the rebuilt skyline
+				# GLBs carry one node per material section (Roof, Walls...);
+				# _extract_mesh took only the FIRST, which rendered the distant
+				# buildings as floating rooftops
+				meshes = _parse_prop_file(gp)
+		elif e.has("model"):
+			var bm := _mesh_for(str(e["model"]))
+			if bm != null:
+				meshes = [bm]
+		if meshes.size() > 0 and is_instance_valid(bd_root):
+			var mesh: Mesh = meshes[0]
+			# a smoke sheet filed under the backdrop layer follows the FX switch
+			# too, wherever the level chose to put it
+			var bdest: Node3D = bd_root
+			if _is_fx_card(mesh, str(e.get("name", e.get("mesh", "")))):
+				bdest = _fx_cards_group(bd_root)
+			# orange, not green: the skyline is made of the level's own
+			# buildings, so untextured it should match the map objects in front
+			# of it rather than the ground under it
+			for msh: Mesh in meshes:
+				_add_multimesh(bdest, msh, e.get("xf", []), textured, mat)
+			_bd_ok += 1
+		_bd_done += 1
+		if Time.get_ticks_msec() - frame_start >= BUILD_FRAME_MS:
+			# Cull what has just been added, every slice. Without this the
+			# skyline was built fully visible and stayed that way until
+			# something else happened to call _apply_radius() — which in
+			# practice meant it only started obeying the Range slider once the
+			# user touched the slider. New pieces now obey it the moment they
+			# exist, exactly like the props layer.
+			_apply_radius()
+			backdrop_progress.emit(_bd_done, _bd_total)
+			if not is_inside_tree():
+				return
+			await get_tree().process_frame
+			if gen != _build_gen:
+				return                  # superseded by a new apply()/_clear()
+			if not is_instance_valid(bd_root):
+				return                  # overlay freed under us
+			frame_start = Time.get_ticks_msec()
+	_apply_radius()                 # final pass: the last slice obeys it too
+	backdrop_progress.emit(_bd_total, _bd_total)
+	Log.debug("map context: skyline built, %d of %d piece(s)" % [_bd_ok, _bd_total])
+
+
 func _build_props_async(props_root: Node3D, entries: Array, dir: String,
 		textured: bool, flat_mat: Material, gen: int) -> void:
 	var frame_start := Time.get_ticks_msec()
 	for e in entries:
 		var gp := _prop_path(e, dir)
-		var mesh := _prop_mesh(e, dir)      # the expensive part (GLB parse; cached)
+		var meshes := _prop_mesh(e, dir)    # the expensive part (GLB parse; cached)
+		var mesh: Mesh = meshes[0] if meshes.size() > 0 else null
 		if gp != "":
 			# refresh bookkeeping: which entries this source file built (recorded
 			# even when the parse failed, so a file that lands later refreshes in)
@@ -1944,8 +2385,15 @@ func _build_props_async(props_root: Node3D, entries: Array, dir: String,
 		if mesh != null:
 			var xf: Array = e.get("xf", [])
 			var em: Dictionary = _prop_layers.get(str(e.get("mesh", "")), {})
+			# flipbook cards are an effect, not scenery — own group, FX switch
+			var dest: Node3D = props_root
+			if _is_fx_card(mesh, str(e.get("mesh", ""))):
+				dest = _fx_cards_group(props_root)
 			if em.is_empty():
-				_add_cell_multimeshes(props_root, mesh, xf, textured, flat_mat, gp)
+				# every mesh of a split prop, or the split drops what the
+				# 255-surface cap used to drop
+				for msh: Mesh in meshes:
+					_add_cell_multimeshes(dest, msh, xf, textured, flat_mat, gp)
 			else:
 				# split layer-gated instances (winter dressing, Rush barriers…)
 				# into visibility groups the Variant dropdown flips live.
@@ -1962,10 +2410,12 @@ func _build_props_async(props_root: Node3D, entries: Array, dir: String,
 					else:
 						for j in range(12): base.append(xf[i * 12 + j])
 				if not base.is_empty():
-					_add_cell_multimeshes(props_root, mesh, base, textured, flat_mat, gp)
+					for msh: Mesh in meshes:
+						_add_cell_multimeshes(dest, msh, base, textured, flat_mat, gp)
 				for k in bux:
-					_add_cell_multimeshes(_variant_group(props_root, str(k)),
-							mesh, bux[k], textured, flat_mat, gp)
+					for msh: Mesh in meshes:
+						_add_cell_multimeshes(_variant_group(props_root, str(k)),
+								msh, bux[k], textured, flat_mat, gp)
 			_build_props += 1
 		_build_done += 1
 		if Time.get_ticks_msec() - frame_start >= BUILD_FRAME_MS:
@@ -2083,19 +2533,23 @@ func _refresh_props_async(props_root: Node3D, jobs: Array, gen: int) -> void:
 			"mt": FileAccess.get_modified_time(gp) if FileAccess.file_exists(gp) else 0,
 			"sz": _file_size(gp),
 		}
-		var mesh := _parse_prop_file(gp)
-		if mesh == null:
+		var meshes := _parse_prop_file(gp)
+		if meshes.is_empty():
 			failed += 1
 		else:
-			var old = _mesh_cache.get(gp, null)    # untyped: may be null
-			if old != null:
-				_flip_cache.erase(old)             # its mirrored twin came from the old mesh
-			_mesh_cache[gp] = mesh
+			var old = _mesh_cache.get(gp, null)    # untyped: may be null / a list
+			if old is Array:
+				for om in old:
+					_flip_cache.erase(om)          # each split mesh had its own twin
+			elif old != null:
+				_flip_cache.erase(old)
+			_mesh_cache[gp] = meshes
 			_mesh_stat[gp] = stamp
 			var old_mmis := _collect_prop_mmis(gp)
 			for e in entries:
-				_add_cell_multimeshes(props_root, mesh, e.get("xf", []),
-					_props_textured, _props_mat, gp)
+				for msh: Mesh in meshes:
+					_add_cell_multimeshes(props_root, msh, e.get("xf", []),
+						_props_textured, _props_mat, gp)
 			_free_mmi_list(old_mmis)               # replacement is live — drop the old
 			_build_props += 1
 		_build_done += 1
@@ -2118,7 +2572,7 @@ func _refresh_props_async(props_root: Node3D, jobs: Array, gen: int) -> void:
 	_apply_radius()
 	_building = false
 	if failed > 0:
-		print("MapContext: %d changed prop file(s) failed to parse (mid-write?) — kept the old meshes; run Check for Updates again" % failed)
+		print("MapContext: %d changed prop file(s) failed to parse (mid-write?): kept the old meshes; run Check for Updates again" % failed)
 	_report_progress(true)
 	build_finished.emit(_build_props)
 
@@ -2221,7 +2675,8 @@ func dir_usage_async(path: String) -> Array:
 # extra_keys lets the caller name the models a level uses when its data was
 # never downloaded — the open scene knows them even when no placements file
 # exists, and without this those models could never be freed.
-func purge_info(map: String, extra_keys: Dictionary = {}) -> Dictionary:
+func purge_info(map: String, extra_keys: Dictionary = {},
+		keep_keys: Dictionary = {}) -> Dictionary:
 	var refs := map_prop_refs(map)
 	var others: Dictionary = {}
 	for m in downloaded_maps():
@@ -2230,6 +2685,11 @@ func purge_info(map: String, extra_keys: Dictionary = {}) -> Dictionary:
 			others[nm] = true
 		if is_inside_tree():
 			await get_tree().process_frame   # placements parses are chunky
+	# models belonging to a DIFFERENT scene the user currently has open: that
+	# scene's level may have no downloaded map data at all, so nothing else
+	# records that it needs them. Protect them like a downloaded map's.
+	for nm in keep_keys.keys():
+		others[nm] = true
 	var excl: Array = []
 	var shared := 0
 	var excl_bytes := 0
@@ -2252,8 +2712,19 @@ func purge_info(map: String, extra_keys: Dictionary = {}) -> Dictionary:
 	var hp_excl: Array = []
 	var hp_bytes := 0
 	i = 0
+	# Sweep the WHOLE model library, not just the names this map's placements
+	# happen to list. Models also arrive via the library sync — driven by the
+	# open scene, not by any map's placements — so nothing referenced them and
+	# no map purge could ever free them: purging every map still left GBs behind
+	# (measured: 5.1 GB of models against 118 MB of map data).
+	#
+	# The rule is the one that was always intended, just applied to everything:
+	# keep what another DOWNLOADED map (or another open scene) needs, free the
+	# rest. Anything freed in error re-downloads on demand.
 	var hp_names: Dictionary = refs.duplicate()
 	for k in extra_keys.keys():
+		hp_names[k] = true
+	for k in HighpolyStore.models().keys():
 		hp_names[k] = true
 	for nm in hp_names.keys():
 		if others.has(nm): continue
@@ -2296,6 +2767,8 @@ func purge_map(map: String, info: Dictionary) -> void:
 		_save_props_index(idx)
 	# the high-poly models for this level's objects, and their thumbnails
 	var hp_n := 0
+	var store := HighpolyStore.models()      # live dictionary — erase in place
+	var store_changed := false
 	for nm in info.get("hp_excl", []):
 		var hp := HighpolyStore.model_path(str(nm))
 		if FileAccess.file_exists(hp):
@@ -2304,8 +2777,15 @@ func purge_map(map: String, info: Dictionary) -> void:
 		var th := HighpolyStore.thumb_path(str(nm))
 		if FileAccess.file_exists(th):
 			DirAccess.remove_absolute(th)
+		# scrub the index too, or the panel keeps counting models whose files are
+		# gone and the next sync diff reasons about a library that isn't there
+		if store.has(nm):
+			store.erase(nm)
+			store_changed = true
 		if hp_n % 256 == 0 and is_inside_tree():
 			await get_tree().process_frame
+	if store_changed:
+		HighpolyStore.save()
 	if hp_n > 0:
 		Log.info("Purge %s: removed %d high-poly model(s) no other level uses" % [map, hp_n])
 	_rm_dir_recursive("%s/%s" % [CACHE, map])
@@ -2316,6 +2796,37 @@ func purge_map(map: String, info: Dictionary) -> void:
 	if _map == map:
 		_data = {}
 		_map = ""
+
+# RESET: delete every downloaded byte — all map data, the shared scenery cache
+# and the whole model library — and drop the in-RAM caches that point at them.
+# The fallback for when per-map purging has left something behind, or when you
+# simply want to start clean; everything re-downloads on demand.
+#
+# Returns the number of bytes freed. The CALLER is responsible for tearing the
+# overlay down first, exactly as _do_purge does, so nothing holds these files.
+func purge_everything() -> int:
+	var freed := 0
+	for d in [CACHE, HighpolyStore.MODELS_DIR, HighpolyStore.THUMBS_DIR]:
+		var u: Array = await dir_usage_async(d)
+		freed += int(u[1])
+		_rm_dir_recursive(d)
+	# in-RAM state that would otherwise describe files that no longer exist
+	_mesh_cache.clear()
+	_mesh_stat.clear()
+	_prop_by_src.clear()
+	_flip_cache.clear()
+	_session_checked.clear()
+	_props_verified.clear()
+	_props_refresh.clear()
+	_splat_cache.clear()
+	_data = {}
+	_map = ""
+	# and the model index, or the panel keeps reporting a library that is gone
+	HighpolyStore.models().clear()
+	HighpolyStore.save()
+	Log.info("Reset: removed all downloaded data (%d bytes freed)" % freed)
+	return freed
+
 
 # UPDATE-BUTTON CLEANUP: sweep stale cache artifacts so "Check for Updates"
 # both delivers the new files AND reclaims what this release obsoleted —
@@ -2362,13 +2873,24 @@ static func _rm_dir_recursive(path: String) -> void:
 # "color" ([r,g,b] tint override) — see HighpolyWater. Terrain above a plane
 # occludes it, so each only shows where the ground dips below its own waterline.
 # Maps without a water body carry no "water" key and get no planes.
-func _add_water_plane(ctx: Node3D) -> void:
+func _add_water_plane(ctx: Node3D, textured: bool) -> void:
 	var wdata: Variant = _data.get("water", null)
 	var planes: Array = []
 	if wdata is Dictionary:
 		planes = [wdata]
 	elif wdata is Array:
 		planes = wdata
+	if planes.is_empty():
+		return
+	# Own group, like Props and Backdrop, so Water can be switched without
+	# rebuilding: several maps carry more than one body (rivers plus a harbour),
+	# and they all end up named WATER_NODE, which Godot then auto-renames. A
+	# parent node is something set_water_shown() can actually find.
+	var wroot := Node3D.new()
+	wroot.name = "Water"
+	ctx.add_child(wroot)
+	wroot.owner = null
+	ctx = wroot
 	for wcfg in planes:
 		if not (wcfg is Dictionary) or not wcfg.has("height"): continue
 		var wc: Array = wcfg.get("center", [0.0, 0.0])
@@ -2378,9 +2900,13 @@ func _add_water_plane(ctx: Node3D) -> void:
 		var pm := PlaneMesh.new()
 		pm.size = Vector2(float(wsz[0]), float(wsz[1]))
 		wp.mesh = pm
-		# BF6-style animated water (depth-tinted transparency + fresnel + ripples,
-		# see water.gdshader); flat translucent colour if the shader file is missing
-		var wmat: Material = HighpolyWater.material(wcfg)
+		# Water follows the Detail Mode like everything else. Textured gets the
+		# BF6-style animated shader (depth-tinted transparency, fresnel and
+		# ripples, see water.gdshader). The study modes get plain translucent
+		# blue: a moving, reflective ocean in a flat-colour or clay view reads as
+		# the one thing in the scene that is "finished", which is misleading when
+		# the point of those modes is to look at shape.
+		var wmat: Material = HighpolyWater.material(wcfg) if textured else null
 		if wmat == null:
 			var fb := StandardMaterial3D.new()
 			fb.albedo_color = WATER_COLOR
@@ -2567,6 +3093,151 @@ func _add_cell_multimeshes(parent: Node3D, mesh: Mesh, xf: Array, textured: bool
 			if not _cells.has(key): _cells[key] = []
 			_cells[key].append(mmi)
 
+# Build ONE layer into an overlay that already exists.
+#
+# Every layer toggle used to fall back to the full apply() when its layer was
+# not built yet, and apply() starts with _clear(). So switching Water on — one
+# plane — tore down the terrain, the skyline and all ~2,000 prop meshes and
+# rebuilt them. The same was true of Backdrops, Original map objects and the FX
+# cards: the fast paths only ever handled show/hide of something already there,
+# and "not built yet" is the normal state the first time you press a button.
+#
+# Returns false when there is no overlay at all, which is the one case where a
+# full apply() is genuinely the right answer.
+func ensure_layer(root: Node, layer: String, tex_mode: int) -> bool:
+	if root == null:
+		return false
+	var ctx := root.get_node_or_null(NODE)
+	if ctx == null:
+		return false                       # nothing built: caller does a full apply
+	var map := map_of(root)
+	if map == "" or not _load_data(map):
+		return false
+	var dir := "%s/%s" % [CACHE, map]
+	var textured := tex_mode == 2
+	# the study-mode material the props and skyline share (see apply())
+	var flat: Material = _clay_mat() if tex_mode == 1 else _sdk_assets_material(root, map)
+	if flat is BaseMaterial3D and tex_mode != 1:
+		var fd := (flat as BaseMaterial3D).duplicate() as BaseMaterial3D
+		fd.cull_mode = BaseMaterial3D.CULL_DISABLED
+		flat = fd
+
+	match layer:
+		"water":
+			if ctx.get_node_or_null("Water") != null:
+				return true                # already there; caller just flips it
+			_add_water_plane(ctx, textured)
+			_show_water = true
+			return ctx.get_node_or_null("Water") != null
+		"backdrop":
+			if ctx.get_node_or_null("Backdrop") != null:
+				return true
+			var bd_root := Node3D.new()
+			bd_root.name = "Backdrop"
+			ctx.add_child(bd_root)
+			bd_root.owner = null
+			var entries: Array = _sorted_prop_entries(_data.get("backdrop", []))
+			_bd_total = entries.size()
+			_bd_done = 0
+			_bd_ok = 0
+			_show_backdrop = true
+			if _bd_total > 0:
+				_build_backdrop_async(bd_root, entries, dir, textured, flat,
+						_build_gen)
+			return true
+		"objects":
+			if ctx.get_node_or_null("Props") != null:
+				return true
+			var props_root := Node3D.new()
+			props_root.name = "Props"
+			ctx.add_child(props_root)
+			props_root.owner = null
+			_props_dir = dir
+			_props_textured = textured
+			_props_mat = flat
+			_props_tex_mode = tex_mode
+			_variant_layer_groups = {}
+			var pe: Array = _sorted_prop_entries(_data.get("props", []))
+			_build_total = pe.size()
+			_build_done = 0
+			_build_props = 0
+			_last_report = 0
+			_building = _build_total > 0
+			_show_objects = true
+			if _building:
+				_build_props_async(props_root, pe, dir, textured, flat, _build_gen)
+			else:
+				_apply_radius()
+			return true
+	return false
+
+
+# Re-skin the built overlay in place for a new Detail Mode.
+#
+# A mode change used to call the full apply(), which starts with _clear() and
+# re-parses every prop — minutes of work, during which the map objects are
+# simply GONE. But the "skin" is only ever two properties per instance
+# (material_override for the study modes, the TEXTURED_LAYER bit for the real
+# ones), so it can be swapped on the meshes already built.
+#
+# Returns false when there is nothing built to re-skin, or when the terrain
+# material for this map cannot be resolved — the caller runs the full apply then.
+func reskin(root: Node, tex_mode: int) -> bool:
+	if root == null:
+		return false
+	var ctx := root.get_node_or_null(NODE)
+	if ctx == null:
+		return false
+	var map := map_of(root)
+	if map == "":
+		return false
+	var textured := tex_mode == 2
+
+	# props + backdrop: MultiMeshInstance3D, flat material is the SDK asset
+	# orange (or clay), matching what apply() hands the builders
+	var flat: Material = _clay_mat() if tex_mode == 1 else _sdk_assets_material(root, map)
+	if flat is BaseMaterial3D and tex_mode != 1:
+		var fd := (flat as BaseMaterial3D).duplicate() as BaseMaterial3D
+		fd.cull_mode = BaseMaterial3D.CULL_DISABLED
+		flat = fd
+	# terrain tiles: MeshInstance3D, flat material is the SDK terrain green
+	var tmat: Material = _terrain_shader_mat(map) if textured else null
+	var green_base: Material = _sdk_terrain_material(root, map)
+	var green_tiled: Material = green_base
+	if green_base is BaseMaterial3D:
+		var hm: Dictionary = _data.get("heightmap", {})
+		var span: float = float(hm.get("world_max", 2048)) - float(hm.get("world_min", -2048))
+		var gt := (green_base as BaseMaterial3D).duplicate() as BaseMaterial3D
+		gt.cull_mode = BaseMaterial3D.CULL_DISABLED
+		gt.uv1_scale = Vector3(span / SDK_GRID_M, span / SDK_GRID_M, 1.0)
+		green_tiled = gt
+
+	var n_mm := 0
+	var n_ti := 0
+	var stack: Array = [ctx]
+	while not stack.is_empty():
+		var nd: Node = stack.pop_back()
+		for c in nd.get_children():
+			stack.append(c)
+			if c is MultiMeshInstance3D:
+				var mmi := c as MultiMeshInstance3D
+				mmi.material_override = null if textured else flat
+				mmi.layers = TEXTURED_LAYER if textured else 1
+				n_mm += 1
+			elif c is MeshInstance3D and c.name != WATER_NODE:
+				# terrain tiles; water keeps its own material either way
+				var mi := c as MeshInstance3D
+				if mi.get_parent() != null and String(mi.get_parent().name) == "Water":
+					continue
+				mi.material_override = tmat if (textured and tmat != null) else green_tiled
+				n_ti += 1
+	_ctx_tex_mode = tex_mode
+	_props_tex_mode = tex_mode
+	Log.debug("map context: re-skinned in place (%d instanced groups, %d terrain tiles)"
+		% [n_mm, n_ti])
+	return n_mm > 0 or n_ti > 0
+
+
 func _build_mmi(mesh: Mesh, xf: Array, textured: bool, flat_mat: Material) -> MultiMeshInstance3D:
 	var mm := MultiMesh.new(); mm.transform_format = MultiMesh.TRANSFORM_3D; mm.mesh = mesh
 	var count := int(xf.size() / 12); mm.instance_count = count
@@ -2590,18 +3261,62 @@ func _build_mmi(mesh: Mesh, xf: Array, textured: bool, flat_mat: Material) -> Mu
 	# biggest draw-call saver when flying (a trash can 1.5 km out was a full
 	# draw call). Sized from the mesh's own AABB; fades instead of popping.
 	var _sz := mesh.get_aabb().get_longest_axis_size()
-	if _sz < 3.0:
+	mmi.set_meta("lod_sz", _sz)     # so the Range slider can re-derive these live
+	_set_mmi_lod(mmi, _sz)
+	return mmi
+
+# Per-mesh draw distance for one instanced group, derived from the Range slider.
+#
+# These used to be the constants 400 m and 1200 m, fixed at build time and never
+# touched again. The slider moved the CELL cull and left them alone, so its
+# tooltip promise ("the one distance that governs everything") was only true of
+# half the system: at a 400 m range, small props still drew to 400 m, and pulling
+# the slider down did not make the clutter any cheaper.
+#
+# Same rule the placed-object LOD uses, so both halves of the scene behave alike:
+# clutter to HALF the range, mid-size props to the full range, big structures
+# uncapped because the cell cull already bounds them and popping a building is
+# far more noticeable than popping a bin.
+#
+# At the default 800 m slider small props still cull at 400 m, exactly as before,
+# so this changes the tuning nobody complained about only where the slider moves.
+func _set_mmi_lod(mmi: MultiMeshInstance3D, sz: float) -> void:
+	var r: float = radius
+	if r >= 1.0e8:
+		# "No Culling" end of the slider: honour it literally, no per-mesh limit
+		mmi.visibility_range_end = 0.0
+		mmi.visibility_range_end_margin = 0.0
+		mmi.visibility_range_fade_mode = GeometryInstance3D.VISIBILITY_RANGE_FADE_DISABLED
+		return
+	if sz < 3.0:
 		# small props: HARD cull with a hysteresis buffer. Dither-fade (FADE_SELF)
 		# stipples badly on small objects and reads as flicker while flying — a
 		# clean on/off with a margin is smoother for clutter this size.
-		mmi.visibility_range_end = 400.0
+		mmi.visibility_range_end = maxf(r * 0.5, 40.0)
 		mmi.visibility_range_end_margin = 40.0
 		mmi.visibility_range_fade_mode = GeometryInstance3D.VISIBILITY_RANGE_FADE_DISABLED
-	elif _sz < 12.0:
-		mmi.visibility_range_end = 1200.0
+	elif sz < 12.0:
+		mmi.visibility_range_end = maxf(r, 60.0)
 		mmi.visibility_range_end_margin = 60.0
 		mmi.visibility_range_fade_mode = GeometryInstance3D.VISIBILITY_RANGE_FADE_SELF
-	return mmi
+	else:
+		mmi.visibility_range_end = 0.0
+		mmi.visibility_range_end_margin = 0.0
+		mmi.visibility_range_fade_mode = GeometryInstance3D.VISIBILITY_RANGE_FADE_DISABLED
+
+# Re-derive every built group's draw distance after the Range slider moves.
+# Cheap: a property write per instanced group (hundreds), not per instance.
+func _refresh_mesh_lod() -> void:
+	var n := 0
+	for key in _cells.keys():
+		for c in _cells[key]:
+			if not is_instance_valid(c): continue
+			if c is MultiMeshInstance3D and c.has_meta("lod_sz"):
+				_set_mmi_lod(c as MultiMeshInstance3D, float(c.get_meta("lod_sz")))
+				n += 1
+	if n > 0:
+		Log.debug("map context: re-derived draw distance on %d group(s) at %d m"
+			% [n, int(radius)])
 
 # Fast path for the "Original map objects" toggle: SHOW/HIDE the already-built
 # props subtree instead of tearing the whole overlay down and re-parsing ~2k
@@ -2622,6 +3337,23 @@ func set_objects_shown(root: Node, on: bool, tex_mode := -1) -> bool:
 		_apply_radius()                # re-cull for wherever the camera is now
 	return true
 
+# Fast path for the Backdrops toggle, same contract as set_objects_shown():
+# flip the already-built skyline layer instead of rebuilding the overlay.
+# Returns false when there is no Backdrop layer yet (or the detail mode moved),
+# and the caller runs the full apply() instead.
+func set_backdrop_shown(root: Node, on: bool, tex_mode := -1) -> bool:
+	if root == null: return false
+	var ctx := root.get_node_or_null(NODE)
+	if ctx == null: return false
+	var bd := ctx.get_node_or_null("Backdrop")
+	if bd == null: return false
+	if tex_mode >= 0 and _ctx_tex_mode >= 0 and tex_mode != _ctx_tex_mode:
+		return false                   # detail mode changed → needs a rebuild
+	_show_backdrop = on
+	(bd as Node3D).visible = on
+	return true
+
+
 # Fast path for the "Show whole map" toggle: hide/show the already-built
 # terrain/backdrop/water/scatter layers instead of tearing the WHOLE overlay
 # down — the full apply() also regenerated every map object ("why do all the
@@ -2636,7 +3368,9 @@ func set_context_shown(root: Node, on: bool, tex_mode := -1) -> bool:
 		return false                   # detail mode changed → needs a rebuild
 	var found := false
 	for c in ctx.get_children():
-		if c.name == "Props" or not (c is Node3D):
+		# "Backdrop" is its own toggle now and must not ride this one — hiding the
+		# terrain should not take the horizon with it.
+		if c.name == "Props" or c.name == "Backdrop" or not (c is Node3D):
 			continue
 		found = true
 		(c as Node3D).visible = on
@@ -2648,6 +3382,10 @@ func set_context_shown(root: Node, on: bool, tex_mode := -1) -> bool:
 # ---------- distance streaming (called by the dock on a timer) ----------
 func set_radius(r: float) -> void:
 	radius = r
+	# per-mesh draw distance first, then the cell pass: the cell pass can show
+	# cells, and a freshly shown group should already carry the new distance
+	# rather than drawing at the old one for a frame
+	_refresh_mesh_lod()
 	_apply_radius()
 
 func _apply_radius(budget: int = 1 << 30) -> void:
@@ -2735,8 +3473,26 @@ func tick() -> void:
 	# map" (_active), and the old `_active and` gate froze their culling —
 	# the radius only applied once at slider-change instead of following the
 	# camera.
-	if _show_objects or (_active and not _bd_list.is_empty()):
-		_apply_radius(4)   # amortised: a few cells per tick, never a whole ring
+	# Backdrops no longer ride on _active: the skyline is its own layer and can be
+	# shown with Extended Terrain off, so gating it on _active froze its culling
+	# in exactly the case the new toggle makes possible.
+	if _show_objects or not _bd_list.is_empty():
+		# Budget scaled to how far the camera actually moved. A fixed 4 cells per
+		# half-second tick is fine standing still, but it cannot keep up with
+		# flying: the culling fell behind the camera and only caught up when the
+		# Range slider was touched, because that path passes an unlimited budget.
+		# That is the "I have to adjust the slider to load props around me" bug.
+		# Standing still stays cheap; moving fast is allowed a bigger slice, still
+		# capped so a whole ring never flips in one frame.
+		var budget := 4
+		var cam := _editor_cam()
+		if cam:
+			var p := cam.global_transform.origin
+			var moved := p.distance_to(_last_cull_pos)
+			_last_cull_pos = p
+			if moved > _cell_size * 0.5:
+				budget = clampi(int(moved / maxf(_cell_size, 1.0)) * 8, 8, 64)
+		_apply_radius(budget)
 	# vegetation scatter follows the camera (regenerates on 32 m cell crossings);
 	# frozen while the context layers are hidden (set_context_shown fast path)
 	if _active and _scatter != null and _scatter.active:

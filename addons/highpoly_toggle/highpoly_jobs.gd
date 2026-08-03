@@ -83,7 +83,7 @@ func acquire(name: String) -> int:
 	_waiting.append({"id": id, "name": name})
 	_batch = maxi(_batch, _completed + _waiting.size() + (1 if _active_id != 0 else 0))
 	if _active_id != 0:
-		Log.info("Queued: %s — waiting for %s" % [name, _active])
+		Log.info("Queued: %s: waiting for %s" % [name, _active])
 	changed.emit()
 	while _active_id != 0 or (_waiting.size() > 0 and int(_waiting[0]["id"]) != id):
 		if not is_inside_tree(): return id        # panel closed mid-wait
@@ -110,9 +110,9 @@ func release(id: int, ok: bool, note := "") -> void:
 	_ratio = 0.0
 	_completed += 1
 	if ok:
-		Log.info("Finished: %s%s" % [name, ("  — " + note) if note != "" else ""])
+		Log.info("Finished: %s%s" % [name, (" (" + note + ")") if note != "" else ""])
 	else:
-		Log.error("FAILED: %s%s" % [name, ("  — " + note) if note != "" else ""])
+		Log.error("FAILED: %s%s" % [name, (" (" + note + ")") if note != "" else ""])
 	# the run is over once nothing is left, so the next one counts from 1 again
 	if _waiting.is_empty():
 		_completed = 0

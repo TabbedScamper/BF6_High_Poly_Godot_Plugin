@@ -3,11 +3,26 @@ extends RefCounted
 # (no class_name: the dock preloads this script explicitly, same as the other
 # plugin modules — a fresh global class isn't registered until an editor
 # rescan, which a just-updated plugin can't rely on)
-# Editor-only visualization of the game's ACTUAL collision for placed objects.
+# Editor-only APPROXIMATION of collision for placed objects.
 #
-# BF6 collision follows the object's geometry but scales UNIFORMLY from the X
-# axis: an object scaled (10, 20, 20) collides as if scaled (10, 10, 10). The
-# overlay duplicates the low-poly proxy's own meshes under an owner=null child
+# It is NOT the game's real collision, and must not be described as such. The
+# real shapes live in the object's `.physics` PhysicsResource as convex-
+# decomposed polytopes (stored vertices + an explicit face table), and they
+# differ from the render mesh in two ways that matter:
+#   * shape kind 6 — 58% of instances — carries the preset triplet
+#     NoCollision|NoCollision|Detail, i.e. it is raycast/detail only and does
+#     NOT block player movement, so drawing it as "what you bump into" is
+#     actively wrong;
+#   * kinds 0/1 are parameterised primitives with no vertex data at all, so
+#     nothing derived from the render mesh represents them.
+# Decoding PhysicsResource is a known, specified task (see the pipeline's
+# frostbite-reference/formats/PHYSICS_COLLISION.md); until it is done this
+# overlay stays a shape-and-scale HINT.
+#
+# What it does model correctly is the scaling rule: BF6 collision follows the
+# object's geometry but scales UNIFORMLY from the X axis — an object scaled
+# (10, 20, 20) collides as if scaled (10, 10, 10). The overlay duplicates the
+# low-poly proxy's own meshes under an owner=null child
 # `_COLLISION_VIS` (never saved, nothing stored on disk — mesh resources are
 # shared, not copied) with a transparent red material, and forces the WORLD
 # scale uniform to X. Being a child, it would inherit the proxy's non-uniform
@@ -172,10 +187,15 @@ static func _objects_in(nodes: Array) -> Array:
 				stack.append(gc)
 	return out
 
-# give one object its model back (whatever the current detail mode shows)
-static func _restore_one(node: Node3D, tier: int, textured: bool) -> void:
+# give one object its model back (whatever the current detail mode shows).
+# `rebuild` false means "do not put a model back at all, just reveal the proxy" —
+# used by teardown, which is about to drop every overlay anyway and must not
+# instantiate models on its way out (in the purge path those files are being
+# deleted). It replaces a `tier == LOW` test that meant the same thing only while
+# Low-Poly happened to draw nothing of ours.
+static func _restore_one(node: Node3D, tier: int, textured: bool, rebuild: bool = true) -> void:
 	var restored := false
-	if tier != HighpolyLib.Tier.LOW:
+	if rebuild:
 		var k := HighpolyLib.match_key_public(node)
 		if k != "":
 			restored = HighpolyLib.apply_one(node, k, tier, textured)
@@ -212,12 +232,13 @@ static func reisolate(selection: Array, tier: int, textured: bool) -> int:
 
 # restore ALL isolated objects to whatever the current detail mode shows.
 # keep_overlay=false also removes their collision (global toggle is off).
-static func release_isolation(tier: int, textured: bool, keep_overlay: bool) -> int:
+static func release_isolation(tier: int, textured: bool, keep_overlay: bool,
+		rebuild: bool = true) -> int:
 	var n := 0
 	for node in _isolated:
 		if not is_instance_valid(node):
 			continue
-		_restore_one(node as Node3D, tier, textured)
+		_restore_one(node as Node3D, tier, textured, rebuild)
 		if not keep_overlay:
 			remove_one(node as Node3D)
 		n += 1
