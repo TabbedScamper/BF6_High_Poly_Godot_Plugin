@@ -183,6 +183,17 @@ static func _apply_lod(root: Node, r: float, on: bool) -> int:
 		_collect(hp, ours)
 		if ours.is_empty():
 			continue
+		# NEVER gate the proxy unless our overlay is actually drawing. The
+		# handover only works because something covers the near distance, and an
+		# overlay that is present but hidden covers nothing: the proxy gets a
+		# near-gate, the overlay stays invisible, and the object disappears
+		# entirely while its node remains selectable.
+		#
+		# That is not hypothetical. A reloaded plugin leaves the overlay parented
+		# and hidden, so this ran with nothing to hand over TO.
+		if not hp.visible:
+			_unreveal(node)
+			continue
 		var ext := 0.0
 		for mi in ours:
 			ext = maxf(ext, (mi as VisualInstance3D).get_aabb().get_longest_axis_size())

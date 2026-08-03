@@ -960,6 +960,25 @@ func _startup() -> void:
 		_show_scope_prompt()
 		return
 	_start_sync()
+	_apply_open_scene()
+
+# Draw the open scene with whatever Detail Mode we start in.
+#
+# Startup never applied anything, and that was CORRECT while Low-Poly meant
+# "show the SDK's own proxy": a freshly loaded plugin had nothing to add. Once
+# Low-Poly started drawing OUR geometry, the same silence became a bug. Loading
+# or reloading the plugin left every placed object on its white blockout, and it
+# only healed if the user happened to change modes.
+#
+# It got worse from there. The placed-object cull gates the proxy on the
+# assumption that our overlay covers the near distance, so touching the Range
+# slider hid the proxy behind a gate while the overlay that was supposed to
+# replace it had never been built. Nothing drew at all.
+func _apply_open_scene() -> void:
+	if EditorInterface.get_edited_scene_root() == null:
+		return
+	_apply_scene()
+	_reapply_placed_cull()
 
 func _show_migration_wizard() -> void:
 	var s: Dictionary = HighpolyMigrate.scan()
