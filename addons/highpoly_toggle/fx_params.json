@@ -1,0 +1,8141 @@
+{
+ "_meta": {
+  "purpose": "per-family FX look parameters decoded from BF6 game data; consumed by the site player and the Godot map-context overlay so both previews match",
+  "decoded_fields": [
+   "lifetime_s",
+   "spawn",
+   "drag",
+   "wind_strength",
+   "buoyancy",
+   "gravity",
+   "restitution",
+   "speed_mult",
+   "spawn_speed",
+   "turbulence_strength",
+   "rotation_speed_deg",
+   "spawn_rot_deg",
+   "life_min_mult",
+   "opacity",
+   "opacity_min_mult",
+   "opacity_over_life",
+   "color",
+   "temperature",
+   "intensity",
+   "sheet/cols/rows/frames",
+   "emitter_bbox",
+   "slider_ranges",
+   "mesh_ebx"
+  ],
+  "assumed_fields": {
+   "fps": "frames/lifetime (playback rate is baked into the compiled flipbook shader; no authored fps survives in EBX)",
+   "size_min/size_max/grow/rise_mps": "class fallbacks only: BaseSize/SpawnSize/SizeCurve are now decoded where authored (per graph and per effect emitter); class_defaults apply to emitters without them",
+   "emission": "per-effect spawn bounds come from each effect's override block in manifest.json (bbox field); the graph emitter_bbox here is the template culling box"
+  },
+  "evidence": {
+   "gravity": "PropertyId 0xc46720e3 named via djb2-xor crack, value -9.81 in spark graphs",
+   "restitution": "PropertyId 0x8906e021, value 0.3 (spark ground bounce)",
+   "rotation": "SpawnRot/RotationSpeed pids; +-180 spawn-rot range pids sit adjacent in the same table",
+   "six_way_smoke": "LeftRightTiles atlases carry two lighting bases side by side; exported sheets are cropped to the left base (naive full-sheet playback double-tiles, which is why first-pass editor smoke looked wrong)"
+  }
+ },
+ "class_defaults": {
+  "globalsorting_fire": {
+   "size_min": 0.7,
+   "size_max": 1.4,
+   "grow": 1.25,
+   "rise_mps": 1.3
+  },
+  "globalsorting_smoke": {
+   "size_min": 0.9,
+   "size_max": 1.8,
+   "grow": 2.3,
+   "rise_mps": 0.85
+  },
+  "sparks": {
+   "size_min": 0.02,
+   "size_max": 0.06,
+   "grow": 1.0,
+   "streak_stretch": 4.0
+  },
+  "meshdebris": {
+   "size_min": 1.0,
+   "size_max": 1.0,
+   "grow": 1.0,
+   "tumble_dps": 320
+  }
+ },
+ "graphs": {
+  "EG_GS_BasicSmoke_TerrainSnap_EndEffect": {
+   "graph": "EG_GS_BasicSmoke_TerrainSnap_EndEffect",
+   "family": "globalsorting",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 1.0,
+    "max_count": 6400,
+    "initial_count": 0
+   },
+   "drag": 0.3,
+   "wind_strength": 1.0,
+   "buoyancy": 0.0,
+   "spawn_speed": [
+    1.0,
+    1.0,
+    0.0,
+    0.0
+   ],
+   "rotation_speed_deg": 10.0,
+   "spawn_rot_deg": 30.0,
+   "life_min_mult": 0.5,
+   "opacity": 1.0,
+   "opacity_min_mult": 0.5,
+   "opacity_over_life": [
+    -1.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "color": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "color0": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "base_size": 1.0,
+   "base_size_bias": 1.0,
+   "random_force": 0.1,
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ],
+   "sheet": "textures/t_smoke_puff_d_4x8.png",
+   "cols": 4,
+   "rows": 2,
+   "frames": 8,
+   "fps": 1.6,
+   "six_way_lighting": false,
+   "render": "lit"
+  },
+  "EG_GS_BasicSmoke_01": {
+   "graph": "EG_GS_BasicSmoke_01",
+   "family": "globalsorting",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 1.0,
+    "max_count": 64,
+    "initial_count": 0
+   },
+   "drag": 0.3,
+   "wind_strength": 1.0,
+   "buoyancy": 0.0,
+   "spawn_speed": [
+    1.0,
+    1.0,
+    0.0,
+    0.0
+   ],
+   "rotation_speed_deg": 10.0,
+   "spawn_rot_deg": 30.0,
+   "life_min_mult": 0.5,
+   "opacity": 1.0,
+   "opacity_min_mult": 0.5,
+   "opacity_over_life": [
+    -1.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "color": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "color0": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "base_size": 1.0,
+   "base_size_bias": 1.0,
+   "random_force": 0.1,
+   "slider_ranges": [
+    [
+     0.9998999834060669,
+     1.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ],
+   "sheet": "textures/t_clasticsmoke_tg1_01_d_8x64.png",
+   "cols": 8,
+   "rows": 8,
+   "frames": 64,
+   "fps": 12.8,
+   "six_way_lighting": true,
+   "render": "sixway"
+  },
+  "EG_GS_BasicFire_MimicChild_01": {
+   "graph": "EG_GS_BasicFire_MimicChild_01",
+   "family": "globalsorting",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "burst",
+    "rate": null,
+    "max_count": 64,
+    "initial_count": 64
+   },
+   "rotation_speed_deg": 0.0,
+   "spawn_rot_deg": 0.0,
+   "life_min_mult": 1.0,
+   "opacity": 1.0,
+   "opacity_min_mult": 0.5,
+   "opacity_over_life": [
+    -1.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "color": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "color0": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "base_size": 1.0,
+   "base_size_bias": 1.0,
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ],
+   "sheet": "textures/t_clasticsmoke_tg1_01_d_8x64.png",
+   "cols": 8,
+   "rows": 8,
+   "frames": 64,
+   "fps": 12.8,
+   "six_way_lighting": true,
+   "render": "sixway"
+  },
+  "EG_GS_BasicSmoke_MimicParent_01": {
+   "graph": "EG_GS_BasicSmoke_MimicParent_01",
+   "family": "globalsorting",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 1.0,
+    "max_count": 64,
+    "initial_count": 0
+   },
+   "drag": 0.3,
+   "wind_strength": 1.0,
+   "buoyancy": 0.0,
+   "spawn_speed": [
+    1.0,
+    1.0,
+    0.0,
+    0.0
+   ],
+   "rotation_speed_deg": 10.0,
+   "spawn_rot_deg": 30.0,
+   "life_min_mult": 0.5,
+   "opacity": 1.0,
+   "opacity_min_mult": 0.5,
+   "opacity_over_life": [
+    -1.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "color": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "color0": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "base_size": 1.0,
+   "base_size_bias": 1.0,
+   "random_force": 0.1,
+   "slider_ranges": [
+    [
+     0.9998999834060669,
+     1.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ],
+   "sheet": "textures/t_clasticsmoke_tg1_01_d_8x64.png",
+   "cols": 8,
+   "rows": 8,
+   "frames": 64,
+   "fps": 12.8,
+   "six_way_lighting": true,
+   "render": "sixway"
+  },
+  "EG_GS_MultiRibbonDist_01": {
+   "graph": "EG_GS_MultiRibbonDist_01",
+   "family": "globalsorting",
+   "lifetime_s": 4.0,
+   "spawn": {
+    "mode": "burst",
+    "rate": null,
+    "max_count": 64,
+    "initial_count": 64
+   },
+   "drag": 0.3,
+   "wind_strength": 0.2,
+   "turbulence_strength": 10.0,
+   "life_min_mult": 0.8,
+   "opacity": 1.0,
+   "opacity_min_mult": 0.5,
+   "opacity_over_life": [
+    -1.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "color": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "color0": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "turbulence_frequency": 0.1,
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ],
+   "sheet": "textures/t_smokethick_trail_01_d_1x1.png",
+   "cols": 1,
+   "rows": 1,
+   "frames": 1,
+   "fps": 0.25,
+   "six_way_lighting": false,
+   "render": "lit"
+  },
+  "EG_GS_BasicFire_01": {
+   "graph": "EG_GS_BasicFire_01",
+   "family": "globalsorting",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 1.0,
+    "max_count": 64,
+    "initial_count": 0
+   },
+   "drag": 0.3,
+   "wind_strength": 1.0,
+   "buoyancy": 0.0,
+   "spawn_speed": [
+    1.0,
+    1.0,
+    0.0,
+    0.0
+   ],
+   "rotation_speed_deg": 10.0,
+   "spawn_rot_deg": 30.0,
+   "life_min_mult": 0.5,
+   "opacity": 1.0,
+   "opacity_min_mult": 0.5,
+   "opacity_over_life": [
+    -1.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "color": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "color0": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "base_size": 1.0,
+   "base_size_bias": 1.0,
+   "random_force": 0.1,
+   "slider_ranges": [
+    [
+     0.9998999834060669,
+     1.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ],
+   "sheet": "textures/t_anim_fireturbulent_01_d_6x36.png",
+   "cols": 6,
+   "rows": 6,
+   "frames": 36,
+   "fps": 7.2,
+   "six_way_lighting": false,
+   "render": "emissive"
+  },
+  "EG_GS_BasicSmoke_Vehicle_Exhaust_01": {
+   "graph": "EG_GS_BasicSmoke_Vehicle_Exhaust_01",
+   "family": "globalsorting",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 1.0,
+    "max_count": 64,
+    "initial_count": 0
+   },
+   "drag": 0.3,
+   "wind_strength": 1.0,
+   "buoyancy": 0.0,
+   "spawn_speed": [
+    1.0,
+    1.0,
+    0.0,
+    0.0
+   ],
+   "rotation_speed_deg": 10.0,
+   "spawn_rot_deg": 30.0,
+   "life_min_mult": 0.5,
+   "opacity": 1.0,
+   "opacity_min_mult": 0.5,
+   "opacity_over_life": [
+    -1.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "color": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "color0": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "base_size": 1.0,
+   "base_size_bias": 1.0,
+   "random_force": 0.1,
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ],
+   "sheet": "textures/t_clasticsmoke_tg1_01_d_8x64.png",
+   "cols": 8,
+   "rows": 8,
+   "frames": 64,
+   "fps": 12.8,
+   "six_way_lighting": true,
+   "render": "sixway"
+  },
+  "EG_GS_BasicSmokeArm_01": {
+   "graph": "EG_GS_BasicSmokeArm_01",
+   "family": "globalsorting",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 1.0,
+    "max_count": 64,
+    "initial_count": 0
+   },
+   "drag": 0.3,
+   "wind_strength": 1.0,
+   "gravity": -9.81,
+   "spawn_speed": [
+    1.0,
+    1.0,
+    0.0,
+    0.0
+   ],
+   "rotation_speed_deg": 10.0,
+   "spawn_rot_deg": 30.0,
+   "life_min_mult": 0.5,
+   "opacity": 1.0,
+   "opacity_min_mult": 0.5,
+   "opacity_over_life": [
+    -1.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "color": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "color0": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "base_size": 1.0,
+   "base_size_bias": 1.0,
+   "random_force": 0.1,
+   "slider_ranges": [
+    [
+     0.9998999834060669,
+     1.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ],
+   "sheet": "textures/t_smokearm_02_d_4x4.png",
+   "cols": 4,
+   "rows": 1,
+   "frames": 4,
+   "fps": 0.8,
+   "six_way_lighting": false,
+   "render": "lit"
+  },
+  "EG_GS_BasicChunks_01": {
+   "graph": "EG_GS_BasicChunks_01",
+   "family": "globalsorting",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 1.0,
+    "max_count": 64,
+    "initial_count": 0
+   },
+   "drag": 0.3,
+   "wind_strength": 1.0,
+   "gravity": -9.81,
+   "spawn_speed": [
+    1.0,
+    1.0,
+    0.0,
+    0.0
+   ],
+   "rotation_speed_deg": 10.0,
+   "spawn_rot_deg": 30.0,
+   "life_min_mult": 0.5,
+   "opacity": 1.0,
+   "opacity_min_mult": 0.5,
+   "opacity_over_life": [
+    -1.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "color": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "color0": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "base_size": 1.0,
+   "base_size_bias": 1.0,
+   "random_force": 0.1,
+   "slider_ranges": [
+    [
+     0.9998999834060669,
+     1.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ],
+   "sheet": "textures/t_debris_finedetail_03_d_1x1.png",
+   "cols": 1,
+   "rows": 1,
+   "frames": 1,
+   "fps": 0.2,
+   "six_way_lighting": false,
+   "render": "lit"
+  },
+  "EG_GS_StaticQuads_01": {
+   "graph": "EG_GS_StaticQuads_01",
+   "family": "globalsorting",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "burst",
+    "rate": null,
+    "max_count": 64,
+    "initial_count": 64
+   },
+   "spawn_speed": [
+    1.0,
+    1.0,
+    0.0,
+    0.0
+   ],
+   "rotation_speed_deg": 10.0,
+   "spawn_rot_deg": 30.0,
+   "opacity": 1.0,
+   "opacity_min_mult": 0.5,
+   "opacity_over_life": [
+    -1.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "color": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "color0": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "base_size": 1.0,
+   "base_size_bias": 1.0,
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ],
+   "sheet": "textures/t_smokepuff_tg1_d_6x36.png",
+   "cols": 6,
+   "rows": 6,
+   "frames": 36,
+   "fps": 7.2,
+   "six_way_lighting": true,
+   "render": "sixway"
+  },
+  "EG_GS_OneOffTextureSmoke_01": {
+   "graph": "EG_GS_OneOffTextureSmoke_01",
+   "family": "globalsorting",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 1.0,
+    "max_count": 64,
+    "initial_count": 0
+   },
+   "drag": 0.3,
+   "wind_strength": 1.0,
+   "buoyancy": 0.0,
+   "spawn_speed": [
+    1.0,
+    1.0,
+    0.0,
+    0.0
+   ],
+   "rotation_speed_deg": 0.0,
+   "spawn_rot_deg": 0.0,
+   "life_min_mult": 0.5,
+   "opacity": 1.0,
+   "opacity_min_mult": 0.5,
+   "opacity_over_life": [
+    -1.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "color": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "color0": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "base_size": 1.0,
+   "base_size_bias": 1.0,
+   "random_force": 0.1,
+   "slider_ranges": [
+    [
+     0.9998999834060669,
+     1.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ],
+   "sheet": "textures/t_clasticsmoke_tg1_01_d_8x64.png",
+   "cols": 8,
+   "rows": 8,
+   "frames": 64,
+   "fps": 12.8,
+   "six_way_lighting": true,
+   "render": "sixway"
+  },
+  "EG_GS_Muzzleflash_Fire_01": {
+   "graph": "EG_GS_Muzzleflash_Fire_01",
+   "family": "globalsorting",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 1.0,
+    "max_count": 64,
+    "initial_count": 0
+   },
+   "drag": 0.3,
+   "spawn_speed": [
+    1.0,
+    1.0,
+    0.0,
+    0.0
+   ],
+   "rotation_speed_deg": 10.0,
+   "spawn_rot_deg": 30.0,
+   "life_min_mult": 0.5,
+   "opacity": 1.0,
+   "opacity_min_mult": 0.5,
+   "opacity_over_life": [
+    -1.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "color": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "color0": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "base_size": 1.0,
+   "base_size_bias": 1.0,
+   "slider_ranges": [
+    [
+     0.0,
+     1.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ],
+   "sheet": "textures/t_muzzleflash_d_4x16.png",
+   "cols": 4,
+   "rows": 4,
+   "frames": 16,
+   "fps": 3.2,
+   "six_way_lighting": false,
+   "render": "emissive"
+  },
+  "EG_GS_BasicFire_Facing_01": {
+   "graph": "EG_GS_BasicFire_Facing_01",
+   "family": "globalsorting",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 1.0,
+    "max_count": 64,
+    "initial_count": 0
+   },
+   "drag": 0.3,
+   "wind_strength": 1.0,
+   "buoyancy": 0.0,
+   "spawn_speed": [
+    1.0,
+    1.0,
+    0.0,
+    0.0
+   ],
+   "rotation_speed_deg": 10.0,
+   "spawn_rot_deg": 30.0,
+   "life_min_mult": 0.5,
+   "opacity": 1.0,
+   "opacity_min_mult": 0.5,
+   "opacity_over_life": [
+    -1.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "color": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "color0": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "base_size": 1.0,
+   "base_size_bias": 1.0,
+   "random_force": 0.1,
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ],
+   "sheet": "textures/t_clasticsmoke_tg1_01_d_8x64.png",
+   "cols": 8,
+   "rows": 8,
+   "frames": 64,
+   "fps": 12.8,
+   "six_way_lighting": true,
+   "render": "sixway"
+  },
+  "EG_GS_Muzzleflash_Smoke_01": {
+   "graph": "EG_GS_Muzzleflash_Smoke_01",
+   "family": "globalsorting",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 1.0,
+    "max_count": 64,
+    "initial_count": 0
+   },
+   "drag": 0.3,
+   "wind_strength": 1.0,
+   "buoyancy": 0.0,
+   "spawn_speed": [
+    1.0,
+    1.0,
+    0.0,
+    0.0
+   ],
+   "rotation_speed_deg": 10.0,
+   "spawn_rot_deg": 30.0,
+   "life_min_mult": 0.5,
+   "opacity": 1.0,
+   "opacity_min_mult": 0.5,
+   "opacity_over_life": [
+    -1.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "color": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "color0": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "base_size": 1.0,
+   "base_size_bias": 1.0,
+   "random_force": 0.1,
+   "slider_ranges": [
+    [
+     0.0,
+     1.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ],
+   "sheet": "textures/t_muzzleflash_smoke_soft_d_2x4.png",
+   "cols": 2,
+   "rows": 2,
+   "frames": 4,
+   "fps": 0.8,
+   "six_way_lighting": false,
+   "render": "lit"
+  },
+  "EG_GS_ScreenSplats_Static_02": {
+   "graph": "EG_GS_ScreenSplats_Static_02",
+   "family": "globalsorting",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 1.0,
+    "max_count": 64,
+    "initial_count": 0
+   },
+   "drag": 0.3,
+   "wind_strength": 1.0,
+   "buoyancy": 0.0,
+   "spawn_speed": [
+    1.0,
+    1.0,
+    0.0,
+    0.0
+   ],
+   "rotation_speed_deg": 10.0,
+   "spawn_rot_deg": 30.0,
+   "life_min_mult": 0.5,
+   "opacity": 1.0,
+   "opacity_min_mult": 0.5,
+   "opacity_over_life": [
+    -1.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "color": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "color0": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "base_size": 1.0,
+   "base_size_bias": 1.0,
+   "random_force": 0.1,
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ]
+  },
+  "EG_GS_BasicFire_TerrainSnap_01": {
+   "graph": "EG_GS_BasicFire_TerrainSnap_01",
+   "family": "globalsorting",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 1.0,
+    "max_count": 64,
+    "initial_count": 0
+   },
+   "drag": 0.3,
+   "wind_strength": 1.0,
+   "buoyancy": 0.0,
+   "spawn_speed": [
+    1.0,
+    1.0,
+    0.0,
+    0.0
+   ],
+   "rotation_speed_deg": 10.0,
+   "spawn_rot_deg": 30.0,
+   "life_min_mult": 0.5,
+   "opacity": 1.0,
+   "opacity_min_mult": 0.5,
+   "opacity_over_life": [
+    -1.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "color": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "color0": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "base_size": 1.0,
+   "base_size_bias": 1.0,
+   "random_force": 0.1,
+   "slider_ranges": [
+    [
+     0.9998999834060669,
+     1.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ],
+   "sheet": "textures/t_anim_fireturbulent_01_d_6x36.png",
+   "cols": 6,
+   "rows": 6,
+   "frames": 36,
+   "fps": 7.2,
+   "six_way_lighting": false,
+   "render": "emissive"
+  },
+  "EG_GS_BasicSmoke_Preroll_01": {
+   "graph": "EG_GS_BasicSmoke_Preroll_01",
+   "family": "globalsorting",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 1.0,
+    "max_count": 64,
+    "initial_count": 0
+   },
+   "drag": 0.3,
+   "wind_strength": 1.0,
+   "buoyancy": 0.0,
+   "spawn_speed": [
+    1.0,
+    1.0,
+    0.0,
+    0.0
+   ],
+   "rotation_speed_deg": 10.0,
+   "spawn_rot_deg": 30.0,
+   "life_min_mult": 0.5,
+   "opacity": 1.0,
+   "opacity_min_mult": 0.5,
+   "opacity_over_life": [
+    -1.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "color": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "color0": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "base_size": 1.0,
+   "base_size_bias": 1.0,
+   "random_force": 0.1,
+   "slider_ranges": [
+    [
+     0.9998999834060669,
+     1.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ],
+   "sheet": "textures/t_clasticsmoke_tg1_01_d_8x64.png",
+   "cols": 8,
+   "rows": 8,
+   "frames": 64,
+   "fps": 12.8,
+   "six_way_lighting": true,
+   "render": "sixway"
+  },
+  "EG_GS_BasicSmoke_TerrainSnap_03": {
+   "graph": "EG_GS_BasicSmoke_TerrainSnap_03",
+   "family": "globalsorting",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 1.0,
+    "max_count": 64,
+    "initial_count": 0
+   },
+   "drag": 0.3,
+   "wind_strength": 1.0,
+   "buoyancy": 0.0,
+   "spawn_speed": [
+    1.0,
+    1.0,
+    0.0,
+    0.0
+   ],
+   "rotation_speed_deg": 10.0,
+   "spawn_rot_deg": 30.0,
+   "life_min_mult": 0.5,
+   "opacity": 1.0,
+   "opacity_min_mult": 0.5,
+   "opacity_over_life": [
+    -1.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "color": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "color0": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "base_size": 1.0,
+   "base_size_bias": 1.0,
+   "random_force": 0.1,
+   "slider_ranges": [
+    [
+     0.9998999834060669,
+     1.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ],
+   "sheet": "textures/t_smoke_puff_d_4x8.png",
+   "cols": 4,
+   "rows": 2,
+   "frames": 8,
+   "fps": 1.6,
+   "six_way_lighting": false,
+   "render": "lit"
+  },
+  "EG_GS_BasicFire_TerrainSnap_01_SnapEveryFrame": {
+   "graph": "EG_GS_BasicFire_TerrainSnap_01_SnapEveryFrame",
+   "family": "globalsorting",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 1.0,
+    "max_count": 64,
+    "initial_count": 0
+   },
+   "drag": 0.3,
+   "wind_strength": 1.0,
+   "buoyancy": 0.0,
+   "spawn_speed": [
+    1.0,
+    1.0,
+    0.0,
+    0.0
+   ],
+   "rotation_speed_deg": 10.0,
+   "spawn_rot_deg": 30.0,
+   "life_min_mult": 0.5,
+   "opacity": 1.0,
+   "opacity_min_mult": 0.5,
+   "opacity_over_life": [
+    -1.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "color": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "color0": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "base_size": 1.0,
+   "base_size_bias": 1.0,
+   "random_force": 0.1,
+   "slider_ranges": [
+    [
+     0.9998999834060669,
+     1.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ],
+   "sheet": "textures/t_anim_fireturbulent_01_d_6x36.png",
+   "cols": 6,
+   "rows": 6,
+   "frames": 36,
+   "fps": 7.2,
+   "six_way_lighting": false,
+   "render": "emissive"
+  },
+  "EG_GS_CohesiveSmoke_Preroll_5pt_01": {
+   "graph": "EG_GS_CohesiveSmoke_Preroll_5pt_01",
+   "family": "globalsorting",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 1.0,
+    "max_count": 64,
+    "initial_count": 0
+   },
+   "drag": 0.3,
+   "wind_strength": 1.0,
+   "buoyancy": 0.0,
+   "spawn_speed": [
+    1.0,
+    1.0,
+    0.0,
+    0.0
+   ],
+   "rotation_speed_deg": 10.0,
+   "spawn_rot_deg": 30.0,
+   "life_min_mult": 0.5,
+   "opacity": 1.0,
+   "opacity_min_mult": 0.5,
+   "opacity_over_life": [
+    -1.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "color": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "color0": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "base_size": 1.0,
+   "base_size_bias": 1.0,
+   "random_force": 0.1,
+   "slider_ranges": [
+    [
+     0.9998999834060669,
+     1.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ],
+   "sheet": "textures/t_clasticsmoke_tg1_01_d_8x64.png",
+   "cols": 8,
+   "rows": 8,
+   "frames": 64,
+   "fps": 12.8,
+   "six_way_lighting": true,
+   "render": "sixway"
+  },
+  "EG_GS_BasicRibbon_01": {
+   "graph": "EG_GS_BasicRibbon_01",
+   "family": "globalsorting",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 1.0,
+    "max_count": 64,
+    "initial_count": 0
+   },
+   "drag": 0.3,
+   "wind_strength": 1.0,
+   "buoyancy": 0.0,
+   "spawn_speed": [
+    1.0,
+    1.0,
+    0.0,
+    0.0
+   ],
+   "opacity": 1.0,
+   "opacity_min_mult": 0.5,
+   "opacity_over_life": [
+    -1.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "color": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "color0": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "random_force": 0.1,
+   "slider_ranges": [
+    [
+     0.9998999834060669,
+     1.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ],
+   "sheet": "textures/t_wispysmoke_trail_01_d_1x1.png",
+   "cols": 1,
+   "rows": 1,
+   "frames": 1,
+   "fps": 0.2,
+   "six_way_lighting": false,
+   "render": "lit"
+  },
+  "EG_GS_BasicChunks_Fountain": {
+   "graph": "EG_GS_BasicChunks_Fountain",
+   "family": "globalsorting",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 1.0,
+    "max_count": 64,
+    "initial_count": 0
+   },
+   "drag": 0.3,
+   "wind_strength": 1.0,
+   "gravity": -9.81,
+   "spawn_speed": [
+    1.0,
+    1.0,
+    0.0,
+    0.0
+   ],
+   "rotation_speed_deg": 10.0,
+   "spawn_rot_deg": 30.0,
+   "life_min_mult": 0.5,
+   "opacity": 1.0,
+   "opacity_min_mult": 0.5,
+   "opacity_over_life": [
+    -1.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "color": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "color0": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "base_size": 1.0,
+   "base_size_bias": 1.0,
+   "random_force": 0.1,
+   "slider_ranges": [
+    [
+     0.9998999834060669,
+     1.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ],
+   "sheet": "textures/t_debris_finedetail_03_d_1x1.png",
+   "cols": 1,
+   "rows": 1,
+   "frames": 1,
+   "fps": 0.2,
+   "six_way_lighting": false,
+   "render": "lit"
+  },
+  "EG_GS_StaticEmissive_01": {
+   "graph": "EG_GS_StaticEmissive_01",
+   "family": "globalsorting",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "burst",
+    "rate": null,
+    "max_count": 64,
+    "initial_count": 64
+   },
+   "spawn_speed": [
+    1.0,
+    1.0,
+    0.0,
+    0.0
+   ],
+   "rotation_speed_deg": 10.0,
+   "spawn_rot_deg": 30.0,
+   "life_min_mult": 0.5,
+   "opacity": 1.0,
+   "opacity_min_mult": 0.5,
+   "opacity_over_life": [
+    -1.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "color": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "color0": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "base_size": 1.0,
+   "base_size_bias": 1.0,
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ],
+   "sheet": "textures/impact_sparks_02_2x4.png",
+   "cols": 2,
+   "rows": 2,
+   "frames": 4,
+   "fps": 0.8,
+   "six_way_lighting": false,
+   "render": "lit"
+  },
+  "EG_GS_StaticEmissive_GadgetLight_01": {
+   "graph": "EG_GS_StaticEmissive_GadgetLight_01",
+   "family": "globalsorting",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 1.0,
+    "max_count": 10,
+    "initial_count": 0
+   },
+   "spawn_speed": [
+    1.0,
+    1.0,
+    0.0,
+    0.0
+   ],
+   "rotation_speed_deg": 10.0,
+   "spawn_rot_deg": 30.0,
+   "life_min_mult": 0.5,
+   "opacity": 1.0,
+   "opacity_min_mult": 0.5,
+   "opacity_over_life": [
+    -1.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "color": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "color0": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "base_size": 1.0,
+   "base_size_bias": 1.0,
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ],
+   "sheet": "textures/t_glow_01_d_1x1.png",
+   "cols": 1,
+   "rows": 1,
+   "frames": 1,
+   "fps": 0.2,
+   "six_way_lighting": false,
+   "render": "lit"
+  },
+  "EG_GS_BasicFire_Moving_01": {
+   "graph": "EG_GS_BasicFire_Moving_01",
+   "family": "globalsorting",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 1.0,
+    "max_count": 64,
+    "initial_count": 0
+   },
+   "drag": 0.3,
+   "wind_strength": 1.0,
+   "buoyancy": 0.0,
+   "spawn_speed": [
+    1.0,
+    1.0,
+    0.0,
+    0.0
+   ],
+   "rotation_speed_deg": 10.0,
+   "spawn_rot_deg": 30.0,
+   "life_min_mult": 0.5,
+   "opacity": 1.0,
+   "opacity_min_mult": 0.5,
+   "opacity_over_life": [
+    -1.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "color": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "color0": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "base_size": 1.0,
+   "base_size_bias": 1.0,
+   "random_force": 0.1,
+   "slider_ranges": [
+    [
+     0.9998999834060669,
+     1.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ],
+   "sheet": "textures/t_anim_fireturbulent_01_d_6x36.png",
+   "cols": 6,
+   "rows": 6,
+   "frames": 36,
+   "fps": 7.2,
+   "six_way_lighting": false,
+   "render": "emissive"
+  },
+  "EG_GS_BasicFire_EmitterPosition_01": {
+   "graph": "EG_GS_BasicFire_EmitterPosition_01",
+   "family": "globalsorting",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 1.0,
+    "max_count": 64,
+    "initial_count": 0
+   },
+   "drag": 0.3,
+   "wind_strength": 1.0,
+   "buoyancy": 0.0,
+   "spawn_speed": [
+    1.0,
+    1.0,
+    0.0,
+    0.0
+   ],
+   "rotation_speed_deg": 10.0,
+   "spawn_rot_deg": 30.0,
+   "life_min_mult": 0.5,
+   "opacity": 1.0,
+   "opacity_min_mult": 0.5,
+   "opacity_over_life": [
+    -1.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "color": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "color0": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "base_size": 1.0,
+   "base_size_bias": 1.0,
+   "random_force": 0.1,
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ],
+   "sheet": "textures/t_anim_fireturbulent_01_d_6x36.png",
+   "cols": 6,
+   "rows": 6,
+   "frames": 36,
+   "fps": 7.2,
+   "six_way_lighting": false,
+   "render": "emissive"
+  },
+  "EG_GS_BasicSmoke_Turbulence_Moving_02": {
+   "graph": "EG_GS_BasicSmoke_Turbulence_Moving_02",
+   "family": "globalsorting",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 1.0,
+    "max_count": 64,
+    "initial_count": 0
+   },
+   "drag": 0.3,
+   "wind_strength": 1.0,
+   "buoyancy": 0.0,
+   "spawn_speed": [
+    1.0,
+    1.0,
+    0.0,
+    0.0
+   ],
+   "turbulence_strength": 1.0,
+   "rotation_speed_deg": 10.0,
+   "spawn_rot_deg": 30.0,
+   "life_min_mult": 0.5,
+   "opacity": 1.0,
+   "opacity_min_mult": 0.5,
+   "opacity_over_life": [
+    -1.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "color": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "color0": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "base_size": 1.0,
+   "base_size_bias": 1.0,
+   "random_force": 0.1,
+   "turbulence_frequency": 0.1,
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ],
+   "sheet": "textures/t_clasticsmoke_tg1_01_d_8x64.png",
+   "cols": 8,
+   "rows": 8,
+   "frames": 64,
+   "fps": 12.8,
+   "six_way_lighting": true,
+   "render": "sixway"
+  },
+  "EG_GS_BasicFire_MimicPSearch_02": {
+   "graph": "EG_GS_BasicFire_MimicPSearch_02",
+   "family": "globalsorting",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "burst",
+    "rate": null,
+    "max_count": 64,
+    "initial_count": 64
+   },
+   "rotation_speed_deg": 0.0,
+   "spawn_rot_deg": 0.0,
+   "opacity": 1.0,
+   "opacity_min_mult": 0.5,
+   "opacity_over_life": [
+    -1.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "color": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "color0": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "base_size": 1.0,
+   "base_size_bias": 1.0,
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ],
+   "sheet": "textures/t_smokepuff_tg1_d_6x36.png",
+   "cols": 6,
+   "rows": 6,
+   "frames": 36,
+   "fps": 7.2,
+   "six_way_lighting": true,
+   "render": "sixway"
+  },
+  "EG_GS_BasicFire_Secuirtylight_MinScreen": {
+   "graph": "EG_GS_BasicFire_Secuirtylight_MinScreen",
+   "family": "globalsorting",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 1.0,
+    "max_count": 64,
+    "initial_count": 0
+   },
+   "drag": 0.3,
+   "wind_strength": 1.0,
+   "buoyancy": 0.0,
+   "spawn_speed": [
+    1.0,
+    1.0,
+    0.0,
+    0.0
+   ],
+   "rotation_speed_deg": 10.0,
+   "spawn_rot_deg": 30.0,
+   "life_min_mult": 0.5,
+   "opacity": 1.0,
+   "opacity_min_mult": 0.5,
+   "opacity_over_life": [
+    -1.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "color": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "color0": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "base_size": 1.0,
+   "base_size_bias": 1.0,
+   "random_force": 0.1,
+   "slider_ranges": [
+    [
+     0.9998999834060669,
+     1.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ],
+   "sheet": "textures/t_anim_fireturbulent_01_d_6x36.png",
+   "cols": 6,
+   "rows": 6,
+   "frames": 36,
+   "fps": 7.2,
+   "six_way_lighting": false,
+   "render": "emissive"
+  },
+  "EG_GS_BasicRibbon_Moving_01": {
+   "graph": "EG_GS_BasicRibbon_Moving_01",
+   "family": "globalsorting",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 1.0,
+    "max_count": 64,
+    "initial_count": 0
+   },
+   "drag": 0.3,
+   "wind_strength": 1.0,
+   "buoyancy": 0.0,
+   "spawn_speed": [
+    1.0,
+    1.0,
+    0.0,
+    0.0
+   ],
+   "opacity": 1.0,
+   "opacity_min_mult": 0.5,
+   "opacity_over_life": [
+    -1.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "color": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "color0": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "random_force": 0.1,
+   "slider_ranges": [
+    [
+     0.9998999834060669,
+     1.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ],
+   "sheet": "textures/t_wispysmoke_trail_01_d_1x1.png",
+   "cols": 1,
+   "rows": 1,
+   "frames": 1,
+   "fps": 0.2,
+   "six_way_lighting": false,
+   "render": "lit"
+  },
+  "EG_GS_StaticEmissive_GadgetLight_TUGS_01": {
+   "graph": "EG_GS_StaticEmissive_GadgetLight_TUGS_01",
+   "family": "globalsorting",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 1.0,
+    "max_count": 10,
+    "initial_count": 0
+   },
+   "spawn_speed": [
+    1.0,
+    1.0,
+    0.0,
+    0.0
+   ],
+   "rotation_speed_deg": 10.0,
+   "spawn_rot_deg": 30.0,
+   "life_min_mult": 0.5,
+   "opacity": 1.0,
+   "opacity_min_mult": 0.5,
+   "opacity_over_life": [
+    -1.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "color": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "color0": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "base_size": 1.0,
+   "base_size_bias": 1.0,
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ],
+   "sheet": "textures/t_glow_01_d_1x1.png",
+   "cols": 1,
+   "rows": 1,
+   "frames": 1,
+   "fps": 0.2,
+   "six_way_lighting": false,
+   "render": "lit"
+  },
+  "EG_GS_BasicSmoke_Moving_01": {
+   "graph": "EG_GS_BasicSmoke_Moving_01",
+   "family": "globalsorting",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 1.0,
+    "max_count": 64,
+    "initial_count": 0
+   },
+   "drag": 0.3,
+   "wind_strength": 1.0,
+   "buoyancy": 0.0,
+   "spawn_speed": [
+    1.0,
+    1.0,
+    0.0,
+    0.0
+   ],
+   "rotation_speed_deg": 10.0,
+   "spawn_rot_deg": 30.0,
+   "life_min_mult": 0.5,
+   "opacity": 1.0,
+   "opacity_min_mult": 0.5,
+   "opacity_over_life": [
+    -1.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "color": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "color0": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "base_size": 1.0,
+   "base_size_bias": 1.0,
+   "random_force": 0.1,
+   "slider_ranges": [
+    [
+     0.9998999834060669,
+     1.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ],
+   "sheet": "textures/t_clasticsmoke_tg1_01_d_8x64.png",
+   "cols": 8,
+   "rows": 8,
+   "frames": 64,
+   "fps": 12.8,
+   "six_way_lighting": true,
+   "render": "sixway"
+  },
+  "EG_GS_FireLineSegments_01": {
+   "graph": "EG_GS_FireLineSegments_01",
+   "family": "globalsorting",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 1.0,
+    "max_count": 64,
+    "initial_count": 0
+   },
+   "drag": 0.3,
+   "wind_strength": 1.0,
+   "buoyancy": 0.0,
+   "spawn_speed": [
+    1.0,
+    1.0,
+    0.0,
+    0.0
+   ],
+   "rotation_speed_deg": 10.0,
+   "spawn_rot_deg": 30.0,
+   "life_min_mult": 0.5,
+   "opacity": 1.0,
+   "opacity_min_mult": 0.5,
+   "opacity_over_life": [
+    -1.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "color": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "color0": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "base_size": 1.0,
+   "base_size_bias": 1.0,
+   "random_force": 0.1,
+   "slider_ranges": [
+    [
+     0.9998999834060669,
+     1.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ],
+   "sheet": "textures/t_anim_fireturbulent_01_d_6x36.png",
+   "cols": 6,
+   "rows": 6,
+   "frames": 36,
+   "fps": 7.2,
+   "six_way_lighting": false,
+   "render": "emissive"
+  },
+  "EG_GS_BasicSmoke_CamHeightFade": {
+   "graph": "EG_GS_BasicSmoke_CamHeightFade",
+   "family": "globalsorting",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 1.0,
+    "max_count": 64,
+    "initial_count": 0
+   },
+   "drag": 0.3,
+   "wind_strength": 1.0,
+   "buoyancy": 0.0,
+   "spawn_speed": [
+    1.0,
+    1.0,
+    0.0,
+    0.0
+   ],
+   "rotation_speed_deg": 10.0,
+   "spawn_rot_deg": 30.0,
+   "life_min_mult": 0.5,
+   "opacity": 1.0,
+   "opacity_min_mult": 0.5,
+   "opacity_over_life": [
+    -1.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "color": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "color0": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "base_size": 1.0,
+   "base_size_bias": 1.0,
+   "random_force": 0.1,
+   "slider_ranges": [
+    [
+     0.9998999834060669,
+     1.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ],
+   "sheet": "textures/t_clasticsmoke_tg1_01_d_8x64.png",
+   "cols": 8,
+   "rows": 8,
+   "frames": 64,
+   "fps": 12.8,
+   "six_way_lighting": true,
+   "render": "sixway"
+  },
+  "EG_GS_BasicElectric_01": {
+   "graph": "EG_GS_BasicElectric_01",
+   "family": "globalsorting",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 1.0,
+    "max_count": 64,
+    "initial_count": 0
+   },
+   "drag": 0.3,
+   "wind_strength": 1.0,
+   "gravity": -9.81,
+   "spawn_speed": [
+    1.0,
+    1.0,
+    0.0,
+    0.0
+   ],
+   "rotation_speed_deg": 10.0,
+   "spawn_rot_deg": 30.0,
+   "life_min_mult": 0.5,
+   "opacity": 1.0,
+   "opacity_min_mult": 0.5,
+   "opacity_over_life": [
+    -1.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "color": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "color0": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "base_size": 1.0,
+   "base_size_bias": 1.0,
+   "random_force": 0.1,
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ],
+   "sheet": "textures/t_electric_d_2x2.png",
+   "cols": 2,
+   "rows": 1,
+   "frames": 2,
+   "fps": 0.4,
+   "six_way_lighting": false,
+   "render": "lit"
+  },
+  "EG_GS_Gadget_Muzzleflash_Fire_01": {
+   "graph": "EG_GS_Gadget_Muzzleflash_Fire_01",
+   "family": "globalsorting",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 1.0,
+    "max_count": 64,
+    "initial_count": 0
+   },
+   "drag": 0.3,
+   "spawn_speed": [
+    1.0,
+    1.0,
+    0.0,
+    0.0
+   ],
+   "rotation_speed_deg": 10.0,
+   "spawn_rot_deg": 30.0,
+   "life_min_mult": 0.5,
+   "opacity": 1.0,
+   "opacity_min_mult": 0.5,
+   "opacity_over_life": [
+    -1.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "color": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "color0": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "base_size": 1.0,
+   "base_size_bias": 1.0,
+   "slider_ranges": [
+    [
+     0.0,
+     1.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ],
+   "sheet": "textures/t_muzzleflash_d_4x16.png",
+   "cols": 4,
+   "rows": 4,
+   "frames": 16,
+   "fps": 3.2,
+   "six_way_lighting": false,
+   "render": "emissive"
+  },
+  "EG_GS_BasicSmoke_Moving_Turbulence_01": {
+   "graph": "EG_GS_BasicSmoke_Moving_Turbulence_01",
+   "family": "globalsorting",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 1.0,
+    "max_count": 64,
+    "initial_count": 0
+   },
+   "drag": 0.3,
+   "wind_strength": 1.0,
+   "buoyancy": 0.0,
+   "spawn_speed": [
+    1.0,
+    1.0,
+    0.0,
+    0.0
+   ],
+   "turbulence_strength": 1.0,
+   "rotation_speed_deg": 10.0,
+   "spawn_rot_deg": 30.0,
+   "life_min_mult": 0.5,
+   "opacity": 1.0,
+   "opacity_min_mult": 0.5,
+   "opacity_over_life": [
+    -1.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "color": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "color0": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "base_size": 1.0,
+   "base_size_bias": 1.0,
+   "random_force": 0.1,
+   "turbulence_frequency": 0.1,
+   "slider_ranges": [
+    [
+     0.9998999834060669,
+     1.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ],
+   "sheet": "textures/t_clasticsmoke_tg1_01_d_8x64.png",
+   "cols": 8,
+   "rows": 8,
+   "frames": 64,
+   "fps": 12.8,
+   "six_way_lighting": true,
+   "render": "sixway"
+  },
+  "EG_GS_BasicSmoke_Portal": {
+   "graph": "EG_GS_BasicSmoke_Portal",
+   "family": "globalsorting",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 1.0,
+    "max_count": 64,
+    "initial_count": 0
+   },
+   "drag": 0.3,
+   "wind_strength": 1.0,
+   "buoyancy": 0.0,
+   "spawn_speed": [
+    1.0,
+    1.0,
+    0.0,
+    0.0
+   ],
+   "rotation_speed_deg": 10.0,
+   "spawn_rot_deg": 30.0,
+   "life_min_mult": 0.5,
+   "opacity": 1.0,
+   "opacity_min_mult": 0.5,
+   "opacity_over_life": [
+    -1.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "color": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "color0": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "base_size": 1.0,
+   "base_size_bias": 1.0,
+   "random_force": 0.1,
+   "slider_ranges": [
+    [
+     0.9998999834060669,
+     1.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ],
+   "sheet": "textures/t_clasticsmoke_tg1_01_d_8x64.png",
+   "cols": 8,
+   "rows": 8,
+   "frames": 64,
+   "fps": 12.8,
+   "six_way_lighting": true,
+   "render": "sixway"
+  },
+  "EG_GS_StaticEmissive_Looping_01": {
+   "graph": "EG_GS_StaticEmissive_Looping_01",
+   "family": "globalsorting",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "burst",
+    "rate": null,
+    "max_count": 1,
+    "initial_count": 1
+   },
+   "rotation_speed_deg": 10.0,
+   "spawn_rot_deg": 30.0,
+   "opacity": 1.0,
+   "opacity_min_mult": 0.5,
+   "opacity_over_life": [
+    -1.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "color": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "color0": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "base_size": 1.0,
+   "base_size_bias": 1.0,
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ],
+   "sheet": "textures/t_glow_01_d_1x1.png",
+   "cols": 1,
+   "rows": 1,
+   "frames": 1,
+   "fps": 0.2,
+   "six_way_lighting": false,
+   "render": "lit"
+  },
+  "EG_GS_BasicSmoke_Dist_MimicParent_01": {
+   "graph": "EG_GS_BasicSmoke_Dist_MimicParent_01",
+   "family": "globalsorting",
+   "lifetime_s": 4.0,
+   "spawn": {
+    "mode": "burst",
+    "rate": null,
+    "max_count": 64,
+    "initial_count": 64
+   },
+   "drag": 0.3,
+   "wind_strength": 0.2,
+   "turbulence_strength": 10.0,
+   "rotation_speed_deg": 10.0,
+   "spawn_rot_deg": 30.0,
+   "life_min_mult": 0.5,
+   "opacity": 1.0,
+   "opacity_min_mult": 0.5,
+   "opacity_over_life": [
+    -1.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "color": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "color0": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "base_size": 1.0,
+   "base_size_bias": 1.0,
+   "turbulence_frequency": 0.1,
+   "slider_ranges": [
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.9998999834060669,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.009999999776482582,
+     10.0,
+     true
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ],
+   "sheet": "textures/t_clasticsmoke_tg1_01_d_8x64.png",
+   "cols": 8,
+   "rows": 8,
+   "frames": 64,
+   "fps": 16.0,
+   "six_way_lighting": true,
+   "render": "sixway"
+  },
+  "EG_GS_BasicSmoke_Vec3Param_03": {
+   "graph": "EG_GS_BasicSmoke_Vec3Param_03",
+   "family": "globalsorting",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 1.0,
+    "max_count": 64,
+    "initial_count": 0
+   },
+   "drag": 0.3,
+   "wind_strength": 1.0,
+   "buoyancy": 0.0,
+   "spawn_speed": [
+    1.0,
+    1.0,
+    0.0,
+    0.0
+   ],
+   "rotation_speed_deg": 10.0,
+   "spawn_rot_deg": 30.0,
+   "life_min_mult": 0.5,
+   "opacity": 1.0,
+   "opacity_min_mult": 0.5,
+   "opacity_over_life": [
+    -1.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "color": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "color0": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "base_size": 1.0,
+   "base_size_bias": 1.0,
+   "random_force": 0.1,
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ],
+   "sheet": "textures/t_smokepuff_tg1_d_6x36.png",
+   "cols": 6,
+   "rows": 6,
+   "frames": 36,
+   "fps": 7.2,
+   "six_way_lighting": true,
+   "render": "sixway"
+  },
+  "EG_Sparks_Burst_Parent": {
+   "graph": "EG_Sparks_Burst_Parent",
+   "family": "sparks",
+   "lifetime_s": 4.0,
+   "spawn": {
+    "mode": "burst",
+    "rate": null,
+    "max_count": 200,
+    "initial_count": 200
+   },
+   "drag": 0.3,
+   "wind_strength": 0.3,
+   "gravity": -9.81,
+   "restitution": 0.3,
+   "speed_mult": 20.0,
+   "turbulence_strength": 10.0,
+   "life_min_mult": 0.02,
+   "temperature": 0.5,
+   "intensity": 1.0,
+   "shrink_start_age": 0.8,
+   "turbulence_frequency": 0.1,
+   "slider_ranges": [
+    [
+     0.10000000149011612,
+     10.0,
+     true
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     20.0,
+     20.0,
+     20.0
+    ],
+    [
+     -20.0,
+     -20.0,
+     -20.0
+    ]
+   ]
+  },
+  "EG_Sparks_Burst_Pop_ES": {
+   "graph": "EG_Sparks_Burst_Pop_ES",
+   "family": "sparks",
+   "lifetime_s": 4.0,
+   "spawn": {
+    "mode": "burst",
+    "rate": null,
+    "max_count": 200,
+    "initial_count": 200
+   },
+   "drag": 0.3,
+   "wind_strength": 0.3,
+   "gravity": -9.81,
+   "restitution": 0.3,
+   "speed_mult": 20.0,
+   "turbulence_strength": 10.0,
+   "life_min_mult": 0.02,
+   "temperature": 0.5,
+   "intensity": 1.0,
+   "shrink_start_age": 0.8,
+   "turbulence_frequency": 0.1,
+   "slider_ranges": [
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.10000000149011612,
+     10.0,
+     true
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     20.0,
+     20.0,
+     20.0
+    ],
+    [
+     -20.0,
+     -20.0,
+     -20.0
+    ]
+   ]
+  },
+  "EG_Sparks_Cont_Pop_ES": {
+   "graph": "EG_Sparks_Cont_Pop_ES",
+   "family": "sparks",
+   "lifetime_s": 4.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 200.0,
+    "max_count": 200,
+    "initial_count": 0
+   },
+   "drag": 0.3,
+   "wind_strength": 0.3,
+   "gravity": -9.81,
+   "restitution": 0.3,
+   "speed_mult": 20.0,
+   "turbulence_strength": 10.0,
+   "life_min_mult": 0.02,
+   "temperature": 0.5,
+   "intensity": 1.0,
+   "shrink_start_age": 0.8,
+   "turbulence_frequency": 0.1,
+   "slider_ranges": [
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.10000000149011612,
+     10.0,
+     true
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     20.0,
+     20.0,
+     20.0
+    ],
+    [
+     -20.0,
+     -20.0,
+     -20.0
+    ]
+   ]
+  },
+  "EG_Sparks_Burst_ES": {
+   "graph": "EG_Sparks_Burst_ES",
+   "family": "sparks",
+   "lifetime_s": 4.0,
+   "spawn": {
+    "mode": "burst",
+    "rate": null,
+    "max_count": 200,
+    "initial_count": 200
+   },
+   "drag": 0.3,
+   "wind_strength": 0.3,
+   "gravity": -9.81,
+   "restitution": 0.3,
+   "speed_mult": 20.0,
+   "turbulence_strength": 10.0,
+   "life_min_mult": 0.02,
+   "temperature": 0.5,
+   "intensity": 1.0,
+   "shrink_start_age": 0.8,
+   "turbulence_frequency": 0.1,
+   "slider_ranges": [
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.10000000149011612,
+     10.0,
+     true
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     20.0,
+     20.0,
+     20.0
+    ],
+    [
+     -20.0,
+     -20.0,
+     -20.0
+    ]
+   ]
+  },
+  "EG_Sparks_Cont_ES": {
+   "graph": "EG_Sparks_Cont_ES",
+   "family": "sparks",
+   "lifetime_s": 4.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 200.0,
+    "max_count": 200,
+    "initial_count": 0
+   },
+   "drag": 0.3,
+   "wind_strength": 0.3,
+   "gravity": -9.81,
+   "restitution": 0.3,
+   "speed_mult": 20.0,
+   "turbulence_strength": 10.0,
+   "life_min_mult": 0.02,
+   "temperature": 0.5,
+   "intensity": 1.0,
+   "shrink_start_age": 0.8,
+   "turbulence_frequency": 0.1,
+   "slider_ranges": [
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.10000000149011612,
+     10.0,
+     true
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     20.0,
+     20.0,
+     20.0
+    ],
+    [
+     -20.0,
+     -20.0,
+     -20.0
+    ]
+   ]
+  },
+  "EG_SparkTrails_ES": {
+   "graph": "EG_SparkTrails_ES",
+   "family": "sparks",
+   "lifetime_s": 4.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 200.0,
+    "max_count": 200,
+    "initial_count": 0
+   },
+   "drag": 0.3,
+   "wind_strength": 0.3,
+   "gravity": -9.81,
+   "restitution": 0.3,
+   "speed_mult": 20.0,
+   "turbulence_strength": 10.0,
+   "life_min_mult": 0.02,
+   "temperature": 0.5,
+   "intensity": 1.0,
+   "shrink_start_age": 0.8,
+   "turbulence_frequency": 0.1,
+   "slider_ranges": [
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.10000000149011612,
+     10.0,
+     true
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     20.0,
+     20.0,
+     20.0
+    ],
+    [
+     -20.0,
+     -20.0,
+     -20.0
+    ]
+   ]
+  },
+  "EG_Sparks_Cont_Vortex": {
+   "graph": "EG_Sparks_Cont_Vortex",
+   "family": "sparks",
+   "lifetime_s": 4.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 200.0,
+    "max_count": 200,
+    "initial_count": 0
+   },
+   "drag": 0.3,
+   "wind_strength": 0.3,
+   "gravity": -9.81,
+   "restitution": 0.3,
+   "speed_mult": 20.0,
+   "turbulence_strength": 10.0,
+   "life_min_mult": 0.02,
+   "temperature": 0.5,
+   "intensity": 1.0,
+   "shrink_start_age": 0.8,
+   "turbulence_frequency": 0.1,
+   "slider_ranges": [
+    [
+     0.10000000149011612,
+     10.0,
+     true
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     20.0,
+     20.0,
+     20.0
+    ],
+    [
+     -20.0,
+     -20.0,
+     -20.0
+    ]
+   ]
+  },
+  "EG_Sparks_Cont_Moving_ES": {
+   "graph": "EG_Sparks_Cont_Moving_ES",
+   "family": "sparks",
+   "lifetime_s": 4.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 200.0,
+    "max_count": 200,
+    "initial_count": 0
+   },
+   "drag": 0.3,
+   "wind_strength": 0.3,
+   "gravity": -9.81,
+   "restitution": 0.3,
+   "speed_mult": 20.0,
+   "turbulence_strength": 10.0,
+   "life_min_mult": 0.02,
+   "temperature": 0.5,
+   "intensity": 1.0,
+   "shrink_start_age": 0.8,
+   "turbulence_frequency": 0.1,
+   "slider_ranges": [
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.10000000149011612,
+     10.0,
+     true
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     20.0,
+     20.0,
+     20.0
+    ],
+    [
+     -20.0,
+     -20.0,
+     -20.0
+    ]
+   ]
+  },
+  "EG_Sparks_Cont_ES_Portal": {
+   "graph": "EG_Sparks_Cont_ES_Portal",
+   "family": "sparks",
+   "lifetime_s": 4.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 200.0,
+    "max_count": 200,
+    "initial_count": 0
+   },
+   "drag": 0.3,
+   "wind_strength": 0.3,
+   "gravity": -9.81,
+   "restitution": 0.3,
+   "speed_mult": 20.0,
+   "turbulence_strength": 10.0,
+   "life_min_mult": 0.02,
+   "temperature": 0.5,
+   "intensity": 1.0,
+   "shrink_start_age": 0.8,
+   "turbulence_frequency": 0.1,
+   "slider_ranges": [
+    [
+     0.10000000149011612,
+     10.0,
+     true
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     20.0,
+     20.0,
+     20.0
+    ],
+    [
+     -20.0,
+     -20.0,
+     -20.0
+    ]
+   ]
+  },
+  "EG_VolumeDecalOS_FirePatch_ES": {
+   "graph": "EG_VolumeDecalOS_FirePatch_ES",
+   "family": "volumedecals",
+   "lifetime_s": 0.1,
+   "spawn": {
+    "mode": "burst",
+    "rate": null,
+    "max_count": 1,
+    "initial_count": 1
+   },
+   "buoyancy": 1.0,
+   "life_min_mult": 0.5,
+   "opacity": 1.0,
+   "opacity_min_mult": 0.5,
+   "opacity_over_life": [
+    0.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "slider_ranges": [
+    [
+     0.0,
+     180.0,
+     false
+    ],
+    [
+     -180.0,
+     180.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     180.0,
+     false
+    ],
+    [
+     -180.0,
+     180.0,
+     false
+    ],
+    [
+     -180.0,
+     180.0,
+     false
+    ],
+    [
+     0.0,
+     360.0,
+     false
+    ],
+    [
+     0.0,
+     360.0,
+     false
+    ],
+    [
+     0.0,
+     360.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ],
+   "mesh_ebx": "common/fx/emittergraph/volumedecals/meshes/meshp_volumedecal_box_fire_01_es_mesh.ebx"
+  },
+  "EG_VolumeDecalOS_Dirt_3d_NoMask_ES": {
+   "graph": "EG_VolumeDecalOS_Dirt_3d_NoMask_ES",
+   "family": "volumedecals",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "burst",
+    "rate": null,
+    "max_count": 1,
+    "initial_count": 1
+   },
+   "life_min_mult": 0.5,
+   "opacity": 1.0,
+   "opacity_min_mult": 0.5,
+   "opacity_over_life": [
+    0.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "color": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "color0": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "slider_ranges": [
+    [
+     0.0,
+     180.0,
+     false
+    ],
+    [
+     0.0,
+     360.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     180.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     360.0,
+     false
+    ],
+    [
+     -180.0,
+     180.0,
+     false
+    ],
+    [
+     -180.0,
+     180.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     360.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ],
+   "mesh_ebx": "common/fx/emittergraph/volumedecals/meshes/meshp_volumedecal_box_dirt_3d_es_mesh.ebx"
+  },
+  "EG_VolumeDecalOS_Simple_EmitterParented_ES": {
+   "graph": "EG_VolumeDecalOS_Simple_EmitterParented_ES",
+   "family": "volumedecals",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 1.0,
+    "max_count": 1,
+    "initial_count": 1
+   },
+   "buoyancy": 1.0,
+   "opacity": 1.0,
+   "spawn_size": 1.0,
+   "size_over_life": [
+    0.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "slider_ranges": [
+    [
+     -180.0,
+     180.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     360.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     360.0,
+     false
+    ],
+    [
+     0.0,
+     360.0,
+     false
+    ],
+    [
+     0.0,
+     180.0,
+     false
+    ],
+    [
+     0.0,
+     180.0,
+     false
+    ],
+    [
+     -180.0,
+     180.0,
+     false
+    ],
+    [
+     -180.0,
+     180.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ],
+   "mesh_ebx": "common/fx/emittergraph/volumedecals/meshes/meshp_volumedecal_box_rangesphereindicator_es_mesh.ebx"
+  },
+  "EG_VolumeDecalOS_SootPatch_ES": {
+   "graph": "EG_VolumeDecalOS_SootPatch_ES",
+   "family": "volumedecals",
+   "lifetime_s": 0.1,
+   "spawn": {
+    "mode": "burst",
+    "rate": null,
+    "max_count": 1,
+    "initial_count": 1
+   },
+   "life_min_mult": 0.5,
+   "opacity": 1.0,
+   "opacity_min_mult": 0.5,
+   "opacity_over_life": [
+    0.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "color": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "color0": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "slider_ranges": [
+    [
+     0.0,
+     360.0,
+     false
+    ],
+    [
+     -180.0,
+     180.0,
+     false
+    ],
+    [
+     0.0,
+     360.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     360.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     180.0,
+     false
+    ],
+    [
+     -180.0,
+     180.0,
+     false
+    ],
+    [
+     0.0,
+     180.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ],
+   "mesh_ebx": "common/fx/emittergraph/volumedecals/meshes/meshp_volumedecal_box_soot_01_es_mesh.ebx"
+  },
+  "EG_VolumeDecalOS_SootPatch_ES_NoDynMask": {
+   "graph": "EG_VolumeDecalOS_SootPatch_ES_NoDynMask",
+   "family": "volumedecals",
+   "lifetime_s": 0.1,
+   "spawn": {
+    "mode": "burst",
+    "rate": null,
+    "max_count": 1,
+    "initial_count": 1
+   },
+   "life_min_mult": 0.5,
+   "opacity": 1.0,
+   "opacity_min_mult": 0.5,
+   "opacity_over_life": [
+    0.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "color": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "color0": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "slider_ranges": [
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     360.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     360.0,
+     false
+    ],
+    [
+     -180.0,
+     180.0,
+     false
+    ],
+    [
+     -180.0,
+     180.0,
+     false
+    ],
+    [
+     0.0,
+     360.0,
+     false
+    ],
+    [
+     0.0,
+     180.0,
+     false
+    ],
+    [
+     0.0,
+     180.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ],
+   "mesh_ebx": "common/fx/emittergraph/volumedecals/meshes/meshp_volumedecal_box_soot_01_es_mesh.ebx"
+  },
+  "EG_VolumeDecalOS_Dirt_3d_ES": {
+   "graph": "EG_VolumeDecalOS_Dirt_3d_ES",
+   "family": "volumedecals",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "burst",
+    "rate": null,
+    "max_count": 1,
+    "initial_count": 1
+   },
+   "life_min_mult": 0.5,
+   "opacity": 1.0,
+   "opacity_min_mult": 0.5,
+   "opacity_over_life": [
+    0.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "color": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "color0": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "slider_ranges": [
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     -180.0,
+     180.0,
+     false
+    ],
+    [
+     0.0,
+     180.0,
+     false
+    ],
+    [
+     0.0,
+     180.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     360.0,
+     false
+    ],
+    [
+     0.0,
+     360.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     360.0,
+     false
+    ],
+    [
+     -180.0,
+     180.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ],
+   "mesh_ebx": "common/fx/emittergraph/volumedecals/meshes/meshp_volumedecal_box_dirt_3d_es_mesh.ebx"
+  },
+  "EG_FireDistortion_ES": {
+   "graph": "EG_FireDistortion_ES",
+   "family": "smokefire",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 1.0,
+    "max_count": 64,
+    "initial_count": 0
+   },
+   "drag": 0.3,
+   "wind_strength": 1.0,
+   "buoyancy": 0.0,
+   "spawn_speed": [
+    1.0,
+    1.0,
+    0.0,
+    0.0
+   ],
+   "rotation_speed_deg": 10.0,
+   "spawn_rot_deg": 30.0,
+   "life_min_mult": 0.5,
+   "opacity": 1.0,
+   "opacity_min_mult": 0.5,
+   "opacity_over_life": [
+    -1.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "color": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "color0": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "base_size": 1.0,
+   "base_size_bias": 1.0,
+   "random_force": 0.1,
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ]
+  },
+  "EG_FireDistortion_Moving_ES": {
+   "graph": "EG_FireDistortion_Moving_ES",
+   "family": "smokefire",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 1.0,
+    "max_count": 64,
+    "initial_count": 0
+   },
+   "drag": 0.3,
+   "wind_strength": 1.0,
+   "buoyancy": 0.0,
+   "spawn_speed": [
+    1.0,
+    1.0,
+    0.0,
+    0.0
+   ],
+   "rotation_speed_deg": 10.0,
+   "spawn_rot_deg": 30.0,
+   "life_min_mult": 0.5,
+   "opacity": 1.0,
+   "opacity_min_mult": 0.5,
+   "opacity_over_life": [
+    -1.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "color": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "color0": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "base_size": 1.0,
+   "base_size_bias": 1.0,
+   "random_force": 0.1,
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ]
+  },
+  "EG_PropDest_Shard_MeshP_Geo_SuperSphere_Contin": {
+   "graph": "EG_PropDest_Shard_MeshP_Geo_SuperSphere_Contin",
+   "family": "xlegacy",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 1.0,
+    "max_count": 64,
+    "initial_count": 0
+   },
+   "drag": 0.3,
+   "wind_strength": 0.3,
+   "gravity": -9.81,
+   "restitution": 0.3,
+   "spawn_speed": [
+    0.0,
+    2.0,
+    0.0,
+    0.0
+   ],
+   "turbulence_strength": 10.0,
+   "spawn_size": 1.0,
+   "size_curve": [
+    0.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "spawn_rotation_speed": 720.0,
+   "spawn_speed_mult": [
+    1.0,
+    1.0,
+    0.0,
+    0.0
+   ],
+   "spawn_direction_min": 1.0,
+   "spawn_direction_max": 1.0,
+   "turbulence_frequency": 0.1,
+   "slider_ranges": [
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ]
+  },
+  "EG_PropDest_Shard_UnitQuad_SuperSphere": {
+   "graph": "EG_PropDest_Shard_UnitQuad_SuperSphere",
+   "family": "xlegacy",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "burst",
+    "rate": null,
+    "max_count": 64,
+    "initial_count": 64
+   },
+   "drag": 0.3,
+   "wind_strength": 0.3,
+   "gravity": -9.81,
+   "restitution": 0.3,
+   "spawn_speed": [
+    0.0,
+    2.0,
+    0.0,
+    0.0
+   ],
+   "turbulence_strength": 10.0,
+   "spawn_size": 1.0,
+   "size_curve": [
+    0.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "spawn_rotation_speed": 720.0,
+   "fade_in_speed": 100000.0,
+   "fade_start_age": 0.8,
+   "spawn_speed_mult": [
+    1.0,
+    1.0,
+    0.0,
+    0.0
+   ],
+   "spawn_direction_min": 1.0,
+   "spawn_direction_max": 1.0,
+   "turbulence_frequency": 0.1,
+   "slider_ranges": [
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ]
+  },
+  "EG_PropDest_Shard_MeshP_Geo_SuperSphere": {
+   "graph": "EG_PropDest_Shard_MeshP_Geo_SuperSphere",
+   "family": "xlegacy",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "burst",
+    "rate": null,
+    "max_count": 64,
+    "initial_count": 64
+   },
+   "drag": 0.3,
+   "wind_strength": 0.3,
+   "gravity": -9.81,
+   "restitution": 0.3,
+   "spawn_speed": [
+    0.0,
+    2.0,
+    0.0,
+    0.0
+   ],
+   "turbulence_strength": 10.0,
+   "spawn_size": 1.0,
+   "size_curve": [
+    0.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "spawn_rotation_speed": 720.0,
+   "spawn_speed_mult": [
+    1.0,
+    1.0,
+    0.0,
+    0.0
+   ],
+   "spawn_direction_min": 1.0,
+   "spawn_direction_max": 1.0,
+   "turbulence_frequency": 0.1,
+   "slider_ranges": [
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ]
+  },
+  "EG_PropDest_Shard_MeshP_Geo_Box_Continuous": {
+   "graph": "EG_PropDest_Shard_MeshP_Geo_Box_Continuous",
+   "family": "xlegacy",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 1.0,
+    "max_count": 64,
+    "initial_count": 0
+   },
+   "drag": 0.3,
+   "wind_strength": 0.3,
+   "gravity": -9.81,
+   "restitution": 0.3,
+   "spawn_speed": [
+    0.0,
+    2.0,
+    0.0,
+    0.0
+   ],
+   "turbulence_strength": 10.0,
+   "spawn_size": 1.0,
+   "size_curve": [
+    0.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "spawn_rotation_speed": 720.0,
+   "spawn_speed_mult": [
+    1.0,
+    1.0,
+    0.0,
+    0.0
+   ],
+   "spawn_direction_min": 1.0,
+   "spawn_direction_max": 1.0,
+   "turbulence_frequency": 0.1,
+   "slider_ranges": [
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ],
+   "mesh_ebx": "common/fx/emittergraph/_particletypes/meshp_defaulttriangle_oat_es_mesh.ebx"
+  },
+  "EG_PropDest_Shard_MeshP_Geo_Box_RotXYZ_noRollYawPitch": {
+   "graph": "EG_PropDest_Shard_MeshP_Geo_Box_RotXYZ_noRollYawPitch",
+   "family": "xlegacy",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "burst",
+    "rate": null,
+    "max_count": 64,
+    "initial_count": 64
+   },
+   "drag": 0.3,
+   "wind_strength": 0.3,
+   "gravity": -9.81,
+   "restitution": 0.3,
+   "spawn_speed": [
+    0.0,
+    2.0,
+    0.0,
+    0.0
+   ],
+   "turbulence_strength": 10.0,
+   "spawn_size": 1.0,
+   "size_curve": [
+    0.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "spawn_rotation_speed": 720.0,
+   "spawn_speed_mult": [
+    1.0,
+    1.0,
+    0.0,
+    0.0
+   ],
+   "spawn_direction_min": 1.0,
+   "spawn_direction_max": 1.0,
+   "turbulence_frequency": 0.1,
+   "slider_ranges": [
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ]
+  },
+  "EG_PropDest_Shard_UnitQuad_Front_SuperSphere": {
+   "graph": "EG_PropDest_Shard_UnitQuad_Front_SuperSphere",
+   "family": "xlegacy",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "burst",
+    "rate": null,
+    "max_count": 64,
+    "initial_count": 64
+   },
+   "drag": 0.3,
+   "wind_strength": 0.3,
+   "gravity": -9.81,
+   "restitution": 0.3,
+   "spawn_speed": [
+    0.0,
+    2.0,
+    0.0,
+    0.0
+   ],
+   "turbulence_strength": 10.0,
+   "spawn_size": 1.0,
+   "size_curve": [
+    0.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "spawn_rotation_speed": 720.0,
+   "fade_in_speed": 100000.0,
+   "fade_start_age": 0.8,
+   "spawn_speed_mult": [
+    1.0,
+    1.0,
+    0.0,
+    0.0
+   ],
+   "spawn_direction_min": 1.0,
+   "spawn_direction_max": 1.0,
+   "turbulence_frequency": 0.1,
+   "slider_ranges": [
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ]
+  },
+  "EG_PropDest_Shard_UnitQuad_Box": {
+   "graph": "EG_PropDest_Shard_UnitQuad_Box",
+   "family": "xlegacy",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "burst",
+    "rate": null,
+    "max_count": 64,
+    "initial_count": 64
+   },
+   "drag": 0.3,
+   "wind_strength": 0.3,
+   "gravity": -9.81,
+   "restitution": 0.3,
+   "spawn_speed": [
+    0.0,
+    2.0,
+    0.0,
+    0.0
+   ],
+   "turbulence_strength": 10.0,
+   "spawn_size": 1.0,
+   "size_curve": [
+    0.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "spawn_rotation_speed": 720.0,
+   "fade_in_speed": 100000.0,
+   "fade_start_age": 0.8,
+   "spawn_speed_mult": [
+    1.0,
+    1.0,
+    0.0,
+    0.0
+   ],
+   "spawn_direction_min": 1.0,
+   "spawn_direction_max": 1.0,
+   "turbulence_frequency": 0.1,
+   "slider_ranges": [
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.10000000149011612,
+     10.0,
+     true
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ]
+  },
+  "EG_PropDest_Shard_MeshP_Geo_Box": {
+   "graph": "EG_PropDest_Shard_MeshP_Geo_Box",
+   "family": "xlegacy",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "burst",
+    "rate": null,
+    "max_count": 64,
+    "initial_count": 64
+   },
+   "drag": 0.3,
+   "wind_strength": 0.3,
+   "gravity": -9.81,
+   "restitution": 0.3,
+   "spawn_speed": [
+    0.0,
+    2.0,
+    0.0,
+    0.0
+   ],
+   "turbulence_strength": 10.0,
+   "spawn_size": 1.0,
+   "size_curve": [
+    0.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "spawn_rotation_speed": 720.0,
+   "spawn_speed_mult": [
+    1.0,
+    1.0,
+    0.0,
+    0.0
+   ],
+   "spawn_direction_min": 1.0,
+   "spawn_direction_max": 1.0,
+   "turbulence_frequency": 0.1,
+   "slider_ranges": [
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ],
+   "mesh_ebx": "common/fx/emittergraph/_particletypes/meshp_defaulttriangle_oat_es_mesh.ebx"
+  },
+  "EG_VegDest_Shard_UnitQuad_Leaves_Burst": {
+   "graph": "EG_VegDest_Shard_UnitQuad_Leaves_Burst",
+   "family": "xlegacy",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "burst",
+    "rate": null,
+    "max_count": 1000,
+    "initial_count": 1000
+   },
+   "drag": 0.3,
+   "wind_strength": 0.2,
+   "gravity": -9.81,
+   "restitution": 0.3,
+   "spawn_speed": [
+    0.0,
+    2.0,
+    0.0,
+    0.0
+   ],
+   "turbulence_strength": 10.0,
+   "spawn_size": 1.0,
+   "size_curve": [
+    0.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "spawn_rotation_speed": 720.0,
+   "fade_in_speed": 100000.0,
+   "fade_start_age": 0.8,
+   "spawn_speed_mult": [
+    1.0,
+    1.0,
+    0.0,
+    0.0
+   ],
+   "spawn_direction_min": 1.0,
+   "spawn_direction_max": 1.0,
+   "turbulence_frequency": 0.1,
+   "slider_ranges": [
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ]
+  },
+  "EG_Trash_Default_SpawnMap": {
+   "graph": "EG_Trash_Default_SpawnMap",
+   "family": "xlegacy",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 1666.0,
+    "max_count": 5000,
+    "initial_count": 0
+   },
+   "fade_in_speed": 100000.0,
+   "fade_start_age": 0.8,
+   "slider_ranges": [
+    [
+     0.0,
+     0.25,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     10.0,
+     false
+    ],
+    [
+     0.0,
+     10.0,
+     false
+    ],
+    [
+     0.0,
+     2.0,
+     false
+    ],
+    [
+     0.0,
+     20.0,
+     false
+    ],
+    [
+     0.0,
+     5.0,
+     false
+    ],
+    [
+     0.0,
+     100.0,
+     false
+    ],
+    [
+     0.0,
+     5.0,
+     false
+    ],
+    [
+     0.0,
+     100.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     10.0,
+     false
+    ],
+    [
+     0.0,
+     0.25,
+     false
+    ],
+    [
+     -180.0,
+     180.0,
+     false
+    ],
+    [
+     0.0,
+     180.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     10.0,
+     false
+    ],
+    [
+     0.0,
+     100.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     10.0,
+     false
+    ],
+    [
+     0.0,
+     200.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     100.0,
+     false
+    ],
+    [
+     0.0,
+     200.0,
+     false
+    ],
+    [
+     -5.0,
+     5.0,
+     false
+    ],
+    [
+     0.0,
+     5.0,
+     false
+    ],
+    [
+     0.0,
+     20.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     2.0,
+     false
+    ],
+    [
+     0.0,
+     100.0,
+     false
+    ],
+    [
+     0.0,
+     4.0,
+     false
+    ],
+    [
+     0.0,
+     5.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     100.0,
+     false
+    ],
+    [
+     0.0,
+     100.0,
+     false
+    ],
+    [
+     0.0,
+     5.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     100.0,
+     false
+    ],
+    [
+     0.0,
+     10.0,
+     false
+    ],
+    [
+     0.0,
+     5.0,
+     false
+    ],
+    [
+     0.0,
+     10.0,
+     false
+    ],
+    [
+     0.0,
+     180.0,
+     false
+    ],
+    [
+     0.0,
+     150.0,
+     false
+    ],
+    [
+     0.0,
+     100.0,
+     false
+    ],
+    [
+     -0.5,
+     0.5,
+     false
+    ],
+    [
+     0.0,
+     10.0,
+     false
+    ],
+    [
+     0.0,
+     100.0,
+     false
+    ],
+    [
+     0.0,
+     4.0,
+     false
+    ],
+    [
+     0.0,
+     5.0,
+     false
+    ],
+    [
+     -180.0,
+     180.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     5.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     4.0,
+     false
+    ],
+    [
+     0.0,
+     10.0,
+     false
+    ],
+    [
+     0.0,
+     20.0,
+     false
+    ],
+    [
+     0.0,
+     100.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     2.0,
+     false
+    ],
+    [
+     0.0,
+     100.0,
+     false
+    ],
+    [
+     0.0,
+     100.0,
+     false
+    ],
+    [
+     0.0,
+     100.0,
+     false
+    ],
+    [
+     0.0,
+     10.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ]
+  },
+  "EG_PropDest_Soft_UnitQuad_Box_Flag_Test": {
+   "graph": "EG_PropDest_Soft_UnitQuad_Box_Flag_Test",
+   "family": "xlegacy",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "burst",
+    "rate": null,
+    "max_count": 64,
+    "initial_count": 64
+   },
+   "drag": 0.3,
+   "wind_strength": 0.3,
+   "gravity": -9.81,
+   "restitution": 0.3,
+   "spawn_speed": [
+    0.0,
+    2.0,
+    0.0,
+    0.0
+   ],
+   "turbulence_strength": 10.0,
+   "spawn_size": 1.0,
+   "size_curve": [
+    0.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "spawn_rotation_speed": 720.0,
+   "spawn_speed_mult": [
+    1.0,
+    1.0,
+    0.0,
+    0.0
+   ],
+   "spawn_direction_min": 1.0,
+   "spawn_direction_max": 1.0,
+   "turbulence_frequency": 0.1,
+   "slider_ranges": [
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.10000000149011612,
+     10.0,
+     true
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ]
+  },
+  "EG_PropDest_Shard_MeshP_Geo_SuperSphere_ParentRot": {
+   "graph": "EG_PropDest_Shard_MeshP_Geo_SuperSphere_ParentRot",
+   "family": "xlegacy",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "burst",
+    "rate": null,
+    "max_count": 64,
+    "initial_count": 64
+   },
+   "drag": 0.3,
+   "wind_strength": 0.3,
+   "gravity": -9.81,
+   "restitution": 0.3,
+   "spawn_speed": [
+    0.0,
+    2.0,
+    0.0,
+    0.0
+   ],
+   "turbulence_strength": 10.0,
+   "spawn_size": 1.0,
+   "size_curve": [
+    0.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "spawn_rotation_speed": 720.0,
+   "spawn_speed_mult": [
+    1.0,
+    1.0,
+    0.0,
+    0.0
+   ],
+   "spawn_direction_min": 1.0,
+   "spawn_direction_max": 1.0,
+   "turbulence_frequency": 0.1,
+   "slider_ranges": [
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ]
+  },
+  "Eg_AmbWar_UAV_Circling": {
+   "graph": "Eg_AmbWar_UAV_Circling",
+   "family": "other",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "burst",
+    "rate": null,
+    "max_count": 2,
+    "initial_count": 2
+   },
+   "emitter_bbox": [
+    [
+     100.0,
+     100.0,
+     100.0
+    ],
+    [
+     -100.0,
+     -100.0,
+     -100.0
+    ]
+   ],
+   "mesh_ebx": "common/fx/ambientwarfare/meshes/meshp_veh_airplane_mq9_base_mesh.ebx"
+  },
+  "EG_Fly_SE": {
+   "graph": "EG_Fly_SE",
+   "family": "other",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 1.0,
+    "max_count": 64,
+    "initial_count": 0
+   },
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ],
+   "mesh_ebx": "common/fx/emittergraph/insects/meshes/meshp_fly_01_mesh.ebx"
+  },
+  "EG_Rotorblade_Vortex_Ring": {
+   "graph": "EG_Rotorblade_Vortex_Ring",
+   "family": "other",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 1.0,
+    "max_count": 200,
+    "initial_count": 0
+   },
+   "turbulence_strength": 1.0,
+   "rotation_speed_deg": 10.0,
+   "spawn_rot_deg": 30.0,
+   "life_min_mult": 0.5,
+   "opacity": 1.0,
+   "opacity_min_mult": 0.5,
+   "opacity_over_life": [
+    -1.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "color": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "color0": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "base_size": 1.0,
+   "base_size_bias": 1.0,
+   "turbulence_frequency": 0.1,
+   "slider_ranges": [
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     -0.05000000074505806,
+     0.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     10.0,
+     1.5,
+     10.0
+    ],
+    [
+     -10.0,
+     -4.5,
+     -10.0
+    ]
+   ]
+  },
+  "EG_Explosion_Dust_KickUp_Decal": {
+   "graph": "EG_Explosion_Dust_KickUp_Decal",
+   "family": "other",
+   "lifetime_s": 1.5,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 1.0,
+    "max_count": 1,
+    "initial_count": 1
+   },
+   "emitter_bbox": [
+    [
+     30.0,
+     1.0,
+     30.0
+    ],
+    [
+     -30.0,
+     -1.0,
+     -30.0
+    ]
+   ],
+   "mesh_ebx": "common/fx/emittergraph/volumedecals/meshes/meshp_volumedecal_box_soot_01_es_mesh.ebx"
+  },
+  "EG_Projectile_Mk82_AIR_Animated": {
+   "graph": "EG_Projectile_Mk82_AIR_Animated",
+   "family": "other",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 1.0,
+    "max_count": 1,
+    "initial_count": 0
+   },
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ]
+  },
+  "EG_Missile_AirStrike_Impact": {
+   "graph": "EG_Missile_AirStrike_Impact",
+   "family": "other",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 1.0,
+    "max_count": 1,
+    "initial_count": 1
+   },
+   "emitter_bbox": [
+    [
+     500.0,
+     1.0,
+     500.0
+    ],
+    [
+     -500.0,
+     -600.0,
+     -500.0
+    ]
+   ],
+   "mesh_ebx": "common/fx/ambientwarfare/meshes/meshp_m30_rocket_mesh.ebx"
+  },
+  "EG_VolumeDecalOS_Fire_ES_TEST": {
+   "graph": "EG_VolumeDecalOS_Fire_ES_TEST",
+   "family": "other",
+   "lifetime_s": 0.1,
+   "spawn": {
+    "mode": "burst",
+    "rate": null,
+    "max_count": 1,
+    "initial_count": 1
+   },
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ],
+   "mesh_ebx": "common/fx/emittergraph/volumedecals/meshes/meshp_volumedecal_box_fire_01_es_mesh.ebx"
+  },
+  "EG_Gadget_AdrenalineShot_ScreenEffect": {
+   "graph": "EG_Gadget_AdrenalineShot_ScreenEffect",
+   "family": "other",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "burst",
+    "rate": null,
+    "max_count": 1,
+    "initial_count": 1
+   },
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ]
+  },
+  "EG_Airburst_PredictedPath_Line": {
+   "graph": "EG_Airburst_PredictedPath_Line",
+   "family": "other",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "burst",
+    "rate": null,
+    "max_count": 5,
+    "initial_count": 5
+   },
+   "gravity": [
+    0.0,
+    -9.81,
+    0.0,
+    0.0
+   ],
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ]
+  },
+  "EG_AirburstImpactPoint_Decal": {
+   "graph": "EG_AirburstImpactPoint_Decal",
+   "family": "other",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "burst",
+    "rate": null,
+    "max_count": 1,
+    "initial_count": 1
+   },
+   "opacity": 1.0,
+   "slider_ranges": [
+    [
+     0.0,
+     1.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     5.0,
+     5.0,
+     5.0
+    ],
+    [
+     -5.0,
+     -5.0,
+     -5.0
+    ]
+   ],
+   "mesh_ebx": "common/fx/emittergraph/volumedecals/meshes/meshp_volumedecal_box_airburstimpactpoint_es_mesh.ebx"
+  },
+  "EG_AirburstImpactPoint_Circle": {
+   "graph": "EG_AirburstImpactPoint_Circle",
+   "family": "other",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "burst",
+    "rate": null,
+    "max_count": 1,
+    "initial_count": 1
+   },
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ]
+  },
+  "EG_AirburstImpactPoint_GroundConnectLine": {
+   "graph": "EG_AirburstImpactPoint_GroundConnectLine",
+   "family": "other",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "burst",
+    "rate": null,
+    "max_count": 64,
+    "initial_count": 64
+   },
+   "spawn_speed": [
+    1.0,
+    1.0,
+    0.0,
+    0.0
+   ],
+   "rotation_speed_deg": 10.0,
+   "spawn_rot_deg": 30.0,
+   "life_min_mult": 0.5,
+   "opacity": 1.0,
+   "opacity_min_mult": 0.5,
+   "opacity_over_life": [
+    -1.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "color": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "color0": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "base_size": 1.0,
+   "base_size_bias": 1.0,
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ],
+   "sheet": "textures/impact_sparks_02_2x4.png",
+   "cols": 2,
+   "rows": 2,
+   "frames": 4,
+   "fps": 0.8,
+   "six_way_lighting": false,
+   "render": "lit"
+  },
+  "EG_Decal_Unlit_WaterExplosion_Ripple_Wave": {
+   "graph": "EG_Decal_Unlit_WaterExplosion_Ripple_Wave",
+   "family": "other",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "burst",
+    "rate": null,
+    "max_count": 1,
+    "initial_count": 1
+   },
+   "opacity_over_life": [
+    0.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "size_over_life": [
+    0.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ],
+   "mesh_ebx": "common/fx/emittergraph/volumedecals/meshes/meshp_volumedecal_box_shockwave_water_ripplewave_01_mesh.ebx"
+  },
+  "EG_Decal_Unlit_WaterExplosion_Ripple": {
+   "graph": "EG_Decal_Unlit_WaterExplosion_Ripple",
+   "family": "other",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "burst",
+    "rate": null,
+    "max_count": 1,
+    "initial_count": 1
+   },
+   "opacity_over_life": [
+    0.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "size_over_life": [
+    0.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ],
+   "mesh_ebx": "common/fx/emittergraph/volumedecals/meshes/meshp_volumedecal_box_shockwave_water_ripple_01_mesh.ebx"
+  },
+  "EG_DeployableMortar_FireVortexRing": {
+   "graph": "EG_DeployableMortar_FireVortexRing",
+   "family": "other",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 1.0,
+    "max_count": 1,
+    "initial_count": 1
+   },
+   "emissive_intensity_mult": [
+    2000.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ],
+   "mesh_ebx": "common/fx/gadgets/deployablemortar/meshes/meshp_flamevortexring_mesh.ebx"
+  },
+  "EG_Soldier_ScreenEffect_Vignette": {
+   "graph": "EG_Soldier_ScreenEffect_Vignette",
+   "family": "other",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "burst",
+    "rate": null,
+    "max_count": 1,
+    "initial_count": 1
+   },
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ]
+  },
+  "EG_Decal_Mortar_Target_Area": {
+   "graph": "EG_Decal_Mortar_Target_Area",
+   "family": "other",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "burst",
+    "rate": null,
+    "max_count": 1,
+    "initial_count": 1
+   },
+   "slider_ranges": [
+    [
+     0.0,
+     1.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     5.0,
+     5.0,
+     5.0
+    ],
+    [
+     -5.0,
+     -5.0,
+     -5.0
+    ]
+   ],
+   "mesh_ebx": "common/fx/emittergraph/volumedecals/meshes/meshp_volumedecal_box_rangesphereindicator_es_mesh.ebx"
+  },
+  "EG_Gadget_Drone_ScreenEffect_OutOfRange_Distortion": {
+   "graph": "EG_Gadget_Drone_ScreenEffect_OutOfRange_Distortion",
+   "family": "other",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "burst",
+    "rate": null,
+    "max_count": 1,
+    "initial_count": 1
+   },
+   "slider_ranges": [
+    [
+     0.0,
+     30.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     2.0,
+     2.0,
+     2.0
+    ],
+    [
+     -2.0,
+     -2.0,
+     -2.0
+    ]
+   ]
+  },
+  "EG_Missile_Thruster_Shockdiamonds": {
+   "graph": "EG_Missile_Thruster_Shockdiamonds",
+   "family": "other",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 10.0,
+    "max_count": 7,
+    "initial_count": 7
+   },
+   "emissive_intensity_mult": [
+    2000.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "slider_ranges": [
+    [
+     0.0,
+     1.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ],
+   "mesh_ebx": "common/fx/vehicles/weapons/missiles/meshes/meshp_missile_thruster_shockdiamond_mesh.ebx"
+  },
+  "EG_Grid_Sparks": {
+   "graph": "EG_Grid_Sparks",
+   "family": "other",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "burst",
+    "rate": null,
+    "max_count": 64,
+    "initial_count": 64
+   },
+   "drag": 0.3,
+   "wind_strength": 0.3,
+   "gravity": -9.81,
+   "restitution": 0.3,
+   "turbulence_strength": 10.0,
+   "life_min_mult": 0.02,
+   "temperature": 0.5,
+   "intensity": 1.0,
+   "shrink_start_age": 0.8,
+   "turbulence_frequency": 0.1,
+   "slider_ranges": [
+    [
+     0.10000000149011612,
+     10.0,
+     true
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ]
+  },
+  "EG_PTKM_Submunition": {
+   "graph": "EG_PTKM_Submunition",
+   "family": "other",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 1.0,
+    "max_count": 64,
+    "initial_count": 0
+   },
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ],
+   "mesh_ebx": "common/fx/gadgets/ptkm/meshes/meshp_ptkm_submunition_mesh.ebx"
+  },
+  "EG_Gadget_ScreenEffect_RemoteTurret_HealthDamage": {
+   "graph": "EG_Gadget_ScreenEffect_RemoteTurret_HealthDamage",
+   "family": "other",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "burst",
+    "rate": null,
+    "max_count": 1,
+    "initial_count": 1
+   },
+   "slider_ranges": [
+    [
+     0.0,
+     2.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     50.0,
+     50.0,
+     50.0
+    ],
+    [
+     -50.0,
+     -50.0,
+     -50.0
+    ]
+   ]
+  },
+  "EG_Vehicle_ScreenEffect_Damage_Distortion_Looping": {
+   "graph": "EG_Vehicle_ScreenEffect_Damage_Distortion_Looping",
+   "family": "other",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "burst",
+    "rate": null,
+    "max_count": 1,
+    "initial_count": 1
+   },
+   "slider_ranges": [
+    [
+     0.0,
+     2.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     50.0,
+     50.0,
+     50.0
+    ],
+    [
+     -50.0,
+     -50.0,
+     -50.0
+    ]
+   ]
+  },
+  "EG_Yoon_Debug_Axis": {
+   "graph": "EG_Yoon_Debug_Axis",
+   "family": "other",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 80.0,
+    "max_count": 1000,
+    "initial_count": 0
+   },
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ],
+   "mesh_ebx": "common/fx/meshes/fxm_debug_axis_mesh.ebx"
+  },
+  "EG_Concussion_Grenade_ScreenEffect_OcclusionCheck": {
+   "graph": "EG_Concussion_Grenade_ScreenEffect_OcclusionCheck",
+   "family": "other",
+   "lifetime_s": 0.05,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 1.0,
+    "max_count": 1,
+    "initial_count": 1
+   },
+   "emitter_bbox": [
+    [
+     0.05,
+     0.05,
+     0.05
+    ],
+    [
+     -0.05,
+     -0.05,
+     -0.05
+    ]
+   ]
+  },
+  "EG_VelocityStabilized_Projectile_AntiTank_Grenade": {
+   "graph": "EG_VelocityStabilized_Projectile_AntiTank_Grenade",
+   "family": "other",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "burst",
+    "rate": null,
+    "max_count": 1,
+    "initial_count": 1
+   },
+   "emitter_bbox": [
+    [
+     10.0,
+     10.0,
+     10.0
+    ],
+    [
+     -10.0,
+     -10.0,
+     -10.0
+    ]
+   ],
+   "mesh_ebx": "common/fx/gadgets/grenades/antitank/meshes/meshp_antitank_grenade_mesh.ebx"
+  },
+  "EG_Flashbang_BurnIn": {
+   "graph": "EG_Flashbang_BurnIn",
+   "family": "other",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "burst",
+    "rate": null,
+    "max_count": 1,
+    "initial_count": 1
+   },
+   "emitter_bbox": [
+    [
+     50.0,
+     50.0,
+     50.0
+    ],
+    [
+     -50.0,
+     -50.0,
+     -50.0
+    ]
+   ]
+  },
+  "EG_Flashbang_BurnIn_OcclusionCheck": {
+   "graph": "EG_Flashbang_BurnIn_OcclusionCheck",
+   "family": "other",
+   "lifetime_s": 0.05,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 1.0,
+    "max_count": 1,
+    "initial_count": 1
+   },
+   "emitter_bbox": [
+    [
+     0.05,
+     0.05,
+     0.05
+    ],
+    [
+     -0.05,
+     -0.05,
+     -0.05
+    ]
+   ]
+  },
+  "EG_Gadget_BreachingDart_Projectile_Stuck": {
+   "graph": "EG_Gadget_BreachingDart_Projectile_Stuck",
+   "family": "other",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "burst",
+    "rate": null,
+    "max_count": 1,
+    "initial_count": 1
+   },
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ],
+   "mesh_ebx": "common/fx/gadgets/breachingdart/meshes/meshp_gadget_breachingdart_stuck_mesh.ebx"
+  },
+  "EG_Flashbang_Concussion_ScreenEffect": {
+   "graph": "EG_Flashbang_Concussion_ScreenEffect",
+   "family": "other",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 1.0,
+    "max_count": 1,
+    "initial_count": 1
+   },
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ]
+  },
+  "EG_Soldier_ScreenEffect_Flashbang": {
+   "graph": "EG_Soldier_ScreenEffect_Flashbang",
+   "family": "other",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "burst",
+    "rate": null,
+    "max_count": 1,
+    "initial_count": 1
+   },
+   "slider_ranges": [
+    [
+     0.0,
+     1.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ]
+  },
+  "EG_Debris_Cont_ES_Terrain_vortex_1": {
+   "graph": "EG_Debris_Cont_ES_Terrain_vortex_1",
+   "family": "other",
+   "lifetime_s": 8.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 200.0,
+    "max_count": 200,
+    "initial_count": 0
+   },
+   "drag": 0.3,
+   "wind_strength": 0.3,
+   "gravity": -9.81,
+   "restitution": 0.3,
+   "turbulence_strength": 10.0,
+   "life_min_mult": 0.8,
+   "spawn_rotation_speed": 720.0,
+   "turbulence_frequency": 0.1,
+   "slider_ranges": [
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.10000000149011612,
+     10.0,
+     true
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     5.0,
+     5.0,
+     5.0
+    ],
+    [
+     -5.0,
+     -5.0,
+     -5.0
+    ]
+   ],
+   "mesh_ebx": "common/fx/emittergraph/thindebris/meshes/meshp_unitquad_thinmeshdebris_textured_es_mesh.ebx"
+  },
+  "EG_Prop_Destroy_Static_Simple": {
+   "graph": "EG_Prop_Destroy_Static_Simple",
+   "family": "other",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 1.0,
+    "max_count": 64,
+    "initial_count": 0
+   },
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ]
+  },
+  "EG_Gadget_Claymore_Laser_Tripwire": {
+   "graph": "EG_Gadget_Claymore_Laser_Tripwire",
+   "family": "other",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "burst",
+    "rate": null,
+    "max_count": 1,
+    "initial_count": 1
+   },
+   "wind_strength": 1.0,
+   "slider_ranges": [
+    [
+     0.0,
+     1.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ],
+   "mesh_ebx": "common/fx/weapons/attachments/meshes/meshp_lasersightbeam_3p_es_mesh.ebx"
+  },
+  "EG_Panzerfaust_Stabilizer_Unfold": {
+   "graph": "EG_Panzerfaust_Stabilizer_Unfold",
+   "family": "other",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 1.0,
+    "max_count": 1,
+    "initial_count": 1
+   },
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ],
+   "mesh_ebx": "common/fx/gadgets/meshes/meshp_panzerfaust3_projectile_stabilizer_mesh.ebx"
+  },
+  "EG_Projectile_SABOT_Petal": {
+   "graph": "EG_Projectile_SABOT_Petal",
+   "family": "other",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 1.0,
+    "max_count": 1,
+    "initial_count": 1
+   },
+   "gravity": 0.0,
+   "emitter_bbox": [
+    [
+     100.0,
+     500.0,
+     100.0
+    ],
+    [
+     -100.0,
+     -20.0,
+     -100.0
+    ]
+   ],
+   "mesh_ebx": "common/fx/vehicles/weapons/guns/meshes/meshp_m829_apfsds_sabot_petal_mesh.ebx"
+  },
+  "EG_RPG7_Fins": {
+   "graph": "EG_RPG7_Fins",
+   "family": "other",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 1.0,
+    "max_count": 64,
+    "initial_count": 0
+   },
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ],
+   "mesh_ebx": "common/fx/gadgets/launchers/rpg7v2/meshes/meshp_rpg7_finsextended_mesh.ebx"
+  },
+  "EG_DebrisClusteroid_Shells_Continuous_ES": {
+   "graph": "EG_DebrisClusteroid_Shells_Continuous_ES",
+   "family": "other",
+   "lifetime_s": 10.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 1.0,
+    "max_count": 64,
+    "initial_count": 1
+   },
+   "drag": 0.1,
+   "wind_strength": 1.0,
+   "gravity": -9.81,
+   "restitution": 0.2,
+   "turbulence_strength": 10.0,
+   "life_min_mult": 0.8,
+   "spawn_rotation_speed": 90.0,
+   "turbulence_frequency": 0.01,
+   "slider_ranges": [
+    [
+     9.999999747378752e-06,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     10.0,
+     10.0,
+     10.0
+    ],
+    [
+     -10.0,
+     -10.0,
+     -10.0
+    ]
+   ],
+   "mesh_ebx": "common/fx/emittergraph/_particletypes/meshp_defaulttriangle_zonly_es_mesh.ebx"
+  },
+  "EG_GS_BasicChunks_Impact_Sub": {
+   "graph": "EG_GS_BasicChunks_Impact_Sub",
+   "family": "other",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 1.0,
+    "max_count": 64,
+    "initial_count": 0
+   },
+   "drag": 0.3,
+   "wind_strength": 1.0,
+   "gravity": -9.81,
+   "spawn_speed": [
+    1.0,
+    1.0,
+    0.0,
+    0.0
+   ],
+   "rotation_speed_deg": 10.0,
+   "spawn_rot_deg": 30.0,
+   "life_min_mult": 0.5,
+   "opacity": 1.0,
+   "opacity_min_mult": 0.5,
+   "opacity_over_life": [
+    -1.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "color": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "color0": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "base_size": 1.0,
+   "base_size_bias": 1.0,
+   "random_force": 0.1,
+   "slider_ranges": [
+    [
+     0.9998999834060669,
+     1.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ],
+   "sheet": "textures/t_debris_finedetail_03_d_1x1.png",
+   "cols": 1,
+   "rows": 1,
+   "frames": 1,
+   "fps": 0.2,
+   "six_way_lighting": false,
+   "render": "lit"
+  },
+  "EG_WireGuidedMissile_PosEventBroadcast": {
+   "graph": "EG_WireGuidedMissile_PosEventBroadcast",
+   "family": "other",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "burst",
+    "rate": null,
+    "max_count": 1,
+    "initial_count": 1
+   },
+   "emitter_bbox": [
+    [
+     100.0,
+     100.0,
+     100.0
+    ],
+    [
+     -100.0,
+     -100.0,
+     -100.0
+    ]
+   ]
+  },
+  "EG_WireGuidedMissile_SpooledWire": {
+   "graph": "EG_WireGuidedMissile_SpooledWire",
+   "family": "other",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "burst",
+    "rate": null,
+    "max_count": 5,
+    "initial_count": 5
+   },
+   "slider_ranges": [
+    [
+     0.0,
+     10.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ],
+   "mesh_ebx": "common/fx/vehicles/weapons/missiles/meshes/meshp_wireguidedmissile_spooledwire_mesh.ebx"
+  },
+  "eg_ambwar_artillarystrike_spawn": {
+   "graph": "eg_ambwar_artillarystrike_spawn",
+   "family": "other",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 1.0,
+    "max_count": 64,
+    "initial_count": 0
+   },
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ]
+  },
+  "EG_Pebbles_Burst_ES": {
+   "graph": "EG_Pebbles_Burst_ES",
+   "family": "pebbles",
+   "lifetime_s": 8.0,
+   "spawn": {
+    "mode": "burst",
+    "rate": null,
+    "max_count": 200,
+    "initial_count": 200
+   },
+   "drag": 0.3,
+   "wind_strength": 0.3,
+   "gravity": -9.81,
+   "restitution": 0.3,
+   "speed_mult": 20.0,
+   "turbulence_strength": 10.0,
+   "life_min_mult": 0.8,
+   "spawn_rotation_speed": 3600.0,
+   "fade_in_speed": 100000.0,
+   "fade_start_age": 0.8,
+   "turbulence_frequency": 0.1,
+   "slider_ranges": [
+    [
+     0.9998999834060669,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.10000000149011612,
+     10.0,
+     true
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     5.0,
+     5.0,
+     5.0
+    ],
+    [
+     -5.0,
+     -5.0,
+     -5.0
+    ]
+   ],
+   "mesh_ebx": "common/fx/emittergraph/pebbles/meshes/meshp_unitquad_pebble_es_mesh.ebx"
+  },
+  "EG_Pebbles_Cont_ES": {
+   "graph": "EG_Pebbles_Cont_ES",
+   "family": "pebbles",
+   "lifetime_s": 8.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 200.0,
+    "max_count": 200,
+    "initial_count": 1
+   },
+   "drag": 0.3,
+   "wind_strength": 0.3,
+   "gravity": -9.81,
+   "restitution": 0.3,
+   "speed_mult": 20.0,
+   "turbulence_strength": 10.0,
+   "life_min_mult": 0.8,
+   "spawn_rotation_speed": 3600.0,
+   "fade_in_speed": 100000.0,
+   "fade_start_age": 0.8,
+   "turbulence_frequency": 0.1,
+   "slider_ranges": [
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.9998999834060669,
+     1.0,
+     false
+    ],
+    [
+     0.10000000149011612,
+     10.0,
+     true
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     5.0,
+     5.0,
+     5.0
+    ],
+    [
+     -5.0,
+     -5.0,
+     -5.0
+    ]
+   ],
+   "mesh_ebx": "common/fx/emittergraph/pebbles/meshes/meshp_unitquad_pebble_es_mesh.ebx"
+  },
+  "EG_ThinDebris_Burst_ES": {
+   "graph": "EG_ThinDebris_Burst_ES",
+   "family": "thindebris",
+   "lifetime_s": 8.0,
+   "spawn": {
+    "mode": "burst",
+    "rate": null,
+    "max_count": 200,
+    "initial_count": 200
+   },
+   "drag": 0.3,
+   "wind_strength": 0.3,
+   "gravity": -9.81,
+   "restitution": 0.3,
+   "speed_mult": 20.0,
+   "turbulence_strength": 10.0,
+   "life_min_mult": 0.8,
+   "spawn_rotation_speed": 720.0,
+   "turbulence_frequency": 0.1,
+   "slider_ranges": [
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.10000000149011612,
+     10.0,
+     true
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     5.0,
+     5.0,
+     5.0
+    ],
+    [
+     -5.0,
+     -5.0,
+     -5.0
+    ]
+   ],
+   "mesh_ebx": "common/fx/emittergraph/thindebris/meshes/meshp_unitquad_thinmeshdebris_proc_es_mesh.ebx"
+  },
+  "EG_ThinDebris_Burning_Cont_ES": {
+   "graph": "EG_ThinDebris_Burning_Cont_ES",
+   "family": "thindebris",
+   "lifetime_s": 8.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 200.0,
+    "max_count": 200,
+    "initial_count": 0
+   },
+   "drag": 0.3,
+   "wind_strength": 0.3,
+   "gravity": -9.81,
+   "restitution": 0.3,
+   "speed_mult": 20.0,
+   "turbulence_strength": 10.0,
+   "life_min_mult": 0.8,
+   "spawn_rotation_speed": 720.0,
+   "fade_in_speed": 100000.0,
+   "fade_start_age": 0.8,
+   "turbulence_frequency": 0.1,
+   "slider_ranges": [
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.10000000149011612,
+     10.0,
+     true
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     5.0,
+     5.0,
+     5.0
+    ],
+    [
+     -5.0,
+     -5.0,
+     -5.0
+    ]
+   ],
+   "mesh_ebx": "common/fx/emittergraph/thindebris/meshes/meshp_unitquad_thinmeshdebris_proc_es_mesh.ebx"
+  },
+  "EG_ThinDebris_Txtr_Burst_ES": {
+   "graph": "EG_ThinDebris_Txtr_Burst_ES",
+   "family": "thindebris",
+   "lifetime_s": 8.0,
+   "spawn": {
+    "mode": "burst",
+    "rate": null,
+    "max_count": 200,
+    "initial_count": 200
+   },
+   "drag": 0.3,
+   "wind_strength": 0.3,
+   "gravity": -9.81,
+   "restitution": 0.3,
+   "speed_mult": 20.0,
+   "turbulence_strength": 10.0,
+   "life_min_mult": 0.8,
+   "spawn_rotation_speed": 720.0,
+   "turbulence_frequency": 0.1,
+   "slider_ranges": [
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.10000000149011612,
+     10.0,
+     true
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     5.0,
+     5.0,
+     5.0
+    ],
+    [
+     -5.0,
+     -5.0,
+     -5.0
+    ]
+   ],
+   "mesh_ebx": "common/fx/emittergraph/thindebris/meshes/meshp_unitquad_thinmeshdebris_textured_es_mesh.ebx"
+  },
+  "EG_ThinDebris_Txtr_Cont_ES": {
+   "graph": "EG_ThinDebris_Txtr_Cont_ES",
+   "family": "thindebris",
+   "lifetime_s": 8.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 200.0,
+    "max_count": 200,
+    "initial_count": 0
+   },
+   "drag": 0.3,
+   "wind_strength": 0.3,
+   "gravity": -9.81,
+   "restitution": 0.3,
+   "speed_mult": 20.0,
+   "turbulence_strength": 10.0,
+   "life_min_mult": 0.8,
+   "spawn_rotation_speed": 720.0,
+   "turbulence_frequency": 0.1,
+   "slider_ranges": [
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.10000000149011612,
+     10.0,
+     true
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     5.0,
+     5.0,
+     5.0
+    ],
+    [
+     -5.0,
+     -5.0,
+     -5.0
+    ]
+   ],
+   "mesh_ebx": "common/fx/emittergraph/thindebris/meshes/meshp_unitquad_thinmeshdebris_textured_es_mesh.ebx"
+  },
+  "EG_ThinDebris_Phys_Txtr_ES": {
+   "graph": "EG_ThinDebris_Phys_Txtr_ES",
+   "family": "thindebris",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 1.0,
+    "max_count": 64,
+    "initial_count": 0
+   },
+   "restitution": 0.3,
+   "slider_ranges": [
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     100.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     5.0,
+     false
+    ],
+    [
+     0.009999999776482582,
+     5.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     100.0,
+     false
+    ],
+    [
+     0.0,
+     20.0,
+     false
+    ],
+    [
+     0.0,
+     20.0,
+     false
+    ],
+    [
+     0.0,
+     20.0,
+     false
+    ],
+    [
+     0.0,
+     1000.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     -5.0,
+     5.0,
+     false
+    ],
+    [
+     0.0,
+     100.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     20.0,
+     false
+    ],
+    [
+     0.0,
+     10.0,
+     false
+    ],
+    [
+     0.0,
+     5.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     5.0,
+     false
+    ],
+    [
+     0.0,
+     100.0,
+     false
+    ],
+    [
+     0.0,
+     100.0,
+     false
+    ],
+    [
+     0.0,
+     0.5,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     500.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.009999999776482582,
+     5.0,
+     false
+    ],
+    [
+     0.0,
+     5.0,
+     false
+    ],
+    [
+     0.0,
+     0.10000000149011612,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     20.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     100.0,
+     100.0,
+     100.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ],
+   "mesh_ebx": "common/fx/emittergraph/thindebris/meshes/meshp_unitquad_thinmeshdebris_textured_es_mesh.ebx"
+  },
+  "EG_Bird_Flocking_ES": {
+   "graph": "EG_Bird_Flocking_ES",
+   "family": "birds",
+   "lifetime_s": 99999.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 1.0,
+    "max_count": 10,
+    "initial_count": 0
+   },
+   "emitter_bbox": [
+    [
+     200.0,
+     200.0,
+     200.0
+    ],
+    [
+     -200.0,
+     -200.0,
+     -200.0
+    ]
+   ],
+   "mesh_ebx": "common/fx/emittergraph/birds/meshes/meshp_bird_01_mesh.ebx"
+  },
+  "EG_DummyEmitter_DeletemeTracker": {
+   "graph": "EG_DummyEmitter_DeletemeTracker",
+   "family": "dummy",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "burst",
+    "rate": null,
+    "max_count": 1,
+    "initial_count": 1
+   },
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ]
+  },
+  "EG_DummyEmitter": {
+   "graph": "EG_DummyEmitter",
+   "family": "dummy",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "burst",
+    "rate": null,
+    "max_count": 1,
+    "initial_count": 1
+   },
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ]
+  },
+  "EG_Explosion_Shrapnel_Hits": {
+   "graph": "EG_Explosion_Shrapnel_Hits",
+   "family": "impacts",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "burst",
+    "rate": null,
+    "max_count": 64,
+    "initial_count": 64
+   },
+   "drag": 0.3,
+   "wind_strength": 1.0,
+   "buoyancy": 0.0,
+   "spawn_speed": [
+    1.0,
+    1.0,
+    0.0,
+    0.0
+   ],
+   "rotation_speed_deg": 10.0,
+   "spawn_rot_deg": 30.0,
+   "life_min_mult": 0.5,
+   "opacity": 1.0,
+   "opacity_min_mult": 0.5,
+   "opacity_over_life": [
+    -1.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "color": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "color0": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "base_size": 1.0,
+   "base_size_bias": 1.0,
+   "random_force": 0.1,
+   "emitter_bbox": [
+    [
+     25.0,
+     10.0,
+     25.0
+    ],
+    [
+     -25.0,
+     -2.0,
+     -25.0
+    ]
+   ],
+   "sheet": "textures/t_smokepuff_tg1_d_6x36.png",
+   "cols": 6,
+   "rows": 6,
+   "frames": 36,
+   "fps": 7.2,
+   "six_way_lighting": true,
+   "render": "sixway"
+  },
+  "EG_Explosion_Shrapnel_Hits_SuperSphere": {
+   "graph": "EG_Explosion_Shrapnel_Hits_SuperSphere",
+   "family": "impacts",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "burst",
+    "rate": null,
+    "max_count": 64,
+    "initial_count": 64
+   },
+   "drag": 0.3,
+   "wind_strength": 1.0,
+   "buoyancy": 0.0,
+   "spawn_speed": [
+    1.0,
+    1.0,
+    0.0,
+    0.0
+   ],
+   "rotation_speed_deg": 10.0,
+   "spawn_rot_deg": 30.0,
+   "life_min_mult": 0.5,
+   "opacity": 1.0,
+   "opacity_min_mult": 0.5,
+   "opacity_over_life": [
+    -1.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "color": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "color0": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "base_size": 1.0,
+   "base_size_bias": 1.0,
+   "random_force": 0.1,
+   "emitter_bbox": [
+    [
+     25.0,
+     10.0,
+     25.0
+    ],
+    [
+     -25.0,
+     -2.0,
+     -25.0
+    ]
+   ],
+   "sheet": "textures/t_smokepuff_tg1_d_6x36.png",
+   "cols": 6,
+   "rows": 6,
+   "frames": 36,
+   "fps": 7.2,
+   "six_way_lighting": true,
+   "render": "sixway"
+  },
+  "EG_DebrisClusteroid_SimpleCollisionObject_ES": {
+   "graph": "EG_DebrisClusteroid_SimpleCollisionObject_ES",
+   "family": "gadgets",
+   "lifetime_s": 10.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 1.0,
+    "max_count": 1,
+    "initial_count": 1
+   },
+   "drag": 0.1,
+   "wind_strength": 1.0,
+   "gravity": -9.81,
+   "restitution": 0.2,
+   "spawn_speed": 10.0,
+   "turbulence_strength": 10.0,
+   "life_min_mult": 0.8,
+   "spawn_rotation_speed": 90.0,
+   "spawn_speed_min": 0.5,
+   "turbulence_frequency": 0.01,
+   "slider_ranges": [
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     9.999999747378752e-06,
+     1.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     10.0,
+     10.0,
+     10.0
+    ],
+    [
+     -10.0,
+     -10.0,
+     -10.0
+    ]
+   ],
+   "mesh_ebx": "common/fx/emittergraph/_particletypes/meshp_defaulttriangle_zonly_es_mesh.ebx"
+  },
+  "EG_Static_MeshP": {
+   "graph": "EG_Static_MeshP",
+   "family": "gadgets",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "burst",
+    "rate": null,
+    "max_count": 64,
+    "initial_count": 64
+   },
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ]
+  },
+  "EG_DebrisClusteroid_Many_ES_7p": {
+   "graph": "EG_DebrisClusteroid_Many_ES_7p",
+   "family": "meshdebris",
+   "lifetime_s": 10.0,
+   "spawn": {
+    "mode": "burst",
+    "rate": null,
+    "max_count": 1,
+    "initial_count": 1
+   },
+   "drag": 0.1,
+   "wind_strength": 1.0,
+   "gravity": -9.81,
+   "restitution": 0.2,
+   "spawn_speed": 10.0,
+   "turbulence_strength": 10.0,
+   "life_min_mult": 0.8,
+   "spawn_size": 1.0,
+   "spawn_rotation_speed": 90.0,
+   "spawn_speed_min": 0.5,
+   "turbulence_frequency": 0.01,
+   "slider_ranges": [
+    [
+     9.999999747378752e-06,
+     1.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     10.0,
+     10.0,
+     10.0
+    ],
+    [
+     -10.0,
+     -10.0,
+     -10.0
+    ]
+   ],
+   "mesh_ebx": "common/fx/emittergraph/_particletypes/meshp_defaulttriangle_zonly_es_mesh.ebx"
+  },
+  "EG_DebrisClusteroid_Many_ES_8p": {
+   "graph": "EG_DebrisClusteroid_Many_ES_8p",
+   "family": "meshdebris",
+   "lifetime_s": 10.0,
+   "spawn": {
+    "mode": "burst",
+    "rate": null,
+    "max_count": 1,
+    "initial_count": 1
+   },
+   "drag": 0.1,
+   "wind_strength": 1.0,
+   "gravity": -9.81,
+   "restitution": 0.2,
+   "spawn_speed": 10.0,
+   "turbulence_strength": 10.0,
+   "life_min_mult": 0.8,
+   "spawn_size": 1.0,
+   "spawn_rotation_speed": 90.0,
+   "spawn_speed_min": 0.5,
+   "turbulence_frequency": 0.01,
+   "slider_ranges": [
+    [
+     9.999999747378752e-06,
+     1.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     10.0,
+     10.0,
+     10.0
+    ],
+    [
+     -10.0,
+     -10.0,
+     -10.0
+    ]
+   ],
+   "mesh_ebx": "common/fx/emittergraph/_particletypes/meshp_defaulttriangle_zonly_es_mesh.ebx"
+  },
+  "EG_DebrisClusteroid_Many_ES_6p": {
+   "graph": "EG_DebrisClusteroid_Many_ES_6p",
+   "family": "meshdebris",
+   "lifetime_s": 10.0,
+   "spawn": {
+    "mode": "burst",
+    "rate": null,
+    "max_count": 1,
+    "initial_count": 1
+   },
+   "drag": 0.1,
+   "wind_strength": 1.0,
+   "gravity": -9.81,
+   "restitution": 0.2,
+   "spawn_speed": 10.0,
+   "turbulence_strength": 10.0,
+   "life_min_mult": 0.8,
+   "spawn_size": 1.0,
+   "spawn_rotation_speed": 90.0,
+   "spawn_speed_min": 0.5,
+   "turbulence_frequency": 0.01,
+   "slider_ranges": [
+    [
+     9.999999747378752e-06,
+     1.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     10.0,
+     10.0,
+     10.0
+    ],
+    [
+     -10.0,
+     -10.0,
+     -10.0
+    ]
+   ],
+   "mesh_ebx": "common/fx/emittergraph/_particletypes/meshp_defaulttriangle_zonly_es_mesh.ebx"
+  },
+  "EG_DebrisClusteroid_Many_ES_24p": {
+   "graph": "EG_DebrisClusteroid_Many_ES_24p",
+   "family": "meshdebris",
+   "lifetime_s": 10.0,
+   "spawn": {
+    "mode": "burst",
+    "rate": null,
+    "max_count": 1,
+    "initial_count": 1
+   },
+   "drag": 0.1,
+   "wind_strength": 1.0,
+   "gravity": -9.81,
+   "restitution": 0.2,
+   "spawn_speed": 10.0,
+   "turbulence_strength": 10.0,
+   "life_min_mult": 0.8,
+   "spawn_size": 1.0,
+   "spawn_rotation_speed": 90.0,
+   "spawn_speed_min": 0.5,
+   "turbulence_frequency": 0.01,
+   "slider_ranges": [
+    [
+     9.999999747378752e-06,
+     1.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     10.0,
+     10.0,
+     10.0
+    ],
+    [
+     -10.0,
+     -10.0,
+     -10.0
+    ]
+   ],
+   "mesh_ebx": "common/fx/emittergraph/_particletypes/meshp_defaulttriangle_zonly_es_mesh.ebx"
+  },
+  "EG_Sand_Frustrum_Quad_ES": {
+   "graph": "EG_Sand_Frustrum_Quad_ES",
+   "family": "sand",
+   "lifetime_s": 8.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 200.0,
+    "max_count": 200,
+    "initial_count": 1
+   },
+   "drag": 0.3,
+   "wind_strength": 0.3,
+   "gravity": -9.81,
+   "restitution": 0.3,
+   "turbulence_strength": 10.0,
+   "life_min_mult": 0.8,
+   "spawn_rotation_speed": 3600.0,
+   "fade_in_speed": 100000.0,
+   "fade_start_age": 0.8,
+   "turbulence_frequency": 0.1,
+   "slider_ranges": [
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.10000000149011612,
+     10.0,
+     true
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     10.0,
+     10.0,
+     10.0
+    ],
+    [
+     -10.0,
+     -10.0,
+     -10.0
+    ]
+   ]
+  },
+  "EG_Sand_SpawnVolume_Quad_ES_BG": {
+   "graph": "EG_Sand_SpawnVolume_Quad_ES_BG",
+   "family": "sand",
+   "lifetime_s": 8.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 200.0,
+    "max_count": 200,
+    "initial_count": 1
+   },
+   "drag": 0.3,
+   "wind_strength": 0.3,
+   "gravity": -9.81,
+   "restitution": 0.3,
+   "speed_mult": 1.0,
+   "turbulence_strength": 10.0,
+   "life_min_mult": 0.8,
+   "spawn_rotation_speed": 3600.0,
+   "fade_in_speed": 100000.0,
+   "fade_start_age": 0.8,
+   "turbulence_frequency": 0.1,
+   "slider_ranges": [
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.10000000149011612,
+     10.0,
+     true
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     10.0,
+     10.0,
+     10.0
+    ],
+    [
+     -10.0,
+     -10.0,
+     -10.0
+    ]
+   ]
+  },
+  "EG_Sand_Frustrum_Quad_ES_MainDefault": {
+   "graph": "EG_Sand_Frustrum_Quad_ES_MainDefault",
+   "family": "sand",
+   "lifetime_s": 8.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 200.0,
+    "max_count": 200,
+    "initial_count": 1
+   },
+   "drag": 0.3,
+   "wind_strength": 0.3,
+   "gravity": -9.81,
+   "restitution": 0.3,
+   "turbulence_strength": 10.0,
+   "life_min_mult": 0.8,
+   "spawn_rotation_speed": 3600.0,
+   "fade_in_speed": 100000.0,
+   "fade_start_age": 0.8,
+   "turbulence_frequency": 0.1,
+   "slider_ranges": [
+    [
+     0.10000000149011612,
+     10.0,
+     true
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     10.0,
+     10.0,
+     10.0
+    ],
+    [
+     -10.0,
+     -10.0,
+     -10.0
+    ]
+   ]
+  },
+  "EG_Sand_SpawnVolume_Quad_ES": {
+   "graph": "EG_Sand_SpawnVolume_Quad_ES",
+   "family": "sand",
+   "lifetime_s": 8.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 200.0,
+    "max_count": 200,
+    "initial_count": 1
+   },
+   "drag": 0.3,
+   "wind_strength": 0.3,
+   "gravity": -9.81,
+   "restitution": 0.3,
+   "speed_mult": 1.0,
+   "turbulence_strength": 10.0,
+   "life_min_mult": 0.8,
+   "spawn_rotation_speed": 3600.0,
+   "fade_in_speed": 100000.0,
+   "fade_start_age": 0.8,
+   "turbulence_frequency": 0.1,
+   "slider_ranges": [
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.10000000149011612,
+     10.0,
+     true
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     10.0,
+     10.0,
+     10.0
+    ],
+    [
+     -10.0,
+     -10.0,
+     -10.0
+    ]
+   ]
+  },
+  "EG_LensFlare_Looping_x3_ES": {
+   "graph": "EG_LensFlare_Looping_x3_ES",
+   "family": "lights",
+   "lifetime_s": 2.0,
+   "spawn": {
+    "mode": "burst",
+    "rate": null,
+    "max_count": 2,
+    "initial_count": 2
+   },
+   "color": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "color0": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "slider_ranges": [
+    [
+     -10.0,
+     10.0,
+     false
+    ],
+    [
+     -10.0,
+     10.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ]
+  },
+  "EG_LensFlare_Looping_x2_ES": {
+   "graph": "EG_LensFlare_Looping_x2_ES",
+   "family": "lights",
+   "lifetime_s": 2.0,
+   "spawn": {
+    "mode": "burst",
+    "rate": null,
+    "max_count": 2,
+    "initial_count": 2
+   },
+   "color": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "color0": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "slider_ranges": [
+    [
+     -10.0,
+     10.0,
+     false
+    ],
+    [
+     -10.0,
+     10.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ]
+  },
+  "EG_LensFlare_Looping_x2_Child_ES": {
+   "graph": "EG_LensFlare_Looping_x2_Child_ES",
+   "family": "lights",
+   "lifetime_s": 2.0,
+   "spawn": {
+    "mode": "burst",
+    "rate": null,
+    "max_count": 2,
+    "initial_count": 2
+   },
+   "opacity": 1.0,
+   "opacity_min_mult": 0.5,
+   "opacity_over_life": [
+    -1.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "color": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "color0": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "slider_ranges": [
+    [
+     -10.0,
+     10.0,
+     false
+    ],
+    [
+     -10.0,
+     10.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ]
+  },
+  "EG_Electicity_ES": {
+   "graph": "EG_Electicity_ES",
+   "family": "electricity",
+   "lifetime_s": 0.2,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 10.0,
+    "max_count": 64,
+    "initial_count": 1
+   },
+   "slider_ranges": [
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.009999999776482582,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.009999999776482582,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.009999999776482582,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ],
+    [
+     0.009999999776482582,
+     1.0,
+     false
+    ],
+    [
+     0.0,
+     1.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ],
+   "mesh_ebx": "common/fx/emittergraph/electricity/meshes/meshp_electricarc_null_es_mesh.ebx"
+  },
+  "EG_VFX_Debug_Axis": {
+   "graph": "EG_VFX_Debug_Axis",
+   "family": "debug",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 1.0,
+    "max_count": 1,
+    "initial_count": 1
+   },
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ],
+   "mesh_ebx": "common/fx/meshes/vfx_debug_axis_mesh.ebx"
+  },
+  "EG_MultiRibbonDist_ES": {
+   "graph": "EG_MultiRibbonDist_ES",
+   "family": "ribbons",
+   "lifetime_s": 4.0,
+   "spawn": {
+    "mode": "burst",
+    "rate": null,
+    "max_count": 64,
+    "initial_count": 64
+   },
+   "drag": 0.3,
+   "wind_strength": 0.2,
+   "turbulence_strength": 10.0,
+   "life_min_mult": 0.8,
+   "opacity": 1.0,
+   "opacity_min_mult": 0.5,
+   "opacity_over_life": [
+    -1.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "color": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "color0": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "turbulence_frequency": 0.1,
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ]
+  },
+  "EG_PropDest_SoftMesh_Burst": {
+   "graph": "EG_PropDest_SoftMesh_Burst",
+   "family": "propdest",
+   "lifetime_s": 8.0,
+   "spawn": {
+    "mode": "burst",
+    "rate": null,
+    "max_count": 64,
+    "initial_count": 64
+   },
+   "drag": 0.3,
+   "wind_strength": 0.3,
+   "gravity": -9.81,
+   "restitution": 0.3,
+   "spawn_speed": [
+    0.0,
+    2.0,
+    0.0,
+    0.0
+   ],
+   "turbulence_strength": 10.0,
+   "life_min_mult": 0.8,
+   "spawn_size": 1.0,
+   "spawn_rotation_speed": 720.0,
+   "spawn_speed_mult": [
+    1.0,
+    1.0,
+    0.0,
+    0.0
+   ],
+   "spawn_direction_min": 1.0,
+   "spawn_direction_max": 1.0,
+   "turbulence_frequency": 0.1,
+   "slider_ranges": [
+    [
+     0.0,
+     1.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     5.0,
+     5.0,
+     5.0
+    ],
+    [
+     -5.0,
+     -5.0,
+     -5.0
+    ]
+   ],
+   "mesh_ebx": "common/fx/emittergraph/_particletypes/meshp_defaulttriangle_oat_debris_es_mesh.ebx"
+  },
+  "EG_Rats_01": {
+   "graph": "EG_Rats_01",
+   "family": "rats",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 1.0,
+    "max_count": 64,
+    "initial_count": 0
+   },
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ],
+   "mesh_ebx": "common/fx/emittergraph/rats/meshes/meshp_rat_01_mesh.ebx"
+  },
+  "EG_Butterfly_ES": {
+   "graph": "EG_Butterfly_ES",
+   "family": "butterflies",
+   "lifetime_s": 99999.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 1.0,
+    "max_count": 10,
+    "initial_count": 0
+   },
+   "emitter_bbox": [
+    [
+     50.0,
+     50.0,
+     50.0
+    ],
+    [
+     -50.0,
+     -50.0,
+     -50.0
+    ]
+   ],
+   "mesh_ebx": "common/fx/emittergraph/butterflies/meshp_butterfly_quads_es_mesh.ebx"
+  },
+  "EG_Decal_Lit_FireHydrant_ES": {
+   "graph": "EG_Decal_Lit_FireHydrant_ES",
+   "family": "waterfoam",
+   "lifetime_s": 5.0,
+   "spawn": {
+    "mode": "continuous",
+    "rate": 1.0,
+    "max_count": 64,
+    "initial_count": 1
+   },
+   "opacity": 1.0,
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ],
+   "mesh_ebx": "common/fx/emittergraph/waterfoam/meshes/meshp_volumedecal_box_firehydrantdecal_foam_01_es_mesh.ebx"
+  },
+  "EG_RollTracks_01_ES": {
+   "graph": "EG_RollTracks_01_ES",
+   "family": "rolltracks",
+   "lifetime_s": 10.0,
+   "spawn": {
+    "mode": "burst",
+    "rate": null,
+    "max_count": 208,
+    "initial_count": 208
+   },
+   "emitter_bbox": [
+    [
+     250.0,
+     250.0,
+     250.0
+    ],
+    [
+     -250.0,
+     -250.0,
+     -250.0
+    ]
+   ],
+   "mesh_ebx": "common/fx/emittergraph/rolltracks/meshes/meshp_unitquad_rolltracks_01_es_mesh.ebx"
+  },
+  "EG_DangerCloseSpawner_Default": {
+   "graph": "EG_DangerCloseSpawner_Default",
+   "family": "dangerclose",
+   "lifetime_s": 0.1,
+   "spawn": {
+    "mode": "burst",
+    "rate": null,
+    "max_count": 1,
+    "initial_count": 1
+   },
+   "size_curve": [
+    0.0,
+    0.0,
+    -0.5,
+    1.0
+   ],
+   "slider_ranges": [
+    [
+     0.0,
+     1.0,
+     false
+    ]
+   ],
+   "emitter_bbox": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ]
+  }
+ },
+ "top_aftermath_effects": {
+  "eg_gs_basicsmoke_01": 1242,
+  "eg_gs_basicfire_01": 338,
+  "eg_sparks_cont_es": 272,
+  "pm_mp_aftermath_fallingdust_corner": 271,
+  "eg_propdest_shard_meshp_geo_box": 210,
+  "eg_volumedecalos_sootpatch_es": 206,
+  "pm_insidedust": 199,
+  "eg_firedistortion_es": 190,
+  "eg_volumedecalos_firepatch_es": 168,
+  "eg_thindebris_txtr_cont_es": 137,
+  "eg_gs_basicchunks_01": 108,
+  "edv_euu_heatzonedecal_01": 103,
+  "lf_com_emptyspotlight_firebarel_01": 103,
+  "eg_gs_basicsmokearm_01": 92,
+  "eg_pebbles_burst_es": 92
+ }
+}
