@@ -242,7 +242,9 @@ static func apply(root: Node, map: String, gi := true, shadows := true) -> Strin
 	# --- sun ---
 	var sun := DirectionalLight3D.new()
 	sun.name = "Sun"
-	var dir: Vector3 = sun_dir(float(e["az"]), float(e["el"]))
+	authored_az = float(e["az"])
+	authored_el = float(e["el"])
+	var dir: Vector3 = sun_dir(authored_az, authored_el)
 	# a DirectionalLight3D shines along its local -Z: aim -Z opposite the sun
 	sun.transform = Transform3D(Basis.looking_at(-dir, Vector3.UP), Vector3(0, 200, 0))
 	sun.light_color = e["sun"]
@@ -445,6 +447,23 @@ static func _kelvin(k: float) -> Color:
 		clampf(b, 0.0, 255.0) / 255.0)
 
 
+# D65. The neutral the authored temperatures are measured against: it is the
+# standard render white point AND the most common value in the fleet, so maps
+# that author it want no correction at all.
+const WB_NEUTRAL := 6500.0
+
+# Per-channel gain that makes light of `kelvin` render as white — the ratio, not
+# the illuminant. Normalised to preserve luminance so this shifts hue only.
+static func _wb_gain(kelvin: float) -> Color:
+	var n := _kelvin(WB_NEUTRAL)
+	var t := _kelvin(kelvin)
+	var g := Color(n.r / maxf(t.r, 0.001), n.g / maxf(t.g, 0.001), n.b / maxf(t.b, 0.001))
+	var l := g.r * 0.2126 + g.g * 0.7152 + g.b * 0.0722
+	if l > 0.001:
+		g = Color(g.r / l, g.g / l, g.b / l)
+	return g
+
+
 static func _apply_mined(env: Environment, sun: DirectionalLight3D, m: Dictionary) -> void:
 	# --- sky orientation -----------------------------------------------------
 	# PanoramicRotation is a fraction of a turn (0.869 on dumbo, 0.159 on
@@ -513,23 +532,45 @@ static func _apply_mined(env: Environment, sun: DirectionalLight3D, m: Dictionar
 		env.adjustment_contrast = clampf(ct.r, 0.1, 4.0)
 		env.adjustment_saturation = clampf(st.r, 0.0, 4.0)
 
-	# --- white balance: NOT APPLIED, and the reason matters ------------------
-	# `Temperature` (5600 K on mp_dumbo) was briefly multiplied into the sun as
-	# the black-body colour of that temperature. That made mp_dumbo read as a
-	# sunset when the map is a bright day, and the arithmetic says why: the
-	# authored SunColor is ALREADY warm at (1.0, 0.776, 0.617), and the 5600 K
-	# multiplier (1.0, 0.938, 0.883) pushed the green/red ratio from 0.776 to
-	# 0.728 — further toward orange.
+	# --- white balance -------------------------------------------------------
+	# Applied as a von Kries gain, which is a CORRECTION, not a tint. This was
+	# unapplied for a while because the first attempt multiplied the sun by the
+	# black-body colour of the authored temperature and made mp_dumbo read as a
+	# sunset — the authored SunColor is already warm at (1.0, 0.776, 0.617), and
+	# the 5600 K multiplier pushed green/red from 0.776 to 0.728, further toward
+	# orange. That was backwards: "white balance 5600 K" means TREAT 5600 K AS
+	# WHITE, so it should cancel warmth of that temperature, not add it.
 	#
-	# The direction is very likely backwards as well. A white-balance stage set
-	# to 5600 K means "treat 5600 K as white", so applied to a render it should
-	# NEUTRALISE light of that temperature, not add it. Multiplying by the
-	# illuminant double-counts the warmth the sun already carries.
+	# What was missing was the neutral point, and the fleet supplies it: 6500 K
+	# is the most common authored value and the standard D65 render white point.
+	# Reading the field against 6500 makes the whole thing fall out — the gain is
+	# kelvin(6500)/kelvin(T), every 6500 K map comes out an exact (1,1,1) no-op,
+	# and mp_dumbo's 5600 K becomes (0.950, 1.009, 1.055), a mild COOLING that
+	# moves the sun's green/red from 0.776 to 0.824. That is the correction the
+	# game applies and we were dropping, and dropping it is why a bright day map
+	# read as evening.
 	#
-	# Godot has no white-balance stage, so there is no obviously correct place
-	# for it either. Left unapplied until a PhotoMatch comparison settles the
-	# direction — an unverified guess that visibly wrecks a map is worse than
-	# the field being unused.
+	# It goes in adjustment_color_correction rather than onto the sun, because a
+	# camera white balance acts on the whole frame — sky and ambient included.
+	# A 1D gradient from black to the gain is exactly a per-channel linear gain.
+	# Luminance-normalised so this only shifts hue: brightness is the exposure
+	# field's job, and letting white balance move it would double-count.
+	#
+	# TINT IS DELIBERATELY NOT APPLIED. Temperature has a physical unit and an
+	# established neutral; `Tint` is +-27 on a scale nothing in the data pins
+	# down, and at a guessed scale it swings mp_firestorm's green by 26%. Applying
+	# an unknown-unit field at an invented scale is the exact mistake that
+	# produced the inverted white balance above.
+	var wk := float(m.get("white_temperature", 0.0))
+	if wk > 1000.0 and absf(wk - WB_NEUTRAL) > 25.0:
+		var grad := Gradient.new()
+		grad.set_color(0, Color.BLACK)
+		grad.set_color(1, _wb_gain(wk))
+		var lut := GradientTexture1D.new()
+		lut.use_hdr = true         # cooling gains exceed 1.0 on the blue channel
+		lut.gradient = grad
+		env.adjustment_enabled = true
+		env.adjustment_color_correction = lut
 
 	# --- ambient occlusion ---------------------------------------------------
 	# AffectOutdoorLight is FALSE in BF6: ambient occlusion does not darken
@@ -585,6 +626,59 @@ static func set_interior_fill(root: Node, amount: float) -> String:
 		return "Game lighting is off"
 	we.environment.ambient_light_sky_contribution = 1.0 - interior_fill
 	return "Interior light %d%%" % int(round(interior_fill * 100.0))
+
+
+# --- sun calibration ---------------------------------------------------------
+# The authored angles the last apply() used, so the dock can show what the DATA
+# says next to whatever the user has dialled in. Set by apply(), never by the
+# slider — the point of the exercise is the difference between the two.
+static var authored_az := 0.0
+static var authored_el := 0.0
+
+const CAL_PATH := "user://mapcontext/_sun_calibration.json"
+
+# Re-aim the sun live. Same construction as apply(), deliberately: if these ever
+# disagree the calibration measures the discrepancy instead of the convention.
+static func set_sun_angles(root: Node, az: float, el: float) -> String:
+	var rig := root.get_node_or_null(NODE) if root != null else null
+	var sun := (rig.get_node_or_null("Sun") as DirectionalLight3D) if rig != null else null
+	if sun == null:
+		return "Game lighting is off"
+	var dir := sun_dir(az, el)
+	sun.transform = Transform3D(Basis.looking_at(-dir, Vector3.UP), Vector3(0, 200, 0))
+	var shadow := 99.0
+	if dir.y > 0.001:
+		shadow = sqrt(1.0 - dir.y * dir.y) / dir.y
+	return "Sun %.1f / %.1f  (data %.1f / %.1f)  shadow %.1fx" % [
+		az, el, authored_az, authored_el, shadow]
+
+
+# Append one map's answer to a file, because ONE map cannot tell a mirror from a
+# fixed offset — both fit a single point. Several maps with different authored
+# azimuths separate them: a constant offset shows the same delta everywhere, a
+# mirror shows a delta that moves with 2x the authored angle. So this stores the
+# authored pair alongside the corrected one and keeps every map that gets done.
+static func save_calibration(map: String, az: float, el: float) -> String:
+	if map == "":
+		return "Open a level scene first"
+	var all: Dictionary = {}
+	if FileAccess.file_exists(CAL_PATH):
+		var prev: Variant = JSON.parse_string(FileAccess.get_file_as_string(CAL_PATH))
+		if prev is Dictionary:
+			all = prev
+	all[map] = {
+		"authored_az": authored_az, "authored_el": authored_el,
+		"user_az": az, "user_el": el,
+		"d_az": wrapf(az - authored_az, -180.0, 180.0),
+		"d_el": el - authored_el,
+	}
+	DirAccess.make_dir_recursive_absolute(CAL_PATH.get_base_dir())
+	var f := FileAccess.open(CAL_PATH, FileAccess.WRITE)
+	if f == null:
+		return "Could not write the calibration file"
+	f.store_string(JSON.stringify(all, " "))
+	f.close()
+	return "Saved %s — %d map%s calibrated" % [map, all.size(), "" if all.size() == 1 else "s"]
 
 
 static func set_shadows(root: Node, on: bool) -> String:
