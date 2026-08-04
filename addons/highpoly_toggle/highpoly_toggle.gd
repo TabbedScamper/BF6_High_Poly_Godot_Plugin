@@ -103,8 +103,38 @@ var storage_cache_chk: Button  # "Fast startup cache" (baked mesh sidecars)
 var purge_btn: Button
 var _storage_gen := 0          # supersedes an in-flight usage scan
 
-# dropdown ids: 0 = Low-Poly, 1 = High-Poly grey, 2 = High-Poly textured
+# Dropdown ids. These are PERSISTED per map (as "tex" in _save_mapctx_state), so
+# they are never renumbered: MODE_LIGHT was added after the other three and took
+# the next free id rather than the slot it occupies in the list. Ordering in the
+# list is by cost; ordering by id is history.
 #
+# Each rung answers two questions that used to be tangled into one:
+#
+#   id  entry                             your placed pieces   the level around them
+#   0   Low-Poly — what you export        SDK proxies          nothing, no download
+#   3   Low-Poly + Minimal Downloads      SDK proxies          real, untextured
+#   1   High-Poly (no textures)           real, clay           real, untextured
+#   2   High-Poly (full textures)         real, textured       real, textured
+#
+# So the ONLY difference between rung 3 and rung 1 is whether the pieces you
+# placed are swapped for real models. The surroundings are identical, and that is
+# the point of the light rung: the real level to build inside, without pulling a
+# high-poly model for every object in your own map.
+#
+# The three non-zero ids double as the map-context texture mode (0 flat SDK
+# orange / 1 clay / 2 textured) — see _mapctx_tex_mode, which is why MODE_GREY
+# and MODE_TEX keep the values they do.
+# The mappings themselves live in highpoly_modes.gd, as pure functions of the id.
+# An EditorPlugin cannot be constructed outside a running editor, so anything
+# defined in THIS file is untestable — and this is the area where a wrong answer
+# is silent (a rung that quietly downloads gigabytes, or repaints a map the wrong
+# colour). Splitting them out is what makes them checkable.
+const Modes = preload("highpoly_modes.gd")
+const MODE_SDK := Modes.SDK
+const MODE_LIGHT := Modes.LIGHT
+const MODE_GREY := Modes.GREY
+const MODE_TEX := Modes.TEX
+
 # Mirrors the answer onto HighpolyLib.detail on every read. HighpolySync has to
 # know the detail mode to choose a rendition (_tier_for), and it has no path to
 # this dock. Writing the mirror HERE rather than in the handful of places that
@@ -112,17 +142,123 @@ var _storage_gen := 0          # supersedes an in-flight usage scan
 # through this function, so the mirror is refreshed by the same call that reads it.
 func _mode() -> int:
 	if mode_btn == null: return HighpolyLib.Tier.LOW
-	var t: int = HighpolyLib.Tier.LOW if mode_btn.get_selected_id() == 0 else HighpolyLib.Tier.HIGH
+	var t: int = Modes.tier(mode_btn.get_selected_id())
 	HighpolyLib.detail = t
 	return t
 
 func _textured() -> bool:
-	return mode_btn.get_selected_id() == 2 if mode_btn else true
+	return Modes.textured(mode_btn.get_selected_id()) if mode_btn else true
 
-# map-context detail follows the same dropdown (replaces the old "Textures"
-# checkbox): 0 = flat SDK orange, 1 = grey clay high-poly, 2 = textured
+# True on every rung except the one that fetches nothing at all. Everything the
+# Map Context section offers costs a download, so this is the single gate they
+# all share — see _gate/_locked.
+func _ctx_allowed() -> bool:
+	return mode_btn != null and Modes.downloads(mode_btn.get_selected_id())
+
+# Say what the current mode is SHOWING, in the status line.
+#
+# Low-Poly draws the SDK's own proxies, so a placed asset is a plain white
+# block — correct, because that block is what gets exported. Without saying so,
+# it reads as the plugin being broken: that exact complaint is what caused
+# Low-Poly to be quietly changed into "our geometry, untextured" once before,
+# which cost the mode its meaning. The answer is a sentence, not a redefinition.
+func _mode_hint() -> String:
+	match (mode_btn.get_selected_id() if mode_btn else MODE_SDK):
+		MODE_SDK:
+			return " — showing only what the SDK ships; nothing downloads on this setting"
+		MODE_LIGHT:
+			return " — your pieces are what you export, the level around them is real but untextured"
+		_:
+			return ""
+
 func _mapctx_tex_mode() -> int:
-	return mode_btn.get_selected_id() if mode_btn else 2
+	return Modes.ctx_tex(mode_btn.get_selected_id()) if mode_btn else MODE_TEX
+
+# ---- the download gate ---------------------------------------------------
+# Every control registered here is one that cannot do anything without fetching
+# something first, so on the "nothing downloads" rung they are greyed out.
+#
+# They are greyed but left ENABLED on purpose. A disabled Button in Godot
+# swallows the click without emitting anything, and that click is the only moment
+# we know the user wanted the thing — so disabling them would grey out a control
+# and then say nothing at all about why, which is the state this gate exists to
+# fix. Instead the handler runs, _locked() snaps the control back, and the user
+# gets a sentence naming the rung that would give them what they just asked for.
+var _gated: Array = []          # of Control, each carrying a "gate_what" meta
+
+# `what` is the subject of the warning sentence, so it reads as the thing the
+# user just clicked. `back` is where an OptionButton is snapped to when refused
+# (a Button always goes back to unpressed).
+func _gate(c: Control, what: String, back := 0) -> Control:
+	if c == null: return c
+	c.set_meta("gate_what", what)
+	c.set_meta("gate_back", back)
+	c.tooltip_text += "\n\nNeeds a download, so it is unavailable on \"Low-Poly — what you export\"."
+	_gated.append(c)
+	return c
+
+func _refresh_gates() -> void:
+	var ok := _ctx_allowed()
+	for c in _gated:
+		if is_instance_valid(c):
+			(c as Control).modulate.a = 1.0 if ok else 0.4
+
+# True when the caller must stop. The click has already flipped the control by
+# the time a handler runs, so refusing it means putting the control back first.
+func _locked(c: Control) -> bool:
+	if _ctx_allowed(): return false
+	if c is Button:
+		(c as Button).set_pressed_no_signal(false)
+	elif c is OptionButton:
+		(c as OptionButton).select(int(c.get_meta("gate_back", 0)))
+	lbl.text = ("%s has to be downloaded, and this setting downloads nothing. "
+		+ "Choose \"Low-Poly + Minimal Downloads\" above to get it untextured, "
+		+ "or either High-Poly setting for the full version.") \
+		% str(c.get_meta("gate_what", "That"))
+	_flash_mode()
+	return true
+
+# Send the eye to the dropdown the message is talking about — the warning names
+# a control the user is not looking at.
+func _flash_mode() -> void:
+	if mode_btn == null or not mode_btn.is_inside_tree(): return
+	var tw := mode_btn.create_tween()
+	tw.tween_property(mode_btn, "modulate", Color(1.7, 1.4, 0.55), 0.12)
+	tw.tween_property(mode_btn, "modulate", Color.WHITE, 0.5)
+
+# Dropping to the "nothing downloads" rung has to actually take the borrowed
+# scenery down with it. Leaving it on screen would mean the rung that promises
+# only-what-the-SDK-ships is showing a mined skyline, which is precisely the
+# muddle the four rungs exist to remove.
+#
+# Nothing is deleted from disk: every layer here rebuilds from the same cache the
+# moment the user climbs back up.
+func _shed_map_context() -> int:
+	var r := EditorInterface.get_edited_scene_root()
+	var shed := 0
+	for c in [mapctx_on, mapctx_objects, mapctx_backdrop, mapctx_water,
+			mapctx_fx, mapctx_light]:
+		if c != null and (c as Button).button_pressed:
+			(c as Button).set_pressed_no_signal(false)
+			shed += 1
+	if mapctx_variant != null: mapctx_variant.select(0)
+	if mapctx_variant_row != null: mapctx_variant_row.visible = false
+	# the lighting sub-toggles only exist alongside Lighting itself
+	for c in [mapctx_gi, mapctx_shadows, mapctx_maplights]:
+		if c != null: (c as Control).visible = false
+	if mapctx_fill_row != null: mapctx_fill_row.visible = false
+	if r != null:
+		HighpolyFx.clear(r)
+		HighpolyGamemode.clear(r)
+		LightingScript.clear(r)
+		mapctx.apply(r, false, false, MODE_SDK)
+		# and hand the SDK its own stand-ins back — the layers that were on had
+		# hidden them to take their place
+		_sdk_assets_hidden(false)
+		_sdk_terrain_hidden(false)
+	if shed > 0:
+		_save_mapctx_state()
+	return shed
 
 func _range_label(v: float) -> String:
 	if int(v) <= 0: return "off"
@@ -243,6 +379,9 @@ func _enter_tree() -> void:
 		# clustered-lighting GPU budget), FX clamped to their class ranges
 		var _rr := EditorInterface.get_edited_scene_root()
 		LightingScript.lights_range = clampf(_rad, 0.0, 300.0)
+		# the light cull now skips a stationary camera, so a range change has to
+		# say so or dragging the slider while standing still would do nothing
+		LightingScript.invalidate_light_cull()
 		if _rr != null:
 			HighpolyFx.set_range(_rr, _rad)
 			if mapctx_optimize and mapctx_optimize.button_pressed:
@@ -264,9 +403,13 @@ func _enter_tree() -> void:
 		"Whether you are looking at the Low-Poly pieces you actually build and export with, or the real High-Poly game models laid over the top of them. Switching to High-Poly changes nothing about your map: the Low-Poly underneath is still what gets saved.")
 
 	mode_btn = OptionButton.new()
-	mode_btn.add_item("Low-Poly (what you export)", 0)
-	mode_btn.add_item("High-Poly (no textures)", 1)
-	mode_btn.add_item("High-Poly (full textures)", 2)
+	# Each entry means ONE thing, for both halves of the plugin — the borrowed
+	# scenery and the pieces you placed. Entry 0 briefly drew our own geometry
+	# for placed objects while showing SDK colours for the scenery, which made
+	# it pixel-identical to entry 1 and left no way to see your real export.
+	for id in Modes.ORDER:      # cheapest rung first
+		mode_btn.add_item(Modes.label(id), id)
+	mode_btn.tooltip_text = "Low-Poly — what you export: only what the SDK ships, and nothing is downloaded.\n\nLow-Poly + Minimal Downloads: your own pieces stay exactly as you export them, but the real level is brought in around them — ground, water, skyline, lighting and the level's own objects — untextured, so it stays small.\n\nHigh-Poly: your pieces are swapped for the real game models too, in clay or with their real textures."
 	mode_btn.selected = 0
 	mode_btn.item_selected.connect(func(_i): _mode_changed())
 	host.add_child(mode_btn)
@@ -280,6 +423,7 @@ func _enter_tree() -> void:
 	ovr_chk.tooltip_text = "Swaps just the pieces you have selected to High-Poly, leaving the rest Low-Poly. Handy for lining something up closely. When the whole map is already High-Poly it does the reverse: your selection drops back to Low-Poly so a heavy area stays smooth while you work."
 	ovr_chk.toggled.connect(_override_toggled)
 	detail_chips.add_child(ovr_chk)
+	_gate(ovr_chk, "Previewing a selection in High-Poly")
 
 	host = _section("Collision",
 		"Shows the invisible shapes players bump into. They are often not the shape they look like, which is why something can feel wrong to walk past even when it looks right.")
@@ -354,6 +498,7 @@ func _enter_tree() -> void:
 	mapctx_on = Theme_.chip("Extended Terrain")
 	mapctx_on.tooltip_text = "Adds the real ground and water that surround the play area, so you can see how your build sits in the world. The distant skyline and the level's own objects have their own switches beside this one. Preview only: none of it is saved into your map or included when you export."
 	mapctx_on.toggled.connect(func(v: bool):
+		if _locked(mapctx_on): return
 		var r0 := EditorInterface.get_edited_scene_root()
 		# Extended Terrain used to force the objects layer ON with it, so there
 		# was no way to see the surrounding ground without also pulling in every
@@ -378,6 +523,7 @@ func _enter_tree() -> void:
 	mapctx_backdrop = Theme_.chip("Backdrops")
 	mapctx_backdrop.tooltip_text = "The distant skyline and out-of-bounds scenery the level is surrounded by: bridges, city facades and hills a kilometre or more out. Off by default, because it is heavy and sits well outside the area you build in. Draws whether or not the extended terrain is on."
 	mapctx_backdrop.toggled.connect(func(v: bool):
+		if _locked(mapctx_backdrop): return
 		var r0 := EditorInterface.get_edited_scene_root()
 		if v and mapctx.ensure_layer(r0, "backdrop", _mapctx_tex_mode()):
 			mapctx.set_backdrop_shown(r0, true, _mapctx_tex_mode())
@@ -394,6 +540,7 @@ func _enter_tree() -> void:
 	mapctx_water = Theme_.chip("Water")
 	mapctx_water.tooltip_text = "The rivers, harbours and sea the real level has, at the real height, so you can see what your build sits above. Speed of the ripples follows the water setting in Configure Shaders, where zero holds it still. Maps with no water body simply have nothing to show."
 	mapctx_water.toggled.connect(func(v: bool):
+		if _locked(mapctx_water): return
 		var r0 := EditorInterface.get_edited_scene_root()
 		# flip it if it exists; if not, build JUST this layer. Only a scene with
 		# no overlay at all needs the full apply.
@@ -412,6 +559,7 @@ func _enter_tree() -> void:
 	mapctx_objects = Theme_.chip("Original map objects")
 	mapctx_objects.tooltip_text = "Swaps the level's shipped assets for the real per-object geometry, so you get the actual buildings, vehicles and clutter instead of the single merged mesh the SDK ships. The merged one is hidden while this is on and comes back exactly as you left it when you turn it off. How they look follows the Detail Mode above; the Range slider in Map Context sets how far away you can still see them."
 	mapctx_objects.toggled.connect(func(v: bool):
+		if _locked(mapctx_objects): return
 		# checkbox and Range slider are one control pair: turning objects ON
 		# from a 0 range starts them at 100 m (slider 0 unchecks the box below)
 		if v and mapctx_range != null and int(mapctx_range.value) == 0:
@@ -464,6 +612,7 @@ func _enter_tree() -> void:
 	mapctx_variant.add_item("Off")
 	mapctx_variant.tooltip_text = "Shows one game mode's real layout: capture points, objectives and spawn areas. These are markers laid on top; the scenery itself is the same for every mode."
 	mapctx_variant.item_selected.connect(func(_i):
+		if _locked(mapctx_variant): return
 		var _r := EditorInterface.get_edited_scene_root()
 		var _mode := mapctx_variant.get_item_text(mapctx_variant.selected)
 		lbl.text = HighpolyGamemode.apply(_r, mapctx.map_of(_r), _mode, mapctx) \
@@ -503,6 +652,7 @@ func _enter_tree() -> void:
 	mapctx_fx = Theme_.chip("FX")
 	mapctx_fx.tooltip_text = "Adds the fires, smoke columns and sparks the real level has, in the spots it has them. That includes the big distant smoke and haze cards near the skyline, which are effects rather than scenery. They are off by default, because they are hundreds of metres across and sit in front of the surroundings."
 	mapctx_fx.toggled.connect(func(v: bool):
+		if _locked(mapctx_fx): return
 		var _r := EditorInterface.get_edited_scene_root()
 		# the level's flipbook cards are drawn as props, so they follow this
 		# switch too rather than arriving unbidden with the map objects
@@ -514,6 +664,7 @@ func _enter_tree() -> void:
 	mapctx_light = Theme_.chip("Lighting")
 	mapctx_light.tooltip_text = "Lights your map the way the real one is lit, with the same sun angle, sun colour, sky and haze. Replaces the editor's plain preview light while it is on."
 	mapctx_light.toggled.connect(func(v: bool):
+		if _locked(mapctx_light): return
 		if mapctx_gi: mapctx_gi.visible = v
 		if mapctx_shadows: mapctx_shadows.visible = v
 		if mapctx_maplights: mapctx_maplights.visible = v
@@ -606,6 +757,7 @@ func _enter_tree() -> void:
 		mapctx_batch.add_item("%d m" % m, m)
 	mapctx_batch.select(0)
 	mapctx_batch.item_selected.connect(func(i: int):
+		if _locked(mapctx_batch): return
 		HighpolyMapContext.cell_override = mapctx_batch.get_item_id(i)
 		EditorInterface.get_editor_settings().set_project_metadata(
 			"highpoly_mapctx", "_cell_override", HighpolyMapContext.cell_override)
@@ -630,6 +782,23 @@ func _enter_tree() -> void:
 	mapctx_optimize.visible = false
 	mc_chips.add_child(mapctx_optimize)
 
+	# Everything in this section has to fetch the map's data before it can show
+	# anything, so all of it is gated together. Registered here, in one place,
+	# rather than beside each control: the list IS the answer to "what does this
+	# plugin download", and that is worth being able to read at a glance.
+	#
+	# Deliberately NOT gated: the Range slider (a view distance, it loads
+	# nothing), the lighting sub-toggles (they only exist while Lighting is on,
+	# which is gated), and the collision overlays (drawn from the scene itself).
+	_gate(mapctx_on, "The extended terrain")
+	_gate(mapctx_backdrop, "The distant skyline")
+	_gate(mapctx_water, "The water")
+	_gate(mapctx_objects, "The level's own objects")
+	_gate(mapctx_fx, "The level's effects")
+	_gate(mapctx_light, "The game lighting")
+	_gate(mapctx_variant, "The game mode layouts")
+	_gate(mapctx_batch, "Rebuilding the scenery")
+
 	var td_row := HBoxContainer.new(); host.add_child(td_row)
 	var td_lbl := Label.new(); td_lbl.text = "Terrain"
 	td_row.add_child(td_lbl)
@@ -642,8 +811,10 @@ func _enter_tree() -> void:
 	td.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	td_row.add_child(td)
 	td.item_selected.connect(func(_i):
+		if _locked(td): return
 		mapctx.terrain_step = td.get_item_id(td.selected)
 		_mapctx_rebuild())
+	_gate(td, "The ground", 1)          # snaps back to "High (2m)", its default
 
 	var shader_btn := Button.new()
 	shader_btn.text = "Configure Shaders…"
@@ -992,9 +1163,11 @@ func _enter_tree() -> void:
 	dock.add_child(mapctx_timer); mapctx_timer.start()
 	_edited_root = EditorInterface.get_edited_scene_root()
 
-	# every session starts safe: Low-Poly until a mode is chosen
-	mode_btn.select(mode_btn.get_item_index(HighpolyLib.Tier.LOW))
+	# every session starts safe: the rung that downloads nothing, until a mode is
+	# chosen. _restore_mapctx_state moves off it if the open map was left higher.
+	mode_btn.select(mode_btn.get_item_index(MODE_SDK))
 	previews.tier = HighpolyLib.Tier.LOW
+	_refresh_gates()
 
 	# auto-overlay for pieces placed while a detail mode is active
 	get_tree().node_added.connect(_on_node_added)
@@ -1788,8 +1961,9 @@ func _do_reset() -> void:
 	if previews: previews.rescan_context()
 
 	# --- panel back to defaults ---
-	if mode_btn: mode_btn.select(mode_btn.get_item_index(HighpolyLib.Tier.LOW))
+	if mode_btn: mode_btn.select(mode_btn.get_item_index(MODE_SDK))
 	if previews: previews.tier = HighpolyLib.Tier.LOW
+	_refresh_gates()      # back on the rung that downloads nothing: grey them again
 	for b in [mapctx_on, mapctx_objects, mapctx_fx, mapctx_light, col_chk,
 			iso_chk, ovr_chk]:
 		if b: b.set_pressed_no_signal(false)
@@ -1894,8 +2068,9 @@ func _check_scene_change() -> void:
 		HighpolyCollision.apply(old, false)                   # frees collision overlays
 		HighpolyLib.restore(old)                              # overlays off, SDK proxies back
 	# reset the dock to default for the newly-active scene (programmatic, no rebuild)
-	if mode_btn: mode_btn.select(mode_btn.get_item_index(HighpolyLib.Tier.LOW))
+	if mode_btn: mode_btn.select(mode_btn.get_item_index(MODE_SDK))
 	if previews: previews.tier = HighpolyLib.Tier.LOW
+	_refresh_gates()      # the new scene starts on the rung that downloads nothing
 	_override.clear()
 	if ovr_chk:
 		ovr_chk.set_pressed_no_signal(false)
@@ -2177,7 +2352,13 @@ func _save_mapctx_state() -> void:
 		"fx": mapctx_fx.button_pressed if mapctx_fx else false,
 		"variant": mapctx_variant.get_item_text(mapctx_variant.selected)
 				if mapctx_variant and mapctx_variant.selected >= 0 else "Off",
-		"tex": _mapctx_tex_mode(),
+		# The RAW dropdown id, not _mapctx_tex_mode(). They were the same thing
+		# while there were three entries; they are not any more, because the light
+		# rung draws its surroundings in clay and so reports the High-Poly-grey
+		# texture mode. Saving that would have quietly promoted anyone on the light
+		# rung to High-Poly on their next open — and High-Poly swaps the pieces
+		# they placed, so the rung's one promise would break on reload.
+		"tex": mode_btn.get_selected_id() if mode_btn else MODE_SDK,
 	})
 
 # Plugin/editor START only (not scene switches): put the overlay back the way
@@ -2284,6 +2465,19 @@ func _restore_mapctx_state() -> void:
 				break
 	lbl.text = "Bringing back the real level for %s…" % map
 	var saved_tex := int(d.get("tex", 0))
+	# MIGRATION. Before the light rung existed, id 0 meant plain "Low-Poly" and
+	# could perfectly well have map context switched on with it. Restoring such a
+	# state literally would now land on the rung that downloads nothing, which
+	# sheds every layer the user had left on — they would open their map and find
+	# the scenery gone, with no clue that a mode they never touched took it away.
+	#
+	# A saved state carrying any layer therefore means the light rung, which is
+	# where that combination lives now. Nothing is re-downloaded; it is the same
+	# cache, re-labelled.
+	if saved_tex == MODE_SDK and (bool(d.get("on", false)) or bool(d.get("objects", false)) \
+			or bool(d.get("backdrop", false)) or bool(d.get("water", false)) \
+			or bool(d.get("light", false)) or bool(d.get("fx", false))):
+		saved_tex = MODE_LIGHT
 	if mode_btn != null and saved_tex != mode_btn.get_selected_id():
 		mode_btn.select(mode_btn.get_item_index(saved_tex))
 		_mode_changed()          # re-applies the library AND rebuilds the overlay
@@ -2351,6 +2545,14 @@ func _mapctx_changed() -> void:
 	EditorInterface.popup_dialog_centered(dlg)
 
 func _mode_changed() -> void:
+	# The gate follows the rung: grey the download-backed controls on the rung
+	# that fetches nothing, un-grey them on every other. Dropping onto that rung
+	# also sheds whatever the map context had built, so the rung that promises
+	# only-what-the-SDK-ships is telling the truth on screen as well as in words.
+	_refresh_gates()
+	var shed := 0
+	if not _ctx_allowed():
+		shed = _shed_map_context()
 	# the scene-wide apply below re-uniforms everything, so overrides dissolve
 	_override.clear()
 	if ovr_chk:
@@ -2370,13 +2572,23 @@ func _mode_changed() -> void:
 	_reapply_placed_cull()
 	# whatever this scene needs but doesn't have yet: front of the queue, and
 	# swapped in automatically as it lands (no prompt, no re-apply button).
-	# Both modes, because both draw our geometry. In Low-Poly this is what turns
-	# a just-placed white proxy into the real shape without the user asking.
-	if not HighpolyLib.use_legacy:
+	#
+	# HIGH-POLY MODES ONLY. Low-Poly draws the SDK's own proxies and needs
+	# nothing from our library, so it queues nothing — see _diff_and_queue.
+	# Leaving on Low-Poly therefore fetches zero bytes; this is the moment the
+	# user asks for real models, so it is also the moment the fetch belongs.
+	if not HighpolyLib.use_legacy and _mode() != HighpolyLib.Tier.LOW:
 		var missing: Array = HighpolyLib.take_wanted()
 		if not missing.is_empty():
 			sync.prioritize_scene(missing)
 			lbl.text += ", %d downloading in background" % missing.size()
+		# the hourly diff was skipped for every tick spent in Low-Poly, so the
+		# library backlog has to be rebuilt on the way out or nothing but the
+		# open scene would ever arrive
+		sync.check_now()
+	lbl.text += _mode_hint()
+	if shed > 0:
+		lbl.text += ". %d borrowed layer(s) switched off — still downloaded, back the moment you climb a rung" % shed
 	# The map-context overlay follows the same dropdown (orange / clay /
 	# textured). Re-skin what is already built rather than rebuild it: the full
 	# apply() starts with _clear() and re-parses every prop, so changing Detail
@@ -2425,6 +2637,7 @@ func _override_label() -> String:
 			else "Keep as Low-Poly"
 
 func _override_toggled(pressed: bool) -> void:
+	if _locked(ovr_chk): return
 	if pressed:
 		_reoverride_selection()
 	else:
@@ -2679,6 +2892,17 @@ func _scope_changed() -> void:
 func _on_node_added(node: Node) -> void:
 	if not (node is Node3D): return
 	if node.name == HighpolyLib.HP_NODE or node.name == HighpolyCollision.COL_NODE: return
+	# OUR OWN BUILD IS NOT A USER PLACING SOMETHING.
+	#
+	# This is connected to the tree-wide node_added signal, so it fires for every
+	# node anyone adds anywhere — including the ~11,600 the map-context build
+	# adds itself. Each one used to pay get_edited_scene_root(), an is_ancestor_of
+	# walk UP to the root, and another walk up in in_overlay(), purely to
+	# conclude that our node is ours. A bool checked first skips all of it.
+	#
+	# Nothing is missed: everything the build creates is overlay geometry, which
+	# the in_overlay() test below would have rejected anyway.
+	if mapctx != null and not mapctx.is_build_done(): return
 	var root := EditorInterface.get_edited_scene_root()
 	if root == null or not root.is_ancestor_of(node): return
 	if HighpolyLib.in_overlay(node): return

@@ -21,11 +21,11 @@ const Log = preload("highpoly_log.gd")
 
 # The editor rebuilds gizmos on its own — selecting a node, moving one, undo.
 # A top-up pass catches those, on a slow cadence because it is only tidying.
-const TOPUP_EVERY := 8             # ticks of the panel's half-second timer
+const SLICE := 192                 # tracked nodes swept per half-second tick
 
 static var _nodes: Array = []      # the collision nodes we are keeping clear
 static var _hidden := false
-static var _t := 0
+static var _cursor := 0            # round-robin position in _nodes
 
 static func is_hidden() -> bool: return _hidden
 static func count() -> int: return _nodes.size()
@@ -59,15 +59,28 @@ static func apply(root: Node, hide: bool) -> int:
 		_nodes.clear()
 	return n
 
-# Cheap tidy-up: only every TOPUP_EVERY ticks, and only clears what came back.
+# Cheap tidy-up: a slice per tick, and only clears what came back.
 static func tick() -> int:
-	if not _hidden: return 0
-	_t += 1
-	if _t < TOPUP_EVERY: return 0
-	_t = 0
+	if not _hidden or _nodes.is_empty(): return 0
+	# SPREAD, don't batch. This used to do nothing for seven ticks and then walk
+	# EVERY tracked node on the eighth — get_gizmos() plus a clear on each — which
+	# on a built-up map is a spike once every four seconds. Four seconds is also
+	# the only interval in the plugin near the "hitching every ~3 seconds" users
+	# reported while standing still.
+	#
+	# Same total work, just levelled: a slice each half-second tick, cursor
+	# carried between calls. A full sweep now takes a few seconds of wall clock
+	# instead of one frame, which is fine — this is a tidy-up for gizmos the
+	# editor rebuilt behind us, not something with a deadline.
+	var n := _nodes.size()
+	var slice: int = mini(SLICE, n)
 	var back := 0
 	var dead := false
-	for c in _nodes:
+	for _i in range(slice):
+		if _cursor >= n:
+			_cursor = 0
+		var c: Variant = _nodes[_cursor]
+		_cursor += 1
 		if not is_instance_valid(c):
 			dead = true
 			continue
@@ -79,6 +92,7 @@ static func tick() -> int:
 		for c in _nodes:
 			if is_instance_valid(c): keep.append(c)
 		_nodes = keep
+		_cursor = 0                 # indices shifted under us
 	return back
 
 # A scene we have not seen yet (or one that grew) needs its new nodes clearing
@@ -105,4 +119,4 @@ static func release(root: Node) -> void:
 			(c as Node3D).update_gizmos()
 	_nodes.clear()
 	_hidden = false
-	_t = 0
+	_cursor = 0

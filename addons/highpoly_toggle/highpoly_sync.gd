@@ -90,6 +90,19 @@ func _diff_and_queue(first := false, force := false) -> void:
 		return
 	if not res.get("changed", false) and not first and not force:
 		return                        # nothing published since last check — zero work
+	# LOW-POLY DOWNLOADS NOTHING. The mode shows the SDK's own proxies, so not
+	# one byte of our library is needed to render it. It used to fetch the full
+	# web tier anyway — gigabytes pulled to serve a mode that never displays
+	# them, in the mode that is the DEFAULT for every new scene.
+	#
+	# The manifest refresh above still ran, deliberately: it is one small request
+	# and it lets the panel say how many models are available without committing
+	# to fetching them. Switching to a High-Poly mode calls this again through
+	# _mode_changed(), which is where the queue actually gets built.
+	if HighpolyLib.detail == HighpolyLib.Tier.LOW:
+		Log.info(("Low-Poly: %d model(s) available, downloading none (the mode "
+			+ "draws the SDK's own proxies)") % manifest.size())
+		return
 	var full := HighpolyStore.scope() == "full"
 	if first and full and HighpolyStore.count() == 0:
 		await _bootstrap_bundle()

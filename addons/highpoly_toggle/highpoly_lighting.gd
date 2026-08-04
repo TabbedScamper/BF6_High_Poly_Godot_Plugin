@@ -429,13 +429,39 @@ static func set_map_lights(root: Node, on: bool, map: String) -> String:
 		holder.add_child(lt)
 		lt.owner = null
 		n += 1
+	invalidate_light_cull()      # everything starts hidden: the next tick must run
 	return "Map lights: %d loaded (nearest %d m lit)" % [n, int(lights_range)]
 
-# dock-timer culling: only lights near the editor camera render
+# dock-timer culling: only lights near the editor camera render.
+#
+# This runs on the panel's half-second timer and is O(EVERY light in the map) —
+# 11,640 of them on Dumbo. It used to run on every tick regardless of whether
+# anything had changed, so standing perfectly still cost ~11,640 distance tests
+# twice a second, forever, to arrive at the same answer each time. That is the
+# shape of a periodic hitch reported while stationary.
+#
+# The lights already carry GPU distance fade (see set_map_lights); this pass is
+# the coarser one that keeps them out of the clustered-element budget entirely,
+# so it is worth keeping — it just is not worth REPEATING for a camera that has
+# not moved.
+static var _last_cull_pos := Vector3(1e20, 1e20, 1e20)   # forces the first pass
+static var _cull_dirty := true
+
+# call when the light set or the range changes: the next tick must run even if
+# the camera is exactly where it was
+static func invalidate_light_cull() -> void:
+	_cull_dirty = true
+
 static func tick_lights(root: Node, cam_pos: Vector3) -> void:
 	if root == null: return
 	var holder := root.get_node_or_null(LIGHTS_NODE)
 	if holder == null: return
+	# 1 m of slack: below that, no light can cross the boundary in a way anyone
+	# could see, and the editor camera jitters slightly even when "still"
+	if not _cull_dirty and cam_pos.distance_squared_to(_last_cull_pos) < 1.0:
+		return
+	_last_cull_pos = cam_pos
+	_cull_dirty = false
 	var r2 := lights_range * lights_range
 	for c in holder.get_children():
 		if c is Light3D:
