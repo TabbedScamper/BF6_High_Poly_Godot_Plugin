@@ -28,7 +28,12 @@ class_name HighpolyLighting
 #   "lux" = the VE's SunIntensity (real illuminance) — mapped to a relative
 #   DirectionalLight energy below (the editor has no physical light units).
 #
-# MP_Capstone is absent: its toc was never EBX-extracted (no VE data on disk).
+# MP_Capstone is absent FROM TABLE ONLY — its toc was never EBX-extracted when
+# that table was built. It has since been mined like every other map and its
+# lighting arrives in the map package (54 fields, sun 157.03/31.0, with a sky),
+# so the map is fully supported. It is the only map with no TABLE fallback,
+# which is what made the mined-cache bug grey its Lighting chip out entirely
+# while every other map merely degraded in silence — see mined().
 
 const NODE := "_GAME_LIGHTING"
 
@@ -290,9 +295,7 @@ static func apply(root: Node, map: String, gi := true, shadows := true) -> Strin
 	# --- sun ---
 	var sun := DirectionalLight3D.new()
 	sun.name = "Sun"
-	authored_az = float(e["az"])
-	authored_el = float(e["el"])
-	var dir: Vector3 = sun_dir(authored_az, authored_el)
+	var dir: Vector3 = sun_dir(float(e["az"]), float(e["el"]))
 	# a DirectionalLight3D shines along its local -Z: aim -Z opposite the sun
 	sun.transform = Transform3D(Basis.looking_at(-dir, Vector3.UP), Vector3(0, 200, 0))
 	sun.light_color = e["sun"]
@@ -676,62 +679,12 @@ static func set_interior_fill(root: Node, amount: float) -> String:
 	return "Interior light %d%%" % int(round(interior_fill * 100.0))
 
 
-# --- sun calibration ---------------------------------------------------------
-# The authored angles the last apply() used, so the dock can show what the DATA
-# says next to whatever the user has dialled in. Set by apply(), never by the
-# slider — the point of the exercise is the difference between the two.
-static var authored_az := 0.0
-static var authored_el := 0.0
-
-const CAL_PATH := "user://mapcontext/_sun_calibration.json"
-
-# Re-aim the sun live. Same construction as apply(), deliberately: if these ever
-# disagree the calibration measures the discrepancy instead of the convention.
-static func set_sun_angles(root: Node, az: float, el: float) -> String:
-	var rig := root.get_node_or_null(NODE) if root != null else null
-	var sun := (rig.get_node_or_null("Sun") as DirectionalLight3D) if rig != null else null
-	if sun == null:
-		return "Game lighting is off"
-	var dir := sun_dir(az, el)
-	sun.transform = Transform3D(Basis.looking_at(-dir, Vector3.UP), Vector3(0, 200, 0))
-	var shadow := 99.0
-	if dir.y > 0.001:
-		shadow = sqrt(1.0 - dir.y * dir.y) / dir.y
-	return "Sun %.1f / %.1f  (data %.1f / %.1f)  shadow %.1fx" % [
-		az, el, authored_az, authored_el, shadow]
-
-
-# Append one map's answer to a file, because ONE map cannot tell a mirror from a
-# fixed offset — both fit a single point. Several maps with different authored
-# azimuths separate them: a constant offset shows the same delta everywhere, a
-# mirror shows a delta that moves with 2x the authored angle. So this stores the
-# authored pair alongside the corrected one and keeps every map that gets done.
-static func save_calibration(map: String, az: float, el: float) -> String:
-	if map == "":
-		return "Open a level scene first"
-	var all: Dictionary = {}
-	if FileAccess.file_exists(CAL_PATH):
-		var prev: Variant = JSON.parse_string(FileAccess.get_file_as_string(CAL_PATH))
-		if prev is Dictionary:
-			all = prev
-	all[map] = {
-		"authored_az": authored_az, "authored_el": authored_el,
-		"user_az": az, "user_el": el,
-		"d_az": wrapf(az - authored_az, -180.0, 180.0),
-		"d_el": el - authored_el,
-		# Which convention the slider was feeding when this was recorded. Entries
-		# saved before sun_dir() moved to compass bearings are in a frame 90
-		# degrees out and mirrored, so averaging them together with later ones
-		# would produce a confident, meaningless answer. Unstamped == pre-fix.
-		"convention": "compass",
-	}
-	DirAccess.make_dir_recursive_absolute(CAL_PATH.get_base_dir())
-	var f := FileAccess.open(CAL_PATH, FileAccess.WRITE)
-	if f == null:
-		return "Could not write the calibration file"
-	f.store_string(JSON.stringify(all, " "))
-	f.close()
-	return "Saved %s — %d map%s calibrated" % [map, all.size(), "" if all.size() == 1 else "s"]
+# (The sun-calibration scaffolding lived here — a live re-aim plus a writer for
+# user://mapcontext/_sun_calibration.json — while the azimuth convention was
+# being established against the running game. It is gone: SunRotationX is a
+# compass bearing, sun_dir() says so with the derivation, and
+# tools/test_sun_convention.gd locks it in. Nothing about the sun is adjustable
+# any more, which is the point.)
 
 
 static func set_shadows(root: Node, on: bool) -> String:
