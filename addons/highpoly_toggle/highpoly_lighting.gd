@@ -95,7 +95,78 @@ const TABLE := {
 }
 
 static func has_data(map: String) -> bool:
-	return TABLE.has(map)
+	return TABLE.has(map) or not mined(map).is_empty()
+
+# ---------------------------------------------------------------------------
+# THE MINED VisualEnvironment
+#
+# TABLE above is 7 hand-maintained values per map. The map package now carries
+# 56, read straight out of the level's VisualEnvironment preset — sun, sky, fog,
+# exposure, colour grading, white balance, ambient occlusion, GI and shadow
+# cascades. Where a map has them, they win; TABLE stays as the fallback for
+# anyone whose map data predates this, and for the handful of fields the mine
+# does not cover (the sky gradient colours).
+#
+# Verified before being trusted: mining all 22 maps reproduced every one of the
+# 21 rows TABLE already had, exactly, and supplied MP_Capstone which it lacked.
+# So this is not a new set of numbers, it is the same numbers plus 49 more.
+const CACHE := "user://mapcontext"
+
+static var _mined: Dictionary = {}          # map -> {} (absent) or the fields
+
+static func mined(map: String) -> Dictionary:
+	if map == "":
+		return {}
+	if _mined.has(map):
+		return _mined[map]
+	var out: Dictionary = {}
+	var p := "%s/%s/placements.json" % [CACHE, map]
+	if FileAccess.file_exists(p):
+		var j: Variant = JSON.parse_string(FileAccess.get_file_as_string(p))
+		if j is Dictionary:
+			var lit: Variant = (j as Dictionary).get("lighting")
+			if lit is Dictionary and (lit as Dictionary).get("fields") is Dictionary:
+				out = (lit as Dictionary)["fields"]
+	_mined[map] = out
+	return out
+
+# Local lighting zones (interiors, alleys, dark spots) with a world extent.
+static func zones(map: String) -> Array:
+	if map == "":
+		return []
+	var p := "%s/%s/placements.json" % [CACHE, map]
+	if not FileAccess.file_exists(p):
+		return []
+	var j: Variant = JSON.parse_string(FileAccess.get_file_as_string(p))
+	if not (j is Dictionary):
+		return []
+	var z: Variant = (j as Dictionary).get("light_zones")
+	return z if z is Array else []
+
+static func forget(map := "") -> void:
+	if map == "":
+		_mined.clear()
+	else:
+		_mined.erase(map)
+
+# A vec4/vec3 field arrives as an Array. Colour without the magnitude.
+static func _col(v: Variant, fallback: Color) -> Color:
+	if not (v is Array) or (v as Array).size() < 3:
+		return fallback
+	var a: Array = v
+	return Color(float(a[0]), float(a[1]), float(a[2]))
+
+# The same array, normalised, plus how bright it was. BF6 stores fog colour and
+# similar as HDR radiance — `(1385, 2132, 3072)` is a sky blue at ~3072 — so hue
+# and magnitude have to be separated rather than clamped.
+static func _col_hdr(v: Variant, fallback: Color) -> Array:
+	if not (v is Array) or (v as Array).size() < 3:
+		return [fallback, 1.0]
+	var a: Array = v
+	var m: float = maxf(maxf(float(a[0]), float(a[1])), float(a[2]))
+	if m <= 0.0001:
+		return [fallback, 0.0]
+	return [Color(float(a[0]) / m, float(a[1]) / m, float(a[2]) / m), m]
 
 # world-space unit vector TOWARD the sun (photo-verified convention, see header)
 static func sun_dir(az_deg: float, el_deg: float) -> Vector3:
@@ -129,9 +200,22 @@ static func apply(root: Node, map: String, gi := true, shadows := true) -> Strin
 	if root == null:
 		return "No scene open"
 	clear(root)
-	if not TABLE.has(map):
+	var m: Dictionary = mined(map)
+	if not TABLE.has(map) and m.is_empty():
 		return "No lighting data for %s" % map
-	var e: Dictionary = TABLE[map]
+	# TABLE is the base; every field the map package supplies overrides it. The
+	# gradient colours (top/hor/gnd) are not in the VE mine, so they still come
+	# from TABLE and are what the procedural fallback sky uses when a map has no
+	# panorama yet.
+	var e: Dictionary = (TABLE[map] as Dictionary).duplicate(true) if TABLE.has(map) else {}
+	if not m.is_empty():
+		if m.has("sun_az"): e["az"] = float(m["sun_az"])
+		if m.has("sun_el"): e["el"] = float(m["sun_el"])
+		if m.has("sun_lux"): e["lux"] = float(m["sun_lux"])
+		if m.has("sun_color"): e["sun"] = _col(m["sun_color"], e.get("sun", Color.WHITE))
+		for k in ["top", "hor", "gnd"]:
+			if not e.has(k):
+				e[k] = Color(0.6, 0.75, 1.0)
 
 	var rig := Node3D.new()
 	rig.name = NODE
@@ -164,7 +248,25 @@ static func apply(root: Node, map: String, gi := true, shadows := true) -> Strin
 	# horizon come from data, not from gradient-colour approximation.
 	var sky := Sky.new()
 	var pano_tex: Texture2D = null
-	if e.has("pano"):
+	var pano_scale := 0.0
+	# The map package's own sky, converted from the level's PanoramicTexture.
+	# EXR because Godot cannot load .dds at runtime — that limitation is why the
+	# one sky this plugin used to have was welded into its own zip, and why only
+	# one map ever had a real sky.
+	var sp := "%s/%s/sky.exr" % [CACHE, map]
+	if FileAccess.file_exists(sp):
+		var img := Image.new()
+		if img.load_exr_from_buffer(FileAccess.get_file_as_bytes(sp)) == OK:
+			pano_tex = ImageTexture.create_from_image(img)
+			# The panorama ships NORMALISED (measured mean 0.057-1.345 across all
+			# 22) and the VE's LuminanceScale carries the magnitude, 500-80000.
+			# Read it; do not measure the texture and normalise to its own
+			# average, which throws the authored brightness away.
+			pano_scale = float(m.get("sky_luminance_scale", 0.0))
+	if pano_tex == null and e.has("pano"):
+		# legacy: the one sky bundled inside the plugin. Already multiplied
+		# through, so it is normalised by its MEASURED luminance, not by
+		# LuminanceScale — the two disagree for exactly this reason.
 		var pp := "res://addons/highpoly_toggle/sky/" + str(e["pano"])
 		if ResourceLoader.exists(pp):
 			pano_tex = load(pp)
@@ -172,8 +274,14 @@ static func apply(root: Node, map: String, gi := true, shadows := true) -> Strin
 		var pmat := PanoramaSkyMaterial.new()
 		pmat.panorama = pano_tex
 		pmat.filter = true
-		# physical-HDR normalization (see the TABLE "pano_lum" note)
-		pmat.energy_multiplier = 1.0 / maxf(float(e.get("pano_lum", 1.0)), 0.001)
+		if pano_scale > 0.0:
+			# Bring the authored magnitude onto the ~1.0 scale the rest of the
+			# rig is calibrated against: texture x LuminanceScale is the real
+			# luminance, and SKY_REF is what we call "1".
+			const SKY_REF := 7000.0        # median of texture-mean x scale, fleet-wide
+			pmat.energy_multiplier = clampf(pano_scale / SKY_REF, 0.05, 20.0)
+		else:
+			pmat.energy_multiplier = 1.0 / maxf(float(e.get("pano_lum", 1.0)), 0.001)
 		sky.sky_material = pmat
 	else:
 		var mat := ProceduralSkyMaterial.new()
@@ -235,6 +343,16 @@ static func apply(root: Node, map: String, gi := true, shadows := true) -> Strin
 		# half-resolution GI buffers — near-identical look for diffuse GI,
 		# large GPU savings. Runtime call: doesn't touch project settings.
 		RenderingServer.gi_set_use_half_resolution(true)
+
+	# ---- everything the map's VisualEnvironment authored --------------------
+	# Systems the editor did not reproduce at all until now. Every value here is
+	# a field the level states; none of it is tuned by eye.
+	if not m.is_empty():
+		_apply_mined(env, sun, m)
+
+	# the exposure a zone blends AWAY from, and the zones themselves
+	_base_exposure = env.tonemap_exposure
+	load_zones(map)
 	# depth fog: per-map "fog" density when photo/VE-verified (0.0 = the map has
 	# none — e.g. Aftermath, confirmed against all 21 PhotoMatch references).
 	# Maps without a mined value keep the old horizon-haze heuristic until they
@@ -267,6 +385,129 @@ static func apply(root: Node, map: String, gi := true, shadows := true) -> Strin
 
 # live sub-toggles (dock checkboxes under "Game lighting") — operate on the
 # existing rig/overlay, nothing rebuilds
+# Apply the authored VE systems onto a Godot Environment + sun.
+#
+# Kelvin -> linear RGB, a Tanner Helland style black-body approximation. BF6
+# authors a white balance (5600 K on mp_dumbo) and Godot has no white-balance
+# stage, so it becomes a multiplier on the sun and ambient rather than being
+# dropped. 6500 K is the neutral point: it returns white and changes nothing.
+static func _kelvin(k: float) -> Color:
+	var t: float = clampf(k, 1000.0, 40000.0) / 100.0
+	var r := 255.0
+	var g := 255.0
+	var b := 255.0
+	if t <= 66.0:
+		g = 99.4708025861 * log(t) - 161.1195681661
+		b = 0.0 if t <= 19.0 else 138.5177312231 * log(t - 10.0) - 305.0447927307
+	else:
+		r = 329.698727446 * pow(t - 60.0, -0.1332047592)
+		g = 288.1221695283 * pow(t - 60.0, -0.0755148492)
+	return Color(clampf(r, 0.0, 255.0) / 255.0,
+		clampf(g, 0.0, 255.0) / 255.0,
+		clampf(b, 0.0, 255.0) / 255.0)
+
+
+static func _apply_mined(env: Environment, sun: DirectionalLight3D, m: Dictionary) -> void:
+	# --- sky orientation -----------------------------------------------------
+	# PanoramicRotation is a fraction of a turn (0.869 on dumbo, 0.159 on
+	# aftermath), so the painted sun lines up with the one casting shadows.
+	if m.has("sky_rotation"):
+		env.sky_rotation = Vector3(0.0, float(m["sky_rotation"]) * TAU, 0.0)
+
+	# --- sun disc ------------------------------------------------------------
+	# DrawSunDisc is true on every map read, so the engine paints a disc over the
+	# panorama rather than relying on one baked into it. SunSize units are NOT
+	# established (0.005 / 0.002), so it is not converted to degrees — the
+	# existing angular distance stands and only the on/off is honoured.
+	if m.has("sun_disc") and not bool(m["sun_disc"]):
+		sun.light_angular_distance = 0.0
+
+	# --- sun shadow distance -------------------------------------------------
+	# The level states this. We used to guess it (30 m, arrived at by eye);
+	# mp_dumbo authors 45.
+	var ssd: Variant = m.get("sun_shadow_distance")
+	if ssd is Array and (ssd as Array).size() > 0:
+		var d := float((ssd as Array)[0])
+		if d > 1.0:
+			sun.directional_shadow_max_distance = clampf(d * 8.0, 60.0, 2000.0)
+
+	# --- fog -----------------------------------------------------------------
+	# The most map-distinguishing system in the whole VE: FogColor alone takes 14
+	# distinct values across 22 maps, and HeightFogEnable is genuinely false on
+	# some. Colour is HDR radiance, so hue and magnitude are separated.
+	if m.has("fog_enabled") and bool(m["fog_enabled"]):
+		env.fog_enabled = true
+		var fc := _col_hdr(m.get("fog_color"), Color(0.5, 0.6, 0.7))
+		env.fog_light_color = fc[0]
+		env.fog_light_energy = 1.0
+		if m.has("sun_scatter"):
+			env.fog_sun_scatter = clampf(float(m["sun_scatter"]), 0.0, 1.0)
+		if m.has("aerial_perspective"):
+			env.fog_aerial_perspective = clampf(float(m["aerial_perspective"]) / 50.0, 0.0, 1.0)
+		env.fog_mode = Environment.FOG_MODE_DEPTH
+		var fs := float(m.get("fog_dist_start", 0.0))
+		var fe := float(m.get("fog_dist_end", 0.0))
+		if fe > fs and fe > 1.0:
+			env.fog_depth_begin = fs
+			env.fog_depth_end = fe
+		# height falloff: Altitude is where the layer sits, Depth how thick
+		if m.has("fog_altitude"):
+			env.fog_height = float(m["fog_altitude"])
+		var fd := float(m.get("fog_depth", 0.0))
+		if fd > 0.0:
+			env.fog_height_density = clampf(1.0 / fd, 0.0, 1.0)
+		if m.has("volumetrics") and bool(m["volumetrics"]):
+			env.volumetric_fog_enabled = true
+			env.volumetric_fog_density = 0.01
+	else:
+		env.fog_enabled = false
+
+	# --- colour grading ------------------------------------------------------
+	# Subtle and whole-frame: dumbo runs saturation 0.966, contrast 1.093,
+	# brightness 1.023. An editor applying none of it cannot match the game
+	# however right the lighting is.
+	if m.has("grading_enabled") and bool(m["grading_enabled"]):
+		env.adjustment_enabled = true
+		var br := _col(m.get("grade_brightness"), Color(1, 1, 1))
+		var ct := _col(m.get("grade_contrast"), Color(1, 1, 1))
+		var st := _col(m.get("grade_saturation"), Color(1, 1, 1))
+		env.adjustment_brightness = clampf(br.r, 0.1, 4.0)
+		env.adjustment_contrast = clampf(ct.r, 0.1, 4.0)
+		env.adjustment_saturation = clampf(st.r, 0.0, 4.0)
+
+	# --- white balance -------------------------------------------------------
+	if m.has("white_temperature"):
+		var k := float(m["white_temperature"])
+		if k > 1000.0 and absf(k - 6500.0) > 50.0:
+			var w := _kelvin(k)
+			sun.light_color = Color(sun.light_color.r * w.r,
+				sun.light_color.g * w.g, sun.light_color.b * w.b)
+
+	# --- ambient occlusion ---------------------------------------------------
+	# AffectOutdoorLight is FALSE in BF6: ambient occlusion does not darken
+	# sun-lit surfaces. Godot's ssao_light_affect is exactly that control and
+	# defaults to affecting direct light, so leaving it alone systematically
+	# over-darkens every exterior.
+	if m.has("ao_affects_sun"):
+		env.ssao_light_affect = 1.0 if bool(m["ao_affects_sun"]) else 0.0
+	if m.has("hbao_radius"):
+		env.ssao_radius = clampf(float(m["hbao_radius"]) * 2.0, 0.2, 8.0)
+	if m.has("hbao_contrast"):
+		env.ssao_intensity = clampf(float(m["hbao_contrast"]), 0.1, 8.0)
+
+	# --- bloom ---------------------------------------------------------------
+	var bs: Variant = m.get("bloom_scale")
+	if bs is Array and (bs as Array).size() > 0:
+		env.glow_intensity = clampf(float((bs as Array)[0]) * 8.0, 0.05, 2.0)
+
+	# --- GI ambient ----------------------------------------------------------
+	# SkyBoxSkyColor / SkyBoxGroundColor are the authored ambient hemisphere.
+	if m.has("gi_sky_color"):
+		var gc := _col(m["gi_sky_color"], Color(0.2, 0.2, 0.2))
+		if gc.r + gc.g + gc.b > 0.01 and interior_fill > 0.0:
+			env.ambient_light_color = gc
+
+
 static func set_gi(root: Node, on: bool) -> String:
 	var rig := root.get_node_or_null(NODE) if root != null else null
 	var we := (rig.get_node_or_null("GameEnvironment") as WorldEnvironment) if rig != null else null
@@ -354,6 +595,106 @@ static func clear(root: Node) -> void:
 			root.remove_child(c)
 			c.queue_free()
 	clear_map_lights(root)     # the map-lights sub-option rides Game Lighting
+
+# ---------- local lighting zones: interiors, alleys, dark spots -------------
+#
+# HOW THE GAME DOES IT. A level's local presets are not alternative environments
+# — they are thin overrides carrying only the components they change, and on
+# every map read that is the EXPOSURE component alone. The game blends one in by
+# proximity: a proximity node drives a gate, the gate writes the VE reference
+# object's `Visibility`, which is a 0..1 blend weight (traced edge by edge in
+# bf6-research formats/VISUAL_ENVIRONMENT.md §1b).
+#
+# So an interior in BF6 is the camera's exposure changing, NOT the ambient being
+# lifted. The "Interior light" slider raises ambient, which is a different thing
+# that happens to look similar — it is kept as a comfort control, but this is the
+# game's own behaviour and it runs off the map's own numbers.
+#
+# A preset carries no volume, so the zone comes from where it was placed: the
+# world bounds of the prefab that imports it (interior_zones_mine.py). Only zones
+# with a real extent ship; presets whose placement could not be recovered are
+# absent rather than guessed at.
+static var zones_enabled := true
+static var _zones: Array = []              # for the open map
+static var _zone_map := ""
+static var _zone_blend := 0.0              # current blend weight, eased per tick
+static var _base_exposure := 1.0
+
+# The base preset's EV, which a zone's own EV is measured against. 0 when the
+# open map has no mined lighting, which disables zone blending rather than
+# comparing against a made-up number.
+static func base_ev() -> float:
+	var m := mined(_zone_map)
+	if m.has("ev_max") and float(m["ev_max"]) > 0.0:
+		return float(m["ev_max"])
+	return float(m.get("ev", 0.0))
+
+
+static func load_zones(map: String) -> int:
+	_zones = []
+	_zone_map = map
+	_zone_blend = 0.0
+	for z in zones(map):
+		if not (z is Dictionary):
+			continue
+		var zz: Variant = (z as Dictionary).get("zone")
+		var ov: Variant = (z as Dictionary).get("overrides")
+		if not (zz is Dictionary) or not (ov is Dictionary):
+			continue
+		var mn: Variant = (zz as Dictionary).get("min")
+		var mx: Variant = (zz as Dictionary).get("max")
+		if not (mn is Array) or not (mx is Array):
+			continue
+		_zones.append({
+			"aabb": AABB(Vector3(mn[0], mn[1], mn[2]),
+				Vector3(mx[0] - mn[0], mx[1] - mn[1], mx[2] - mn[2])),
+			"ev": float((ov as Dictionary).get("ev", 0.0)),
+			"ev_max": float((ov as Dictionary).get("ev_max", 0.0)),
+			"name": str((z as Dictionary).get("preset", "")),
+		})
+	return _zones.size()
+
+# Exposure difference a zone asks for, as a multiplier. EV is a log2 stop scale,
+# so one stop darker is half the light: 2^(base - zone).
+static func _zone_exposure(z: Dictionary, base_ev: float) -> float:
+	var ev := float(z.get("ev_max", 0.0))
+	if ev <= 0.0:
+		ev = float(z.get("ev", 0.0))
+	if ev <= 0.0 or base_ev <= 0.0:
+		return 1.0
+	return clampf(pow(2.0, base_ev - ev), 0.25, 4.0)
+
+# Camera-driven blend, called from the dock tick. Returns the zone entered, or "".
+static func tick_zones(root: Node, cam_pos: Vector3, base_ev: float) -> String:
+	if root == null or _zones.is_empty() or not zones_enabled:
+		return ""
+	var env := _env_of(root)
+	if env == null:
+		return ""
+	var want := 1.0
+	var inside := ""
+	for z in _zones:
+		var box: AABB = z["aabb"]
+		# grow slightly so the transition starts at the threshold rather than
+		# snapping exactly on the wall
+		if box.grow(2.0).has_point(cam_pos):
+			want = _zone_exposure(z, base_ev)
+			inside = str(z["name"])
+			break
+	# ease rather than snap: the game runs adaptation times of about a second
+	# (DarkAdaptationTime 1.1, LightAdaptationTime 0.8), and an instant jump as
+	# you cross a doorway reads as a bug.
+	_zone_blend = lerpf(_zone_blend, want, 0.15)
+	env.tonemap_exposure = _base_exposure * _zone_blend if _zone_blend > 0.01 else _base_exposure
+	return inside
+
+static func _env_of(root: Node) -> Environment:
+	for c in root.get_children():
+		if String(c.name).contains(NODE):
+			for g in (c as Node).get_children():
+				if g is WorldEnvironment:
+					return (g as WorldEnvironment).environment
+	return null
 
 # ---------- map lights (mined placements: user://mapcontext/<map>/lights.json) ----------
 # 3,716 real light entities on Aftermath (PbrSpot/Sphere/Rect/Tube, positions +

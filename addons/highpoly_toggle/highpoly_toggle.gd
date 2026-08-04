@@ -1147,8 +1147,15 @@ func _enter_tree() -> void:
 		var _vp3 := EditorInterface.get_editor_viewport_3d(0)
 		var _cam3 := _vp3.get_camera_3d() if _vp3 else null
 		if _cam3:
-			LightingScript.tick_lights(EditorInterface.get_edited_scene_root(),
-					_cam3.global_position)
+			var _r3 := EditorInterface.get_edited_scene_root()
+			LightingScript.tick_lights(_r3, _cam3.global_position)
+			# Local lighting zones follow the camera the way the game follows the
+			# player: entering an interior blends its exposure in, leaving blends
+			# it out. Costs an AABB test per zone (59 across the whole fleet, and
+			# most maps have none), so it is not worth gating.
+			if mapctx_light != null and mapctx_light.button_pressed:
+				LightingScript.tick_zones(_r3, _cam3.global_position,
+						LightingScript.base_ev())
 			ShapeViz.tick()      # tidy up any outline the editor rebuilt
 		# a CANCELLED scenery build (Extended Terrain switched off, or a new
 		# apply superseding it) ends without a build_finished — without this the
