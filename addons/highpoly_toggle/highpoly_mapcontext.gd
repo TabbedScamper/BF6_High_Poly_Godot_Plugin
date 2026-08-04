@@ -1357,7 +1357,10 @@ func _parse_prop_file(gp: String) -> Array:
 	#             the normal/roughness/metallic/AO maps are simply not in the
 	#             file any more, so no amount of re-reading a v2 sidecar can
 	#             recover them. They have to come back from the GLB.
-	var baked := gp + ".baked3.res"
+	# baked4: baked3 sidecars cache meshes baked with tangents left in the source
+	# frame. The code fix alone would never reach anyone holding a cache — the
+	# sidecar IS the geometry, so correcting it means moving the suffix.
+	var baked := gp + ".baked4.res"
 	if mesh_cache_enabled and FileAccess.file_exists(baked) \
 			and FileAccess.get_modified_time(baked) >= FileAccess.get_modified_time(gp):
 		var bm := ResourceLoader.load(baked, "Mesh", ResourceLoader.CACHE_MODE_REPLACE)
@@ -2080,6 +2083,47 @@ func _merge_meshes(pairs: Array) -> Array:
 # varyings from GDScript, and generating them is cheap next to a per-draw-call
 # renderer warning for the life of the scene. Tested against the same tags the
 # passes above use, so the two cannot drift apart.
+# Rotate a tangent array into a new frame, in place on a surface array.
+#
+# Tangents transform like DIRECTIONS (basis only, never the full transform), and
+# the binormal sign in .w flips when the basis mirrors — exactly as the winding
+# does. _merge_meshes has always done both; _bake_mesh and _flipped_mesh did not,
+# and that omission is SILENT: the surface still has a tangent array, so nothing
+# warns, the normal map is just sampled in the wrong frame. Measured on a real
+# prop (ba_lf_ind_ceilinglamp_bulb_01_h_128) a 90 deg bake left the frame 30 deg
+# out.
+static func _xform_tangents(arr: Array, basis: Basis) -> void:
+	var T = arr[Mesh.ARRAY_TANGENT]
+	if T == null or T.size() < 4:
+		return
+	var flip: bool = basis.determinant() < 0.0
+	var out := PackedFloat32Array()
+	out.resize(T.size())
+	for i in range(0, T.size() - 3, 4):
+		var tv := (basis * Vector3(T[i], T[i + 1], T[i + 2])).normalized()
+		out[i] = tv.x
+		out[i + 1] = tv.y
+		out[i + 2] = tv.z
+		out[i + 3] = -T[i + 3] if flip else T[i + 3]
+	arr[Mesh.ARRAY_TANGENT] = out
+
+
+# A pure winding reversal (no basis): the tangent direction is unchanged, but the
+# handedness of the frame reverses, so only .w flips.
+static func _flip_binormal(arr: Array) -> void:
+	var T = arr[Mesh.ARRAY_TANGENT]
+	if T == null or T.size() < 4:
+		return
+	var out := PackedFloat32Array()
+	out.resize(T.size())
+	for i in range(0, T.size() - 3, 4):
+		out[i] = T[i]
+		out[i + 1] = T[i + 1]
+		out[i + 2] = T[i + 2]
+		out[i + 3] = -T[i + 3]
+	arr[Mesh.ARRAY_TANGENT] = out
+
+
 static func _wants_tangents(mat: Variant) -> bool:
 	if mat == null:
 		return false
@@ -2132,6 +2176,12 @@ func _bake_mesh(mesh: Mesh, xf: Transform3D) -> Mesh:
 			var nn := PackedVector3Array(); nn.resize(N.size())
 			for i in range(N.size()): nn[i] = (nb * N[i]).normalized()
 			arr[Mesh.ARRAY_NORMAL] = nn
+		# Tangents were left in the OLD frame: this rewrote vertices and normals
+		# and passed ARRAY_TANGENT straight through. Every prop GLB we ship
+		# carries AUTHORED tangents (131 of 131 surfaces across a 40-prop sample),
+		# so this was not a missing array, it was a wrong one — 30 degrees out on
+		# a 90 degree bake, and completely silent.
+		_xform_tangents(arr, xf.basis)
 		out.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr)
 		var mat := mesh.surface_get_material(s)     # keep the texture/material!
 		if mat != null: out.surface_set_material(out.get_surface_count() - 1, mat)
@@ -2193,6 +2243,11 @@ func _flipped_mesh(mesh: Mesh) -> Mesh:
 			var nn := PackedVector3Array(); nn.resize(nrm.size())
 			for k in range(nrm.size()): nn[k] = -nrm[k]
 			arr[Mesh.ARRAY_NORMAL] = nn
+		# reversing the winding reverses the handedness of the tangent frame, so
+		# the binormal sign has to follow. _merge_meshes already does this for
+		# mirrored instances (`-w if flip`); this copy did not, so mirrored props
+		# built through here had their normal maps lit inside out.
+		_flip_binormal(arr)
 		out.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr)
 		var mat := mesh.surface_get_material(s)   # keep materials on the flipped copy
 		if mat != null: out.surface_set_material(out.get_surface_count() - 1, mat)
@@ -3005,7 +3060,7 @@ func purge_map(map: String, info: Dictionary) -> void:
 		var p := "%s/%s.glb" % [PROPS_CACHE, str(nm)]
 		if FileAccess.file_exists(p):
 			DirAccess.remove_absolute(p)
-		for sfx in [".baked.res", ".baked2.res", ".baked3.res"]:
+		for sfx in [".baked.res", ".baked2.res", ".baked3.res", ".baked4.res"]:
 			if FileAccess.file_exists(p + sfx):
 				DirAccess.remove_absolute(p + sfx)   # fast-startup sidecars
 		if idx.has(nm):
@@ -3104,8 +3159,10 @@ func cleanup_stale(map: String) -> int:
 				kill = true                     # v2 sidecar (lossy foliage swap)
 			elif f.ends_with(".tmp.glb"):
 				kill = true                     # torn mid-write leftover
+			elif f.ends_with(".baked4.res"):
+				kill = not FileAccess.file_exists(p.trim_suffix(".baked4.res"))
 			elif f.ends_with(".baked3.res"):
-				kill = not FileAccess.file_exists(p.trim_suffix(".baked3.res"))
+				kill = true      # superseded: baked with tangents in the wrong frame
 			if kill:
 				DirAccess.remove_absolute(p)
 				removed += 1
