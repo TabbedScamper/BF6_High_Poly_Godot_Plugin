@@ -341,10 +341,22 @@ static func apply_one(node: Node3D, key: String, tier: Tier, textured: bool) -> 
 	return true
 
 static func _set_textured(hp: Node, textured: bool) -> void:
+	# Overlays follow the dock's Shadows sub-checkbox, exactly as map-context
+	# props already do (highpoly_mapcontext, _build_mmi).
+	#
+	# They used to have no shadow handling at all, so every one defaulted to
+	# casting. That cost nothing while Low-Poly drew no overlays. Once Low-Poly
+	# started drawing them, switching lighting on added a shadow caster for every
+	# placed object in one go, all of it landing in the directional shadow atlas
+	# at a 1,500 m range -- enough to crash the editor outright on the
+	# multi-threaded renderer this project ships with.
+	var shadow: int = GeometryInstance3D.SHADOW_CASTING_SETTING_ON \
+		if HighpolyLighting.cast_shadows else GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	var stack: Array = [hp]
 	while not stack.is_empty():
 		var n: Node = stack.pop_back()
 		if n is GeometryInstance3D:
+			(n as GeometryInstance3D).cast_shadow = shadow
 			(n as GeometryInstance3D).material_override = null if textured else gray_material()
 			# Keep the map-tile decal OFF the high-poly overlay. The decal exists
 			# to colour the SDK's own untextured terrain and grey proxy buildings;

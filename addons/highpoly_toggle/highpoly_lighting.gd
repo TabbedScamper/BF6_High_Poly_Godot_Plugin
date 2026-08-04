@@ -116,6 +116,12 @@ static func sun_energy(lux: float) -> float:
 # builder consults it) — kept in sync by apply()/set_shadows()
 static var cast_shadows := true
 
+# Fraction of ambient held back from sky visibility so enclosed spaces keep a
+# floor of light. See the block in apply() for why interiors were black without
+# it. 0.0 restores the strictly sky-driven (PhotoMatch-calibrated) behaviour;
+# raise it if rooms are still too dark to work in.
+static var interior_fill := 0.22
+
 # Build + inject the lighting rig. Idempotent (clears any previous rig first).
 # gi/shadows: the dock's sub-checkboxes (PhotoMatch renders keep full quality
 # via the defaults).
@@ -182,8 +188,25 @@ static func apply(root: Node, map: String, gi := true, shadows := true) -> Strin
 	var env := Environment.new()
 	env.background_mode = Environment.BG_SKY
 	env.sky = sky
+	# INTERIOR FILL. With sky_contribution at 1.0 every scrap of ambient came
+	# from how much SKY a surface can see, so anything enclosed got none —
+	# and with sdfgi_use_occlusion and SSAO on top, interiors resolved to
+	# black. That is defensible physically: the 11,640 authored lights that
+	# actually light those rooms in-game are not instantiated here, so there
+	# is nothing left to see by.
+	#
+	# Holding a fraction back from the sky gives a floor that occlusion cannot
+	# take away. Tinted with the map's own horizon colour (the same mined value
+	# that drives the sky gradient) rather than grey, so rooms lift toward the
+	# light the exterior sits in instead of going flat and blue.
+	#
+	# This is a WORKING-COMFORT fudge, not a fidelity improvement: it adds light
+	# the PhotoMatch reference photos do not have, and it softens outdoor contact
+	# shadows by the same fraction. Turn it to 0.0 for a calibrated render.
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
-	env.ambient_light_sky_contribution = 1.0
+	env.ambient_light_sky_contribution = clampf(1.0 - interior_fill, 0.0, 1.0)
+	if interior_fill > 0.0:
+		env.ambient_light_color = e["hor"]
 	env.ambient_light_energy = 1.0 if sun.visible else 1.6   # indoor maps live off ambient
 	env.tonemap_mode = Environment.TONE_MAPPER_ACES
 	env.tonemap_white = 6.0
@@ -253,6 +276,19 @@ static func set_gi(root: Node, on: bool) -> String:
 	we.environment.ssao_enabled = on
 	return "Global illumination " + ("on" if on else "off")
 
+# Interior fill, live. Holding a fraction of ambient back from sky visibility
+# keeps enclosed spaces from going black — see interior_fill and the block in
+# apply(). No rebuild needed: the ambient split is a plain Environment property.
+static func set_interior_fill(root: Node, amount: float) -> String:
+	interior_fill = clampf(amount, 0.0, 1.0)
+	var rig := root.get_node_or_null(NODE) if root != null else null
+	var we := (rig.get_node_or_null("GameEnvironment") as WorldEnvironment) if rig != null else null
+	if we == null or we.environment == null:
+		return "Game lighting is off"
+	we.environment.ambient_light_sky_contribution = 1.0 - interior_fill
+	return "Interior light %d%%" % int(round(interior_fill * 100.0))
+
+
 static func set_shadows(root: Node, on: bool) -> String:
 	cast_shadows = on
 	var rig := root.get_node_or_null(NODE) if root != null else null
@@ -264,14 +300,48 @@ static func set_shadows(root: Node, on: bool) -> String:
 	var ctx := root.get_node_or_null("_MAP_CONTEXT")
 	if ctx != null:
 		_set_shadows(ctx, on)
+	# ...and the high-poly overlays on the user's own placed objects, which live
+	# scattered through the scene rather than under one root. They were missed
+	# entirely, so turning shadows off left every overlay still casting.
+	#
+	# ONLY the overlay subtrees. Sweeping the whole scene would rewrite
+	# cast_shadow on the user's OWN meshes, and that property is serialized into
+	# their .tscn: a debug toggle would quietly edit their map.
+	_set_shadows_in_overlays(root, on)
 	return "Shadows " + ("on" if on else "off")
+
+# "_HIPOLY_PREVIEW" spelled out rather than taken from HighpolyLib.HP_NODE:
+# HighpolyLib references this class for cast_shadows, and pointing back at it
+# from here would make the two class_names mutually dependent.
+static func _set_shadows_in_overlays(n: Node, on: bool) -> void:
+	if String(n.name) == "_HIPOLY_PREVIEW":
+		_set_shadows(n, on)
+		return                          # everything below belongs to this overlay
+	for c in n.get_children():
+		_set_shadows_in_overlays(c, on)
 
 static func _set_shadows(n: Node, on: bool) -> void:
 	if n.name == "_SCATTER":
 		return                 # grass never casts (cost >> visual gain)
 	if n is MultiMeshInstance3D or n is MeshInstance3D:
+		# Turning shadows ON must not re-enable them on the small props the
+		# builder deliberately left off. Without this the toggle would undo the
+		# size rule and put ~87,000 draw calls straight back.
+		#
+		# The builder stamps each group with its extent as "lod_sz"; a node
+		# without it is not ours to second-guess, so it follows the plain toggle.
+		var allow := on
+		# "no_shadow" is an absolute opt-out set by the builder (skyline,
+		# terrain, roads) and it must win over everything below it. The size
+		# rule alone could not express it: a backdrop cluster is 500+ m across,
+		# so it clears any extent threshold and this walk switched 6,627 skyline
+		# surfaces back on — 26,508 draw calls — every time Shadows was toggled.
+		if n.has_meta("no_shadow"):
+			allow = false
+		elif on and n.has_meta("lod_sz"):
+			allow = float(n.get_meta("lod_sz")) >= HighpolyMapContext.SHADOW_MIN_EXTENT
 		(n as GeometryInstance3D).cast_shadow = \
-			GeometryInstance3D.SHADOW_CASTING_SETTING_ON if on \
+			GeometryInstance3D.SHADOW_CASTING_SETTING_ON if allow \
 			else GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	for c in n.get_children():
 		_set_shadows(c, on)
