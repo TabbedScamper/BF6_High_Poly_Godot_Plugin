@@ -113,21 +113,38 @@ static func has_data(map: String) -> bool:
 const CACHE := "user://mapcontext"
 
 static var _mined: Dictionary = {}          # map -> {} (absent) or the fields
+static var _mined_stamp: Dictionary = {}    # map -> mtime the entry was read from
 
+# CACHING THE MISS WAS THE BUG. The dock's half-second timer calls has_data() ->
+# mined() as soon as a level scene opens, which is seconds BEFORE its map package
+# finishes downloading. The empty answer was then cached, and since nothing in
+# the plugin ever called forget(), it stuck for the whole session:
+#   - MP_Capstone is the only map absent from TABLE, so has_data() went false and
+#     the Lighting chip greyed out permanently, even once its data had arrived.
+#   - Everywhere else the chip stayed enabled but apply() silently fell back to
+#     TABLE's 7 values: no sky, no fog, no colour grading, no AO, none of it,
+#     with nothing said about why.
+#
+# Re-reading every call is not the answer either — placements.json runs to tens
+# of MB on a big map and this is called twice a second. So key the cache on the
+# file's modification time: one stat instead of a parse, and it also picks up a
+# REPUBLISHED package, which the old code could not do at all.
 static func mined(map: String) -> Dictionary:
 	if map == "":
 		return {}
-	if _mined.has(map):
+	var p := "%s/%s/placements.json" % [CACHE, map]
+	var stamp: int = FileAccess.get_modified_time(p) if FileAccess.file_exists(p) else 0
+	if _mined.has(map) and int(_mined_stamp.get(map, -1)) == stamp:
 		return _mined[map]
 	var out: Dictionary = {}
-	var p := "%s/%s/placements.json" % [CACHE, map]
-	if FileAccess.file_exists(p):
+	if stamp != 0:
 		var j: Variant = JSON.parse_string(FileAccess.get_file_as_string(p))
 		if j is Dictionary:
 			var lit: Variant = (j as Dictionary).get("lighting")
 			if lit is Dictionary and (lit as Dictionary).get("fields") is Dictionary:
 				out = (lit as Dictionary)["fields"]
 	_mined[map] = out
+	_mined_stamp[map] = stamp
 	return out
 
 # Local lighting zones (interiors, alleys, dark spots) with a world extent.
@@ -146,8 +163,10 @@ static func zones(map: String) -> Array:
 static func forget(map := "") -> void:
 	if map == "":
 		_mined.clear()
+		_mined_stamp.clear()
 	else:
 		_mined.erase(map)
+		_mined_stamp.erase(map)
 
 # A vec4/vec3 field arrives as an Array. Colour without the magnitude.
 static func _col(v: Variant, fallback: Color) -> Color:
