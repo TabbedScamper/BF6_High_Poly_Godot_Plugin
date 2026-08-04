@@ -675,10 +675,16 @@ func _enter_tree() -> void:
 
 	# sub-toggles: only shown while Game lighting is on; both act LIVE on the
 	# injected rig/overlay (no rebuild) and are remembered per map
-	mapctx_gi = Theme_.chip("Soft shading")
+	# Was "Soft shading", and it switched on Godot's real-time global
+	# illumination as well as contact shading. The GI half made the view WORSE
+	# than leaving the chip off — the game bakes its GI offline and our scene is
+	# a runtime overlay spread over kilometres, which is the case that technique
+	# handles worst. It now toggles only the contact darkening the game itself
+	# has, so the label says that instead of promising bounced light.
+	mapctx_gi = Theme_.chip("Contact shading")
 	mapctx_gi.button_pressed = true
 	mapctx_gi.visible = false
-	mapctx_gi.tooltip_text = "Softer, more realistic shading, with light bouncing off surfaces and settling into corners. Looks better, but costs frame rate. Switch it off if the view gets choppy."
+	mapctx_gi.tooltip_text = "Darkens the creases where surfaces meet — under vehicles, inside doorways, along kerbs. This is the same contact shading the game uses, at the radius the map itself specifies. Costs some frame rate; switch it off if the view gets choppy."
 	mapctx_gi.toggled.connect(func(v: bool):
 		lbl.text = LightingScript.set_gi(EditorInterface.get_edited_scene_root(), v)
 		_save_mapctx_state())

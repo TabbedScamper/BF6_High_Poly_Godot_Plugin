@@ -329,19 +329,34 @@ static func apply(root: Node, map: String, gi := true, shadows := true) -> Strin
 	env.glow_intensity = 0.45
 	env.glow_bloom = 0.03
 	env.glow_hdr_threshold = 1.1
-	# GI: the game's VE runs full GI + GTAO (both components present in the
-	# preset dumps). Editor equivalents that work on the runtime-injected
-	# overlay (no baking, no saved scenes): SDFGI for bounce light + sky
-	# occlusion, SSAO for the contact darkening GTAO gives in-game. Both are
-	# part of the same PhotoMatch exposure calibration.
-	env.sdfgi_enabled = gi
-	env.sdfgi_use_occlusion = true
-	env.sdfgi_min_cell_size = 0.4      # coarser voxels: ~same diffuse bounce,
-	                                   # roughly half the SDFGI cost + more reach
+	# SDFGI IS THE WRONG TECHNIQUE HERE, and the game's own data says so.
+	#
+	# "Soft shading" used to switch on SDFGI + SSAO together. SDFGI made the
+	# scene look markedly worse than with the chip off, and the reason is not
+	# tuning:
+	#
+	#   - BF6 does not use real-time GI. Its GI component is ENLIGHTEN, an
+	#     offline radiosity bake, plus GTAO for contact darkening. SDFGI is a
+	#     different technique solving a different problem.
+	#   - Our scene is close to SDFGI's worst case: a runtime overlay of
+	#     thousands of MultiMeshInstance3D nodes with owner=null, spread over an
+	#     8 km map. SDFGI voxelises static geometry into cascades that reach a
+	#     few hundred metres, so it re-voxelises constantly as the camera flies
+	#     and darkens blotchily where the cascade is sparse.
+	#   - sdfgi_use_occlusion then darkens from that same sparse voxel field,
+	#     which is where the "decimated" look came from.
+	#
+	# What the game actually has is ambient from its skybox plus contact AO. We
+	# already have the real panorama driving ambient (AMBIENT_SOURCE_SKY above),
+	# so the honest editor equivalent is that plus SSAO — no voxelisation, no
+	# cascades, nothing to flicker.
+	env.sdfgi_enabled = false
+	# GTAO's editor equivalent. Radius/intensity and, importantly, whether it
+	# touches direct light come from the map's own AO component in _apply_mined.
 	env.ssao_enabled = gi
 	if gi:
-		# half-resolution GI buffers — near-identical look for diffuse GI,
-		# large GPU savings. Runtime call: doesn't touch project settings.
+		# half-resolution AO buffer — near-identical look, large GPU saving.
+		# Runtime call: doesn't touch project settings.
 		RenderingServer.gi_set_use_half_resolution(true)
 
 	# ---- everything the map's VisualEnvironment authored --------------------
@@ -500,12 +515,18 @@ static func _apply_mined(env: Environment, sun: DirectionalLight3D, m: Dictionar
 	if bs is Array and (bs as Array).size() > 0:
 		env.glow_intensity = clampf(float((bs as Array)[0]) * 8.0, 0.05, 2.0)
 
-	# --- GI ambient ----------------------------------------------------------
-	# SkyBoxSkyColor / SkyBoxGroundColor are the authored ambient hemisphere.
-	if m.has("gi_sky_color"):
-		var gc := _col(m["gi_sky_color"], Color(0.2, 0.2, 0.2))
-		if gc.r + gc.g + gc.b > 0.01 and interior_fill > 0.0:
-			env.ambient_light_color = gc
+	# --- GI ------------------------------------------------------------------
+	# NOT used as a runtime ambient colour, deliberately.
+	#
+	# SkyBoxSkyColor / SkyBoxGroundColor are inputs to ENLIGHTEN, the game's
+	# offline radiosity bake — they describe the skybox the bake sees, not a
+	# colour to tint the frame with. They are also not all in 0..1: across the
+	# fleet they run from (0.05, 0.05, 0.06) on mp_badlands to (8192, 8192, 8192)
+	# on mp_limestone, whose SkyBoxSunLightColor is 32768. Assigning that to
+	# ambient_light_color would white out the scene.
+	#
+	# Runtime ambient stays sky-derived (AMBIENT_SOURCE_SKY above), which is both
+	# physically right and what the real panorama is for.
 
 
 static func set_gi(root: Node, on: bool) -> String:
@@ -513,9 +534,12 @@ static func set_gi(root: Node, on: bool) -> String:
 	var we := (rig.get_node_or_null("GameEnvironment") as WorldEnvironment) if rig != null else null
 	if we == null or we.environment == null:
 		return "Game lighting is off"
-	we.environment.sdfgi_enabled = on
+	# SDFGI stays off whichever way this goes — see the block in apply(). The
+	# chip now toggles the contact shading the game actually has (GTAO), not
+	# Godot's real-time GI, which made the scene worse than leaving it off.
+	we.environment.sdfgi_enabled = false
 	we.environment.ssao_enabled = on
-	return "Global illumination " + ("on" if on else "off")
+	return "Contact shading " + ("on" if on else "off")
 
 # Interior fill, live. Holding a fraction of ambient back from sky visibility
 # keeps enclosed spaces from going black — see interior_fill and the block in
