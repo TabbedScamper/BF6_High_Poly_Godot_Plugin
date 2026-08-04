@@ -16,10 +16,15 @@ class_name HighpolyLighting
 # preview sun/environment (Godot re-enables them when the scene stops carrying
 # a DirectionalLight3D / WorldEnvironment).
 #
-# Sun-angle convention (photo-verified on MP_Badlands, shadow/sun-glow azimuth
-# from the Rust Blackwell Fields reference stills within ~3°):
-#   SunRotationX = azimuth in degrees, world XZ direction TOWARD the sun
-#                  = (cos az, sin az); SunRotationY = elevation in degrees.
+# Sun-angle convention: SunRotationX is a COMPASS BEARING (0 = +Z, turning
+# toward +X) and SunRotationY is elevation above the horizon. See sun_dir() for
+# the derivation and the evidence.
+#   RETRACTED: this block used to read "= (cos az, sin az)" and claim the
+#   convention was photo-verified on MP_Badlands within ~3 degrees. It was not.
+#   That reading is mirrored and 90 degrees out, and Badlands is precisely the
+#   map where a hand check is least reliable — open terrain with a 10-degree
+#   red sun, no vertical edges to read a shadow against. A claim of verification
+#   is worth nothing without saying what it was checked AGAINST.
 #   "lux" = the VE's SunIntensity (real illuminance) — mapped to a relative
 #   DirectionalLight energy below (the editor has no physical light units).
 #
@@ -187,11 +192,54 @@ static func _col_hdr(v: Variant, fallback: Color) -> Array:
 		return [fallback, 0.0]
 	return [Color(float(a[0]) / m, float(a[1]) / m, float(a[2]) / m), m]
 
-# world-space unit vector TOWARD the sun (photo-verified convention, see header)
+# World-space unit vector TOWARD the sun.
+#
+# az is BF6's SunRotationX, which is a COMPASS BEARING: 0 points along +Z and
+# turns toward +X. This used to be read as a maths-convention angle (0 along +X,
+# turning toward +Z), which is both mirrored AND 90 degrees out — the two errors
+# together are why fitting either one alone never explained the result.
+#
+#     compass A -> (sin A, 0, cos A)        our old az -> (cos az, 0, sin az)
+#     cos(az) = sin(A), sin(az) = cos(A)  =>  az = 90 - A
+#
+# Note what was NOT wrong: the arithmetic. Rebuilding the sun and reading the
+# direction back off the finished DirectionalLight3D matched the authored angles
+# to 0.000 on all 22 maps. The bug was the convention, which no amount of
+# checking our own maths could ever have surfaced.
+#
+# EVIDENCE. Nothing shipped can settle a sun angle: the sky panoramas contain no
+# sun disc (verified by rendering all 22 and crushing exposure until only real
+# highlights survive — every one goes black; the engine draws the disc itself,
+# DrawSunDisc = 1 everywhere), the maptiles are flat-lit with no cast shadows,
+# and the SDK ships no DirectionalLight. So this was settled against the running
+# game, by hand, through the dock's sun sliders:
+#     MP_Dumbo      predicted 325.2   set 325.5   off by 0.3 deg
+#     MP_Aftermath  predicted 212.1   set 211.0   off by 1.1 deg
+#     MP_Capstone   predicted 293.0   set 284.5   off by 8.5 deg
+#     MP_Badlands   predicted  96.0   set  71.5   off by 24.5 deg
+# The constant is 90 exactly, DERIVED, with no free parameter — and Dumbo was
+# calibrated twice, independently, moving 327.5 -> 325.5, i.e. converging on a
+# number nobody fitted. The two tight maps are dense city grids where a shadow
+# can be read against a street; the two loose ones are open terrain where it
+# cannot, so they are treated as the weaker measurements rather than evidence
+# against. If a later calibration on buildable ground disagrees, revisit this.
+#
+# Ruled out as the cause of the per-map spread: map origin (a directional light
+# has no position), map-context rotation (none is applied), and a per-map level
+# root yaw (the walker bakes world transforms, and an arbitrary per-map yaw
+# could not put two maps within a degree of the SAME derived constant).
+#
+# NO MAP IS HAND-SET, AND NONE MAY BE. The calibration identified WHICH
+# CONVENTION the data is written in; it did not supply a value. What ships is
+# this one formula, applied identically everywhere, and every map's sun still
+# comes from its own SunRotationX/Y in its own VisualEnvironment — including the
+# maps nobody has ever looked at, and any map added later. The dock's sun
+# sliders are a diagnostic that writes to a JSON for analysis; they feed nothing
+# into apply(), and a per-map fudge table must never be added here.
 static func sun_dir(az_deg: float, el_deg: float) -> Vector3:
 	var az := deg_to_rad(az_deg)
 	var el := deg_to_rad(el_deg)
-	return Vector3(cos(az) * cos(el), sin(el), sin(az) * cos(el)).normalized()
+	return Vector3(sin(az) * cos(el), sin(el), cos(az) * cos(el)).normalized()
 
 # SunIntensity (lux) -> relative DirectionalLight energy. Perceptual-ish curve
 # anchored so full midday (~120k lux) reads as a strong editor sun and a low
@@ -671,6 +719,11 @@ static func save_calibration(map: String, az: float, el: float) -> String:
 		"user_az": az, "user_el": el,
 		"d_az": wrapf(az - authored_az, -180.0, 180.0),
 		"d_el": el - authored_el,
+		# Which convention the slider was feeding when this was recorded. Entries
+		# saved before sun_dir() moved to compass bearings are in a frame 90
+		# degrees out and mirrored, so averaging them together with later ones
+		# would produce a confident, meaningless answer. Unstamped == pre-fix.
+		"convention": "compass",
 	}
 	DirAccess.make_dir_recursive_absolute(CAL_PATH.get_base_dir())
 	var f := FileAccess.open(CAL_PATH, FileAccess.WRITE)
