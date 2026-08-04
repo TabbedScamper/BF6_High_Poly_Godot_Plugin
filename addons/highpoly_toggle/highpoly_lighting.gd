@@ -406,6 +406,10 @@ static func apply(root: Node, map: String, gi := true, shadows := true) -> Strin
 # authors a white balance (5600 K on mp_dumbo) and Godot has no white-balance
 # stage, so it becomes a multiplier on the sun and ambient rather than being
 # dropped. 6500 K is the neutral point: it returns white and changes nothing.
+# Kept deliberately, though nothing calls it right now: it is the conversion the
+# white-balance field needs once the direction is settled (see the note in
+# _apply_mined). Verified against known values — 6500 K returns ~neutral, 3200 K
+# is red-biased, 9000 K blue-biased.
 static func _kelvin(k: float) -> Color:
 	var t: float = clampf(k, 1000.0, 40000.0) / 100.0
 	var r := 255.0
@@ -490,13 +494,23 @@ static func _apply_mined(env: Environment, sun: DirectionalLight3D, m: Dictionar
 		env.adjustment_contrast = clampf(ct.r, 0.1, 4.0)
 		env.adjustment_saturation = clampf(st.r, 0.0, 4.0)
 
-	# --- white balance -------------------------------------------------------
-	if m.has("white_temperature"):
-		var k := float(m["white_temperature"])
-		if k > 1000.0 and absf(k - 6500.0) > 50.0:
-			var w := _kelvin(k)
-			sun.light_color = Color(sun.light_color.r * w.r,
-				sun.light_color.g * w.g, sun.light_color.b * w.b)
+	# --- white balance: NOT APPLIED, and the reason matters ------------------
+	# `Temperature` (5600 K on mp_dumbo) was briefly multiplied into the sun as
+	# the black-body colour of that temperature. That made mp_dumbo read as a
+	# sunset when the map is a bright day, and the arithmetic says why: the
+	# authored SunColor is ALREADY warm at (1.0, 0.776, 0.617), and the 5600 K
+	# multiplier (1.0, 0.938, 0.883) pushed the green/red ratio from 0.776 to
+	# 0.728 — further toward orange.
+	#
+	# The direction is very likely backwards as well. A white-balance stage set
+	# to 5600 K means "treat 5600 K as white", so applied to a render it should
+	# NEUTRALISE light of that temperature, not add it. Multiplying by the
+	# illuminant double-counts the warmth the sun already carries.
+	#
+	# Godot has no white-balance stage, so there is no obviously correct place
+	# for it either. Left unapplied until a PhotoMatch comparison settles the
+	# direction — an unverified guess that visibly wrecks a map is worse than
+	# the field being unused.
 
 	# --- ambient occlusion ---------------------------------------------------
 	# AffectOutdoorLight is FALSE in BF6: ambient occlusion does not darken
