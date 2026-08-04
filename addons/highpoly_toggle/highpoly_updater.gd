@@ -15,7 +15,29 @@ const DEFAULT_MANIFEST := "https://pub-45114dae448e4a059f488662e3d47b19.r2.dev/p
 # returns and the caller is wedged for the rest of the session. Every request
 # here gets a deadline; a timeout surfaces as RESULT_TIMEOUT, which the retry
 # loops below already treat as a normal retryable failure.
-const FETCH_TIMEOUT := 120.0     # a single model GLB / small payload
+# NOT a transfer deadline. HTTPRequest.timeout caps the WHOLE transfer, which
+# turns into a hard ceiling on file size: nothing larger than
+# (your bandwidth x the timeout) can ever finish, however healthy the connection.
+# At 120 s that ceiling sat right in the middle of the library. A user on a
+# ~2 MB/s line lost every model over ~230 MB, four times each, deterministically:
+#
+#   Area06_Building_02_B  332.5 MB  failed      Area06_Building_03_B  214.8 MB  ok
+#   Area04_Building_02    304.3 MB  failed      Area03_Building_01    164.8 MB  ok
+#   Area06_Building_01_B  298.5 MB  failed
+#   Area04_Building_01    245.9 MB  failed      4 attempts x 120 s = 480 s, and
+#   Area04_Building_03    233.2 MB  failed      they failed at 8m02-8m04.
+#
+# The five that failed were the five largest, and the retries restarted from
+# byte zero, so several GB were downloaded to deliver nothing. Failed models are
+# then skipped for the session, so the map renders with its biggest buildings
+# missing and does the same thing again next launch.
+#
+# What we actually care about is a transfer that stops MOVING. So: no whole-
+# transfer cap, watch the byte counter instead. highpoly_mapcontext.gd already
+# does exactly this for map packages and says so in a comment; the model path
+# never got the same treatment.
+const STALL_SECS := 45.0         # no new bytes for this long = dead socket
+const MAX_TRANSFER := 1800.0     # backstop so a trickling socket cannot wedge a session
 const HEAD_TIMEOUT := 30.0       # metadata only
 const Log = preload("highpoly_log.gd")
 
@@ -34,16 +56,54 @@ static func _fetch(http: HTTPRequest, url: String) -> PackedByteArray:
 	# building overlays and tanking that frame rate. Safe to set here because no
 	# request is in flight yet on this node.
 	http.use_threads = true
-	http.timeout = FETCH_TIMEOUT
+	http.timeout = 0.0            # see STALL_SECS: a size ceiling, not a safety net
 	for attempt in range(4):
 		if attempt > 0:
 			# 0.4s, 0.8s, 1.6s between retries
 			await http.get_tree().create_timer(0.4 * pow(2, attempt - 1)).timeout
+		var state := {"done": false, "res": []}
+		# Held in a var so it can be disconnected again: CONNECT_ONE_SHOT only
+		# cleans up when the signal FIRES, and cancel_request() does not fire it.
+		# Without this, a stalled attempt would leave its callback attached and
+		# the next attempt would resolve into the previous attempt's state.
+		var on_done := func(r: int, c: int, h: PackedStringArray, b: PackedByteArray):
+			state["done"] = true
+			state["res"] = [r, c, h, b]
+		http.request_completed.connect(on_done, CONNECT_ONE_SHOT)
 		var rq := http.request(url)
 		if rq != OK:
 			Log.warn("Could not start download of %s: %s" % [url, error_string(rq)])
+			if http.request_completed.is_connected(on_done):
+				http.request_completed.disconnect(on_done)
 			continue
-		var res: Array = await http.request_completed
+		# Poll fast at first and back off. A small JSON payload lands inside the
+		# first tick or two, so this costs it ~50 ms rather than a fixed poll
+		# interval x thousands of models; a long transfer settles at 1 s.
+		var poll := 0.05
+		var idle := 0.0
+		var spent := 0.0
+		var last := 0
+		while not state["done"]:
+			await http.get_tree().create_timer(poll).timeout
+			spent += poll
+			var d := http.get_downloaded_bytes()
+			if d > last:
+				last = d
+				idle = 0.0
+			else:
+				idle += poll
+			poll = minf(poll * 1.6, 1.0)
+			if idle >= STALL_SECS or spent >= MAX_TRANSFER:
+				http.cancel_request()
+				Log.warn("download stalled after %s (%s), retrying: %s"
+					% [Log.human_bytes(last), "no data for %ds" % int(idle)
+						if idle >= STALL_SECS else "over time", url])
+				break
+		if http.request_completed.is_connected(on_done):
+			http.request_completed.disconnect(on_done)
+		if not state["done"]:
+			continue
+		var res: Array = state["res"]
 		# res = [result, response_code, headers, body]
 		if res[0] == HTTPRequest.RESULT_SUCCESS and res[1] == 200:
 			return res[3]
