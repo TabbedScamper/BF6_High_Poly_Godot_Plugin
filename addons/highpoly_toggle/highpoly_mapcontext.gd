@@ -40,6 +40,33 @@ var _map := ""
 var _data: Dictionary = {}
 var _cells: Dictionary = {}        # "cx,cz" -> Array[MultiMeshInstance3D] (props)
 var _cell_size := 64.0
+# 0 = use whatever the map package says (64 m today). Anything else overrides it,
+# so the batching/culling trade can be measured with the profiler instead of
+# argued about. Set from the dock; takes effect on the next scenery build.
+static var cell_override := 0
+
+# A casting surface is redrawn once per directional cascade, so it costs about
+# five draw calls rather than one. Anything smaller than this stops casting.
+#
+# Raised 12 -> 20 -> 30 m. At 12 m, shadows were 17,820 of a 48,488-call frame
+# on Dumbo even after the skyline left the shadow pass; 20 m took that to 5,592.
+# The second raise is for a reason the first one created: once the per-mesh draw
+# distance stopped drawing small props at all, what remained in view skewed
+# large, and the CASTING SHARE went UP — 9% of visible prop surfaces at 20 m
+# became 33%, so shadows cost more than the geometry did (5,592 calls against
+# 4,227). Culling the small stuff concentrated the casters rather than removing
+# them.
+#
+# What 30 m costs visually is shadows from vehicles, skips, kiosks and market
+# stalls. Buildings, containers, trucks, the bridge and the elevated highway are
+# all well above it, and those are the shadows that read at street scale.
+#
+# This constant governs SHADOW CASTING ONLY. The HLOD tier split
+# (_set_mmi_lod) and the placed-object cull (highpoly_placedcull.gd) each use
+# their own literal 12.0; they happen to match but are not wired to this, so
+# changing it here does not quietly move the culling too. An older comment
+# claimed all three were "one boundary across the plugin" — they never were.
+const SHADOW_MIN_EXTENT := 30.0
 var _world_min := -2048.0
 var _mesh_cache: Dictionary = {}   # model path -> Mesh
 var terrain_step: int = 2          # metres per terrain vertex (1=full, 2=high, 4=medium)
@@ -408,11 +435,51 @@ func _save_etag(map: String, key: String, val: String) -> void:
 	var f := FileAccess.open(_etags_path(map), FileAccess.WRITE)
 	if f: f.store_string(JSON.stringify(d)); f.close()
 
+# Remote ETags seen this session, "<map>/<key>" -> tag. Feeds _ver_url().
+var _remote_tag: Dictionary = {}
+
+# Map packages are published to the same URL every time and served with
+# `Cache-Control: public, max-age=3600`, so for an hour after a republish the
+# CDN edge will happily hand out the PREVIOUS body to anyone who already pulled
+# it. HEAD requests and range requests are cached separately and do show the new
+# object, which makes this look fine from every angle except the one that
+# matters: the full GET the plugin actually makes.
+#
+# That is not theoretical. A rebuilt Dumbo was published, the freshness check
+# correctly saw a new ETag, the plugin downloaded 1.7 GB, overwrote all 2,871
+# props with the STALE body it was served, and then stamped the new ETag over
+# the top — leaving a cache that was wrong AND believed itself current, so no
+# later check could ever repair it.
+#
+# Appending the content's own ETag as a query parameter gives each version its
+# own cache key, so a republish can never be masked by a warm edge. The origin
+# ignores the parameter.
+func _ver_url(host: Node, map: String, key: String, url: String) -> String:
+	var k := "%s/%s" % [map, key]
+	var tag: String = str(_remote_tag.get(k, ""))
+	if tag == "":
+		# first pull of a map never ran the freshness check (there was nothing
+		# local to compare), and that is exactly when a warm edge hurts most
+		var http := HTTPRequest.new(); host.add_child(http)
+		tag = await HighpolyUpdater.remote_etag(http, url)
+		http.queue_free()
+		if tag != "":
+			_remote_tag[k] = tag
+	if tag == "":
+		return url                      # offline / no ETag: plain URL still works
+	return "%s?v=%s" % [url, tag.md5_text().substr(0, 16)]
+
 # Record the CURRENT remote ETag for a package we just downloaded in full.
 func _stamp_etag(host: Node, map: String, key: String, url: String) -> void:
-	var http := HTTPRequest.new(); host.add_child(http)
-	var tag := await HighpolyUpdater.remote_etag(http, url)
-	http.queue_free()
+	# Prefer the tag the download was actually keyed to. Re-asking the server
+	# here would record whatever is published NOW, which is not necessarily what
+	# we just wrote to disk if a republish landed mid-download — and a cache that
+	# claims a version it does not hold can never be repaired by a later check.
+	var tag: String = str(_remote_tag.get("%s/%s" % [map, key], ""))
+	if tag == "":
+		var http := HTTPRequest.new(); host.add_child(http)
+		tag = await HighpolyUpdater.remote_etag(http, url)
+		http.queue_free()
 	_save_etag(map, key, tag)
 
 # Once per session per map: are the published packages newer than our cache?
@@ -457,6 +524,10 @@ func _check_freshness(host: Node, map: String) -> Dictionary:
 		var file: String = "mapdata.zip" if key == "mapdata" else props_file()
 		var store_key: String = key if key == "mapdata" else _props_etag_key()
 		var tag: String = await HighpolyUpdater.remote_etag(http, b + file)
+		if tag != "":
+			# remember it for _ver_url(): the download that follows must be
+			# keyed to the version this check actually saw
+			_remote_tag["%s/%s" % [map, store_key]] = tag
 		if tag != "" and tag != str(have.get(store_key, "")):
 			out[key] = true
 	http.queue_free()
@@ -514,7 +585,8 @@ func download_map(host: Node, map: String, status: Callable, force := false) -> 
 			total_mb = int(mb / 1048576.0)
 	status.call("Downloading %s map data%s…" % [map, (" (~%d MB)" % total_mb) if total_mb else ""])
 	var tmp := "%s/mapdata.zip" % dir
-	var got_ok := await _download_with_progress(host, b + "mapdata.zip", tmp, status,
+	var got_ok := await _download_with_progress(host,
+		await _ver_url(host, map, "mapdata", b + "mapdata.zip"), tmp, status,
 		"Downloading %s map data:" % map, total_mb)
 	if not got_ok:
 		status.call("Map data download failed. The server is busy, try Reload again.")
@@ -865,10 +937,18 @@ static var _splat_cache: Dictionary = {}   # map -> Dictionary ({} = none)
 var _splat_active := false                 # last _terrain_shader_mat had splat data
 var _splat_n := 0                          # its texture-array slice count
 # With splat shading the extended terrain (which spans the WHOLE footprint,
-# including under the SDK bowl) becomes the ground truth. It is lifted slightly
-# so it wins the depth test against the SDK's own coincident bowl mesh — the
-# maptile decal that used to mask that z-fight is gone in splat mode.
-const SPLAT_LIFT := 0.15
+# including under the SDK bowl) becomes the ground truth.
+#
+# Now 0.0 — no offset. This was 0.15 m, lifting our terrain so it would win the
+# depth test against the SDK's own coincident bowl mesh. That defence is
+# obsolete: SdkHide already hides the SDK terrain whenever Extended Terrain is
+# shown, so there is nothing left to z-fight with, and the lift was simply
+# putting the ground 15 cm above where the heightmap says it is. The heightmap
+# is exact to about 5 mm, so any visible offset is ours, not the data's.
+#
+# If ground flicker ever reappears here, the cause is the SDK bowl becoming
+# visible again — fix the hiding, not the height.
+const SPLAT_LIFT := 0.0
 
 # Load a map's baked splat set (cached): textures + world box + slice count.
 # Returns {} when the map package carries no usable splat data.
@@ -1007,7 +1087,23 @@ func _load_data(map: String) -> bool:
 	_map = map
 	var w: Dictionary = d.get("world", {})
 	_world_min = float(w.get("min", -2048))
-	_cell_size = float(w.get("cell", 64))
+	# The cell does double duty: it is the batching grain AND the culling grain.
+	#
+	# Props are bucketed into one MultiMesh per mesh PER CELL, so at the packaged
+	# 64 m Dumbo builds 13,407 MultiMeshes for 44,925 instances, 3.4 each, and
+	# 48% of them hold a SINGLE instance. That is a MultiMesh with all of the
+	# overhead and none of the benefit, which is why the measured flyover showed
+	# draw calls tracking object count 1:1 (0.92) and 156,177 of them at the worst
+	# frame, with fps correlating at -0.87.
+	#
+	# Coarsening trades one cost for another and the balance is not obvious:
+	#   64 m  13,407 nodes    128 m  9,055    256 m  5,755    512 m  4,230
+	# but a bigger cell also shows more geometry (a 512 m cell reaches ~1.16 km at
+	# an 800 m radius against ~845 m for 64 m cells, so roughly 89% more
+	# instances). Instances inside a MultiMesh are nearly free while draw calls
+	# are not, so the trade should be favourable -- "should" being why this is a
+	# setting to measure rather than a constant to guess.
+	_cell_size = float(cell_override) if cell_override > 0 else float(w.get("cell", 64))
 	_load_prop_layers(map)
 	return true
 
@@ -1253,8 +1349,15 @@ static func _mesh_keeps_textures(m: Mesh) -> bool:
 # so the refresh path can build-then-swap (parse first, only then evict).
 # Returns null for missing/torn/unparseable files.
 func _parse_prop_file(gp: String) -> Array:
-	# v2 suffix: v1 sidecars predate runtime LOD generation — regenerate once
-	var baked := gp + ".baked2.res"
+	# Versioned suffix: a bump invalidates every sidecar at once, which is the
+	# only way to retire caches baked under a rule that has since changed.
+	#   v1 -> v2  runtime LOD generation
+	#   v2 -> v3  foliage: v2 meshes were baked with leaf cards already swapped
+	#             to the old albedo-only wind shader, and that swap is lossy —
+	#             the normal/roughness/metallic/AO maps are simply not in the
+	#             file any more, so no amount of re-reading a v2 sidecar can
+	#             recover them. They have to come back from the GLB.
+	var baked := gp + ".baked3.res"
 	if mesh_cache_enabled and FileAccess.file_exists(baked) \
 			and FileAccess.get_modified_time(baked) >= FileAccess.get_modified_time(gp):
 		var bm := ResourceLoader.load(baked, "Mesh", ResourceLoader.CACHE_MODE_REPLACE)
@@ -1300,14 +1403,28 @@ func _parse_prop_file(gp: String) -> Array:
 			and _mesh_keeps_textures(done[0]):
 		if ResourceSaver.save(done[0], baked, ResourceSaver.FLAG_COMPRESS) != OK:
 			DirAccess.remove_absolute(baked)   # never leave a torn cache file
-		elif not _mesh_keeps_textures(ResourceLoader.load(
-				baked, "Mesh", ResourceLoader.CACHE_MODE_IGNORE)):
-			# Writing it is not the same as being able to read it back. Saving a
-			# sidecar whose textures do not survive the round trip is worse than
-			# having no cache at all, because it is preferred forever after.
-			DirAccess.remove_absolute(baked)
-			Log.warn("%s: textures did not survive the mesh cache, not caching it"
-				% gp.get_file())
+		# NO read-back verification here, deliberately. It used to load the file
+		# straight back and delete any sidecar whose textures returned 0x0 —
+		# reasonable-sounding, and the single biggest self-inflicted wound in
+		# this file. Loading the sidecar uploads a SECOND copy of every texture
+		# while the build already holds thousands, and the engine only reclaims
+		# discarded ones between frames, so a long uninterrupted build starves
+		# itself and the verification starts failing on perfectly good props.
+		#
+		# Measured on Dumbo: 942 of 2,871 props were rejected this way, and the
+		# rejects were not bad models. Re-running the identical parse/save/verify
+		# on 135 of them standalone passed 135/135. Re-running 60 of them inside
+		# the live editor as one uninterrupted burst passed the first 40 and
+		# failed the last 19 — a dose response, not a data problem — and those
+		# 19 passed on a second attempt once frames had run. The check was
+		# manufacturing the failure it reported, and the cost was real: every
+		# rejected prop re-parsed from glTF on every scene build.
+		#
+		# A genuinely unreadable sidecar is still caught, one step later and for
+		# free: the LOAD path above verifies _mesh_keeps_textures() before
+		# trusting a cached mesh, deletes it and re-bakes from the GLB. That is
+		# the same guarantee without a second texture upload at the worst
+		# possible moment.
 	return done
 
 # ---------- Configure Shaders (dock dialog) ----------
@@ -1348,6 +1465,12 @@ static func _fx_animate_materials(m: Mesh) -> void:
 # dock toggle is a pure live uniform change.
 static func _wind_swap_materials(m: Mesh) -> void:
 	if not (m is ArrayMesh): return
+	# Do NOT replace a material for a feature that is switched off. This used to
+	# run unconditionally and swap in the wind shader with wind_strength 0, so
+	# every foliage prop was rendered by a substitute material even for users who
+	# never enabled Foliage Wind — all cost, no effect. Turning the pref ON still
+	# reaches already-built meshes through apply_shader_prefs(), which calls this.
+	if not bool(shader_prefs.get("wind", false)): return
 	var rx := RegEx.create_from_string("(?i)(" + WIND_MAT_PAT + ")")
 	var am := m as ArrayMesh
 	for i in range(am.get_surface_count()):
@@ -1370,6 +1493,26 @@ static func _wind_swap_materials(m: Mesh) -> void:
 				if bm.transparency == BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR else 0.5)
 		sm.set_shader_parameter("wind_strength",
 				float(shader_prefs.get("wind_str", 0.08)) if bool(shader_prefs.get("wind", false)) else 0.0)
+		# Carry the REST of the material across. Swapping used to drop the normal
+		# map, roughness, metallic and AO on the floor, which is what made every
+		# tree and hedge read flat. A substitute material that keeps only the
+		# albedo is not a substitute.
+		sm.set_shader_parameter("use_normal", bm.normal_enabled and bm.normal_texture != null)
+		sm.set_shader_parameter("normal_tex", bm.normal_texture)
+		sm.set_shader_parameter("normal_scale", bm.normal_scale)
+		sm.set_shader_parameter("use_rough_tex", bm.roughness_texture != null)
+		sm.set_shader_parameter("rough_tex", bm.roughness_texture)
+		sm.set_shader_parameter("rough_channel", int(bm.roughness_texture_channel))
+		sm.set_shader_parameter("roughness_mul", bm.roughness)
+		sm.set_shader_parameter("use_metal_tex", bm.metallic_texture != null)
+		sm.set_shader_parameter("metal_tex", bm.metallic_texture)
+		sm.set_shader_parameter("metal_channel", int(bm.metallic_texture_channel))
+		sm.set_shader_parameter("metallic_mul", bm.metallic)
+		sm.set_shader_parameter("use_ao", bm.ao_enabled and bm.ao_texture != null)
+		sm.set_shader_parameter("ao_tex", bm.ao_texture)
+		sm.set_shader_parameter("ao_channel", int(bm.ao_texture_channel))
+		sm.set_shader_parameter("ao_affect", bm.ao_light_affect)
+		sm.set_shader_parameter("specular_amount", bm.metallic_specular)
 		am.surface_set_material(i, sm)
 
 # push the current shader_prefs onto every live overlay material (water plane,
@@ -1557,7 +1700,8 @@ func ensure_props(host: Node, map: String, status: Callable) -> bool:
 	if props_mb > 0:
 		status.call("Downloading %s prop meshes (~%d MB, %s quality)…"
 			% [map, props_mb, "in-game" if HighpolyStore.quality() == "full" else "web"])
-	var ok := await _download_with_progress(host, b + props_file(), tmp, status,
+	var ok := await _download_with_progress(host,
+		await _ver_url(host, map, _props_etag_key(), b + props_file()), tmp, status,
 		"Downloading prop meshes:", props_mb)
 	if not ok:
 		status.call("Prop mesh download failed (try again)"); return false
@@ -1570,11 +1714,51 @@ func ensure_props(host: Node, map: String, status: Callable) -> bool:
 	for nm in miss: want["%s.glb" % nm] = true
 	var n := 0
 	var skipped2 := 0
-	for f in zr.get_files():
+	# Say what we actually received and what we intend to do with it. Dumbo's
+	# props have now been "successfully" re-downloaded three times and come out
+	# byte-identical to the stale copy every time, and none of the four things
+	# that could explain it -- wrong URL, CDN serving an old body, refresh flag
+	# lost, extraction skipping existing files -- can be told apart from the
+	# outside, because the log records only that 1.71 GiB arrived. One line here
+	# separates all four.
+	var zfiles: PackedStringArray = zr.get_files()
+	var probe := ""
+	for f0 in zfiles:
+		if f0.ends_with(".glb"):
+			probe = "%s (%d B in zip)" % [f0, zr.read_file(f0).size()]
+			break
+	var zbytes := 0
+	var zf := FileAccess.open(tmp, FileAccess.READ)      # length only: NEVER read
+	if zf:                                               # the archive into RAM,
+		zbytes = zf.get_length()                         # it is gigabytes
+		zf.close()
+	Log.info("%s props: archive %d B holds %d entries, refresh=%s, %d missing · first=%s"
+		% [map, zbytes, zfiles.size(), str(refresh), miss.size(), probe])
+	# Rewriting a prop that did not change is not free, it is the single most
+	# expensive thing this function can do. _parse_prop_file() treats a sidecar
+	# older than its .glb as stale, so touching every file invalidates the whole
+	# fast-load cache and forces all ~2,871 props to re-parse from glTF and
+	# re-bake on the next build -- minutes of work to deliver, on Dumbo, 235
+	# actually-changed props. Comparing bytes first costs one sequential read of
+	# files we just wrote to the page cache anyway, and lets everything unchanged
+	# keep its timestamp and its sidecar.
+	var same := 0
+	for f in zfiles:
 		if want.has(f) or (refresh and f.ends_with(".glb") and not f.contains("/")):
-			var out := FileAccess.open("%s/%s" % [PROPS_CACHE, f], FileAccess.WRITE)
+			var data := zr.read_file(f)
+			var dst := "%s/%s" % [PROPS_CACHE, f]
+			if FileAccess.file_exists(dst):
+				var cur := FileAccess.open(dst, FileAccess.READ)
+				if cur:
+					var identical: bool = cur.get_length() == data.size() \
+						and cur.get_buffer(data.size()) == data
+					cur.close()
+					if identical:
+						same += 1
+						continue
+			var out := FileAccess.open(dst, FileAccess.WRITE)
 			if out:
-				out.store_buffer(zr.read_file(f)); out.close(); n += 1
+				out.store_buffer(data); out.close(); n += 1
 			else:
 				skipped2 += 1
 				if skipped2 == 1:
@@ -1585,10 +1769,39 @@ func ensure_props(host: Node, map: String, status: Callable) -> bool:
 			% [map, skipped2, n + skipped2, ProjectSettings.globalize_path(PROPS_CACHE)])
 	zr.close()
 	DirAccess.remove_absolute(tmp)
+	Log.info(("%s props: wrote %d of %d entries, %d already identical "
+		+ "(kept their fast-load cache)") % [map, n, zfiles.size(), same])
 	if refresh:
 		_props_refresh.erase(map)
 		_mesh_cache.clear()          # re-parse refreshed meshes on the next build
-		_save_props_index({})        # overwritten files: forget verified hashes, re-verify
+		# ACCEPT the package copies instead of wiping the index.
+		#
+		# Wiping it made _verify_props_registry() re-hash every prop, find that
+		# the freshly extracted copy does not match the model LIBRARY's hash, and
+		# download the library's copy over the top — silently undoing the map
+		# package four seconds after unpacking it. That is how three consecutive
+		# "successful" Dumbo re-downloads all ended with byte-identical stale
+		# props: the archive was right every time and got reverted every time.
+		#
+		# The two are separate pipelines. maps/<MAP>/props.zip is built for this
+		# map and carries optimisations the library does not (merged same-material
+		# surfaces, ~2.9x fewer draw calls), so at the moment it is extracted it
+		# is the better source and must win.
+		#
+		# Recording the registry's CURRENT hash as accepted keeps the healing
+		# path alive rather than disabling it: when the library publishes a new
+		# hash later, this entry no longer matches and the prop is re-verified
+		# exactly as before. Only "the library differs from the package we just
+		# unpacked" stops being treated as damage to repair.
+		var reg2: Dictionary = HighpolyStore.mesh_remote
+		var idx2: Dictionary = {}
+		for zf2 in zfiles:
+			if not zf2.ends_with(".glb") or zf2.contains("/"):
+				continue
+			var nm2 := zf2.get_basename()
+			if reg2.has(nm2):
+				idx2[nm2] = str((reg2[nm2] as Dictionary).get("hash", ""))
+		_save_props_index(idx2)
 	await _stamp_etag(host, map, _props_etag_key(), b + props_file())
 	await _verify_props_registry(host, map, status)
 	status.call("%d prop meshes ready" % n)
@@ -2002,12 +2215,54 @@ func _add_multimesh(parent: Node3D, mesh: Mesh, xf: Array, textured: bool, flat_
 		for j in range(12): dst.append(xf[o + j])
 	if not pos.is_empty():
 		var m1 := _build_mmi(mesh, pos, textured, flat_mat)
+		_no_backdrop_shadow(m1)
 		parent.add_child(m1)
 		_bd_list.append(m1)
 	if not neg.is_empty():
 		var m2 := _build_mmi(_flipped_mesh(mesh), neg, textured, flat_mat)
+		_no_backdrop_shadow(m2)
 		parent.add_child(m2)
 		_bd_list.append(m2)
+
+
+# The skyline never casts. _build_mmi's size rule lets it through — every
+# backdrop cluster is 500+ m across, so it is "big enough to matter" by any
+# measure of extent — but extent is the wrong question for geometry that exists
+# only to fill the horizon.
+#
+# Measured on Dumbo with shadows off: the backdrop is 59 visible nodes carrying
+# 6,639 surfaces for 0.1M triangles. That is 112 surfaces per node of almost no
+# geometry, and a casting surface is paid once per directional cascade, so
+# letting it cast costs ~33,000 draw calls — around half the entire frame — to
+# render shadows from buildings that sit outside the play area and fall only on
+# other backdrop buildings. Nothing in view gets a shadow it would otherwise
+# have; the cost is the whole effect.
+#
+# Deliberately NOT routed through the Shadows checkbox or the size rule: this is
+# not a quality trade the user should have to find, it is set dressing that was
+# never a shadow caster in the first place.
+func _no_backdrop_shadow(g: GeometryInstance3D) -> void:
+	if g != null:
+		mark_never_casts(g)
+
+
+# "This node must never cast, whatever any toggle says."
+#
+# Setting cast_shadow = OFF at build time is not enough on its own: the Shadows
+# checkbox walks the whole overlay and re-derives casting from the mesh's extent
+# (HighpolyLighting._set_shadows), and the skyline is 500+ m across, so it sails
+# past any size rule and switches straight back on. That is exactly what
+# happened — a measured pass came back with 6,627 of 6,632 backdrop surfaces
+# casting again, 26,508 draw calls, after the build had correctly turned them
+# off. The terrain went with it.
+#
+# So the intent has to live ON THE NODE where every later pass can see it,
+# rather than in a flag that the next walk overwrites.
+static func mark_never_casts(g: GeometryInstance3D) -> void:
+	if g == null:
+		return
+	g.set_meta("no_shadow", true)
+	g.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 
 # Build the _MAP_CONTEXT subtree. Everything owner=null.
 #   enabled      – Map Context on at all (terrain + surroundings baseline)
@@ -2178,8 +2433,7 @@ func apply(root: Node, enabled: bool, show_objects: bool, tex = true,
 						rstack.append(cc)
 					if rc is GeometryInstance3D:
 						(rc as GeometryInstance3D).layers = EXT_TERRAIN_LAYER
-						(rc as GeometryInstance3D).cast_shadow = \
-							GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+						mark_never_casts(rc as GeometryInstance3D)
 
 	# Water is its own layer too. It is not terrain (plenty of maps have a river
 	# or a harbour you may want to see without the surrounding ground, or the
@@ -2751,7 +3005,7 @@ func purge_map(map: String, info: Dictionary) -> void:
 		var p := "%s/%s.glb" % [PROPS_CACHE, str(nm)]
 		if FileAccess.file_exists(p):
 			DirAccess.remove_absolute(p)
-		for sfx in [".baked.res", ".baked2.res"]:
+		for sfx in [".baked.res", ".baked2.res", ".baked3.res"]:
 			if FileAccess.file_exists(p + sfx):
 				DirAccess.remove_absolute(p + sfx)   # fast-startup sidecars
 		if idx.has(nm):
@@ -2846,10 +3100,12 @@ func cleanup_stale(map: String) -> int:
 			var kill := false
 			if f.ends_with(".baked.res"):
 				kill = true                     # v1 sidecar (pre-LOD)
+			elif f.ends_with(".baked2.res"):
+				kill = true                     # v2 sidecar (lossy foliage swap)
 			elif f.ends_with(".tmp.glb"):
 				kill = true                     # torn mid-write leftover
-			elif f.ends_with(".baked2.res"):
-				kill = not FileAccess.file_exists(p.trim_suffix(".baked2.res"))
+			elif f.ends_with(".baked3.res"):
+				kill = not FileAccess.file_exists(p.trim_suffix(".baked3.res"))
 			if kill:
 				DirAccess.remove_absolute(p)
 				removed += 1
@@ -2954,7 +3210,7 @@ func _build_terrain_from_heightmap(dir: String, meta: Dictionary) -> Node3D:
 			var mi := MeshInstance3D.new()
 			mi.name = "T%d_%d" % [cx, cz]
 			mi.mesh = m
-			mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+			mark_never_casts(mi)
 			troot.add_child(mi)
 			mi.owner = troot                  # PackedScene.pack needs the owner chain
 	var packed := PackedScene.new()
@@ -3250,18 +3506,33 @@ func _build_mmi(mesh: Mesh, xf: Array, textured: bool, flat_mat: Material) -> Mu
 		# (it exists to colour the SDK's untextured terrain/proxies, not to tint
 		# models that are already correct). See HighpolyLib.TEXTURED_LAYER.
 		mmi.layers = TEXTURED_LAYER
+	# Sized from the mesh's own AABB. Computed BEFORE shadows because shadow
+	# casting now depends on it.
+	var _sz := mesh.get_aabb().get_longest_axis_size()
+	mmi.set_meta("lod_sz", _sz)     # so the Range slider can re-derive these live
 	# props/backdrop CAST shadows (the flat no-shadow overlay was an old
 	# study-mode perf choice — with game lighting it read as "shadows don't
 	# render"). Follows the dock's Shadows sub-checkbox so meshes built while
 	# it's unchecked stay light. Grass scatter is always shadow-off (GPU cost).
+	#
+	# SIZE-AWARE, because shadows were the largest single cost measured. A
+	# casting surface is redrawn once per directional cascade, so its real price
+	# is five draw calls rather than one. On a Dumbo flyover: 4,264 visible
+	# nodes carrying 22,482 surfaces, which at five passes is ~112,000 calls and
+	# accounted for essentially the whole 156,864 the engine reported at 4 fps.
+	#
+	# Big structures still cast, because that is where a shadow reads and where
+	# its absence would be noticed. The thousands of small props stop paying four
+	# extra passes each to cast a shadow the size of a bin lid. Same 12 m
+	# boundary the HLOD tiers and the placed-object cull already use, so there is
+	# one notion of "big enough to matter" rather than three.
 	mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON \
-		if HighpolyLighting.cast_shadows else GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		if (HighpolyLighting.cast_shadows and _sz >= SHADOW_MIN_EXTENT) \
+		else GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	# VISIBILITY RANGES (Godot's per-instance HLOD): small props stop being
 	# drawn long before the Range slider would cull their cell — the single
 	# biggest draw-call saver when flying (a trash can 1.5 km out was a full
-	# draw call). Sized from the mesh's own AABB; fades instead of popping.
-	var _sz := mesh.get_aabb().get_longest_axis_size()
-	mmi.set_meta("lod_sz", _sz)     # so the Range slider can re-derive these live
+	# draw call). Fades instead of popping.
 	_set_mmi_lod(mmi, _sz)
 	return mmi
 
@@ -3273,13 +3544,21 @@ func _build_mmi(mesh: Mesh, xf: Array, textured: bool, flat_mat: Material) -> Mu
 # half the system: at a 400 m range, small props still drew to 400 m, and pulling
 # the slider down did not make the clutter any cheaper.
 #
-# Same rule the placed-object LOD uses, so both halves of the scene behave alike:
-# clutter to HALF the range, mid-size props to the full range, big structures
+# Clutter to a FIFTH of the range, mid-size props to two fifths, big structures
 # uncapped because the cell cull already bounds them and popping a building is
 # far more noticeable than popping a bin.
 #
-# At the default 800 m slider small props still cull at 400 m, exactly as before,
-# so this changes the tuning nobody complained about only where the slider moves.
+# These were 0.5 / 1.0. Measured on Dumbo, 89% of visible prop surfaces come from
+# props under 12 m — 54% from clutter under 3 m alone — so this band is where the
+# draw calls actually are, and distance is the only thing that removes them
+# without removing the object. Counting what survives each threshold put the
+# saving at about a third of the prop surfaces in view.
+#
+# NOTE: highpoly_placedcull.gd keeps its own 0.5 / 1.0 copy of this rule, so map
+# context and YOUR placed objects no longer cull alike. That is deliberate: your
+# objects are a handful of nodes and a few draw calls, and having the props you
+# are actively working on vanish early is a worse trade than the frames it would
+# buy. An older comment here claimed the two were kept in step — they are not.
 func _set_mmi_lod(mmi: MultiMeshInstance3D, sz: float) -> void:
 	var r: float = radius
 	if r >= 1.0e8:
@@ -3292,11 +3571,11 @@ func _set_mmi_lod(mmi: MultiMeshInstance3D, sz: float) -> void:
 		# small props: HARD cull with a hysteresis buffer. Dither-fade (FADE_SELF)
 		# stipples badly on small objects and reads as flicker while flying — a
 		# clean on/off with a margin is smoother for clutter this size.
-		mmi.visibility_range_end = maxf(r * 0.5, 40.0)
+		mmi.visibility_range_end = maxf(r * 0.2, 40.0)
 		mmi.visibility_range_end_margin = 40.0
 		mmi.visibility_range_fade_mode = GeometryInstance3D.VISIBILITY_RANGE_FADE_DISABLED
 	elif sz < 12.0:
-		mmi.visibility_range_end = maxf(r, 60.0)
+		mmi.visibility_range_end = maxf(r * 0.4, 60.0)
 		mmi.visibility_range_end_margin = 60.0
 		mmi.visibility_range_fade_mode = GeometryInstance3D.VISIBILITY_RANGE_FADE_SELF
 	else:
@@ -3429,8 +3708,15 @@ func _apply_radius(budget: int = 1 << 30) -> void:
 		# a shadow is visible on at street scale.
 		var casts: bool = near and dist <= 350.0 + half_diag \
 			and HighpolyLighting.cast_shadows
-		var casts_now: bool = (lst[0] as GeometryInstance3D).cast_shadow \
-			== GeometryInstance3D.SHADOW_CASTING_SETTING_ON
+		# Read the cell's INTENDED shadow state, not lst[0]'s actual one. The
+		# two are no longer the same thing: _build_mmi() only lets a mesh cast
+		# if it is at least SHADOW_MIN_EXTENT across, so a cell whose first
+		# member is a small prop reports "not casting" however near it is.
+		# Comparing against the actual flag made this loop re-queue every such
+		# cell EVERY tick and — worse — the apply below then forced the size
+		# gate back ON, which is why a measured flyover still showed ~4.9
+		# shadow passes per surface after the gate went in.
+		var casts_now: bool = bool((lst[0] as Node).get_meta("cell_casts", false))
 		if near != vis_now or casts != casts_now:
 			changes.append([0 if near else 1, dist, key, near, casts])
 	changes.sort()   # lexicographic: shows before hides, nearest first
@@ -3440,8 +3726,15 @@ func _apply_radius(budget: int = 1 << 30) -> void:
 		for mmi in _cells[ch[2]]:
 			if is_instance_valid(mmi):
 				mmi.visible = ch[3]
+				# The cell decides WHETHER shadows are in play here; the mesh's
+				# own size decides whether IT is worth one. Both must agree, so
+				# distance can turn a caster off but can never promote a small
+				# prop into one.
+				mmi.set_meta("cell_casts", ch[4])
+				var big: bool = float(mmi.get_meta("lod_sz", 1e9)) >= SHADOW_MIN_EXTENT \
+					and not mmi.has_meta("no_shadow")
 				(mmi as GeometryInstance3D).cast_shadow = \
-					GeometryInstance3D.SHADOW_CASTING_SETTING_ON if ch[4] \
+					GeometryInstance3D.SHADOW_CASTING_SETTING_ON if (ch[4] and big) \
 					else GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	# backdrop follows the Range slider too: cull each skyline/surroundings
 	# cluster by distance to its own bounds (a 500 m-wide cluster whose edge

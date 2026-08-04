@@ -83,6 +83,14 @@ func setup(section_title: String, description: String) -> void:
 	content = VBoxContainer.new()
 	content.set_anchors_preset(Control.PRESET_TOP_WIDE)
 	content.modulate.a = 0.0
+	# Re-fit when the CONTENTS change height, not only when the box does.
+	# body.resized alone catches the panel being resized, but not a chip row
+	# wrapping onto another line, a row becoming visible, or a label growing —
+	# the content got taller inside a box still sized for the old height, so it
+	# was clipped while the section below kept its old gap. That is the odd
+	# spacing that appears "from time to time": it tracks whatever last changed
+	# the content's own minimum size.
+	content.minimum_size_changed.connect(_fit_content)
 	body.add_child(content)
 
 	hl = 0.0

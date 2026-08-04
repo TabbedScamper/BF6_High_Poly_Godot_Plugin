@@ -26,6 +26,7 @@ var _override: Array = []      # nodes currently carrying the override
 # relative preloads: the plugin works from ANY folder under addons/ (users
 # often drop the whole repo zip in, nesting the plugin one level deeper)
 const PreviewsScript = preload("highpoly_previews.gd")
+const ProfilerScript = preload("highpoly_profiler.gd")
 const MapContextScript = preload("highpoly_mapcontext.gd")
 const SyncScript = preload("highpoly_sync.gd")
 const HighpolyCollision = preload("highpoly_collision.gd")
@@ -42,6 +43,8 @@ const SectionScript = preload("highpoly_section.gd")
 const SplashScript = preload("highpoly_splash.gd")
 const Theme_ = preload("highpoly_theme.gd")
 var previews: Node
+var profiler: Node          # performance recorder (highpoly_profiler.gd)
+var perf_btn: Button       # its start/stop button
 var mapctx: Node
 var sync: Node
 var col_chk: Button          # Show collisions overlay
@@ -62,6 +65,10 @@ var mapctx_light: Button     # game lighting (sun/sky/fog from the real map VE)
 var mapctx_gi: Button        # sub-toggle: SDFGI + SSAO (visible while lighting is on)
 var mapctx_shadows: Button   # sub-toggle: sun shadows + overlay casting
 var mapctx_maplights: Button # sub-toggle: the map's mined light entities
+var mapctx_fill_row: HBoxContainer   # "Interior light" slider row (with the shadow controls)
+var mapctx_fill: HSlider             # ambient held back from sky visibility, 0-60%
+var mapctx_fill_val: Label
+var mapctx_batch: OptionButton  # scenery batching grain (cell size)
 var mapctx_optimize: Button  # distance-cull the user's PLACED objects (their custom map content)
 var mapctx_variant_row: HBoxContainer  # "Variant" gamemode dropdown (visible with objects)
 var mapctx_variant: OptionButton
@@ -289,12 +296,17 @@ func _enter_tree() -> void:
 	iso_chk.toggled.connect(_isolate_toggled)
 	col_chips.add_child(iso_chk)
 
-	# Off by default. Every placed object carries one of Godot's collision
-	# outlines, and on a built-up level that is thousands of extra wireframes
-	# drawn every frame — it stutters, and they are also what stays behind when
-	# an object is too far away to draw.
+	# ON by default. These are the editor's normal outlines, and switching them
+	# off silently changes how the editor behaves for someone who never asked:
+	# an object out of draw range leaves nothing on screen at all, which reads as
+	# the plugin having eaten it. Better to keep the SDK's own behaviour and let
+	# anyone who wants the frames back turn them off deliberately.
+	#
+	# The cost is real on a built-up level: one wireframe per placed object,
+	# thousands of them drawn every frame, and it does stutter. That is what the
+	# chip is for, and the tooltip says so.
 	shape_chk = Theme_.chip("Godot shape outlines")
-	shape_chk.tooltip_text = "Godot draws a teal outline around every object's collision shape. On a busy level that is thousands of extra outlines every frame, so the plugin switches them off. Turn this on to get them back."
+	shape_chk.tooltip_text = "Godot draws a teal outline around every object's collision shape. On a busy level that is thousands of extra outlines every frame, so switching them off can smooth out the viewport. They are on by default because that is how the editor normally behaves."
 	shape_chk.toggled.connect(func(v: bool):
 		var _r := EditorInterface.get_edited_scene_root()
 		var n: int = ShapeViz.apply(_r, not v)
@@ -340,7 +352,7 @@ func _enter_tree() -> void:
 	# visible while it is on
 	var mc_sub := _chip_row(host, 14)
 	mapctx_on = Theme_.chip("Extended Terrain")
-	mapctx_on.tooltip_text = "Adds the real ground and water that surround the play area, so you can see how your build sits in the world. The distant skyline has its own switch, and the level's own objects live under Detail Mode. Preview only: none of it is saved into your map or included when you export."
+	mapctx_on.tooltip_text = "Adds the real ground and water that surround the play area, so you can see how your build sits in the world. The distant skyline and the level's own objects have their own switches beside this one. Preview only: none of it is saved into your map or included when you export."
 	mapctx_on.toggled.connect(func(v: bool):
 		var r0 := EditorInterface.get_edited_scene_root()
 		# Extended Terrain used to force the objects layer ON with it, so there
@@ -431,12 +443,13 @@ func _enter_tree() -> void:
 			_save_mapctx_state()
 			return
 		_mapctx_changed())
-	# Lives under Detail Mode, not in the Map Context row: it is the one layer
-	# whose LOOK the Detail Mode dropdown governs (orange placeholder / clay /
-	# real textures), so it belongs beside the control that governs it. It was
-	# previously hidden entirely and driven implicitly by the Range slider, which
-	# is why there was no way to ask for terrain without objects.
-	_detail_chips.add_child(mapctx_objects)
+	# Lives in the MAP CONTEXT row with the other layers. It used to sit under
+	# Detail Mode on the argument that it belongs beside the control governing
+	# its look — but Detail Mode governs how several layers look, while this
+	# switch decides whether a layer of the map context EXISTS at all. That is
+	# the same question Extended Terrain, Backdrops and Water answer, and
+	# grouping it with them is how people look for it.
+	mc_chips.add_child(mapctx_objects)
 
 	# "Map variant": draw one gamemode's real gameplay layout (capture rings,
 	# objectives, spawn clusters, zones + that mode's own gated props) — data
@@ -504,6 +517,7 @@ func _enter_tree() -> void:
 		if mapctx_gi: mapctx_gi.visible = v
 		if mapctx_shadows: mapctx_shadows.visible = v
 		if mapctx_maplights: mapctx_maplights.visible = v
+		if mapctx_fill_row: mapctx_fill_row.visible = v
 		_lighting_changed()
 		_save_mapctx_state())
 	mc_chips.add_child(mapctx_light)
@@ -528,6 +542,36 @@ func _enter_tree() -> void:
 		_save_mapctx_state())
 	mc_sub.add_child(mapctx_shadows)
 
+	# Interior light: how much ambient stops depending on seeing sky. Sits with
+	# Shadows because that is the pairing people reach for — the complaint it
+	# answers is "the shadowed side is pure black", and shadows are what put it
+	# there. Shown only alongside the shadow controls, hidden with them.
+	mapctx_fill_row = HBoxContainer.new()
+	mapctx_fill_row.visible = false
+	var fill_lbl := Label.new(); fill_lbl.text = "Interior light"
+	mapctx_fill_row.add_child(fill_lbl)
+	mapctx_fill = HSlider.new()
+	mapctx_fill.min_value = 0; mapctx_fill.max_value = 60
+	mapctx_fill.step = 1; mapctx_fill.value = int(round(LightingScript.interior_fill * 100.0))
+	# An HSlider's minimum width is ZERO, and this row lives in an
+	# HFlowContainer, which sizes children to their minimum. SIZE_EXPAND_FILL
+	# means nothing there, so the bar collapsed to no width at all: the label and
+	# the "22%" rendered, the draggable part did not exist. Give it a real width.
+	mapctx_fill.custom_minimum_size = Vector2(150, 0)
+	mapctx_fill.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	mapctx_fill.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	mapctx_fill.tooltip_text = "Lifts the darkest areas — inside buildings, under bridges, the shadowed side of a wall — so you can see what you are working on. At zero the lighting is strictly what the sky reaches, which is the calibrated match to the real game and leaves interiors black. Preview only: it changes nothing about your map."
+	mapctx_fill_row.add_child(mapctx_fill)
+	mapctx_fill_val = Label.new()
+	mapctx_fill_val.text = "%d%%" % int(mapctx_fill.value)
+	mapctx_fill_row.add_child(mapctx_fill_val)
+	mapctx_fill.value_changed.connect(func(v: float):
+		mapctx_fill_val.text = "%d%%" % int(v)
+		lbl.text = LightingScript.set_interior_fill(
+			EditorInterface.get_edited_scene_root(), v / 100.0)
+		_save_mapctx_state())
+	mc_sub.add_child(mapctx_fill_row)
+
 	mapctx_maplights = Theme_.chip("Map lights")
 	mapctx_maplights.button_pressed = false
 	mapctx_maplights.visible = false
@@ -544,6 +588,32 @@ func _enter_tree() -> void:
 	# map content — not the backdrop) so a densely-built map stays fast. Near props
 	# stay full-quality and fully selectable/editable; distant ones stop drawing.
 	# Follows the Range slider. Editor-only — nothing hidden, export untouched.
+	# Scenery batching. The map package groups props into one MultiMesh per mesh
+	# per cell, and at the packaged 64 m that is 13,407 MultiMeshes holding 3.4
+	# instances each on Dumbo, half of them holding exactly one. Draw calls then
+	# track object count 1:1 and the measured flyover hit 156,177 of them.
+	#
+	# Bigger cells mean far fewer draw calls but a coarser distance cull, so this
+	# is exposed to be MEASURED with Record performance rather than guessed.
+	var batch_row := HBoxContainer.new(); host.add_child(batch_row)
+	var batch_lbl := Label.new(); batch_lbl.text = "Scenery batching"
+	batch_row.add_child(batch_lbl)
+	mapctx_batch = OptionButton.new()
+	mapctx_batch.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	mapctx_batch.tooltip_text = "How coarsely the level's scenery is grouped for drawing. Larger groups mean far fewer draw calls, which is usually what limits the frame rate, at the cost of a less precise distance cull. Auto uses whatever the map was packaged with. Changing this rebuilds the scenery."
+	mapctx_batch.add_item("Auto", 0)
+	for m in [64, 128, 256, 512]:
+		mapctx_batch.add_item("%d m" % m, m)
+	mapctx_batch.select(0)
+	mapctx_batch.item_selected.connect(func(i: int):
+		HighpolyMapContext.cell_override = mapctx_batch.get_item_id(i)
+		EditorInterface.get_editor_settings().set_project_metadata(
+			"highpoly_mapctx", "_cell_override", HighpolyMapContext.cell_override)
+		lbl.text = "Scenery batching %s. Rebuilding so it takes effect." \
+			% mapctx_batch.get_item_text(i)
+		_mapctx_changed())
+	batch_row.add_child(mapctx_batch)
+
 	# Not shown: this is just what the Range slider means for the pieces you
 	# placed yourself, so it is always on and rides the slider like everything
 	# else. Kept unshown because the overlay code reads its state.
@@ -624,6 +694,10 @@ func _enter_tree() -> void:
 	# any disk either — it only stops FUTURE caching — so leaving it off was a
 	# cost with no benefit. It stays available for anyone genuinely short on
 	# space, which is the only reason to pick it.
+	# batching grain is remembered per project: it is a performance choice, and
+	# having it silently reset to Auto would make before/after runs disagree
+	HighpolyMapContext.cell_override = int(_es.get_project_metadata(
+		"highpoly_mapctx", "_cell_override", 0))
 	var _mc_on := bool(_es.get_project_metadata("highpoly_mapctx", "_mesh_cache", true))
 	storage_cache_chk.set_pressed_no_signal(_mc_on)
 	HighpolyMapContext.mesh_cache_enabled = _mc_on
@@ -737,6 +811,27 @@ func _enter_tree() -> void:
 		lbl.text = "Removed %d marker(s)." % HighpolyMarkers.clear(r))
 	mark_row.add_child(mark_clear)
 
+	# ---- performance recorder ----
+	# Everything about performance in this plugin has been reasoned from triangle
+	# counts, which is guesswork: a scene can be triangle-light and draw-call
+	# heavy. This measures the real counters while you fly and says which
+	# subsystem owned what was on screen when the frame rate dropped.
+	var perf_row := HBoxContainer.new()
+	perf_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	host.add_child(perf_row)
+	perf_btn = Button.new()
+	perf_btn.text = "Record performance"
+	perf_btn.tooltip_text = "Measures the frame rate while you fly, then reports what was actually being drawn when it was worst, broken down by what put it there. Fly the route that feels slow, then press Stop. Writes a spreadsheet next to the log."
+	perf_btn.pressed.connect(func():
+		if profiler == null: return
+		if profiler.recording:
+			lbl.text = profiler.stop()
+			perf_btn.text = "Record performance"
+		else:
+			lbl.text = profiler.start()
+			perf_btn.text = "Stop recording")
+	perf_row.add_child(perf_btn)
+
 	var log_row := HBoxContainer.new()
 	log_row.alignment = BoxContainer.ALIGNMENT_CENTER
 	host.add_child(log_row)
@@ -819,6 +914,9 @@ func _enter_tree() -> void:
 	_check_plugin_update.call_deferred()
 	_refresh_storage.call_deferred()   # async walk; mapctx exists by deferred time
 
+	profiler = ProfilerScript.new()
+	profiler.name = "HighpolyProfiler"
+	dock.add_child(profiler)
 	previews = PreviewsScript.new()
 	dock.add_child(previews)
 	mapctx = MapContextScript.new()
@@ -1268,8 +1366,11 @@ func _refresh_job_bar() -> void:
 # Off unless the user has said otherwise. Stored per project, so someone who
 # wants Godot's outlines back keeps them back.
 func _apply_shape_outlines() -> void:
+	# Defaults to SHOWN: the editor's own behaviour, kept unless the user turns
+	# it off. A saved preference still wins, so anyone who already switched them
+	# off keeps them off.
 	var want_shown: bool = bool(EditorInterface.get_editor_settings()
-		.get_project_metadata("highpoly", "shape_outlines", false))
+		.get_project_metadata("highpoly", "shape_outlines", true))
 	if shape_chk: shape_chk.set_pressed_no_signal(want_shown)
 	var n: int = ShapeViz.apply(EditorInterface.get_edited_scene_root(), not want_shown)
 	if n > 0 and not want_shown:
@@ -1698,6 +1799,7 @@ func _do_reset() -> void:
 	if mapctx_gi: mapctx_gi.visible = false
 	if mapctx_shadows: mapctx_shadows.visible = false
 	if mapctx_maplights: mapctx_maplights.visible = false
+	if mapctx_fill_row: mapctx_fill_row.visible = false
 	if mapctx_variant_row: mapctx_variant_row.visible = false
 	if ovr_chk: ovr_chk.text = _override_label()
 	_override.clear()
@@ -1811,6 +1913,7 @@ func _check_scene_change() -> void:
 	if mapctx_gi: mapctx_gi.visible = false
 	if mapctx_shadows: mapctx_shadows.visible = false
 	if mapctx_maplights: mapctx_maplights.visible = false
+	if mapctx_fill_row: mapctx_fill_row.visible = false
 	if mapctx_variant_row: mapctx_variant_row.visible = false
 	if col_chk: col_chk.set_pressed_no_signal(false)
 	if iso_chk:
@@ -1906,6 +2009,7 @@ func _lighting_changed() -> void:
 		mapctx_light.set_pressed_no_signal(false)
 		if mapctx_gi: mapctx_gi.visible = false
 		if mapctx_shadows: mapctx_shadows.visible = false
+		if mapctx_fill_row: mapctx_fill_row.visible = false
 		lbl.text = "No lighting data for this scene" if map != "" else "Open an MP_… level scene first"
 		return
 	lbl.text = LightingScript.apply(r, map,
@@ -1926,6 +2030,7 @@ func _lighting_guard() -> void:
 		mapctx_light.set_pressed_no_signal(false)
 		if mapctx_gi: mapctx_gi.visible = false
 		if mapctx_shadows: mapctx_shadows.visible = false
+		if mapctx_fill_row: mapctx_fill_row.visible = false
 
 # one-time baked-in performance settings: multi-threaded rendering (zero
 # visual impact) + 2048 shadow atlas (negligible under the soft overcast sun).
@@ -2067,6 +2172,7 @@ func _save_mapctx_state() -> void:
 		"gi": mapctx_gi.button_pressed if mapctx_gi else true,
 		"shadows": mapctx_shadows.button_pressed if mapctx_shadows else true,
 		"maplights": mapctx_maplights.button_pressed if mapctx_maplights else false,
+		"fill": mapctx_fill.value if mapctx_fill else 22.0,
 		"optimize": true,      # always on: it is what the Range slider means
 		"fx": mapctx_fx.button_pressed if mapctx_fx else false,
 		"variant": mapctx_variant.get_item_text(mapctx_variant.selected)
@@ -2156,6 +2262,15 @@ func _restore_mapctx_state() -> void:
 		if mapctx_gi: mapctx_gi.visible = true
 		if mapctx_shadows: mapctx_shadows.visible = true
 		if mapctx_maplights: mapctx_maplights.visible = true
+		if mapctx_fill_row: mapctx_fill_row.visible = true
+		# restore the interior fill BEFORE the rig is built, so apply() reads the
+		# saved value rather than the static default and the view does not flash
+		# at 22% on the way to whatever the user actually chose
+		if mapctx_fill:
+			var fv: float = float(d.get("fill", mapctx_fill.value))
+			mapctx_fill.set_value_no_signal(fv)
+			if mapctx_fill_val: mapctx_fill_val.text = "%d%%" % int(fv)
+			LightingScript.interior_fill = clampf(fv / 100.0, 0.0, 1.0)
 		_lighting_changed()
 	# gamemode variant overlay (dropdown lives under "Original map objects")
 	_variant_row_update(bool(d.get("objects", false)))

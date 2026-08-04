@@ -223,18 +223,35 @@ static func save() -> String:
 		push_error("[High-Poly] could not write %s: %s"
 			% [path, error_string(FileAccess.get_open_error())])
 		return ""
-	# Prefer the write-through session file: the in-memory ring holds the last
-	# 800 lines, and the interesting part of a long download run is usually
-	# further back than that.
-	var body := ""
+	# The IN-MEMORY ring is the source of truth, not the session file.
+	#
+	# It used to be the other way round, on the reasoning that the ring only
+	# holds the last 800 lines while the file holds everything. The file is not
+	# readable while we are writing it: Godot's FileAccess writes through a
+	# sibling .tmp and only renames on close, so a read of SESSION_LOG during a
+	# live session returns the last CLEANLY CLOSED session instead. An editor
+	# that was killed, or a plugin reloaded without teardown, leaves the .tmp
+	# orphaned and the real file frozen.
+	#
+	# The result was a saved log that looked plausible and was completely stale:
+	# byte-identical across saves, reporting an older plugin version, with none
+	# of the session's actual entries. Hours were spent hunting a second editor
+	# instance that did not exist.
+	var body := header() + "\n" + as_text()
+	# The older session file is still worth appending when it belongs to a
+	# DIFFERENT run, since it holds what came before the ring's 800 lines. It is
+	# clearly labelled so it can never again be mistaken for the current one.
 	if _fh != null:
 		_fh.flush()
 	var sf := FileAccess.open(SESSION_LOG, FileAccess.READ)
 	if sf != null:
-		body = sf.get_as_text()
+		var prev := sf.get_as_text()
 		sf.close()
-	if body.strip_edges() == "":
-		body = header() + "\n" + as_text()
+		if prev.strip_edges() != "" and not prev.begins_with(header().split("\n")[0] + "\n" + "saved"):
+			body += "\n\n" + "-".repeat(60) + "\n" \
+				+ "PREVIOUS SESSION (from %s, kept because the ring above holds only\n" % SESSION_LOG \
+				+ "the last %d lines and the earlier part of a long run is often what\n" % MAX_LINES \
+				+ "matters). This is NOT this session.\n" + "-".repeat(60) + "\n" + prev
 	# Problem markers ride along with the log, because the log is the thing that
 	# actually gets sent. A marker alone says "something is wrong here"; appended
 	# here it also carries what the package expects at that spot and whether the
