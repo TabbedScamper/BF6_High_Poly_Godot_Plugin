@@ -209,10 +209,12 @@ static func apply(root: Node, tier: Tier, textured: bool = true) -> int:
 # Apply only the props in `names` (the batched swap-in pass after downloads):
 # touches matching nodes that don't already carry a current overlay.
 static func apply_names(root: Node, names: Dictionary, tier: Tier, textured: bool) -> int:
-	# No Tier.LOW gate: Low-Poly draws our geometry too, so a model that finishes
-	# downloading has to swap in whatever the mode. Gated, the first download in
-	# Low-Poly landed on disk and stayed invisible until the user switched modes.
-	if root == null or names.is_empty(): return 0
+	# Gated on Tier.LOW again. While Low-Poly meant "our geometry, untextured"
+	# this had to run in every mode or a just-downloaded model stayed invisible
+	# until the user switched. Now Low-Poly means the SDK proxy, so swapping our
+	# mesh in here would silently contradict the mode the user selected — and
+	# with downloads switched off in Low-Poly there is nothing arriving to swap.
+	if root == null or names.is_empty() or tier == Tier.LOW: return 0
 	var ks := known()
 	var count := 0
 	var stack: Array = [root]
@@ -287,15 +289,26 @@ static func _nofit_for(key: String) -> bool:
 	return HighpolyStore.nofit(key)
 
 static func apply_one(node: Node3D, key: String, tier: Tier, textured: bool) -> bool:
-	# Detail Mode decides how our geometry is SKINNED, not whether it is used.
-	# Low-Poly used to mean "show the SDK proxy instead", which is why a placed
-	# asset rendered as a solid white block and never improved: the proxy IS the
-	# white block. Low-Poly now draws the same accurate mesh as High-Poly, in
-	# clay. Geometry is byte-identical between the web and hq renditions and only
-	# the texture maps differ, so the accurate silhouette costs a fraction of the
-	# bytes -- Low-Poly stays the cheap option, it just stops being the wrong one.
+	# LOW MEANS THE SDK'S OWN PROXY. Not our mesh drawn plainly — the actual
+	# thing that gets saved and exported.
+	#
+	# This was briefly changed to "our geometry, untextured" because a placed
+	# asset in Low-Poly rendered as a solid white block and never improved. That
+	# complaint was real, but it was about DISCOVERABILITY, not about the mode:
+	# in Low-Poly the white block is correct, because the white block is what you
+	# export. Answering it by drawing our mesh instead cost three things —
+	#   * modes 0 and 1 became pixel-identical for placed objects, so one entry
+	#     of a three-entry dropdown did nothing;
+	#   * there was no way to see your real export while the plugin was on,
+	#     which is the one thing this plugin promises not to disturb;
+	#   * "Low-Poly" downloaded every model and drew every triangle, so the
+	#     cheap-sounding default was the expensive one.
+	# The panel now says plainly what this mode is showing instead (see
+	# _mode_hint in highpoly_toggle.gd), which is what the original complaint
+	# actually needed.
 	if tier == Tier.LOW:
-		textured = false
+		_show_proxy_only(node)
+		return false
 	var id := _asset_id(key)
 	if id == "":
 		wanted[key] = true                    # known to the registry, not local yet

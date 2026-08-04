@@ -100,6 +100,45 @@ The model-library site reads the same `plugin-version.json` for its version
 badge, so a plugin release bumps the site version automatically — one version
 number across the whole system.
 
+## Detail Mode ids (persisted — never renumber)
+
+The dropdown holds four rungs, and their ids are written into each map's saved
+state as `"tex"`. `MODE_LIGHT` was added after the other three and took the next
+free id rather than the list slot it occupies, so **list order is by cost, id
+order is by history**. They are not the same sequence, and neither may be
+re-derived from the other.
+
+| const | id | your placed pieces | the level around them |
+|---|---|---|---|
+| `MODE_SDK` | 0 | SDK proxies | nothing, no download |
+| `MODE_LIGHT` | 3 | SDK proxies | real, untextured |
+| `MODE_GREY` | 1 | real, clay | real, untextured |
+| `MODE_TEX` | 2 | real, textured | real, textured |
+
+Three invariants hold this together, and all three are the same class of bug —
+a value that used to be interchangeable with another and no longer is:
+
+- **`_mode()` maps both low rungs to `Tier.LOW`.** The tier governs the pieces
+  the *user* placed, and neither low rung swaps those. Testing `id == 0`, which
+  is what it did while there were three entries, makes the light rung High-Poly
+  and starts fetching models for the user's own props — the one thing that rung
+  promises not to do.
+- **`_mapctx_tex_mode()` is not the id.** `highpoly_mapcontext.gd` understands
+  only `0` flat / `1` clay / `2` textured, so `MODE_LIGHT` reports `MODE_GREY`.
+  A raw `3` falls silently into the flat branch.
+- **`_save_mapctx_state()` writes the raw id, not the texture mode.** Same value
+  while there were three entries; saving the texture mode now promotes anyone on
+  the light rung to High-Poly on their next open.
+
+Anything that can start a download is registered with `_gate()` and greyed on
+`MODE_SDK`. Gated controls stay *enabled* on purpose: a disabled Godot `Button`
+swallows the click, and that click is the only moment we know the user wanted
+the thing — `_locked()` snaps the control back and names the rung that would
+give it to them. Dropping onto `MODE_SDK` also runs `_shed_map_context()`, so
+the rung that promises only-what-the-SDK-ships is telling the truth on screen as
+well as in words. Nothing is deleted from disk; climbing back up rebuilds from
+the same cache.
+
 ## Overlay node names (reserved)
 
 - `_HIPOLY_PREVIEW` — a prop's Detail Mode overlay child.

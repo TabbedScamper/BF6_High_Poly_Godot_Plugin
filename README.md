@@ -79,12 +79,32 @@ Both knobs stay in your hands afterwards:
 ## The High-Poly dock
 
 ### Detail Mode
-Swaps every placed prop between the SDK proxy and the real game model:
+Four rungs, ordered by what they cost you. Each answers two separate questions:
+what **your own placed pieces** look like, and what the **borrowed level around
+them** looks like.
+
+| Setting | Your placed pieces | The level around them | Downloads |
+|---|---|---|---|
+| **Low-Poly — what you export** | SDK proxies | nothing | none at all |
+| **Low-Poly + Minimal Downloads** | SDK proxies | the real level, untextured | map data + web-quality prop geometry |
+| **High-Poly (no textures)** | real models, clay | the real level, untextured | the above + models for your own pieces |
+| **High-Poly (full textures)** | real models, textured | the real level, textured | the above at full texture quality |
+
+The only difference between the second and third rungs is whether the pieces
+**you** placed get swapped for real models. The surroundings are identical —
+that is the point of the light rung: build inside the real level without pulling
+a high-poly model for every object in your own map.
+
+On the first rung every control that would fetch something is greyed out, and
+clicking one tells you which rung to move to. Nothing you have already
+downloaded is deleted — climbing back up rebuilds from the same cache.
+
+Newly placed pieces auto-overlay while a High-Poly mode is active; models still
+downloading swap in automatically as they land.
 
 | Control | What it does |
 |---|---|
-| **Low-Poly / High-Poly (no textures) / High-Poly (textured)** | Scene-wide detail mode. Newly placed pieces auto-overlay while a mode is active; models still downloading swap in automatically as they land. |
-| **Preview selected in High-Poly** | Per-object override that follows your selection live. In Low-Poly mode the selected objects show high-poly (work light, inspect in detail); in High-Poly mode they drop to their proxies (reclaim FPS in heavy areas). Uncheck to restore the scene mode everywhere. |
+| **Preview selected in High-Poly** | Per-object override that follows your selection live. On a Low-Poly rung the selected objects show high-poly (work light, inspect in detail); on a High-Poly rung they drop to their proxies (reclaim FPS in heavy areas). Uncheck to restore the scene mode everywhere. |
 
 High-poly mode covers more than static props:
 
