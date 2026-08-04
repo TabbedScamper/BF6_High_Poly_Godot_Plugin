@@ -63,10 +63,6 @@ var mapctx_maptile: Button   # project the maptile decal over SDK terrain+assets
 var mapctx_fx: Button        # live GPU particles at the map's mined FX spawns
 var mapctx_light: Button     # game lighting (sun/sky/fog from the real map VE)
 var mapctx_gi: Button        # sub-toggle: SDFGI + SSAO (visible while lighting is on)
-var mapctx_sun_row: VBoxContainer   # sun calibration block (with the lighting subs)
-var mapctx_sun_az: HSlider
-var mapctx_sun_el: HSlider
-var mapctx_sun_info: Label
 var mapctx_shadows: Button   # sub-toggle: sun shadows + overlay casting
 var mapctx_maplights: Button # sub-toggle: the map's mined light entities
 var mapctx_fill_row: HBoxContainer   # "Interior light" slider row (with the shadow controls)
@@ -237,48 +233,6 @@ func _flash_mode() -> void:
 #
 # Nothing is deleted from disk: every layer here rebuilds from the same cache the
 # moment the user climbs back up.
-# One labelled slider for the sun rows. Same width fix as Interior light: an
-# HSlider's minimum width is zero, so without one it collapses to nothing.
-func _sun_slider(into: Control, text: String, lo: float, hi: float) -> HSlider:
-	var row := HBoxContainer.new()
-	var l := Label.new()
-	l.text = text
-	row.add_child(l)
-	var s := HSlider.new()
-	s.min_value = lo
-	s.max_value = hi
-	s.step = 0.5
-	s.custom_minimum_size = Vector2(150, 0)
-	s.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	s.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	row.add_child(s)
-	into.add_child(row)
-	s.value_changed.connect(func(_v: float): _sun_apply())
-	return s
-
-# Live re-aim + the readout that makes the result interpretable: the authored
-# pair, the dialled pair, and the shadow length, since shadow length is the cue
-# a person actually compares against the game.
-func _sun_apply() -> void:
-	if mapctx_sun_az == null or mapctx_sun_el == null:
-		return
-	var msg := LightingScript.set_sun_angles(EditorInterface.get_edited_scene_root(),
-			mapctx_sun_az.value, mapctx_sun_el.value)
-	lbl.text = msg
-	if mapctx_sun_info != null:
-		mapctx_sun_info.text = msg
-
-# Sliders start on the authored values every time the lighting is (re)applied,
-# so "what the data says" is always the starting point and any offset is visible
-# as a deliberate move away from it.
-func _sun_sync_to_data() -> void:
-	if mapctx_sun_az == null: return
-	mapctx_sun_az.set_value_no_signal(LightingScript.authored_az)
-	mapctx_sun_el.set_value_no_signal(LightingScript.authored_el)
-	if mapctx_sun_info != null:
-		mapctx_sun_info.text = "Game data says %.1f / %.1f" % [
-			LightingScript.authored_az, LightingScript.authored_el]
-
 func _shed_map_context() -> int:
 	var r := EditorInterface.get_edited_scene_root()
 	var shed := 0
@@ -775,46 +729,10 @@ func _enter_tree() -> void:
 		_save_mapctx_state())
 	mc_sub.add_child(mapctx_fill_row)
 
-	# Sun calibration. The game's authored sun angle is read straight out of the
-	# level's VisualEnvironment and the conversion into Godot is exact — verified
-	# by reading the direction back off the built light on all 22 maps, error
-	# 0.000. Despite that the sun lands wrong in the viewport, which means the
-	# error is in the CONVENTION (where azimuth zero points, and which way it
-	# turns), not the arithmetic. Nothing in the shipped data can settle that:
-	# the sky panoramas contain no sun disc, the maptiles are flat-lit with no
-	# cast shadows, and the SDK ships no light of its own. A person comparing
-	# against the running game is the only oracle there is, so this hands them
-	# the dial and records what they choose.
-	mapctx_sun_row = VBoxContainer.new()
-	mapctx_sun_row.visible = false
-	var sun_hdr := Label.new()
-	sun_hdr.text = "Sun position (calibration)"
-	mapctx_sun_row.add_child(sun_hdr)
-	mapctx_sun_az = _sun_slider(mapctx_sun_row, "Compass", 0.0, 359.5)
-	mapctx_sun_el = _sun_slider(mapctx_sun_row, "Height ", 0.0, 90.0)
-	mapctx_sun_info = Label.new()
-	mapctx_sun_info.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	mapctx_sun_info.add_theme_font_size_override("font_size", 10)
-	mapctx_sun_row.add_child(mapctx_sun_info)
-	var sun_btns := HBoxContainer.new()
-	var sun_reset := Button.new()
-	sun_reset.text = "Back to game data"
-	sun_reset.tooltip_text = "Put the sun back exactly where the level's own data says, undoing anything dragged here."
-	sun_reset.pressed.connect(func():
-		mapctx_sun_az.set_value_no_signal(LightingScript.authored_az)
-		mapctx_sun_el.set_value_no_signal(LightingScript.authored_el)
-		_sun_apply())
-	sun_btns.add_child(sun_reset)
-	var sun_save := Button.new()
-	sun_save.text = "Save this map"
-	sun_save.tooltip_text = "Record where you put the sun for this map, so the difference from the game's own value can be worked out. Do a few different maps: one on its own cannot tell a mirrored angle from a fixed offset, but several can."
-	sun_save.pressed.connect(func():
-		lbl.text = LightingScript.save_calibration(
-			mapctx.map_of(EditorInterface.get_edited_scene_root()),
-			mapctx_sun_az.value, mapctx_sun_el.value))
-	sun_btns.add_child(sun_save)
-	mapctx_sun_row.add_child(sun_btns)
-	mc_sub.add_child(mapctx_sun_row)
+	# (A pair of sun-position sliders lived here while the azimuth convention was
+	# being worked out against the running game. They did their job — SunRotationX
+	# turned out to be a compass bearing, see sun_dir() — and came straight back
+	# out. The sun is read from each level's own data with nothing to adjust.)
 
 	mapctx_maplights = Theme_.chip("Map lights")
 	mapctx_maplights.button_pressed = false
@@ -2290,18 +2208,12 @@ func _lighting_changed() -> void:
 	lbl.text = LightingScript.apply(r, map,
 			mapctx_gi.button_pressed if mapctx_gi else true,
 			mapctx_shadows.button_pressed if mapctx_shadows else true)
-	_sun_sync_to_data()
 	if mapctx_maplights and mapctx_maplights.button_pressed:
 		lbl.text += " | " + LightingScript.set_map_lights(r, true, map)
 
 # grey the checkbox out when the open scene has no lighting data (called from
 # the dock's 0.5 s timer — cheap: one dictionary lookup)
 func _lighting_guard() -> void:
-	# The sun block shares the lighting sub-toggles' visibility. Mirrored here on
-	# the dock timer rather than at each of the eight places that show or hide
-	# them, so there is one rule instead of eight chances to miss one.
-	if mapctx_sun_row != null and mapctx_fill_row != null:
-		mapctx_sun_row.visible = mapctx_fill_row.visible
 	if mapctx_light == null: return
 	var map: String = mapctx.map_of(EditorInterface.get_edited_scene_root())
 	var ok := map != "" and LightingScript.has_data(map)
