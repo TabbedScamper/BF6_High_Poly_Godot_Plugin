@@ -233,6 +233,31 @@ func _flash_mode() -> void:
 #
 # Nothing is deleted from disk: every layer here rebuilds from the same cache the
 # moment the user climbs back up.
+# Everything the recorder needs to say what the panel was set to. Flat strings
+# on purpose: the profiler turns any CHANGE into a timestamped event by
+# comparing values, so a nested structure would report as one opaque diff.
+func _perf_state() -> Dictionary:
+	var r := EditorInterface.get_edited_scene_root()
+	var chip := func(b: Button) -> String:
+		if b == null: return "-"
+		return "on" if b.button_pressed else "off"
+	return {
+		"scene": (String(r.name) if r != null else "(none)"),
+		"map": (mapctx.map_of(r) if (mapctx != null and r != null) else ""),
+		"mode": (mode_btn.get_selected_id() if mode_btn != null else -1),
+		"scope": HighpolyStore.scope(),
+		"map_context": chip.call(mapctx_on),
+		"objects": chip.call(mapctx_objects),
+		"backdrop": chip.call(mapctx_backdrop),
+		"water": chip.call(mapctx_water),
+		"fx": chip.call(mapctx_fx),
+		"lighting": chip.call(mapctx_light),
+		"contact_shading": chip.call(mapctx_gi),
+		"shadows": chip.call(mapctx_shadows),
+		"map_lights": chip.call(mapctx_maplights),
+		"models_local": HighpolyStore.count(),
+	}
+
 func _shed_map_context() -> int:
 	var r := EditorInterface.get_edited_scene_root()
 	var shed := 0
@@ -1131,6 +1156,12 @@ func _enter_tree() -> void:
 	mapctx.job_queue = jobs        # map-context downloads take their turn
 	sync = SyncScript.new()
 	dock.add_child(sync)
+	# The recorder reads download rates and the panel's own state, so a
+	# recording says WHAT WAS HAPPENING rather than only what the frame cost.
+	# Both are pulled on a timer rather than pushed from here, so nothing else
+	# has to remember to report, and a missing profiler is simply a no-op.
+	profiler.sync = sync
+	profiler.state_provider = func() -> Dictionary: return _perf_state()
 	sync.model_ready.connect(_on_model_ready)
 	sync.progress_changed.connect(_update_progress)
 	sync.manifest_refreshed.connect(_on_manifest_refreshed)

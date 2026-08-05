@@ -74,6 +74,32 @@ var _scene_set: Dictionary = {}       # every name the open scene uses (drives h
 var _workers := 0
 var _done := 0
 var _fail_count := 0
+# Cumulative bytes actually delivered this session. Nothing tracked this, so
+# "downloads feel slow" could never be answered with a rate — only with a count
+# of files, which says nothing when one model is 300 MB and the next is 70 KB.
+# The profiler differentiates this to get MB/s over time.
+var bytes_done := 0
+# Wall-clock ms spent inside transfers, summed across workers. Divided by
+# bytes_done this gives PER-STREAM throughput, which is the number that says
+# whether more workers would help or the line is already full.
+var transfer_ms := 0
+
+
+# One snapshot for the recorder. Kept here rather than having the profiler reach
+# into private fields, so renaming one does not silently empty a report column.
+func stats() -> Dictionary:
+	return {
+		"queued": _queue.size(),
+		"active": _active.size(),
+		"done": _done,
+		"failed": _fail_count,
+		"bytes": bytes_done,
+		"transfer_ms": transfer_ms,
+		"workers": _workers,
+		"max_workers": MAX_WORKERS,
+		"paused": paused,
+		"bootstrapping": bootstrapping,
+	}
 var _write_failures := 0              # fetched fine but couldn't be stored
 var _started := false
 var _recheck: Timer = null
@@ -478,6 +504,8 @@ func _worker() -> void:
 		elif HighpolyStore.ingest_downloaded(nm, str(rend["hash"]), bool(e.get("nofit", false))):
 			_done += 1
 			var ms := Time.get_ticks_msec() - t0
+			bytes_done += got
+			transfer_ms += ms
 			# A slow model names itself, with its size, instead of "took forever".
 			var line := "%s %s in %s [%s]" % [nm, Log.human_bytes(got),
 				Log.human_ms(ms), tier]
