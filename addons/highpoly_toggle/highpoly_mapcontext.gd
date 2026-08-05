@@ -1413,6 +1413,75 @@ func _baked_suffix() -> String:
 		VRAM_FULL: return ".baked5f.res"
 		_: return ".baked5.res"
 
+
+# The SHIPPED bake, as opposed to the three above which a user's own machine
+# wrote. No vram mode in the name because there are no pixels in the file.
+const GEOM_SUFFIX := ".geom.res"
+
+
+func _geom_part_suffix(i: int) -> String:
+	return ".geom.p%d.res" % i
+
+
+# Set while the pipeline is baking the files we publish, so the lossy material
+# passes and the texture compression are left for the client to apply.
+static var bake_geometry_only := false
+
+
+# Load a prop from its shipped geometry bake and hang the sidecar textures on
+# it. Returns [] if there is no bake, or if it is unusable — every caller falls
+# back to the glb, so a bad file costs a parse and never a broken prop.
+func _load_geom_tier(gp: String) -> Array:
+	var meshes: Array = []
+	if FileAccess.file_exists(gp + _geom_part_suffix(0)):
+		# A split prop ships numbered parts, exactly as the local cache does.
+		# ALL OR NOTHING: a prop missing one of its meshes renders as a fragment,
+		# which reads as a bad model rather than a bad file.
+		var i := 0
+		while FileAccess.file_exists(gp + _geom_part_suffix(i)):
+			var pm := ResourceLoader.load(gp + _geom_part_suffix(i), "Mesh",
+				ResourceLoader.CACHE_MODE_REPLACE)
+			if not (pm is Mesh):
+				return []
+			meshes.append(pm)
+			i += 1
+	elif FileAccess.file_exists(gp + GEOM_SUFFIX):
+		var bm := ResourceLoader.load(gp + GEOM_SUFFIX, "Mesh",
+			ResourceLoader.CACHE_MODE_REPLACE)
+		if not (bm is Mesh):
+			return []
+		meshes.append(bm)
+	if meshes.is_empty():
+		return []
+
+	# CACHE_MODE_REPLACE above, matching the local cache tier, and for the same
+	# reason: it re-reads the file into the cached object rather than handing
+	# back whatever a previous build left there. Without it a mesh that had
+	# already been through the wind swap and the VRAM compression would come
+	# back already swapped and already compressed, and get both applied a second
+	# time. Copying the meshes instead would be correct too and would also undo
+	# the entire saving — rebuilding every vertex array is most of the work the
+	# bake exists to skip.
+	var own: Array = meshes
+
+	# The textures. A worker has usually decoded them already; _bind_side does
+	# the same job for the glb path and says so in a recording when it has to
+	# fall back to decoding inline.
+	var d: Variant = _bc.get(gp)
+	if d is Dictionary:
+		_bc.erase(gp)
+	elif BcTex.exists(gp):
+		var _t := Time.get_ticks_msec()
+		d = _decode_side(gp)
+		HighpolyProfiler.span("textures: decoded on the MAIN thread (no prefetch)",
+			Time.get_ticks_msec() - _t)
+	if d is Dictionary and not (d as Dictionary).is_empty():
+		var _tb := Time.get_ticks_msec()
+		BcTex.bind_meshes(own, d as Dictionary)
+		HighpolyProfiler.span("textures: bind to materials",
+			Time.get_ticks_msec() - _tb)
+	return own
+
 const _TEX_SLOTS := [
 	BaseMaterial3D.TEXTURE_ALBEDO, BaseMaterial3D.TEXTURE_NORMAL,
 	BaseMaterial3D.TEXTURE_ROUGHNESS, BaseMaterial3D.TEXTURE_METALLIC,
@@ -1688,6 +1757,29 @@ func _parse_prop_file(gp: String) -> Array:
 			Log.warn("%s: cached mesh had empty textures, re-baking from the model"
 				% gp.get_file())
 		DirAccess.remove_absolute(baked)
+	# ---- the shipped geometry bake ---------------------------------------
+	# The tier above is a cache the USER built, on their machine, on a previous
+	# load — which is why the first load of a map is the slow one. Nothing in it
+	# is user-specific, so the pipeline bakes it too and ships it, and the cold
+	# pull gets to be the fast path.
+	#
+	# Measured on real props: loading the bake is ~6x faster than parsing the
+	# same stripped glb, and the file is 0.39x its size — 22.4 bytes per vertex
+	# against 45.1, because glTF spends float32 on positions, normals and UVs
+	# while Godot's own format is denser and the merge drops 21% of the vertices
+	# outright. It is smaller AND faster, which is why this is worth shipping
+	# rather than offering as a trade.
+	#
+	# NO TEXTURES IN IT, deliberately. They ride in the .bctex beside it, where
+	# they are deduplicated across the whole map (Dumbo's 9,715 image references
+	# are 84 distinct textures) and mostly kept as their original webp bytes.
+	# That also makes this file independent of the VRAM mode: the pixels differ
+	# between Full, Compressed and Low, the geometry does not, so one shipped
+	# bake serves all three instead of tripling what we publish.
+	var geom := _load_geom_tier(gp)
+	if not geom.is_empty():
+		return await _finish_prop(gp, baked, geom)
+
 	var out: Array = []
 	var inst := _load_external_glb(gp)   # a live scene root, ours to free
 	if inst:
@@ -1702,6 +1794,23 @@ func _parse_prop_file(gp: String) -> Array:
 		elif pairs.size() > 1:
 			out = _merge_meshes(pairs)          # one mesh per 255 surfaces
 		inst.queue_free()
+	return await _finish_prop(gp, baked, out)
+
+
+# The material work every prop gets, whichever tier it arrived from. Shared so a
+# prop loaded from a shipped .geom.res cannot drift from one parsed out of a glb
+# — the two must end up byte-for-byte equivalent or maps would look different
+# depending on which files a user happened to have.
+func _finish_prop(gp: String, baked: String, out: Array) -> Array:
+	# THE PIPELINE STOPS HERE. When this same code bakes the files we ship, it
+	# must hand back the merged geometry and nothing else: the passes below swap
+	# materials and compress pixels, and baking either into a shipped file is
+	# permanent. The wind swap in particular is lossy — it drops the normal,
+	# roughness, metallic and AO maps, which is what forced the v2 -> v3 sidecar
+	# invalidation, and no amount of re-reading the file gets them back.
+	if bake_geometry_only:
+		return out
+
 	var done: Array = []
 	for m in out:
 		if m == null:

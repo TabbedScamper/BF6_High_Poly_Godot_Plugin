@@ -1,2 +1,6 @@
 __pycache__/
 *.pyc
+
+# generated on demand by bc_pipeline.py: a throwaway Godot project that
+# holds a copy of the plugin so the pipeline can bake against it
+_bakeproj/

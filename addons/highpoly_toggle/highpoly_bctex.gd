@@ -169,27 +169,61 @@ static func bind(root: Node, decoded: Dictionary) -> int:
 		for c in x.get_children():
 			stack.append(c)
 		for m in _materials_of(x):
-			var bm := m as BaseMaterial3D
-			if bm == null:
+			n += _bind_material(m, images, mats, cache)
+	return n
+
+
+# MAIN THREAD, same as bind(), but for meshes that never came from a scene.
+#
+# A prop loaded from a shipped .geom.res is a list of Meshes, not a node tree —
+# there is nothing to walk. The material names are the same ones bc_strip wrote,
+# so the sidecar still matches; only the way we reach the materials differs.
+static func bind_meshes(meshes: Array, decoded: Dictionary) -> int:
+	if meshes.is_empty() or decoded.is_empty():
+		return 0
+	var images: Array = decoded.get("images", [])
+	var mats: Dictionary = decoded.get("materials", {})
+	if images.is_empty() or mats.is_empty():
+		return 0
+
+	var cache: Dictionary = {}
+	var n := 0
+	for m in meshes:
+		var mesh := m as Mesh
+		if mesh == null:
+			continue
+		for i in range(mesh.get_surface_count()):
+			n += _bind_material(mesh.surface_get_material(i), images, mats, cache)
+	return n
+
+
+# The texture cache is passed in rather than made here so one prop's shared
+# atlases are uploaded ONCE across all its surfaces. Uploading per surface is
+# the mistake that made an earlier version measure 1.8x instead of 4.3x.
+static func _bind_material(m: Material, images: Array, mats: Dictionary,
+		cache: Dictionary) -> int:
+	var bm := m as BaseMaterial3D
+	if bm == null:
+		return 0
+	var slots: Variant = mats.get(bm.resource_name)
+	if not (slots is Dictionary):
+		return 0
+	var n := 0
+	for slot in (slots as Dictionary).keys():
+		if not SLOT_MAP.has(slot):
+			continue
+		var idx := int((slots as Dictionary)[slot])
+		if idx < 0 or idx >= images.size() or images[idx] == null:
+			continue
+		var tex: Texture2D = cache.get(idx)
+		if tex == null:
+			tex = ImageTexture.create_from_image(images[idx] as Image)
+			if tex == null:
 				continue
-			var slots: Variant = mats.get(bm.resource_name)
-			if not (slots is Dictionary):
-				continue
-			for slot in (slots as Dictionary).keys():
-				if not SLOT_MAP.has(slot):
-					continue
-				var idx := int((slots as Dictionary)[slot])
-				if idx < 0 or idx >= images.size() or images[idx] == null:
-					continue
-				var tex: Texture2D = cache.get(idx)
-				if tex == null:
-					tex = ImageTexture.create_from_image(images[idx] as Image)
-					if tex == null:
-						continue
-					cache[idx] = tex
-				bm.set_texture(SLOT_MAP[slot], tex)
-				_enable_slot(bm, str(slot))
-				n += 1
+			cache[idx] = tex
+		bm.set_texture(SLOT_MAP[slot], tex)
+		_enable_slot(bm, str(slot))
+		n += 1
 	return n
 
 
