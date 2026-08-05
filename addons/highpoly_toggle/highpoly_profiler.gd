@@ -60,6 +60,43 @@ var _scan: Timer
 var _status := ""
 var _warned_no_scene := false
 
+# ---------------------------------------------------------------------------
+# WHAT THE PLUGIN WAS DOING, not just what the frame cost.
+#
+# The recording this is built for is: purge everything, press record, wait for
+# the whole thing to load, press stop. That question ("where did the time go
+# bringing a map up from nothing") cannot be answered by frame counters alone —
+# a 4 fps sample means nothing without knowing whether it was downloading,
+# unzipping, building meshes or just drawing.
+#
+# So each tick also captures the DOWNLOAD counters and the MENU STATE, and any
+# change in that state becomes a timestamped event. The report is then a
+# timeline rather than a pile of samples.
+# ---------------------------------------------------------------------------
+var sync: Node                    # highpoly_sync.gd, for stats(); set by the dock
+var state_provider: Callable      # returns the dock's toggle state as a Dictionary
+
+var _events: Array = []           # [{t, kind, text}]
+var _last_state := {}
+var _last_dl := {}
+var _dl_series: Array = []        # [{t, mbps, files_s, queued, active}]
+var _peak := {"draws": 0, "objs": 0, "vram": 0.0, "nodes": 0}
+
+# A frame this much worse than the recent median counts as a hitch worth naming.
+const HITCH_FACTOR := 3.0
+const HITCH_FLOOR_MS := 50.0      # below this, a spike is not worth reporting
+
+
+# Anything can drop a marker in without depending on this class: the dock calls
+# it, but a missing profiler is a no-op rather than an error.
+func event(kind: String, text: String) -> void:
+	if not recording:
+		return
+	_events.append({
+		"t": Time.get_ticks_msec() / 1000.0 - _t0,
+		"kind": kind, "text": text,
+	})
+
 
 func _ready() -> void:
 	_tick = Timer.new(); _tick.wait_time = 0.25; _tick.timeout.connect(_sample)
@@ -69,13 +106,18 @@ func _ready() -> void:
 
 
 func start() -> String:
-	_samples.clear(); _attrib.clear()
+	_samples.clear(); _attrib.clear(); _events.clear(); _dl_series.clear()
+	_last_state = {}
+	_last_dl = {}
+	_peak = {"draws": 0, "objs": 0, "vram": 0.0, "nodes": 0}
 	_t0 = Time.get_ticks_msec() / 1000.0
 	recording = true
 	_tick.start(); _scan.start()
-	Log.info("performance recording started - fly the route you want measured, "
-		+ "then press Stop")
-	return "Recording performance. Fly around, then press Stop."
+	event("start", "recording began")
+	_note_state(true)
+	Log.info("performance recording started - do the thing you want measured "
+		+ "(loading a map from cold is a good one), then press Stop")
+	return "Recording. Load/fly whatever you want measured, then press Stop."
 
 
 func stop() -> String:
@@ -92,20 +134,110 @@ func stop() -> String:
 # ---------- cheap sampler ----------
 func _sample() -> void:
 	var cam := _cam()
-	_samples.append({
-		"t": Time.get_ticks_msec() / 1000.0 - _t0,
+	var t := Time.get_ticks_msec() / 1000.0 - _t0
+	var ms: float = Performance.get_monitor(Performance.TIME_PROCESS) * 1000.0
+	var dl := _download_snapshot(t)
+	var s := {
+		"t": t,
 		"fps": Performance.get_monitor(Performance.TIME_FPS),
-		"ms": Performance.get_monitor(Performance.TIME_PROCESS) * 1000.0,
+		"ms": ms,
 		"draws": Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME),
 		"prims": Performance.get_monitor(Performance.RENDER_TOTAL_PRIMITIVES_IN_FRAME),
 		"objs": Performance.get_monitor(Performance.RENDER_TOTAL_OBJECTS_IN_FRAME),
 		"vram": Performance.get_monitor(Performance.RENDER_VIDEO_MEM_USED) / 1048576.0,
 		"nodes": Performance.get_monitor(Performance.OBJECT_NODE_COUNT),
+		"mem": Performance.get_monitor(Performance.MEMORY_STATIC) / 1048576.0,
 		"pos": cam.origin if cam != null else Vector3.ZERO,
-	})
+	}
+	s.merge(dl)
+	_samples.append(s)
+
+	_peak["draws"] = maxi(int(_peak["draws"]), int(s["draws"]))
+	_peak["objs"] = maxi(int(_peak["objs"]), int(s["objs"]))
+	_peak["nodes"] = maxi(int(_peak["nodes"]), int(s["nodes"]))
+	_peak["vram"] = maxf(float(_peak["vram"]), float(s["vram"]))
+
+	_note_state(false)
+	_note_hitch(t, ms)
+
+
+# Downloads, differentiated. Absolute counters cannot answer "was it fast" — the
+# rate between two samples can, and it is what lines a slow patch of the
+# recording up against whatever was happening at that moment.
+func _download_snapshot(t: float) -> Dictionary:
+	var out := {"mbps": 0.0, "files_s": 0.0, "queued": 0, "active": 0,
+		"dl_done": 0, "dl_failed": 0, "dl_mb": 0.0}
+	if sync == null or not sync.has_method("stats"):
+		return out
+	var st: Dictionary = sync.call("stats")
+	out["queued"] = int(st.get("queued", 0))
+	out["active"] = int(st.get("active", 0))
+	out["dl_done"] = int(st.get("done", 0))
+	out["dl_failed"] = int(st.get("failed", 0))
+	out["dl_mb"] = float(st.get("bytes", 0)) / 1048576.0
+	if not _last_dl.is_empty():
+		var dt: float = t - float(_last_dl.get("t", t))
+		if dt > 0.001:
+			out["mbps"] = (float(out["dl_mb"]) - float(_last_dl.get("mb", 0.0))) / dt
+			out["files_s"] = (int(out["dl_done"]) - int(_last_dl.get("done", 0))) / dt
+	_last_dl = {"t": t, "mb": out["dl_mb"], "done": out["dl_done"]}
+	if float(out["mbps"]) > 0.0 or int(out["active"]) > 0:
+		_dl_series.append({"t": t, "mbps": out["mbps"], "files_s": out["files_s"],
+			"queued": out["queued"], "active": out["active"]})
+	return out
+
+
+# Menu state, as a timeline. What is on when you press record is half the
+# context; the other half is the moment something got switched on, because that
+# is usually where the frame rate falls off a cliff.
+func _note_state(force: bool) -> void:
+	if not state_provider.is_valid():
+		return
+	var st: Dictionary = state_provider.call()
+	if not (st is Dictionary):
+		return
+	if force:
+		_last_state = st.duplicate()
+		event("state", _describe(st))
+		return
+	for k in st:
+		if str(st[k]) != str(_last_state.get(k, "<unset>")):
+			event("state", "%s: %s -> %s" % [k, _last_state.get(k, "?"), st[k]])
+	_last_state = st.duplicate()
+
+
+func _describe(st: Dictionary) -> String:
+	var parts := PackedStringArray()
+	for k in st:
+		parts.append("%s=%s" % [k, st[k]])
+	return " ".join(parts)
+
+
+# A spike is only meaningful against the recent normal, so compare with the
+# median of the last few seconds rather than a fixed threshold: 80 ms is a
+# disaster at 120 fps and unremarkable while a map is loading.
+func _note_hitch(t: float, ms: float) -> void:
+	if _samples.size() < 12 or ms < HITCH_FLOOR_MS:
+		return
+	var recent: Array = []
+	for i in range(maxi(0, _samples.size() - 41), _samples.size() - 1):
+		recent.append(float(_samples[i]["ms"]))
+	if recent.size() < 8:
+		return
+	recent.sort()
+	var med: float = recent[recent.size() / 2]
+	if med > 0.0 and ms > med * HITCH_FACTOR:
+		event("hitch", "%.0f ms frame (%.1fx the %.0f ms running median)"
+			% [ms, ms / med, med])
 
 
 func _cam() -> Variant:
+	# EditorInterface only carries these outside a plain script run, and a
+	# missing method throws from inside a Timer callback, aborting the rest of
+	# the sample. Guarding keeps the recorder runnable headlessly, which is the
+	# only way its reporting gets tested at all.
+	if not Engine.is_editor_hint():
+		return null
 	var vp := EditorInterface.get_editor_viewport_3d(0)
 	if vp == null: return null
 	var c := vp.get_camera_3d()
@@ -117,6 +249,8 @@ func _cam() -> Variant:
 # including it would blame the wrong subsystem. MultiMesh instance counts matter
 # more than node counts: one node can be 4,000 drawn instances.
 func _attribute() -> void:
+	if not Engine.is_editor_hint():
+		return
 	var root := EditorInterface.get_edited_scene_root()
 	if root == null:
 		# Say so instead of returning in silence. Three recordings produced a
@@ -235,6 +369,89 @@ static func _tris(m: Mesh) -> int:
 	return t
 
 
+# ---------- reporting: downloads ----------
+# Answers "were the downloads the bottleneck, and if so which half of the
+# problem was it" — the pipe being full, or the pipe being idle while we did
+# something else. Idle time with a non-empty queue is the interesting case: it
+# means work was available and we were not fetching it.
+func _download_report() -> PackedStringArray:
+	var out := PackedStringArray()
+	if _dl_series.is_empty():
+		return out
+	var first: Dictionary = _samples[0]
+	var last: Dictionary = _samples[-1]
+	var mb: float = float(last.get("dl_mb", 0.0)) - float(first.get("dl_mb", 0.0))
+	var files: int = int(last.get("dl_done", 0)) - int(first.get("dl_done", 0))
+	var span: float = maxf(0.001, float(last["t"]) - float(first["t"]))
+	var rates: Array = []
+	var busy := 0.0
+	var starved := 0.0
+	var peak_active := 0
+	var cap := 0
+	if sync != null and sync.has_method("stats"):
+		cap = int((sync.call("stats") as Dictionary).get("max_workers", 0))
+	for d in _dl_series:
+		rates.append(float(d["mbps"]))
+		peak_active = maxi(peak_active, int(d["active"]))
+	for s in _samples:
+		if int(s.get("active", 0)) > 0:
+			busy += _tick.wait_time
+		elif int(s.get("queued", 0)) > 0:
+			starved += _tick.wait_time
+	rates.sort()
+	out.append("")
+	out.append("DOWNLOADS")
+	out.append("  %.1f MB in %d file(s) over %.0f s  =  %.2f MB/s averaged over the whole recording"
+		% [mb, files, span, mb / span])
+	if busy > 0.0:
+		out.append("  %.2f MB/s while actually transferring (%.0f s of the %.0f s)"
+			% [mb / busy, busy, span])
+	out.append("  peak %.2f MB/s   median while active %.2f MB/s   most workers busy at once: %d of %d"
+		% [rates[-1], rates[rates.size() / 2], peak_active, cap])
+	if cap > 0 and peak_active < cap:
+		out.append("     never used all %d workers, so the queue — not the host — was the limit" % cap)
+	if starved > 1.0:
+		out.append("  %.0f s had models QUEUED but nothing downloading — that is dead time,"
+			% starved)
+		out.append("     and it is the cheapest thing on this list to fix.")
+	var failed: int = int(last.get("dl_failed", 0)) - int(first.get("dl_failed", 0))
+	if failed > 0:
+		out.append("  %d download(s) FAILED — those models are skipped for the session" % failed)
+	return out
+
+
+# ---------- reporting: what happened, when ----------
+func _timeline_report() -> PackedStringArray:
+	var out := PackedStringArray()
+	if _events.is_empty():
+		return out
+	var hitches := 0
+	for e in _events:
+		if str(e["kind"]) == "hitch":
+			hitches += 1
+	out.append("")
+	out.append("TIMELINE  (%d event(s), %d hitch(es))" % [_events.size(), hitches])
+	# Hitches are printed in full only if there are few of them; a load from cold
+	# can produce hundreds and a wall of them buries the state changes that
+	# explain the shape of the run.
+	var show_hitches := hitches <= 25
+	var shown := 0
+	for e in _events:
+		if str(e["kind"]) == "hitch" and not show_hitches:
+			continue
+		out.append("  %7.1fs  %-6s %s" % [float(e["t"]), str(e["kind"]), str(e["text"])])
+		shown += 1
+		if shown > 200:
+			out.append("  ... (%d more, see the events csv)" % (_events.size() - shown))
+			break
+	if not show_hitches:
+		out.append("  %d hitches omitted here — they are all in the events csv" % hitches)
+	out.append("")
+	out.append("PEAKS   %d draw calls   %d objects   %d nodes   %.0f MB vram"
+		% [int(_peak["draws"]), int(_peak["objs"]), int(_peak["nodes"]), float(_peak["vram"])])
+	return out
+
+
 # ---------- reporting ----------
 func _summarise() -> String:
 	if _samples.is_empty():
@@ -251,6 +468,8 @@ func _summarise() -> String:
 			worst = s
 	var out := PackedStringArray()
 	out.append("PERFORMANCE  %d samples over %.0f s" % [_samples.size(), float(_samples[-1]["t"])])
+	out.append_array(_download_report())
+	out.append_array(_timeline_report())
 	out.append("  fps      median %.0f   worst 10%% %.0f   lowest %.0f"
 		% [med, p10, float(worst["fps"])])
 	out.append("  at the lowest: %d draw calls, %.1fM primitives, %d objects, %.0f MB vram"
@@ -305,13 +524,28 @@ func _write_csv() -> String:
 	var f := FileAccess.open(p, FileAccess.WRITE)
 	if f == null:
 		return "(could not write the csv)"
-	f.store_line("t,fps,ms,draw_calls,primitives,objects,vram_mb,nodes,x,y,z")
+	f.store_line("t,fps,ms,draw_calls,primitives,objects,vram_mb,static_mb,nodes,"
+		+ "dl_mbps,dl_files_s,dl_queued,dl_active,dl_done,dl_failed,dl_total_mb,x,y,z")
 	for s in _samples:
 		var v: Vector3 = s["pos"]
-		f.store_line("%.2f,%.1f,%.2f,%d,%d,%d,%.0f,%d,%.1f,%.1f,%.1f"
+		f.store_line("%.2f,%.1f,%.2f,%d,%d,%d,%.0f,%.0f,%d,%.3f,%.2f,%d,%d,%d,%d,%.2f,%.1f,%.1f,%.1f"
 			% [s["t"], s["fps"], s["ms"], int(s["draws"]), int(s["prims"]),
-				int(s["objs"]), s["vram"], int(s["nodes"]), v.x, v.y, v.z])
+				int(s["objs"]), s["vram"], s.get("mem", 0.0), int(s["nodes"]),
+				s.get("mbps", 0.0), s.get("files_s", 0.0), int(s.get("queued", 0)),
+				int(s.get("active", 0)), int(s.get("dl_done", 0)),
+				int(s.get("dl_failed", 0)), s.get("dl_mb", 0.0), v.x, v.y, v.z])
 	f.close()
+
+	# Events beside the samples: the same timeline the summary prints, but
+	# complete, so a run with 400 hitches is still fully analysable.
+	var p3 := "%s/perf-%s-events.csv" % [dir, stamp]
+	var f3 := FileAccess.open(p3, FileAccess.WRITE)
+	if f3 != null:
+		f3.store_line("t,kind,text")
+		for e in _events:
+			f3.store_line("%.2f,%s,\"%s\"" % [float(e["t"]), str(e["kind"]),
+				str(e["text"]).replace("\"", "'")])
+		f3.close()
 	# the attribution table is what explains the csv, so it ships beside it
 	var p2 := "%s/perf-%s-owners.csv" % [dir, stamp]
 	var f2 := FileAccess.open(p2, FileAccess.WRITE)
