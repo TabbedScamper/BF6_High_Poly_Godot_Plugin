@@ -1940,7 +1940,19 @@ func ensure_props(host: Node, map: String, status: Callable) -> bool:
 	# actually-changed props. Comparing bytes first costs one sequential read of
 	# files we just wrote to the page cache anyway, and lets everything unchanged
 	# keep its timestamp and its sidecar.
+	# THIS LOOP USED TO RUN TO COMPLETION WITHOUT YIELDING ONCE. Unpacking Dumbo
+	# means 2,761 entries and a 1.7 GB archive, and the whole thing happened
+	# between two frames: 41 seconds during which the editor drew nothing,
+	# accepted no input, and could not move the progress bar that was supposedly
+	# reporting it. It is the largest single freeze in a recorded cold load.
+	#
+	# Nothing here needs to be atomic — each entry is an independent file — so
+	# it now gives the editor a frame back roughly every 40 ms. The unpack takes
+	# marginally longer in wall-clock and the editor stays alive throughout,
+	# which is the trade worth making every time.
 	var same := 0
+	var slice_start := Time.get_ticks_msec()
+	var seen := 0
 	for f in zfiles:
 		if want.has(f) or (refresh and f.ends_with(".glb") and not f.contains("/")):
 			var data := zr.read_file(f)
@@ -1962,6 +1974,13 @@ func ensure_props(host: Node, map: String, status: Callable) -> bool:
 				if skipped2 == 1:
 					Log.err_code("Could not write %s while unpacking %s scenery"
 						% [f, map], FileAccess.get_open_error())
+		seen += 1
+		if Time.get_ticks_msec() - slice_start >= 40:
+			if status.is_valid():
+				status.call("Unpacking %s scenery: %d of %d" % [map, seen, zfiles.size()])
+			if host != null and host.is_inside_tree():
+				await host.get_tree().process_frame
+			slice_start = Time.get_ticks_msec()
 	if skipped2 > 0:
 		Log.error("%s scenery: %d of %d pieces could not be written to %s"
 			% [map, skipped2, n + skipped2, ProjectSettings.globalize_path(PROPS_CACHE)])
