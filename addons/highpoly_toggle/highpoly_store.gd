@@ -381,7 +381,26 @@ static func load_external_glb(user_path: String) -> PackedScene:
 # big scenes. Recompress every texture to GPU-native S3TC right after parse —
 # etcpak encode is milliseconds per texture, memory drops 4-8x in BOTH RAM
 # and VRAM, and it happens once per model per session.
-static func compress_scene_textures(root: Node) -> void:
+# SPLIT OUT SO IT CAN RUN ON A WORKER THREAD. Tangent generation is pure mesh
+# maths (SurfaceTool -> ArrayMesh) and is safe off the main thread — verified.
+# Texture compression is NOT: creating an ImageTexture off-thread HANGS the
+# process, narrowed down one stage at a time (parse alone fine, +generate_scene
+# fine, +PackedScene.pack fine, +compress_scene_textures hangs). So the prefetch
+# runs this half on workers and leaves the textures to the main thread.
+static func ensure_scene_tangents(root: Node) -> void:
+	var stack: Array = [root]
+	while not stack.is_empty():
+		var n: Node = stack.pop_back()
+		if n is MeshInstance3D and (n as MeshInstance3D).mesh is ArrayMesh:
+			var mi := n as MeshInstance3D
+			mi.mesh = _ensure_tangents(mi.mesh as ArrayMesh)
+		for c in n.get_children():
+			stack.append(c)
+
+
+# MAIN THREAD ONLY (see ensure_scene_tangents). `tangents` is false when a
+# prefetch worker has already done that half.
+static func compress_scene_textures(root: Node, tangents := true) -> void:
 	var seen_mats: Dictionary = {}   # material RID -> true
 	var swapped: Dictionary = {}     # old texture RID -> compressed ImageTexture
 	var stack: Array = [root]
@@ -411,7 +430,7 @@ static func compress_scene_textures(root: Node) -> void:
 			_compress_material(m as BaseMaterial3D, swapped)
 		# normal-mapped surfaces need TANGENTS or the renderer warns per draw
 		# (runtime-parsed GLBs ship without them) — generate once at parse
-		if n is MeshInstance3D and (n as MeshInstance3D).mesh is ArrayMesh:
+		if tangents and n is MeshInstance3D and (n as MeshInstance3D).mesh is ArrayMesh:
 			var mi2 := n as MeshInstance3D
 			mi2.mesh = _ensure_tangents(mi2.mesh as ArrayMesh)
 		for c in n.get_children():

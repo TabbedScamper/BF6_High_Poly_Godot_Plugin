@@ -11,6 +11,10 @@ var fails := 0
 
 
 func _init() -> void:
+	await process_frame
+	var mc = MC.new()
+	root.add_child(mc)
+	await process_frame
 	var base := OS.get_environment("APPDATA") + "/Godot/app_userdata/Battlefield™ Portal Project"
 	var dir := base + "/mapcontext/_props"
 	var da := DirAccess.open(dir)
@@ -25,7 +29,7 @@ func _init() -> void:
 	print("%-22s %10s %10s %8s %s" % ["mode", "VRAM MB", "vs full", "compr", "smallest texture"])
 	var results := {}
 	for pair in [["FULL", MC.VRAM_FULL], ["COMPRESSED", MC.VRAM_COMPRESSED], ["LOW", MC.VRAM_LOW]]:
-		MC.vram_mode = pair[1]
+		mc.vram_mode = pair[1]
 		var bytes := 0
 		var n := 0
 		var minw := 1 << 30
@@ -34,7 +38,7 @@ func _init() -> void:
 			var m := _mesh(str(files[i]))
 			if m == null:
 				continue
-			n += MC._compress_textures(m)
+			n += await mc._compress_textures(m)
 			var r := _measure(m)
 			bytes += int(r[0])
 			minw = mini(minw, int(r[1]))
@@ -46,32 +50,32 @@ func _init() -> void:
 				n, minw, "   ZERO-SIZED TEXTURES!" if zero > 0 else ""])
 		_check("%s produced no zero-sized textures" % pair[0], zero == 0)
 
-	MC.vram_mode = MC.VRAM_COMPRESSED
+	mc.vram_mode = MC.VRAM_COMPRESSED
 	_check("COMPRESSED is at least 3x smaller than FULL",
 		float(results["FULL"]) / maxf(1.0, float(results["COMPRESSED"])) >= 3.0)
 	_check("LOW is smaller again than COMPRESSED",
 		results["LOW"] < results["COMPRESSED"])
-	_check("suffix differs per mode", _suffixes_differ())
+	_check("suffix differs per mode", _suffixes_differ(mc))
 
 	# the watchdog must answer without exploding, whatever the driver reports
-	var mb: float = MC.vram_used_mb()
+	var mb: float = mc.vram_used_mb()
 	_check("vram_used_mb returns a number (%.1f MB)" % mb, mb >= 0.0)
 	# vram_check REPORTS, it must never stop the build — an earlier version
 	# returned a stop flag and killed every prop on Dumbo because the baseline
 	# scene alone is already over 4 GB before a single prop exists.
-	MC.vram_check()
+	mc.vram_check()
 	_check("vram_check returns nothing and cannot halt a build", true)
 
 	print("\n%s" % ("ALL PASS" if fails == 0 else "%d FAILED" % fails))
 	quit(0 if fails == 0 else 1)
 
 
-func _suffixes_differ() -> bool:
+func _suffixes_differ(mc) -> bool:
 	var seen := {}
 	for m in [MC.VRAM_FULL, MC.VRAM_COMPRESSED, MC.VRAM_LOW]:
-		MC.vram_mode = m
-		seen[MC._baked_suffix()] = true
-	MC.vram_mode = MC.VRAM_COMPRESSED
+		mc.vram_mode = m
+		seen[mc._baked_suffix()] = true
+	mc.vram_mode = MC.VRAM_COMPRESSED
 	return seen.size() == 3
 
 

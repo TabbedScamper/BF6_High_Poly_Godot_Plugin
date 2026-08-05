@@ -2991,8 +2991,32 @@ func _build_props_async(props_root: Node3D, entries: Array, dir: String,
 	var _t_build := Time.get_ticks_msec()
 	_vram_warned = false
 	HighpolyProfiler.mark("phase", "props: build started, %d entries" % entries.size())
-	for e in entries:
+	# Parse a batch ahead on the worker pool while the main thread places the
+	# previous one. PREFETCH_BATCH is a compromise: bigger batches parallelise
+	# better but hold more parsed scenes in memory at once, and video memory is
+	# already the thing that kills low-end cards.
+	const PREFETCH_BATCH := 48
+	var next_pf := 0
+	for ei in range(entries.size()):
+		var e = entries[ei]
 		vram_check()      # reports once if memory is getting high; never stops
+		if ei >= next_pf:
+			var want: Array = []
+			for j in range(ei, mini(ei + PREFETCH_BATCH, entries.size())):
+				var pp := _prop_path(entries[j], dir)
+				# skip anything a sidecar already covers — re-parsing it would
+				# cost more than the load it is meant to save
+				if pp != "" and not _pf.has(pp) and not _mesh_cache.has(pp) \
+						and not FileAccess.file_exists(pp + _baked_suffix()):
+					want.append(pp)
+			next_pf = ei + int(PREFETCH_BATCH * 0.5)  # top up before it runs dry
+			if not want.is_empty():
+				var _tp := Time.get_ticks_msec()
+				await _prefetch(want)
+				HighpolyProfiler.span("props: prefetch parse (worker threads)",
+					Time.get_ticks_msec() - _tp)
+				if gen != _build_gen:
+					return
 		var gp := _prop_path(e, dir)
 		var _t0 := Time.get_ticks_msec()
 		_merge_who = "props"
@@ -3673,7 +3697,90 @@ func _heightmap_mesh(raw: PackedByteArray, res: int, step: int, meta: Dictionary
 	am.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr)
 	return am
 
+# --- parallel GLB prefetch ---------------------------------------------------
+# The parse is 79% of a cold load and 95% of IT is image decoding — measured at
+# 34.9 ms per prop with images and 1.9 ms without, and no GLTFState flag avoids
+# it (DISCARD_TEXTURES, EXTRACT_TEXTURES, skipping generate_scene and reading
+# get_meshes() instead all land within 2 ms of each other).
+#
+# It IS safe to do on worker threads, but only in halves. Narrowed one stage at
+# a time: parse alone fine, + generate_scene fine, + PackedScene.pack fine,
+# + compress_scene_textures HANGS THE PROCESS. Creating GPU textures off the
+# main thread is the line. So workers do parse + generate_scene + tangents +
+# pack — about 9x faster — and the textures are compressed on the main thread
+# when the result is consumed, exactly as before.
+#
+# Scene NODES are handed back for the main thread to free: freeing them on a
+# worker is what hung an earlier experiment at exit.
+var _pf: Dictionary = {}             # path -> PackedScene, ready to use
+var _pf_paths: Array = []            # batch input
+var _pf_scenes: Array = []           # nodes awaiting a main-thread free
+var _pf_packed: Array = []
+
+
+func _prefetch_job(i: int) -> void:
+	var p: String = str(_pf_paths[i])
+	var bytes := FileAccess.get_file_as_bytes(p)
+	if bytes.size() < 12 or bytes.decode_u32(0) != 0x46546C67:
+		return
+	var st := GLTFState.new()
+	st.filename = p.get_file()
+	st.set_handle_binary_image(GLTFState.HANDLE_BINARY_EMBED_AS_UNCOMPRESSED)
+	var doc := GLTFDocument.new()
+	doc.append_from_buffer(bytes, p.get_base_dir(), st)
+	var sc := doc.generate_scene(st)
+	if sc == null:
+		return
+	HighpolyStore.ensure_scene_tangents(sc)     # mesh maths only: safe here
+	var ps := PackedScene.new()
+	if ps.pack(sc) == OK:
+		_pf_packed[i] = ps
+	_pf_scenes[i] = sc                          # main thread frees this
+
+
+# Parse `paths` across all cores. Yields while they run so the editor stays
+# alive, which is the whole point of doing it here rather than inline.
+func _prefetch(paths: Array) -> void:
+	_pf_paths = paths
+	_pf_packed = []
+	_pf_scenes = []
+	_pf_packed.resize(paths.size())
+	_pf_scenes.resize(paths.size())
+	var gid := WorkerThreadPool.add_group_task(_prefetch_job, paths.size(),
+		-1, false, "highpoly glb prefetch")
+	if is_inside_tree():
+		while not WorkerThreadPool.is_group_task_completed(gid):
+			await get_tree().process_frame
+	WorkerThreadPool.wait_for_group_task_completion(gid)
+	for i in range(paths.size()):
+		if _pf_packed[i] != null:
+			_pf[str(paths[i])] = _pf_packed[i]
+		var sc: Variant = _pf_scenes[i]
+		if sc != null and is_instance_valid(sc):
+			(sc as Node).free()                 # MAIN thread, deliberately
+	_pf_paths = []
+	_pf_packed = []
+	_pf_scenes = []
+
+
 func _load_external_glb(abs_or_res: String) -> PackedScene:
+	# a prefetch worker may already have done the expensive half
+	if _pf.has(abs_or_res):
+		var ps: PackedScene = _pf[abs_or_res]
+		_pf.erase(abs_or_res)
+		var inst := ps.instantiate()
+		if inst != null:
+			# textures only: the worker already generated the tangents
+			HighpolyStore.compress_scene_textures(inst, false)
+			var out := PackedScene.new()
+			if out.pack(inst) == OK:
+				inst.queue_free()
+				return out
+			inst.queue_free()
+	return _load_external_glb_uncached(abs_or_res)
+
+
+func _load_external_glb_uncached(abs_or_res: String) -> PackedScene:
 	# user:// glbs aren't imported; load via runtime GLTF; res:// via normal loader
 	if abs_or_res.begins_with("res://"):
 		return load(abs_or_res) if ResourceLoader.exists(abs_or_res) else null
