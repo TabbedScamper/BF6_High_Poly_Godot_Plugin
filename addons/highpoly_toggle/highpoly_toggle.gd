@@ -23,6 +23,10 @@ var lbl: Label
 var mode_btn: OptionButton
 var ovr_chk: Button          # per-selection detail override (live, contextual label)
 var _override: Array = []      # nodes currently carrying the override
+# How many props the last _apply_scene() put on the download queue. `wanted` is
+# drained by whoever reads it first, so the count has to be carried rather than
+# re-read: _mode_changed used to ask for the list again and always got nothing.
+var _last_queued := 0
 # relative preloads: the plugin works from ANY folder under addons/ (users
 # often drop the whole repo zip in, nesting the plugin one level deeper)
 # WRITTEN ONCE because it is applied from two places. The chip sets it when the
@@ -2346,6 +2350,11 @@ func _check_scene_change() -> void:
 	# pass. That is true of the guard and irrelevant, because the guard is
 	# downstream of a check that already rejected the call. A user's editor log
 	# showed exactly that, three times in a row, on a scene swap.
+	# What the OLD scene used tells us nothing about the new one, and the set is
+	# accumulated now precisely because prioritize_scene only ever sees part of
+	# it. This is where it resets.
+	if sync != null:
+		sync.forget_scene()
 	var alive: Node = old if (old != null and is_instance_valid(old)) else null
 	ShapeViz.release(alive)
 	PlacedCull.release(alive)  # a saved property: don't leave it on a closed scene
@@ -2852,10 +2861,14 @@ func _mode_changed() -> void:
 	# Leaving on Low-Poly therefore fetches zero bytes; this is the moment the
 	# user asks for real models, so it is also the moment the fetch belongs.
 	if not HighpolyLib.use_legacy and _mode() != HighpolyLib.Tier.LOW:
-		var missing: Array = HighpolyLib.take_wanted()
-		if not missing.is_empty():
-			sync.prioritize_scene(missing)
-			lbl.text += ", %d downloading in background" % missing.size()
+		# REPORT WHAT _apply_scene ALREADY QUEUED. This used to call
+		# take_wanted() a second time, and _apply_scene() runs first and drains
+		# it — so the list here was ALWAYS empty, the queueing never happened
+		# twice (which was the saving grace) and the user was never told that
+		# anything had started. Switching to High-Poly with a scene full of
+		# props nobody had downloaded yet looked exactly like nothing happening.
+		if _last_queued > 0:
+			lbl.text += ", %d downloading in background" % _last_queued
 		# the hourly diff was skipped for every tick spent in Low-Poly, so the
 		# library backlog has to be rebuilt on the way out or nothing but the
 		# open scene would ever arrive
@@ -2884,10 +2897,12 @@ func _apply_scene() -> void:
 	# only on a mode switch, which was survivable while "could not draw" meant
 	# "showed the SDK proxy": the user could see something was missing. A
 	# map-context stand-in looks right, so nothing would ever prompt the upgrade.
+	_last_queued = 0
 	if not HighpolyLib.use_legacy and sync != null:
 		var missing: Array = HighpolyLib.take_wanted()
 		if not missing.is_empty():
 			sync.prioritize_scene(missing)
+			_last_queued = missing.size()
 	lbl.text = "%s: %d piece(s)" % [mode_btn.get_item_text(mode_btn.selected), n]
 
 # current placed-object cull distance from the Range slider (mirrors the slider

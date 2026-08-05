@@ -367,7 +367,16 @@ func prioritize_scene(names: Array) -> void:
 	_scene_want.clear()
 	# _scene_set drives the hq tier and must list EVERY prop the scene uses,
 	# not only the ones still pending — _needs() consults it.
-	_scene_set.clear()
+	#
+	# SO IT ACCUMULATES. It used to clear() first, and the caller hands it
+	# take_wanted(), which is only the props still MISSING. The first pass
+	# therefore recorded the whole scene and every pass after it, once some had
+	# arrived, replaced that with the shrinking remainder: a prop that
+	# downloaded successfully dropped straight out of the set that decides
+	# whether the scene is entitled to full quality.
+	#
+	# forget_scene() is the reset, and the edited scene changing is the only
+	# moment the previous list stops being true.
 	for nm in names:
 		_scene_set[nm] = true
 	for nm in names:
@@ -375,6 +384,14 @@ func prioritize_scene(names: Array) -> void:
 			_scene_want[nm] = true
 	enqueue(names, true)
 	progress_changed.emit()
+
+# The edited scene changed, so what the OLD scene used says nothing about the
+# new one. This is the only place the accumulated set is allowed to reset:
+# prioritize_scene cannot do it, because it is handed a partial list.
+func forget_scene() -> void:
+	_scene_set.clear()
+	_scene_want.clear()
+
 
 # A single just-placed prop goes to the very front (swap-in within seconds).
 func prioritize_one(nm: String) -> void:
