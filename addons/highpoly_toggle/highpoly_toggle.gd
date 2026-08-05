@@ -35,6 +35,18 @@ const MAPTILE_TIP := "Lays the map's aerial photo over the ground so it looks \
 like the real place instead of flat colour. Turn it off if it makes buildings \
 look muddy."
 
+const LIGHTING_TIP := "Lights your map the way the real one is lit, with the \
+same sun angle, sun colour, sky and haze. Replaces the editor's plain preview \
+light while it is on."
+
+# A GREYED-OUT CONTROL HAS TO SAY WHY, on the control itself. The reason this
+# one is unavailable was only ever written into the status line by the click
+# handler — which cannot run, because the chip is disabled. So the explanation
+# existed and was unreachable at exactly the moment it was needed, and the map
+# simply had a Lighting button that could not be pressed and never said why.
+const LIGHTING_TIP_NONE := "This map has no lighting data yet, so there is \
+nothing to switch on. Everything else in this panel still works."
+
 const PreviewsScript = preload("highpoly_previews.gd")
 const ProfilerScript = preload("highpoly_profiler.gd")
 const MapContextScript = preload("highpoly_mapcontext.gd")
@@ -560,6 +572,10 @@ func _enter_tree() -> void:
 		HighpolyCollision.set_color(c)
 		col_pick.color = c)
 	ca_row.add_child(col_alpha)
+	# Collisions starts off, so these start unavailable, the same way
+	# "Isolate selected" does. _collision_changed() drives them from here on.
+	col_pick.disabled = true
+	col_alpha.editable = false
 
 	host = _section("Map Context",
 		"Build inside the real level instead of an empty grey box: the ground, the skyline, the buildings, the lighting and the effects the real place has. All of it is preview only: none of it is saved into your map or exported.")
@@ -735,7 +751,7 @@ func _enter_tree() -> void:
 	mc_chips.add_child(mapctx_fx)
 
 	mapctx_light = Theme_.chip("Lighting")
-	mapctx_light.tooltip_text = "Lights your map the way the real one is lit, with the same sun angle, sun colour, sky and haze. Replaces the editor's plain preview light while it is on."
+	mapctx_light.tooltip_text = LIGHTING_TIP
 	mapctx_light.toggled.connect(func(v: bool):
 		if _locked(mapctx_light): return
 		if mapctx_gi: mapctx_gi.visible = v
@@ -2094,6 +2110,11 @@ func _reload_purge_options() -> void:
 	purge_maps.clear()
 	for m in maps:
 		purge_maps.add_item(str(m))
+	# AN EMPTY DROPDOWN NEXT TO A GREYED-OUT DELETE reads as something broken.
+	# It is the ordinary state before anything has been downloaded, so it should
+	# say that rather than leave the user looking for what they did wrong.
+	if maps.is_empty():
+		purge_maps.add_item("Nothing downloaded yet")
 	purge_maps.disabled = maps.is_empty()
 	purge_btn.disabled = maps.is_empty()
 
@@ -2445,6 +2466,9 @@ func _lighting_guard() -> void:
 	var ok := map != "" and LightingScript.has_data(map)
 	if mapctx_light.disabled == (not ok): return
 	mapctx_light.disabled = not ok
+	# Say so ON THE CHIP. The status-line message for this lives in the click
+	# handler, which a disabled chip never reaches.
+	mapctx_light.tooltip_text = LIGHTING_TIP if ok else LIGHTING_TIP_NONE
 	if not ok and mapctx_light.button_pressed:
 		mapctx_light.set_pressed_no_signal(false)
 		if mapctx_gi: mapctx_gi.visible = false
@@ -2979,6 +3003,11 @@ func _collision_changed() -> void:
 		return
 	var on := col_chk.button_pressed
 	iso_chk.disabled = not on
+	# The colour and alpha only tint shapes that are being drawn. Left live with
+	# Collisions off they are two controls that visibly do nothing, which reads
+	# as the setting being broken rather than not applicable yet.
+	if col_pick: col_pick.disabled = not on
+	if col_alpha: col_alpha.editable = on
 	if not on:
 		# turning the overlay off while isolated would leave hidden objects with
 		# no geometry at all — release the isolation first
