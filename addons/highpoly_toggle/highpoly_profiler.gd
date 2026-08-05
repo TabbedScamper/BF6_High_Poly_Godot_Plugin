@@ -393,11 +393,17 @@ func _download_report() -> PackedStringArray:
 	for d in _dl_series:
 		rates.append(float(d["mbps"]))
 		peak_active = maxi(peak_active, int(d["active"]))
-	for s in _samples:
-		if int(s.get("active", 0)) > 0:
-			busy += _tick.wait_time
-		elif int(s.get("queued", 0)) > 0:
-			starved += _tick.wait_time
+	# Real gaps between samples, NOT _tick.wait_time. The sampler is a 0.25 s
+	# Timer, and a Timer CANNOT FIRE while the main thread is blocked. The first
+	# real recording contained a single 44-second frame and averaged 0.68 s
+	# between samples rather than 0.25, so charging every sample a flat quarter
+	# second undercounts precisely the periods that matter most.
+	for i in range(1, _samples.size()):
+		var dt: float = float(_samples[i]["t"]) - float(_samples[i - 1]["t"])
+		if int(_samples[i].get("active", 0)) > 0:
+			busy += dt
+		elif int(_samples[i].get("queued", 0)) > 0:
+			starved += dt
 	rates.sort()
 	out.append("")
 	out.append("DOWNLOADS")
@@ -417,6 +423,45 @@ func _download_report() -> PackedStringArray:
 	var failed: int = int(last.get("dl_failed", 0)) - int(first.get("dl_failed", 0))
 	if failed > 0:
 		out.append("  %d download(s) FAILED — those models are skipped for the session" % failed)
+	return out
+
+
+# ---------- reporting: was the editor usable ----------
+# A 0.25 s Timer that fails to fire for 44 seconds is not a broken timer, it is a
+# main thread that was blocked for 44 seconds — so the sampler's own starvation
+# measures the thing users actually complain about, and it does so without any
+# instrumentation in the code being blamed. "Median fps" hides this completely:
+# a run can average 5 fps and still be usable, or average 5 fps and be frozen
+# solid in half-minute blocks. These are very different bugs.
+func _blocking_report() -> PackedStringArray:
+	var out := PackedStringArray()
+	if _samples.size() < 3:
+		return out
+	var blocked := 0.0
+	var worst := 0.0
+	var worst_at := 0.0
+	var freezes := 0
+	for i in range(1, _samples.size()):
+		var dt: float = float(_samples[i]["t"]) - float(_samples[i - 1]["t"])
+		if dt > 1.0:
+			blocked += dt
+			freezes += 1
+			if dt > worst:
+				worst = dt
+				worst_at = float(_samples[i]["t"])
+	var span: float = maxf(0.001, float(_samples[-1]["t"]) - float(_samples[0]["t"]))
+	out.append("")
+	out.append("EDITOR RESPONSIVENESS")
+	out.append("  sampled %d times in %.0f s — one every %.2f s, against a 0.25 s timer"
+		% [_samples.size(), span, span / float(_samples.size())])
+	if freezes == 0:
+		out.append("  the main thread never blocked for a whole second. Nothing to fix here.")
+		return out
+	out.append("  %d freeze(s) over 1 s, %.0f s total = %.0f%% of the run with the editor wedged"
+		% [freezes, blocked, 100.0 * blocked / span])
+	out.append("  longest single freeze %.1f s at %.0fs — during it the editor drew nothing,"
+		% [worst, worst_at])
+	out.append("     accepted no input, and no progress bar could move.")
 	return out
 
 
@@ -468,6 +513,7 @@ func _summarise() -> String:
 			worst = s
 	var out := PackedStringArray()
 	out.append("PERFORMANCE  %d samples over %.0f s" % [_samples.size(), float(_samples[-1]["t"])])
+	out.append_array(_blocking_report())
 	out.append_array(_download_report())
 	out.append_array(_timeline_report())
 	out.append("  fps      median %.0f   worst 10%% %.0f   lowest %.0f"
