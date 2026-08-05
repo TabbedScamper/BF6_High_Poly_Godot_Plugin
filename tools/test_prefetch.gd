@@ -109,6 +109,35 @@ func _init() -> void:
 	# would just light normal-mapped props wrong
 	_check("prefetched props still have tangents (%d)" % tangents, tangents > 0)
 
+	# ---- the worker compresses now, so a claim is a straight hand-over ----
+	# _load_external_glb no longer touches textures. If the worker ever stops
+	# compressing, props come back with raw RGBA and VRAM quietly triples.
+	mc._pf_release()
+	mc.vram_mode = MC.VRAM_COMPRESSED
+	await mc._prefetch([files[0]])
+	var node: Node = mc._load_external_glb(str(files[0]))
+	_check("a prefetched prop arrives already compressed",
+		node != null and _compressed_in(node))
+	if node != null:
+		node.free()
+
+	# ---- and a VRAM mode switch must not serve the old pixels -------------
+	# the textures are baked on the worker, so a cache filled under Compressed
+	# holds the wrong data once the mode changes, and nothing about a
+	# BC-compressed texture looks wrong until you compare it
+	mc._pf_release()
+	mc.vram_mode = MC.VRAM_COMPRESSED
+	await mc._prefetch([files[1]])
+	_check("the cache records the mode it was built under",
+		mc._pf_mode == MC.VRAM_COMPRESSED)
+	mc.vram_mode = MC.VRAM_FULL
+	var fresh: Node = mc._load_external_glb(str(files[1]))
+	_check("switching VRAM mode does not serve the stale cache",
+		fresh != null and not _compressed_in(fresh))
+	if fresh != null:
+		fresh.free()
+	mc.vram_mode = MC.VRAM_COMPRESSED
+
 	mc._pf_release()
 	_check("_pf_release empties the cache", mc._pf.is_empty())
 
@@ -136,6 +165,36 @@ func _props() -> Array:
 			out.sort()
 			return out
 	return []
+
+
+# GLTFDocument.generate_scene yields ImporterMeshInstance3D in the editor and
+# MeshInstance3D outside it, so a walker that knows only one of them reports
+# zero textures on a scene full of them.
+func _compressed_in(n: Node) -> bool:
+	var stack: Array = [n]
+	while not stack.is_empty():
+		var x: Node = stack.pop_back()
+		for c in x.get_children():
+			stack.append(c)
+		var mats: Array = []
+		if x is MeshInstance3D and (x as MeshInstance3D).mesh != null:
+			var mesh := (x as MeshInstance3D).mesh
+			for i in range(mesh.get_surface_count()):
+				mats.append(mesh.surface_get_material(i))
+		elif x is ImporterMeshInstance3D:
+			var im := (x as ImporterMeshInstance3D).mesh
+			if im != null:
+				for i in range(im.get_surface_count()):
+					mats.append(im.get_surface_material(i))
+		for m in mats:
+			var bm := m as BaseMaterial3D
+			if bm == null: continue
+			var tx := bm.get_texture(BaseMaterial3D.TEXTURE_ALBEDO)
+			if tx == null: continue
+			var img := tx.get_image()
+			if img != null:
+				return img.is_compressed()
+	return false
 
 
 func _tris(m: Mesh) -> int:

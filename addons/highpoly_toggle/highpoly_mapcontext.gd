@@ -658,6 +658,7 @@ func _clear(root: Node, keep_backdrop := false) -> void:
 	_build_gen += 1
 	_building = false
 	_pf_release()         # prefetched scenes the cancelled build will never claim
+	_draw_hidden = false  # the Props node goes with the overlay below
 	# detach/stop the scatter BEFORE freeing the tree it lives under: its
 	# camera-follow tick holds MultiMeshInstance3D refs that must not outlive
 	# _MAP_CONTEXT (frees now interleave with running ticks across frames)
@@ -3085,12 +3086,73 @@ func _build_backdrop_async(bd_root: Node3D, entries: Array, dir: String,
 	Log.debug("map context: skyline built, %d of %d piece(s)" % [_bd_ok, _bd_total])
 
 
+# --- keeping the work in progress off the screen ----------------------------
+# The build is invisible while it runs and revealed periodically, because
+# drawing it is what the build spends a third of its time on (see the note in
+# _build_props_async). These two are a pair: every exit from the builder MUST
+# call _end_build_draw, or the map stays hidden and reads as a failed build.
+const REVEAL_EVERY_MS := 2000
+var _draw_hidden := false
+
+
+func _begin_build_draw(props_root: Node3D) -> void:
+	if props_root == null or not is_instance_valid(props_root):
+		return
+	if not _show_objects:
+		return               # already off by the user's own switch; leave it
+	props_root.visible = false
+	_draw_hidden = true
+
+
+func _end_build_draw(props_root: Node3D) -> void:
+	if not _draw_hidden:
+		return
+	_draw_hidden = false
+	if props_root == null or not is_instance_valid(props_root):
+		return
+	# back to whatever the OBJECTS SWITCH says, not unconditionally on: the user
+	# can turn map objects off while the build is still running, and coming back
+	# to force them visible would undo that.
+	props_root.visible = _show_objects
+
+
+func _reveal_tick(props_root: Node3D, last: int) -> int:
+	"""Show one frame's worth every REVEAL_EVERY_MS. Returns the new stamp."""
+	if not _draw_hidden or props_root == null or not is_instance_valid(props_root):
+		return last
+	if Time.get_ticks_msec() - last < REVEAL_EVERY_MS:
+		return last
+	props_root.visible = true
+	if is_inside_tree():
+		await get_tree().process_frame     # the one expensive frame, on purpose
+	if is_instance_valid(props_root):
+		props_root.visible = false
+	return Time.get_ticks_msec()
+
+
 func _build_props_async(props_root: Node3D, entries: Array, dir: String,
 		textured: bool, flat_mat: Material, gen: int) -> void:
 	var frame_start := Time.get_ticks_msec()
 	var _t_build := Time.get_ticks_msec()
 	_vram_warned = false
 	HighpolyProfiler.mark("phase", "props: build started, %d entries" % entries.size())
+	# DON'T DRAW THE HALF-BUILT MAP. The loop below hands a frame back every
+	# BUILD_FRAME_MS, and the editor spends that frame re-rendering everything
+	# placed so far — which grows as the build proceeds, so the build slows
+	# itself down. On the recorded Dumbo run draw calls climbed 4,305 -> 14,500
+	# during the build, fps fell 11.6 -> 7.5, and 84 s of a 261 s build went on
+	# frame waits that the phase table never attributed to anything.
+	#
+	# Measured on real props: at 30k draw calls a frame costs 34.0 ms visible
+	# and 4.2 ms hidden — and the hidden cost is FLAT no matter how much has
+	# been placed, because nothing is being drawn.
+	#
+	# Hidden the whole way through would make the build a black box, so it is
+	# revealed for one frame every REVEAL_EVERY_MS: the map still fills in
+	# visibly, at a fraction of the cost. Restored by _end_build_draw() on every
+	# exit path — leaving it hidden would look exactly like a failed build.
+	_begin_build_draw(props_root)
+	var last_reveal := Time.get_ticks_msec()
 	# Parse a batch ahead on the worker pool while the main thread places the
 	# previous one. PREFETCH_BATCH is a compromise: bigger batches parallelise
 	# better but hold more parsed scenes in memory at once, and video memory is
@@ -3117,6 +3179,7 @@ func _build_props_async(props_root: Node3D, entries: Array, dir: String,
 					Time.get_ticks_msec() - _tp)
 				if gen != _build_gen:
 					_pf_release()   # this batch has no consumer any more
+					_end_build_draw(props_root)
 					return
 		var gp := _prop_path(e, dir)
 		var _t0 := Time.get_ticks_msec()
@@ -3185,20 +3248,25 @@ func _build_props_async(props_root: Node3D, entries: Array, dir: String,
 				if gen == _build_gen:
 					_building = false
 					_pf_release()
+					_end_build_draw(props_root)
 					build_finished.emit(_build_props)
 				return
+			last_reveal = await _reveal_tick(props_root, last_reveal)
 			await get_tree().process_frame  # keep the editor smooth
 			if gen != _build_gen:
+				_end_build_draw(props_root)
 				return                      # superseded: _clear() already released
 			if not is_instance_valid(props_root):
 				_building = false           # scene/ctx freed underneath us
 				_pf_release()
+				_draw_hidden = false        # the node is gone; nothing to restore
 				build_finished.emit(_build_props)
 				return
 			frame_start = Time.get_ticks_msec()
 	_apply_radius()
 	_building = false
 	_pf_release()   # the tail batch is always over-fetched; free what went unused
+	_end_build_draw(props_root)   # the finished map appears, here
 	_report_progress(true)
 	HighpolyProfiler.mark("phase", "props: build finished, %d built in %.1f s"
 		% [_build_props, (Time.get_ticks_msec() - _t_build) / 1000.0])
@@ -3833,6 +3901,12 @@ func _heightmap_mesh(raw: PackedByteArray, res: int, step: int, meta: Dictionary
 var _pf: Dictionary = {}             # path -> Node, parsed and ready to use
 var _pf_paths: Array = []            # batch input
 var _pf_scenes: Array = []           # worker output, adopted into _pf below
+# The VRAM mode the cached scenes were COMPRESSED UNDER. Textures are baked on
+# the worker now, so a cache filled under Compressed and claimed after a switch
+# to Full would hand back the wrong pixels — silently, since nothing about a
+# BC-compressed texture looks wrong until you compare it. Entries built under a
+# different mode are dropped rather than served.
+var _pf_mode := -1
 
 
 func _prefetch_job(i: int) -> void:
@@ -3849,12 +3923,29 @@ func _prefetch_job(i: int) -> void:
 	if sc == null:
 		return
 	HighpolyStore.ensure_scene_tangents(sc)     # mesh maths only: safe here
+	# AND THE TEXTURE COMPRESSION. This used to be the one part left on the main
+	# thread, on the strength of a comment saying compress_scene_textures "HANGS
+	# THE PROCESS" because "creating GPU textures off the main thread is the
+	# line". That diagnosis was wrong. Tested separately: Image.compress runs on
+	# a worker 5.27x faster than on main, and ImageTexture.create_from_image
+	# runs there too. What actually fails off-thread is creating NODES —
+	# MeshInstance3D, PlaneMesh — and the experiment that "proved" the texture
+	# rule was creating those as well.
+	#
+	# Verified in a REAL EDITOR, not just headless (headless has no renderer, so
+	# it cannot answer a GPU question at all): five runs, no hang, no crash,
+	# 86 of 86 textures compressed either way, 27.8 ms per prop off the main
+	# thread — about 77 s of a 261 s Dumbo build.
+	HighpolyStore.compress_scene_textures(sc, false, _pf_mode == VRAM_COMPRESSED)
 	_pf_scenes[i] = sc                          # handed over as-is, not packed
 
 
 # Parse `paths` across all cores. Yields while they run so the editor stays
 # alive, which is the whole point of doing it here rather than inline.
 func _prefetch(paths: Array) -> void:
+	if _pf_mode != vram_mode:
+		_pf_release()          # anything held was baked under another mode
+		_pf_mode = vram_mode
 	_pf_paths = paths
 	_pf_scenes = []
 	_pf_scenes.resize(paths.size())
@@ -3886,6 +3977,7 @@ func _pf_release() -> void:
 		if n != null and is_instance_valid(n):
 			(n as Node).free()                  # MAIN thread, deliberately
 	_pf.clear()
+	_pf_mode = -1
 
 
 # Returns a LIVE scene root that the caller owns and must free. Not a
@@ -3893,12 +3985,12 @@ func _pf_release() -> void:
 # pack/instantiate round trip is what made the prefetch worthless (see above).
 func _load_external_glb(abs_or_res: String) -> Node:
 	# a prefetch worker may already have done the expensive half
-	if _pf.has(abs_or_res):
+	if _pf.has(abs_or_res) and _pf_mode == vram_mode:
 		var inst: Node = _pf[abs_or_res]
 		_pf.erase(abs_or_res)
 		if inst != null and is_instance_valid(inst):
-			# textures only: the worker already generated the tangents
-			HighpolyStore.compress_scene_textures(inst, false, vram_mode == VRAM_COMPRESSED)
+			# nothing left to do: the worker generated the tangents AND
+			# compressed the textures, so this is a straight hand-over
 			return inst
 	return _load_external_glb_uncached(abs_or_res)
 
