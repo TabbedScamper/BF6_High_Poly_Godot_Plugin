@@ -1949,7 +1949,20 @@ func _all_meshes_and_xf(n: Node, pxf: Transform3D, out: Array) -> void:
 # sections in more than half the skyline were being thrown away at build time.
 # Splitting across several meshes keeps every surface, with the same batching --
 # the caller adds one MultiMeshInstance per mesh.
+# Timed as a whole rather than per surface: this is called once per source file
+# and rebuilds vertex arrays, so it is a prime suspect for the minutes that
+# produce no visible nodes.
 func _merge_meshes(pairs: Array) -> Array:
+	var _tm := Time.get_ticks_msec()
+	var _out := _merge_meshes_inner(pairs)
+	# "of which" because this runs INSIDE the mesh-load span — the report relies
+	# on the prefix to say so, otherwise the columns look like they should add up
+	HighpolyProfiler.span("  of which: merge surfaces",
+		Time.get_ticks_msec() - _tm)
+	return _out
+
+
+func _merge_meshes_inner(pairs: Array) -> Array:
 	# NOTE: plain Arrays (reference type) as accumulators — packed arrays kept
 	# inside a Dictionary are copy-on-write and `g["v"].append(...)` mutates a
 	# discarded copy (classic GDScript pitfall). Packed at surface build below.
@@ -2687,9 +2700,14 @@ func _build_backdrop_async(bd_root: Node3D, entries: Array, dir: String,
 func _build_props_async(props_root: Node3D, entries: Array, dir: String,
 		textured: bool, flat_mat: Material, gen: int) -> void:
 	var frame_start := Time.get_ticks_msec()
+	var _t_build := Time.get_ticks_msec()
+	HighpolyProfiler.mark("phase", "props: build started, %d entries" % entries.size())
 	for e in entries:
 		var gp := _prop_path(e, dir)
+		var _t0 := Time.get_ticks_msec()
 		var meshes := _prop_mesh(e, dir)    # the expensive part (GLB parse; cached)
+		HighpolyProfiler.span("props: load mesh (GLB parse + cache)",
+			Time.get_ticks_msec() - _t0)
 		var mesh: Mesh = meshes[0] if meshes.size() > 0 else null
 		if gp != "":
 			# refresh bookkeeping: which entries this source file built (recorded
@@ -2697,6 +2715,7 @@ func _build_props_async(props_root: Node3D, entries: Array, dir: String,
 			if not _prop_by_src.has(gp): _prop_by_src[gp] = []
 			(_prop_by_src[gp] as Array).append(e)
 		if mesh != null:
+			var _t1 := Time.get_ticks_msec()
 			var xf: Array = e.get("xf", [])
 			var em: Dictionary = _prop_layers.get(str(e.get("mesh", "")), {})
 			# flipbook cards are an effect, not scenery — own group, FX switch
@@ -2730,10 +2749,21 @@ func _build_props_async(props_root: Node3D, entries: Array, dir: String,
 					for msh: Mesh in meshes:
 						_add_cell_multimeshes(_variant_group(props_root, str(k)),
 								msh, bux[k], textured, flat_mat, gp)
+			HighpolyProfiler.span("props: create multimesh cells",
+				Time.get_ticks_msec() - _t1)
 			_build_props += 1
 		_build_done += 1
 		if Time.get_ticks_msec() - frame_start >= BUILD_FRAME_MS:
+			# SUSPECT. This walks EVERY cell built so far, and it runs on every
+			# yield — i.e. every BUILD_FRAME_MS of work — with an unlimited
+			# budget. The set it walks grows as the build proceeds, so the cost
+			# per yield grows with it: quadratic in the number of cells, for a
+			# range check that only matters once the cells exist. Timed
+			# separately so the next recording either convicts it or clears it.
+			var _t2 := Time.get_ticks_msec()
 			_apply_radius()                 # freshly added cells obey the range slider
+			HighpolyProfiler.span("props: apply_radius on every yield",
+				Time.get_ticks_msec() - _t2)
 			_report_progress()
 			if not is_inside_tree():        # host removed us mid-build: no tree to await
 				if gen == _build_gen:
@@ -2751,6 +2781,8 @@ func _build_props_async(props_root: Node3D, entries: Array, dir: String,
 	_apply_radius()
 	_building = false
 	_report_progress(true)
+	HighpolyProfiler.mark("phase", "props: build finished, %d built in %.1f s"
+		% [_build_props, (Time.get_ticks_msec() - _t_build) / 1000.0])
 	build_finished.emit(_build_props)
 
 # Progress: emit the signal (the toggle dock drives a ProgressBar off it) and
