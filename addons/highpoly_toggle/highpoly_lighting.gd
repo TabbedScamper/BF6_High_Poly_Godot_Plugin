@@ -867,7 +867,11 @@ static func clear_map_lights(root: Node) -> void:
 			root.remove_child(c)
 			c.queue_free()
 
-static func set_map_lights(root: Node, on: bool, map: String) -> String:
+# `progress` is called as progress.call(done, total) on each yield, so the panel
+# can show a bar. Thousands of fixtures take real seconds to place and the only
+# feedback used to be a status line that changed once at the end.
+static func set_map_lights(root: Node, on: bool, map: String,
+		progress := Callable()) -> String:
 	clear_map_lights(root)
 	if root == null: return "No scene open"
 	if not on: return "Map lights off"
@@ -887,13 +891,20 @@ static func set_map_lights(root: Node, on: bool, map: String) -> String:
 	# Nothing here is atomic, so hand the editor a frame every ~30 ms.
 	var n := 0
 	var slice := Time.get_ticks_msec()
-	for L in d.get("lights", []):
+	var all: Array = d.get("lights", [])
+	var seen := 0
+	for L in all:
+		seen += 1
 		if Time.get_ticks_msec() - slice >= 30:
+			if progress.is_valid():
+				progress.call(seen, all.size())
 			if root.is_inside_tree():
 				await root.get_tree().process_frame
 			# the scene can be closed or the layer switched off mid-build; the
 			# holder going away is the signal to stop rather than to crash
 			if not is_instance_valid(holder) or not holder.is_inside_tree():
+				if progress.is_valid():
+					progress.call(all.size(), all.size())   # never strand the bar
 				return "Map lights cancelled"
 			slice = Time.get_ticks_msec()
 		if not (L is Dictionary): continue
@@ -941,6 +952,8 @@ static func set_map_lights(root: Node, on: bool, map: String) -> String:
 		lt.owner = null
 		n += 1
 	invalidate_light_cull()      # everything starts hidden: the next tick must run
+	if progress.is_valid():
+		progress.call(all.size(), all.size())
 	return "Map lights: %d loaded (nearest %d m lit)" % [n, int(lights_range)]
 
 # dock-timer culling: only lights near the editor camera render.

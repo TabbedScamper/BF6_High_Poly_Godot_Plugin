@@ -101,6 +101,12 @@ var _props_verified: Dictionary = {}    # map -> true (this session)
 # hook) wait for a COMPLETE overlay before shooting.
 signal build_progress(done: int, total: int)   # per work-slice + on completion
 signal backdrop_progress(done: int, total: int)  # the skyline layer's own lane
+# Getting the map objects in is THREE jobs, not two: download the archive,
+# unpack it, then build. The download and the build each had a bar and the
+# unpack had none, so the panel showed a finished download and a build that had
+# not started yet — a dead gap of 31 s on Dumbo with nothing moving, which reads
+# as a hang. Keyed by label so it takes its own lane next to the others.
+signal stage_progress(label: String, done: int, total: int)
 signal build_finished(built: int)              # completed (not emitted when superseded)
 # Every byte this module pulls, so the dock can show it. The label doubles as
 # the job id — several of these can be in flight at once (map data, props and
@@ -111,6 +117,9 @@ signal download_progress(label: String, done_bytes: int, total_bytes: int)
 # there is no queue and nothing to take turns with.
 var job_queue: Node = null
 signal download_ended(label: String)
+# job labels, shared with the panel so a lane can be opened here and closed
+# there without the two drifting apart into two half-cleared bars
+const UNPACK_JOB := "Unpacking the level's scenery"
 const BUILD_FRAME_MS := 40          # per-frame parse budget (always >=1 mesh per frame)
 const BUILD_REPORT_EVERY := 100     # print / progress-file cadence (meshes)
 var _build_gen := 0                 # generation: _clear() bumps it, cancelling in-flight builds
@@ -648,6 +657,7 @@ func _clear(root: Node, keep_backdrop := false) -> void:
 	# are freed with _MAP_CONTEXT below)
 	_build_gen += 1
 	_building = false
+	_pf_release()         # prefetched scenes the cancelled build will never claim
 	# detach/stop the scatter BEFORE freeing the tree it lives under: its
 	# camera-follow tick holds MultiMeshInstance3D refs that must not outlive
 	# _MAP_CONTEXT (frees now interleave with running ticks across frames)
@@ -1644,9 +1654,8 @@ func _parse_prop_file(gp: String) -> Array:
 				% gp.get_file())
 		DirAccess.remove_absolute(baked)
 	var out: Array = []
-	var g := _load_external_glb(gp)
-	if g:
-		var inst := g.instantiate()
+	var inst := _load_external_glb(gp)   # a live scene root, ours to free
+	if inst:
 		# merge ALL mesh nodes — multi-part GLBs (one node per material part,
 		# e.g. dump-extracted window units: glass part + wall part) used to
 		# render only their FIRST part via _first_mesh_and_xf, which showed
@@ -2054,33 +2063,44 @@ func ensure_props(host: Node, map: String, status: Callable) -> bool:
 	var slice_start := Time.get_ticks_msec()
 	var seen := 0
 	for f in zfiles:
+		# counted FIRST: the identical-file path below continues past the end of
+		# the loop body, so counting there left every unchanged entry out of the
+		# tally and the progress read "1200 of 2761" on a run that unpacked all
+		# 2761 of them
+		seen += 1
 		if want.has(f) or (refresh and f.ends_with(".glb") and not f.contains("/")):
 			var data := zr.read_file(f)
 			var dst := "%s/%s" % [PROPS_CACHE, f]
+			var identical := false
 			if FileAccess.file_exists(dst):
 				var cur := FileAccess.open(dst, FileAccess.READ)
 				if cur:
-					var identical: bool = cur.get_length() == data.size() \
+					identical = cur.get_length() == data.size() \
 						and cur.get_buffer(data.size()) == data
 					cur.close()
-					if identical:
-						same += 1
-						continue
-			var out := FileAccess.open(dst, FileAccess.WRITE)
-			if out:
-				out.store_buffer(data); out.close(); n += 1
+			if identical:
+				same += 1
 			else:
-				skipped2 += 1
-				if skipped2 == 1:
-					Log.err_code("Could not write %s while unpacking %s scenery"
-						% [f, map], FileAccess.get_open_error())
-		seen += 1
+				var out := FileAccess.open(dst, FileAccess.WRITE)
+				if out:
+					out.store_buffer(data); out.close(); n += 1
+				else:
+					skipped2 += 1
+					if skipped2 == 1:
+						Log.err_code("Could not write %s while unpacking %s scenery"
+							% [f, map], FileAccess.get_open_error())
+		# NO `continue` above, deliberately. The unchanged-file path used to skip
+		# straight past this yield, so a re-download where most entries matched
+		# ran the whole loop between two frames — the exact freeze the yielding
+		# was added to remove, still there on the one run most likely to hit it.
 		if Time.get_ticks_msec() - slice_start >= 40:
 			if status.is_valid():
 				status.call("Unpacking %s scenery: %d of %d" % [map, seen, zfiles.size()])
+			stage_progress.emit(UNPACK_JOB, seen, zfiles.size())
 			if host != null and host.is_inside_tree():
 				await host.get_tree().process_frame
 			slice_start = Time.get_ticks_msec()
+	stage_progress.emit(UNPACK_JOB, zfiles.size(), zfiles.size())   # clears the lane
 	if skipped2 > 0:
 		Log.error("%s scenery: %d of %d pieces could not be written to %s"
 			% [map, skipped2, n + skipped2, ProjectSettings.globalize_path(PROPS_CACHE)])
@@ -2838,9 +2858,8 @@ func apply(root: Node, enabled: bool, show_objects: bool, tex = true,
 	if enabled:
 		var rp := "%s/roads/roads.glb" % dir
 		if FileAccess.file_exists(rp):
-			var rs := _load_external_glb(rp)
-			if rs != null:
-				var rn := rs.instantiate()
+			var rn := _load_external_glb(rp)   # live root, adopted into the tree
+			if rn != null:
 				rn.name = "Roads"
 				ctx.add_child(rn)
 				rn.owner = null
@@ -3097,6 +3116,7 @@ func _build_props_async(props_root: Node3D, entries: Array, dir: String,
 				HighpolyProfiler.span("props: prefetch parse (worker threads)",
 					Time.get_ticks_msec() - _tp)
 				if gen != _build_gen:
+					_pf_release()   # this batch has no consumer any more
 					return
 		var gp := _prop_path(e, dir)
 		var _t0 := Time.get_ticks_msec()
@@ -3164,18 +3184,21 @@ func _build_props_async(props_root: Node3D, entries: Array, dir: String,
 			if not is_inside_tree():        # host removed us mid-build: no tree to await
 				if gen == _build_gen:
 					_building = false
+					_pf_release()
 					build_finished.emit(_build_props)
 				return
 			await get_tree().process_frame  # keep the editor smooth
 			if gen != _build_gen:
-				return                      # superseded by a new apply()/_clear()
+				return                      # superseded: _clear() already released
 			if not is_instance_valid(props_root):
 				_building = false           # scene/ctx freed underneath us
+				_pf_release()
 				build_finished.emit(_build_props)
 				return
 			frame_start = Time.get_ticks_msec()
 	_apply_radius()
 	_building = false
+	_pf_release()   # the tail batch is always over-fetched; free what went unused
 	_report_progress(true)
 	HighpolyProfiler.mark("phase", "props: build finished, %d built in %.1f s"
 		% [_build_props, (Time.get_ticks_msec() - _t_build) / 1000.0])
@@ -3779,24 +3802,37 @@ func _heightmap_mesh(raw: PackedByteArray, res: int, step: int, meta: Dictionary
 	return am
 
 # --- parallel GLB prefetch ---------------------------------------------------
-# The parse is 79% of a cold load and 95% of IT is image decoding — measured at
-# 34.9 ms per prop with images and 1.9 ms without, and no GLTFState flag avoids
-# it (DISCARD_TEXTURES, EXTRACT_TEXTURES, skipping generate_scene and reading
-# get_meshes() instead all land within 2 ms of each other).
+# Image work is 62% of a cold prop — 21.7 ms of 34.8, being 13.0 ms to decode
+# the embedded webp and the rest to recompress it to S3TC. No GLTFState flag
+# avoids the decode: DISCARD_TEXTURES and EXTRACT_TEXTURES cost the same as
+# embedding, because Godot decodes the image first and only then decides what to
+# keep. (An earlier note here claimed 95% on the strength of comparing those
+# flags, which measures nothing. The honest split needs a file with the image
+# bytes physically removed.) Doing that decode on workers is worth real time.
 #
-# It IS safe to do on worker threads, but only in halves. Narrowed one stage at
-# a time: parse alone fine, + generate_scene fine, + PackedScene.pack fine,
+# It IS safe on worker threads, but only in halves. Narrowed one stage at a
+# time: parse alone fine, + generate_scene fine, + PackedScene.pack fine,
 # + compress_scene_textures HANGS THE PROCESS. Creating GPU textures off the
-# main thread is the line. So workers do parse + generate_scene + tangents +
-# pack — about 9x faster — and the textures are compressed on the main thread
-# when the result is consumed, exactly as before.
+# main thread is the line, so textures are still compressed on the main thread
+# when the result is consumed.
 #
-# Scene NODES are handed back for the main thread to free: freeing them on a
-# worker is what hung an earlier experiment at exit.
-var _pf: Dictionary = {}             # path -> PackedScene, ready to use
+# THE WORKER HANDS BACK A LIVE NODE, NOT A PackedScene. It used to pack on the
+# worker, and the consumer then instantiated it, compressed it, packed it AGAIN
+# and handed that back for the caller to instantiate a third time. That round
+# trip cost as much as the parse it was meant to save: measured over 60 real
+# props, prefetching every one of them hit the cache 60 times and still cost
+# 35.0 ms per prop against 34.8 ms with no prefetch at all — the whole feature
+# bought nothing. Forcing VRAM_FULL so no compression runs gave the same
+# non-result (43.1 vs 42.5 ms), ruling compression out and leaving the
+# serialise/deserialise round trip as the cost. A parsed scene graph is already
+# what the consumer wants; packing it is pure loss.
+#
+# Nodes must still be FREED on the main thread — freeing them on a worker is
+# what hung an earlier experiment at exit — so unclaimed entries go through
+# _pf_release() and never a plain Dictionary.clear().
+var _pf: Dictionary = {}             # path -> Node, parsed and ready to use
 var _pf_paths: Array = []            # batch input
-var _pf_scenes: Array = []           # nodes awaiting a main-thread free
-var _pf_packed: Array = []
+var _pf_scenes: Array = []           # worker output, adopted into _pf below
 
 
 func _prefetch_job(i: int) -> void:
@@ -3813,19 +3849,14 @@ func _prefetch_job(i: int) -> void:
 	if sc == null:
 		return
 	HighpolyStore.ensure_scene_tangents(sc)     # mesh maths only: safe here
-	var ps := PackedScene.new()
-	if ps.pack(sc) == OK:
-		_pf_packed[i] = ps
-	_pf_scenes[i] = sc                          # main thread frees this
+	_pf_scenes[i] = sc                          # handed over as-is, not packed
 
 
 # Parse `paths` across all cores. Yields while they run so the editor stays
 # alive, which is the whole point of doing it here rather than inline.
 func _prefetch(paths: Array) -> void:
 	_pf_paths = paths
-	_pf_packed = []
 	_pf_scenes = []
-	_pf_packed.resize(paths.size())
 	_pf_scenes.resize(paths.size())
 	var gid := WorkerThreadPool.add_group_task(_prefetch_job, paths.size(),
 		-1, false, "highpoly glb prefetch")
@@ -3834,37 +3865,51 @@ func _prefetch(paths: Array) -> void:
 			await get_tree().process_frame
 	WorkerThreadPool.wait_for_group_task_completion(gid)
 	for i in range(paths.size()):
-		if _pf_packed[i] != null:
-			_pf[str(paths[i])] = _pf_packed[i]
 		var sc: Variant = _pf_scenes[i]
-		if sc != null and is_instance_valid(sc):
+		if sc == null or not is_instance_valid(sc):
+			continue
+		var key := str(paths[i])
+		if _pf.has(key):                        # asked for twice: keep the first
 			(sc as Node).free()                 # MAIN thread, deliberately
+			continue
+		_pf[key] = sc
 	_pf_paths = []
-	_pf_packed = []
 	_pf_scenes = []
 
 
-func _load_external_glb(abs_or_res: String) -> PackedScene:
+# Free whatever the placement loop never claimed. A cancelled or finished build
+# leaves live nodes in _pf, and clear() alone would leak every one of them —
+# these are Nodes now, not refcounted resources.
+func _pf_release() -> void:
+	for k in _pf.keys():
+		var n: Variant = _pf[k]
+		if n != null and is_instance_valid(n):
+			(n as Node).free()                  # MAIN thread, deliberately
+	_pf.clear()
+
+
+# Returns a LIVE scene root that the caller owns and must free. Not a
+# PackedScene: every consumer instantiated one immediately anyway, and the
+# pack/instantiate round trip is what made the prefetch worthless (see above).
+func _load_external_glb(abs_or_res: String) -> Node:
 	# a prefetch worker may already have done the expensive half
 	if _pf.has(abs_or_res):
-		var ps: PackedScene = _pf[abs_or_res]
+		var inst: Node = _pf[abs_or_res]
 		_pf.erase(abs_or_res)
-		var inst := ps.instantiate()
-		if inst != null:
+		if inst != null and is_instance_valid(inst):
 			# textures only: the worker already generated the tangents
 			HighpolyStore.compress_scene_textures(inst, false, vram_mode == VRAM_COMPRESSED)
-			var out := PackedScene.new()
-			if out.pack(inst) == OK:
-				inst.queue_free()
-				return out
-			inst.queue_free()
+			return inst
 	return _load_external_glb_uncached(abs_or_res)
 
 
-func _load_external_glb_uncached(abs_or_res: String) -> PackedScene:
+func _load_external_glb_uncached(abs_or_res: String) -> Node:
 	# user:// glbs aren't imported; load via runtime GLTF; res:// via normal loader
 	if abs_or_res.begins_with("res://"):
-		return load(abs_or_res) if ResourceLoader.exists(abs_or_res) else null
+		if not ResourceLoader.exists(abs_or_res):
+			return null
+		var rps := load(abs_or_res) as PackedScene
+		return rps.instantiate() if rps != null else null
 	HighpolyStore._ensure_webp_ext()   # webp-embedded basecolors (whole prop cache)
 	# ONE-SHOT byte snapshot + append_from_buffer, NOT append_from_file: the
 	# background re-bake rewrites these cache files continuously, and Godot's
@@ -3893,8 +3938,7 @@ func _load_external_glb_uncached(abs_or_res: String) -> PackedScene:
 	if scene == null: return null
 	# raw embedded textures are a memory bomb at scale — recompress to S3TC
 	HighpolyStore.compress_scene_textures(scene, true, vram_mode == VRAM_COMPRESSED)
-	var ps := PackedScene.new(); ps.pack(scene); scene.queue_free()
-	return ps
+	return scene
 
 func _add_cell_multimeshes(parent: Node3D, mesh: Mesh, xf: Array, textured: bool, flat_mat: Material, src := "") -> void:
 	# split placements into world cells (for distance streaming), and within each

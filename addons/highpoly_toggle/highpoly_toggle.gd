@@ -37,6 +37,12 @@ const PlacedCull = preload("highpoly_placedcull.gd")
 const TipsScript = preload("highpoly_tips.gd")
 const JobsScript = preload("highpoly_jobs.gd")
 const SdkHide = preload("highpoly_sdkhide.gd")
+
+# Progress-bar lane names. Kept together because the bar is keyed by string:
+# opening a lane under one spelling and closing it under another leaves a bar
+# stuck on screen for the rest of the session.
+const FX_JOB := "Placing the level's effects"
+const LIGHTS_JOB := "Placing the level's lights"
 const ShapeViz = preload("highpoly_shapeviz.gd")
 const Log = preload("highpoly_log.gd")
 const SectionScript = preload("highpoly_section.gd")
@@ -684,7 +690,7 @@ func _enter_tree() -> void:
 		# the level's flipbook cards are drawn as props, so they follow this
 		# switch too rather than arriving unbidden with the map objects
 		mapctx.set_fx_cards_shown(_r, v)
-		lbl.text = HighpolyFx.apply(_r, mapctx.map_of(_r), v)
+		lbl.text = await HighpolyFx.apply(_r, mapctx.map_of(_r), v, _lane(FX_JOB))
 		_save_mapctx_state())
 	mc_chips.add_child(mapctx_fx)
 
@@ -792,7 +798,8 @@ func _enter_tree() -> void:
 	mapctx_maplights.toggled.connect(func(v: bool):
 		var _r := EditorInterface.get_edited_scene_root()
 		lbl.text = await LightingScript.set_map_lights(_r,
-				v and mapctx_light.button_pressed, mapctx.map_of(_r))
+				v and mapctx_light.button_pressed, mapctx.map_of(_r),
+				_lane(LIGHTS_JOB))
 		_save_mapctx_state())
 	mc_sub.add_child(mapctx_maplights)
 
@@ -1165,6 +1172,11 @@ func _enter_tree() -> void:
 			jobs.set_activity("Building the level's scenery", done, total)
 		else:
 			jobs.clear_activity("Building the level's scenery"))
+	# the third stage: unpacking the archive between the download finishing and
+	# the build starting. 31 s on Dumbo with no bar of any kind, which is why the
+	# panel looked stuck after the download completed.
+	mapctx.stage_progress.connect(func(label: String, done: int, total: int):
+		_lane(label).call(done, total))
 	# the skyline gets its own lane; jobs.set_activity is keyed, so it and the
 	# scenery build show as separate bars instead of overwriting each other
 	mapctx.backdrop_progress.connect(func(done: int, total: int):
@@ -1598,6 +1610,24 @@ func _sdk_terrain_hidden(hide: bool) -> void:
 		Log.info("SDK terrain %s (%d node%s)"
 			% ["hidden, Extended Terrain is showing instead" if hide else "restored",
 				n, "" if n == 1 else "s"])
+
+# One keyed bar for one long job, opened on the first report and closed when
+# done reaches total. Handed to whatever is doing the work as a plain Callable,
+# so a module does not have to know the panel exists to be able to report.
+#
+# Written once and shared because three separate long jobs — unpacking the
+# scenery archive, placing the map lights and placing the FX — each ran for tens
+# of seconds with no bar at all. Getting the map objects in is three stages and
+# only two of them were visible, so the panel showed a finished download and a
+# build that had not started, which reads exactly like a hang.
+func _lane(label: String) -> Callable:
+	return func(done: int, total: int) -> void:
+		if jobs == null: return
+		if total > 0 and done < total:
+			jobs.set_activity(label, done, total)
+		else:
+			jobs.clear_activity(label)
+
 
 func _refresh_job_bar() -> void:
 	if jobs == null or job_row == null: return
@@ -2266,7 +2296,8 @@ func _lighting_changed() -> void:
 			mapctx_gi.button_pressed if mapctx_gi else true,
 			mapctx_shadows.button_pressed if mapctx_shadows else true)
 	if mapctx_maplights and mapctx_maplights.button_pressed:
-		lbl.text += " | " + await LightingScript.set_map_lights(r, true, map)
+		lbl.text += " | " + await LightingScript.set_map_lights(r, true, map,
+			_lane(LIGHTS_JOB))
 
 # grey the checkbox out when the open scene has no lighting data (called from
 # the dock's 0.5 s timer — cheap: one dictionary lookup)
@@ -2517,7 +2548,7 @@ func _restore_mapctx_state() -> void:
 	if mapctx_fx and bool(d.get("fx", false)):
 		mapctx_fx.set_pressed_no_signal(true)
 		mapctx.set_fx_cards_shown(r, true)
-		lbl.text = HighpolyFx.apply(r, map, true)
+		lbl.text = await HighpolyFx.apply(r, map, true, _lane(FX_JOB))
 	if bool(d.get("light", false)) and mapctx_light != null:
 		mapctx_light.set_pressed_no_signal(true)
 		if mapctx_gi: mapctx_gi.visible = true
