@@ -22,15 +22,26 @@ func _init() -> void:
 	await process_frame
 	mc.mesh_cache_enabled = false          # measure the parse, not a sidecar
 
+	# "-- <dir>" points this at a fixed sample. The live prop cache is only
+	# whatever the last session downloaded, and a Reset empties it — after which
+	# this test reported pass=0 fail=0 and looked like it had passed.
 	var base := OS.get_environment("APPDATA") + "/Godot/app_userdata/Battlefield™ Portal Project"
-	var dir := base + "/mapcontext/_props"
-	var da := DirAccess.open(dir)
-	if da == null:
-		print("no props to test against"); quit(1); return
+	var dirs: Array = []
+	for a in OS.get_cmdline_user_args():
+		dirs.append(str(a))
+	dirs.append(base + "/mapcontext/_props")
 	var files: Array = []
-	for f in da.get_files():
-		if f.ends_with(".glb"):
-			files.append(dir + "/" + f)
+	for d in dirs:
+		var da := DirAccess.open(str(d))
+		if da == null:
+			continue
+		for f in da.get_files():
+			if f.ends_with(".glb"):
+				files.append(str(d) + "/" + f)
+		if not files.is_empty():
+			break
+	if files.is_empty():
+		print("no props to test against"); quit(1); return
 	files.sort()
 	files = files.slice(0, N)
 

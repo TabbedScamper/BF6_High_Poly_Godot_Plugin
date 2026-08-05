@@ -110,7 +110,14 @@ static func clear(root: Node) -> void:
 			c.queue_free()
 
 
-static func apply(root: Node, map: String, on: bool) -> String:
+# YIELDS, and reports through `progress` as progress.call(done, total).
+#
+# This used to build up to MAX_EMITTERS GPUParticles3D between two frames with
+# no feedback of any kind: no bar, and no repaint either, so the panel simply
+# stopped responding until it finished. A progress bar on a function that never
+# gives a frame back cannot draw, so the yielding is not decoration here — it is
+# what makes the bar possible.
+static func apply(root: Node, map: String, on: bool, progress := Callable()) -> String:
 	clear(root)
 	if root == null: return "No scene open"
 	if not on: return "FX off"
@@ -128,7 +135,23 @@ static func apply(root: Node, map: String, on: bool) -> String:
 	var n := 0
 	var authored := 0
 	var skipped := 0
-	for f in d.get("fx", []):
+	var all: Array = d.get("fx", [])
+	var seen := 0
+	var slice := Time.get_ticks_msec()
+	for f in all:
+		seen += 1
+		if Time.get_ticks_msec() - slice >= 30:
+			if progress.is_valid():
+				progress.call(seen, all.size())
+			if root.is_inside_tree():
+				await root.get_tree().process_frame
+			# switching the layer back off, or closing the scene, frees the
+			# holder underneath us: stop rather than parent onto a dead node
+			if not is_instance_valid(holder) or not holder.is_inside_tree():
+				if progress.is_valid():
+					progress.call(all.size(), all.size())
+				return "FX cancelled"
+			slice = Time.get_ticks_msec()
 		if not (f is Dictionary): continue
 		if n >= MAX_EMITTERS:
 			skipped += 1
@@ -156,6 +179,8 @@ static func apply(root: Node, map: String, on: bool) -> String:
 		holder.add_child(e)
 		e.owner = null
 		n += 1
+	if progress.is_valid():
+		progress.call(all.size(), all.size())
 	var msg := "FX: %d emitters, %d with authored parameters (%d%%)" % [
 		n, authored, (authored * 100 / maxi(n, 1))]
 	if skipped > 0:

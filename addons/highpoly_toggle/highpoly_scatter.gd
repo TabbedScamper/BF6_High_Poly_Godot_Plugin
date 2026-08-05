@@ -397,14 +397,16 @@ func _scatter_mesh(mc: Object, nm: String) -> Mesh:
 	var m: Mesh = null
 	var gp := "%s/%s.glb" % [PROPS_CACHE, nm]
 	if FileAccess.file_exists(gp):
-		var g: PackedScene = mc._load_external_glb(gp)
-		if g != null:
-			var inst: Node = g.instantiate()
+		var inst: Node = mc._load_external_glb(gp)   # live root, ours to free
+		if inst != null:
 			var pair: Array = mc._first_mesh_and_xf(inst, Transform3D())
 			if not pair.is_empty():
 				m = mc._bake_mesh(pair[0], pair[1])
 				if m == pair[0]:
-					m = (m as Mesh).duplicate()   # never mutate the packed scene's mesh
+					# the mesh outlives the node it came from (Resources are
+					# refcounted), and it is about to be cached and shared —
+					# never mutate the one the loader handed back
+					m = (m as Mesh).duplicate()
 				_foliage_fix(m)
 				mc._wind_swap_materials(m)    # grass joins Foliage Wind
 			inst.queue_free()
