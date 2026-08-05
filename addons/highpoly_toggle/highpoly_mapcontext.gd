@@ -1459,6 +1459,19 @@ static var bake_geometry_only := false
 # it. Returns [] if there is no bake, or if it is unusable — every caller falls
 # back to the glb, so a bad file costs a parse and never a broken prop.
 func _load_geom_tier(gp: String) -> Array:
+	# A BAKE WITHOUT A SIDECAR IS ONLY SAFE IF THE PROP HAS NO PIXELS TO LOSE.
+	# The bake carries geometry and materials but no textures — they are meant
+	# to come from the .bctex beside it. If that is missing while the glb still
+	# holds its own images, using the bake silently renders the prop white; the
+	# glb is right there and still complete, so use it.
+	#
+	# The pipeline never ships that pairing. A cache can still arrive at it: the
+	# registry pass replaces a stripped glb with the model library's textured
+	# copy and leaves the bake behind. One header read, and only for props with
+	# no sidecar, which after a healthy fetch is almost none of them.
+	if not BcTex.exists(gp) and not _glb_has_no_images(gp):
+		return []
+
 	var meshes: Array = []
 	if FileAccess.file_exists(gp + _geom_part_suffix(0)):
 		# A split prop ships numbered parts, exactly as the local cache does.
@@ -3713,7 +3726,12 @@ func _build_props_async(props_root: Node3D, entries: Array, dir: String,
 				var pp := _prop_path(entries[j], dir)
 				# skip anything a sidecar already covers — re-parsing it would
 				# cost more than the load it is meant to save
-				if pp != "" and not _pf.has(pp) and not _mesh_cache.has(pp) \
+				# `_bc` counts as prefetched too. A prop with a shipped bake
+				# comes back with its textures and NO scene — nothing lands in
+				# `_pf` — so testing `_pf` alone would ask for it again in every
+				# overlapping batch and re-decode the same textures each time.
+				if pp != "" and not _pf.has(pp) and not _bc.has(pp) \
+						and not _mesh_cache.has(pp) \
 						and not FileAccess.file_exists(pp + _baked_suffix()):
 					want.append(pp)
 			next_pf = ei + int(PREFETCH_BATCH * 0.5)  # top up before it runs dry
@@ -4528,6 +4546,28 @@ static var prefetch_stage := 0
 
 func _prefetch_job(i: int) -> void:
 	var p: String = str(_pf_paths[i])
+
+	# THE SIDECAR FIRST, and before anything can return early.
+	#
+	# This used to sit further down, after the prefetch_stage gates — and the
+	# default stage is 0, which returns immediately. So it has not run since
+	# v1.35.0, and every texture in every map has been decoding on the MAIN
+	# thread ever since. A recorded Dumbo load spent 43.1 s there across 4,732
+	# props, in a phase named "textures: decoded on the MAIN thread (no
+	# prefetch)" — the profiler was reporting it plainly the whole time.
+	#
+	# It is safe out here at any stage: pure Image work, no Node, no
+	# ImageTexture, no RenderingServer. That is the whole reason BcTex splits
+	# decode() from bind().
+	_bc_out[i] = _decode_side(p)
+
+	# AND WITH A SHIPPED BAKE THERE IS NOTHING TO PARSE. _parse_prop_file tries
+	# the .geom.res before it ever asks for a scene, so everything below would
+	# be built, held, and then freed unused.
+	if FileAccess.file_exists(p + GEOM_SUFFIX) \
+			or FileAccess.file_exists(p + _geom_part_suffix(0)):
+		return
+
 	var bytes := FileAccess.get_file_as_bytes(p)
 	if bytes.size() < 12 or bytes.decode_u32(0) != 0x46546C67:
 		return
