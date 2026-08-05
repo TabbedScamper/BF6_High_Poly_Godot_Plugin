@@ -2108,6 +2108,25 @@ static func _with_lods(m: Mesh) -> Mesh:
 	return out if out != null and out.get_surface_count() > 0 else m
 
 # names of prop meshes this map needs that aren't in the shared cache yet
+# The files that ship BESIDE a prop's glb, named only if the archive has them.
+# Older archives have neither, and a map is perfectly valid without them, so a
+# missing companion is never an error — it just is not asked for.
+static func _want_companions(glb: String, present: Dictionary,
+		want: Dictionary) -> void:
+	# HighpolyBcTex.path_for replaces the extension: Foo.glb -> Foo.bctex.
+	# The bake appends instead: Foo.glb -> Foo.glb.geom.res. They differ, and
+	# guessing either one wrong silently fetches nothing.
+	var side := glb.get_basename() + BcTex.EXT
+	if present.has(side):
+		want[side] = true
+	if present.has(glb + GEOM_SUFFIX):
+		want[glb + GEOM_SUFFIX] = true
+	var i := 0
+	while present.has("%s.geom.p%d.res" % [glb, i]):
+		want["%s.geom.p%d.res" % [glb, i]] = true
+		i += 1
+
+
 func _props_missing() -> Array:
 	HighpolyStore.ensure_dir(PROPS_CACHE)
 	var miss: Array = []
@@ -2117,15 +2136,53 @@ func _props_missing() -> Array:
 			var nm: String = e["mesh"]
 			if seen.has(nm): continue
 			seen[nm] = true
-			if not FileAccess.file_exists("%s/%s.glb" % [PROPS_CACHE, nm]):
+			if _prop_incomplete(nm):
 				miss.append(nm)
 	# vegetation scatter kit meshes (scatter.json) live in the same shared cache
 	for nm in _scatter_mesh_names():
 		if seen.has(nm): continue
 		seen[nm] = true
-		if not FileAccess.file_exists("%s/%s.glb" % [PROPS_CACHE, nm]):
+		if _prop_incomplete(nm):
 			miss.append(nm)
 	return miss
+
+
+# A PROP WITH NO PIXELS COUNTS AS MISSING. Having the glb used to be the whole
+# test, and against a stripped archive that is exactly wrong: the file is there,
+# nothing re-downloads, and the prop draws flat white forever. Nobody would read
+# that as a download problem — the model is plainly present.
+#
+# A stripped glb carries no images, so one with no .bctex beside it is half a
+# prop. Props that ship their images inside the file, the way they always used
+# to, have images and pass here without needing a sidecar at all.
+func _prop_incomplete(nm: String) -> bool:
+	var gp := "%s/%s.glb" % [PROPS_CACHE, nm]
+	if not FileAccess.file_exists(gp):
+		return true
+	if FileAccess.file_exists("%s/%s%s" % [PROPS_CACHE, nm, BcTex.EXT]):
+		return false
+	return _glb_has_no_images(gp)
+
+
+# Read the glTF header only. A prop is a few MB and there are thousands of them,
+# so this stops at the JSON chunk and never touches the mesh data.
+static func _glb_has_no_images(gp: String) -> bool:
+	var f := FileAccess.open(gp, FileAccess.READ)
+	if f == null:
+		return false                      # unreadable is a different problem
+	var head := f.get_buffer(20)
+	if head.size() < 20 or head.decode_u32(0) != 0x46546C67:
+		f.close()
+		return false
+	var jlen := int(head.decode_u32(12))
+	if jlen <= 0 or jlen > 64 << 20:
+		f.close()
+		return false
+	var js := f.get_buffer(jlen).get_string_from_utf8()
+	f.close()
+	# Cheaper than parsing: bc_strip removes the images array entirely, so its
+	# absence is the marker. A file that still has one is a pre-strip prop.
+	return not js.contains("\"images\"")
 
 # mesh names the map's scatter table needs ([] when the map has no scatter data)
 func _scatter_mesh_names() -> Array:
@@ -2192,6 +2249,13 @@ func _ensure_props_ranged(host: Node, map: String, url: String, miss: Array,
 	# path never ran on the one case it exists for. A recorded Dumbo load did
 	# exactly that — "refresh=true" and a 56 s archive download, with none of
 	# this code touched.
+	# EVERY NAME IN THE ARCHIVE, so a prop's companions can be asked for. This
+	# path picks entries out individually — it is not an unpack — so anything it
+	# does not name is simply never downloaded.
+	var present: Dictionary = {}
+	for e in entries:
+		present[str(e["name"])] = true
+
 	var want: Dictionary = {}
 	if refresh:
 		for e in entries:
@@ -2201,6 +2265,18 @@ func _ensure_props_ranged(host: Node, map: String, url: String, miss: Array,
 	else:
 		for nm in miss:
 			want["%s.glb" % nm] = true
+
+	# A PROP IS THREE FILES NOW, and asking only for the glb fetches a model
+	# with no pixels in it. The images ship in a .bctex beside it and the baked
+	# geometry in a .geom.res, and this is the only thing that requests them.
+	#
+	# Nothing here reports a problem when it is wrong: the download succeeds,
+	# the count looks plausible, the map builds. It shows up as a level rendered
+	# entirely in flat white — which is exactly what a client asking for "2761
+	# of 8215 entries" produced against the first pre-baked archive.
+	for glb in want.keys():
+		_want_companions(str(glb), present, want)
+
 	if want.is_empty():
 		return true                       # nothing to do; not a failure
 
