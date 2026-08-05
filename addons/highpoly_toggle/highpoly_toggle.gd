@@ -805,7 +805,7 @@ func _enter_tree() -> void:
 	mapctx_vram_row.add_child(vram_lbl)
 	mapctx_vram = OptionButton.new()
 	mapctx_vram.add_item("Compressed (recommended)", MapContextScript.VRAM_COMPRESSED)
-	mapctx_vram.add_item("Low — for 4 GB cards", MapContextScript.VRAM_LOW)
+	mapctx_vram.add_item("Low (for 4 GB cards)", MapContextScript.VRAM_LOW)
 	mapctx_vram.add_item("Uncompressed (needs 12 GB+)", MapContextScript.VRAM_FULL)
 	mapctx_vram.tooltip_text = "How much video memory the scenery is allowed to use. Compressed looks the same as Uncompressed on scenery and uses a quarter of the memory. Choose Low if the editor runs out of memory or closes itself while a map loads. Changing this rebuilds the scenery cache once."
 	mapctx_vram.item_selected.connect(func(i: int):
@@ -1522,6 +1522,13 @@ func _swap_in_ready() -> void:
 		parsed += 1
 		if parsed % 2 == 0:
 			await get_tree().process_frame
+	# THE SCENE CAN CLOSE WHILE THIS YIELDS. `r` was checked before the loop, and
+	# the loop above gives up a frame every second model — long enough for the
+	# user to switch or close the scene, which frees the root we are still
+	# holding. apply_names takes a typed `root: Node`, so passing the freed one
+	# fails at the call itself; a user's editor log caught it doing exactly that.
+	if r == null or not is_instance_valid(r):
+		return
 	var n := HighpolyLib.apply_names(r, names, _mode(), _textured())
 	if n > 0:
 		lbl.text = "%d piece(s) upgraded as models arrived" % n
@@ -1545,6 +1552,8 @@ func _on_manifest_refreshed() -> void:
 	if previews: previews.rescan_context()
 	if gen != _mapctx_gen:
 		return                         # user toggled Map Context while props re-verified
+	if not is_instance_valid(r):
+		return                         # scene closed while the props verified
 	if mapctx.last_verify_updates > 0 and mapctx_objects.button_pressed:
 		lbl.text = mapctx.apply(r, mapctx_on.button_pressed, true, _mapctx_tex_mode(), mapctx_backdrop != null and mapctx_backdrop.button_pressed, mapctx_water != null and mapctx_water.button_pressed)
 
@@ -2184,7 +2193,10 @@ func _do_reset() -> void:
 	var es := EditorInterface.get_editor_settings()
 	for m in maps_before:
 		es.set_project_metadata("highpoly_mapctx", str(m), {})
-	var open_map: String = mapctx.map_of(r) if r != null else ""
+	# is_instance_valid, not `!= null`: the reset above yields, and a scene closed
+	# while it ran leaves `r` non-null and freed, which a typed `root: Node`
+	# parameter rejects at the call.
+	var open_map: String = mapctx.map_of(r) if is_instance_valid(r) else ""
 	if open_map != "":
 		es.set_project_metadata("highpoly_mapctx", open_map, {})
 	# library settings back to shipped defaults too — "reset" should not leave
@@ -2296,16 +2308,24 @@ func _check_scene_change() -> void:
 	if iso_chk:
 		iso_chk.set_pressed_no_signal(false)
 		iso_chk.disabled = true
-	# the remembered visibility is keyed by node path, and those paths belong to
-	# the scene that just closed — put that one back before letting go of it.
-	# Called even when `old` is already freed: each of these guards its own
-	# restore on `root != null` (which a freed Object does NOT pass — measured on
-	# Godot 4.6.3) but clears its remembered state unconditionally, and that
-	# clearing must happen either way or the next scene inherits bookkeeping
-	# belonging to a closed one.
-	ShapeViz.release(old)
-	PlacedCull.release(old)  # a saved property: don't leave it on a scene we're done with
-	SdkHide.restore_all(old)
+	# The remembered visibility is keyed by node path, and those paths belong to
+	# the scene that just closed, so that one is put back before we let go of it.
+	# The clearing has to happen even when there is nothing left to restore, or
+	# the next scene inherits bookkeeping belonging to a closed one.
+	#
+	# PASS null RATHER THAN A FREED NODE. These take `root: Node`, and GDScript
+	# checks a typed argument at the CALL, before the function body runs — so
+	# handing one a freed Object raises "argument 1 (previously freed) is not a
+	# subclass of the expected argument class" and the call never happens at all.
+	# The comment that used to sit here claimed the opposite: that each of these
+	# guards its own restore on `root != null`, which a freed Object does not
+	# pass. That is true of the guard and irrelevant, because the guard is
+	# downstream of a check that already rejected the call. A user's editor log
+	# showed exactly that, three times in a row, on a scene swap.
+	var alive: Node = old if (old != null and is_instance_valid(old)) else null
+	ShapeViz.release(alive)
+	PlacedCull.release(alive)  # a saved property: don't leave it on a closed scene
+	SdkHide.restore_all(alive)
 	_sync_maptile_control()   # the new scene may carry the SDK's own decal
 	# The one thing that SHOULD carry across a swap: the pieces you placed in the
 	# newly-active scene start culled to wherever the Range slider currently sits.
@@ -2646,6 +2666,11 @@ func _restore_mapctx_state() -> void:
 		mapctx_fx.set_pressed_no_signal(true)
 		mapctx.set_fx_cards_shown(r, true)
 		lbl.text = await HighpolyFx.apply(r, map, true, _lane(FX_JOB))
+	# The FX apply above yields. A scene closed during it leaves `r` freed, and
+	# everything below still hands it to typed `root: Node` parameters, which
+	# fail at the call rather than inside.
+	if not is_instance_valid(r):
+		return
 	if bool(d.get("light", false)) and mapctx_light != null:
 		mapctx_light.set_pressed_no_signal(true)
 		if mapctx_gi: mapctx_gi.visible = true
@@ -2724,6 +2749,8 @@ func _mapctx_changed() -> void:
 		await mapctx.download_map(dock, map, func(s: String): lbl.text = s)
 		if gen != _mapctx_gen:
 			return          # a newer toggle owns the state now
+		if not is_instance_valid(r):
+			return          # scene closed during the download
 		await _apply_mapctx(r, on, objs, tex, gen)
 		return
 	# not downloaded yet — prompt (per-map sized, obvious in context)
