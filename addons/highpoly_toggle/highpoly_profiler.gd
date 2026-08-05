@@ -98,7 +98,41 @@ func event(kind: String, text: String) -> void:
 	})
 
 
+# ---------------------------------------------------------------------------
+# STATIC ENTRY POINTS, so the code being measured does not have to hold a
+# reference to the recorder or know whether one exists. Both are no-ops when
+# nothing is recording, which is the normal case, so instrumentation left in
+# permanently costs a boolean check.
+#
+# The distinction that matters:
+#   mark()  a moment      -> "the props archive finished extracting"
+#   span()  a DURATION    -> "merging meshes cost 4.2 s", accumulated by name
+#
+# Only span() can answer where seventeen minutes went. A timeline of moments
+# tells you the order of events; it cannot tell you which one ate the clock,
+# because the gap between two markers also contains everything else.
+# ---------------------------------------------------------------------------
+static var _active: HighpolyProfiler = null
+static var _spans: Dictionary = {}          # name -> {ms, n}
+
+static func mark(kind: String, text: String) -> void:
+	if _active != null and _active.recording:
+		_active.event(kind, text)
+
+# Call with the elapsed milliseconds of a chunk of work. Costs are SUMMED per
+# name across the run, and the count comes with it: 2761 calls of 8 ms is a very
+# different problem from one call of 22 s, and both add up to the same total.
+static func span(name: String, ms: float) -> void:
+	if _active == null or not _active.recording:
+		return
+	var e: Dictionary = _spans.get(name, {"ms": 0.0, "n": 0})
+	e["ms"] = float(e["ms"]) + ms
+	e["n"] = int(e["n"]) + 1
+	_spans[name] = e
+
+
 func _ready() -> void:
+	_active = self
 	_tick = Timer.new(); _tick.wait_time = 0.25; _tick.timeout.connect(_sample)
 	add_child(_tick)
 	_scan = Timer.new(); _scan.wait_time = 2.0; _scan.timeout.connect(_attribute)
@@ -113,6 +147,7 @@ func start() -> String:
 	# instance ids are recycled, so a stale entry could charge a new mesh the
 	# triangle count of a freed one
 	_tri_cache.clear()
+	_spans.clear()
 	_t0 = Time.get_ticks_msec() / 1000.0
 	recording = true
 	_tick.start(); _scan.start()
@@ -452,6 +487,42 @@ func _download_report() -> PackedStringArray:
 	return out
 
 
+# ---------- reporting: where the clock actually went ----------
+# The one table worth reading first. Everything else says how bad it was; this
+# says what to go and fix, ranked, with the per-call cost so the shape of the
+# problem is obvious: 2761 calls averaging 8 ms is a batching problem, one call
+# of 22 s is a single blocking operation, and they can total identically.
+func _span_report() -> PackedStringArray:
+	var out := PackedStringArray()
+	if _spans.is_empty():
+		return out
+	var keys: Array = _spans.keys()
+	keys.sort_custom(func(a, b): return float(_spans[a]["ms"]) > float(_spans[b]["ms"]))
+	var total := 0.0
+	for k in keys:
+		total += float(_spans[k]["ms"])
+	var span: float = maxf(0.001, float(_samples[-1]["t"]) - float(_samples[0]["t"]))
+	out.append("")
+	out.append("TIME BY PHASE  %.0f s attributed across %.0f s recorded" % [total / 1000.0, span])
+	out.append("  Phases marked \"of which\" are NESTED inside the phase above them, so")
+	out.append("  they are already counted there — the column does not sum to the run.")
+	out.append("  Anything not instrumented (drawing, engine work) is absent entirely.")
+	out.append("  %-34s %9s %8s %10s" % ["phase", "total", "calls", "each"])
+	for k in keys:
+		var e: Dictionary = _spans[k]
+		var ms := float(e["ms"])
+		var n := int(e["n"])
+		out.append("  %-34s %8.1fs %8d %9.1fms  %s"
+			% [k.left(34), ms / 1000.0, n, ms / maxf(1.0, float(n)),
+				_bar(ms / maxf(1.0, total))])
+	return out
+
+
+func _bar(frac: float) -> String:
+	var n := int(round(clampf(frac, 0.0, 1.0) * 20.0))
+	return "#".repeat(n)
+
+
 # ---------- reporting: was the editor usable ----------
 # A 0.25 s Timer that fails to fire for 44 seconds is not a broken timer, it is a
 # main thread that was blocked for 44 seconds — so the sampler's own starvation
@@ -539,6 +610,7 @@ func _summarise() -> String:
 			worst = s
 	var out := PackedStringArray()
 	out.append("PERFORMANCE  %d samples over %.0f s" % [_samples.size(), float(_samples[-1]["t"])])
+	out.append_array(_span_report())
 	out.append_array(_blocking_report())
 	out.append_array(_download_report())
 	out.append_array(_timeline_report())
