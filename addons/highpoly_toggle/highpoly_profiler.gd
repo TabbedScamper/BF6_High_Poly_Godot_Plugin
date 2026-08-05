@@ -92,10 +92,58 @@ const HITCH_FLOOR_MS := 50.0      # below this, a spike is not worth reporting
 func event(kind: String, text: String) -> void:
 	if not recording:
 		return
-	_events.append({
+	var e := {
 		"t": Time.get_ticks_msec() / 1000.0 - _t0,
 		"kind": kind, "text": text,
-	})
+	}
+	_events.append(e)
+	if _ev_fh != null:
+		_ev_fh.store_line("%.2f,%s,\"%s\"" % [float(e["t"]), kind,
+			text.replace("\"", "'")])
+		_ev_fh.flush()          # events are rare and are the story: never batch
+
+
+# ---------------------------------------------------------------------------
+# WRITTEN AS IT GOES, not at stop().
+#
+# A recording used to exist only in memory until Stop was pressed, so a crash
+# threw it away — and a crash is exactly when you most want to know what the
+# plugin was doing. One session got to the lighting layer, died, and left
+# nothing at all: no samples, no events, no last phase.
+#
+# So the sample and event files are opened at start() and appended to live.
+# Samples flush every FLUSH_EVERY rows rather than each one, because at four
+# per second an fsync apiece is its own performance problem; events flush
+# immediately because they are few and they are the narrative.
+# ---------------------------------------------------------------------------
+const FLUSH_EVERY := 8
+var _s_fh: FileAccess
+var _ev_fh: FileAccess
+var _live_path := ""
+var _since_flush := 0
+
+
+func _open_live_files() -> void:
+	var dir := "user://highpoly"
+	HighpolyStore.ensure_dir(dir)
+	var stamp := Time.get_datetime_string_from_system().replace(":", "-")
+	_live_path = "%s/perf-%s.csv" % [dir, stamp]
+	_s_fh = FileAccess.open(_live_path, FileAccess.WRITE)
+	if _s_fh != null:
+		_s_fh.store_line("t,fps,ms,draw_calls,primitives,objects,vram_mb,static_mb,nodes,"
+			+ "dl_mbps,dl_files_s,dl_queued,dl_active,dl_done,dl_failed,dl_total_mb,x,y,z")
+		_s_fh.flush()
+	_ev_fh = FileAccess.open("%s/perf-%s-events.csv" % [dir, stamp], FileAccess.WRITE)
+	if _ev_fh != null:
+		_ev_fh.store_line("t,kind,text")
+		_ev_fh.flush()
+
+
+func _close_live_files() -> void:
+	if _s_fh != null:
+		_s_fh.flush(); _s_fh.close(); _s_fh = null
+	if _ev_fh != null:
+		_ev_fh.flush(); _ev_fh.close(); _ev_fh = null
 
 
 # ---------------------------------------------------------------------------
@@ -158,6 +206,8 @@ func start() -> String:
 	_tri_cache.clear()
 	_spans.clear()
 	_t0 = Time.get_ticks_msec() / 1000.0
+	_since_flush = 0
+	_open_live_files()
 	recording = true
 	_tick.start(); _scan.start()
 	event("start", "recording began")
@@ -203,6 +253,19 @@ func _sample() -> void:
 	_peak["objs"] = maxi(int(_peak["objs"]), int(s["objs"]))
 	_peak["nodes"] = maxi(int(_peak["nodes"]), int(s["nodes"]))
 	_peak["vram"] = maxf(float(_peak["vram"]), float(s["vram"]))
+
+	if _s_fh != null:
+		var v: Vector3 = s["pos"]
+		_s_fh.store_line("%.2f,%.1f,%.2f,%d,%d,%d,%.0f,%.0f,%d,%.3f,%.2f,%d,%d,%d,%d,%.2f,%.1f,%.1f,%.1f"
+			% [s["t"], s["fps"], s["ms"], int(s["draws"]), int(s["prims"]),
+				int(s["objs"]), s["vram"], s.get("mem", 0.0), int(s["nodes"]),
+				s.get("mbps", 0.0), s.get("files_s", 0.0), int(s.get("queued", 0)),
+				int(s.get("active", 0)), int(s.get("dl_done", 0)),
+				int(s.get("dl_failed", 0)), s.get("dl_mb", 0.0), v.x, v.y, v.z])
+		_since_flush += 1
+		if _since_flush >= FLUSH_EVERY:
+			_s_fh.flush()
+			_since_flush = 0
 
 	_note_state(false)
 	_note_hitch(t, ms)
@@ -669,36 +732,19 @@ func _summarise() -> String:
 	return "\n".join(out)
 
 
+# The samples and events were written AS THEY HAPPENED (see _open_live_files),
+# so this only has to close them and add the attribution table, which is the one
+# thing that genuinely cannot be produced incrementally: it is a full scene walk
+# summarised per owner.
 func _write_csv() -> String:
+	_close_live_files()
 	var dir := "user://highpoly"
 	HighpolyStore.ensure_dir(dir)
 	var stamp := Time.get_datetime_string_from_system().replace(":", "-")
-	var p := "%s/perf-%s.csv" % [dir, stamp]
-	var f := FileAccess.open(p, FileAccess.WRITE)
-	if f == null:
-		return "(could not write the csv)"
-	f.store_line("t,fps,ms,draw_calls,primitives,objects,vram_mb,static_mb,nodes,"
-		+ "dl_mbps,dl_files_s,dl_queued,dl_active,dl_done,dl_failed,dl_total_mb,x,y,z")
-	for s in _samples:
-		var v: Vector3 = s["pos"]
-		f.store_line("%.2f,%.1f,%.2f,%d,%d,%d,%.0f,%.0f,%d,%.3f,%.2f,%d,%d,%d,%d,%.2f,%.1f,%.1f,%.1f"
-			% [s["t"], s["fps"], s["ms"], int(s["draws"]), int(s["prims"]),
-				int(s["objs"]), s["vram"], s.get("mem", 0.0), int(s["nodes"]),
-				s.get("mbps", 0.0), s.get("files_s", 0.0), int(s.get("queued", 0)),
-				int(s.get("active", 0)), int(s.get("dl_done", 0)),
-				int(s.get("dl_failed", 0)), s.get("dl_mb", 0.0), v.x, v.y, v.z])
-	f.close()
+	var p := _live_path if _live_path != "" else ("%s/perf-%s.csv" % [dir, stamp])
 
 	# Events beside the samples: the same timeline the summary prints, but
 	# complete, so a run with 400 hitches is still fully analysable.
-	var p3 := "%s/perf-%s-events.csv" % [dir, stamp]
-	var f3 := FileAccess.open(p3, FileAccess.WRITE)
-	if f3 != null:
-		f3.store_line("t,kind,text")
-		for e in _events:
-			f3.store_line("%.2f,%s,\"%s\"" % [float(e["t"]), str(e["kind"]),
-				str(e["text"]).replace("\"", "'")])
-		f3.close()
 	# the attribution table is what explains the csv, so it ships beside it
 	var p2 := "%s/perf-%s-owners.csv" % [dir, stamp]
 	var f2 := FileAccess.open(p2, FileAccess.WRITE)
