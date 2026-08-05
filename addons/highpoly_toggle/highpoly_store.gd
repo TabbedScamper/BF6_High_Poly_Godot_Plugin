@@ -251,6 +251,25 @@ static func record(name: String, h: String, nofit_flag: bool) -> void:
 	save(false)
 	_invalidate(name)
 
+# The model file is ALREADY on disk (streamed there by fetch_to_file); just
+# check it is real and index it. Same bookkeeping as ingest_bytes without ever
+# holding the file in memory.
+static func ingest_downloaded(name: String, h: String, nofit_flag: bool) -> bool:
+	var p := model_path(name)
+	if not FileAccess.file_exists(p):
+		return false
+	var f := FileAccess.open(p, FileAccess.READ)
+	if f == null:
+		return false
+	var n := f.get_length()
+	f.close()
+	if n <= 0:
+		DirAccess.remove_absolute(p)
+		return false
+	record(name, h, nofit_flag)
+	return true
+
+
 static func ingest_bytes(name: String, data: PackedByteArray, h: String, nofit_flag: bool) -> bool:
 	ensure_dir(MODELS_DIR)
 	var f := FileAccess.open(model_path(name), FileAccess.WRITE)
