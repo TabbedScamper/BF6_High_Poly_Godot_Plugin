@@ -681,6 +681,9 @@ func _clear(root: Node, keep_backdrop := false) -> void:
 	_build_gen += 1
 	_building = false
 	_pf_release()         # prefetched scenes the cancelled build will never claim
+	# a cancelled build's sidecars describe meshes nobody is going to use; the
+	# next build re-parses those props and queues them again
+	_side_writes.clear()
 	_release_build_draw() # layer nodes go with the overlay freed below
 	# A cancelled build never reaches its final report, so its bar would stay on
 	# screen for the rest of the session — which is what "switching scenes locks
@@ -1716,32 +1719,17 @@ func _parse_prop_file(gp: String) -> Array:
 			HighpolyProfiler.span("props: compress textures for VRAM",
 				Time.get_ticks_msec() - _tc)
 		done.append(_with_lods(m))
-	# A split prop caches as numbered parts (see the loader above). Written only
-	# when EVERY part is usable, so a half-written set can never be loaded back
-	# as a prop missing some of its meshes.
-	if mesh_cache_enabled and done.size() > 1:
-		var ok := true
-		for m in done:
-			if m == null or not _mesh_keeps_textures(m as Mesh):
-				ok = false
-				break
-		if ok:
-			var wrote := 0
-			for i in range(done.size()):
-				if ResourceSaver.save(done[i], gp + _part_suffix(i),
-						ResourceSaver.FLAG_COMPRESS) == OK:
-					wrote += 1
-				else:
-					break
-			if wrote != done.size():
-				for i in range(wrote):     # never leave a torn set behind
-					DirAccess.remove_absolute(gp + _part_suffix(i))
-
-	# Sidecar for the single-mesh case.
-	if mesh_cache_enabled and done.size() == 1 and done[0] != null \
-			and _mesh_keeps_textures(done[0]):
-		if ResourceSaver.save(done[0], baked, ResourceSaver.FLAG_COMPRESS) != OK:
-			DirAccess.remove_absolute(baked)   # never leave a torn cache file
+	# QUEUED, NOT WRITTEN. The fast-load sidecar is worth about 8x on a LATER
+	# build and nothing at all on this one, yet it used to be written inline —
+	# costing 10.8 s per 600 props, roughly 50 s of a 2,761-prop Dumbo build, on
+	# the cold pull that is the slowest thing a user ever waits for.
+	#
+	# So the build hands them over and flush_sidecars() writes them once the map
+	# is on screen. A build that is cancelled or interrupted simply never writes
+	# its cache, which costs a re-parse next time and is strictly better than
+	# making everybody wait for it every time.
+	if mesh_cache_enabled and not done.is_empty():
+		_side_writes.append({"gp": gp, "baked": baked, "m": done.duplicate()})
 		# NO read-back verification here, deliberately. It used to load the file
 		# straight back and delete any sidecar whose textures returned 0x0 —
 		# reasonable-sounding, and the single biggest self-inflicted wound in
@@ -1765,6 +1753,58 @@ func _parse_prop_file(gp: String) -> Array:
 		# the same guarantee without a second texture upload at the worst
 		# possible moment.
 	return done
+
+
+# Sidecars waiting to be written, queued by _parse_prop_file and drained once
+# the build is finished and the map is on screen.
+var _side_writes: Array = []
+
+
+# Write the queued fast-load sidecars, yielding so this never becomes another
+# freeze. Called after a build finishes; safe to call at any time.
+func flush_sidecars() -> void:
+	if _side_writes.is_empty():
+		return
+	var n := _side_writes.size()
+	var t0 := Time.get_ticks_msec()
+	HighpolyProfiler.crumb("sidecars", "writing %d queued" % n)
+	var slice := Time.get_ticks_msec()
+	while not _side_writes.is_empty():
+		var e: Dictionary = _side_writes.pop_front()
+		_write_sidecar(str(e["gp"]), str(e["baked"]), e["m"] as Array)
+		if Time.get_ticks_msec() - slice >= BUILD_FRAME_MS:
+			if not is_inside_tree():
+				return                  # panel closed: the rest simply re-parses
+			await get_tree().process_frame
+			slice = Time.get_ticks_msec()
+	var ms := Time.get_ticks_msec() - t0
+	HighpolyProfiler.span("sidecars: write fast-load cache", ms)
+	HighpolyProfiler.crumb("sidecars", "wrote %d in %.1f s" % [n, ms / 1000.0])
+	Log.debug("fast-load cache: %d sidecar(s) written in %.1f s" % [n, ms / 1000.0])
+
+
+func _write_sidecar(gp: String, baked: String, done: Array) -> void:
+	# A split prop caches as numbered parts. Written only when EVERY part is
+	# usable, so a half-written set can never be loaded back as a prop missing
+	# some of its meshes.
+	if done.size() > 1:
+		for m in done:
+			if m == null or not _mesh_keeps_textures(m as Mesh):
+				return
+		var wrote := 0
+		for i in range(done.size()):
+			if ResourceSaver.save(done[i], gp + _part_suffix(i),
+					ResourceSaver.FLAG_COMPRESS) == OK:
+				wrote += 1
+			else:
+				break
+		if wrote != done.size():
+			for i in range(wrote):          # never leave a torn set behind
+				DirAccess.remove_absolute(gp + _part_suffix(i))
+		return
+	if done.size() == 1 and done[0] != null and _mesh_keeps_textures(done[0]):
+		if ResourceSaver.save(done[0], baked, ResourceSaver.FLAG_COMPRESS) != OK:
+			DirAccess.remove_absolute(baked)   # never leave a torn cache file
 
 # ---------- Configure Shaders (dock dialog) ----------
 # live-tunable overlay shader prefs, persisted by the dock:
@@ -3308,6 +3348,7 @@ func _build_backdrop_async(bd_root: Node3D, entries: Array, dir: String,
 			frame_start = Time.get_ticks_msec()
 	_apply_radius()                 # final pass: the last slice obeys it too
 	_end_build_draw(bd_root)        # the finished skyline appears, here
+	await flush_sidecars()          # cache written after the skyline is up
 	HighpolyProfiler.crumb("skyline", "build finished, %d of %d" % [_bd_ok, _bd_total])
 	backdrop_progress.emit(_bd_total, _bd_total)
 	Log.debug("map context: skyline built, %d of %d piece(s)" % [_bd_ok, _bd_total])
@@ -3518,6 +3559,8 @@ func _build_props_async(props_root: Node3D, entries: Array, dir: String,
 	_pf_release()   # the tail batch is always over-fetched; free what went unused
 	HighpolyProfiler.crumb("props", "build finished, %d built" % _build_props)
 	_end_build_draw(props_root)   # the finished map appears, here
+	# and only NOW write the fast-load cache, with the map already on screen
+	await flush_sidecars()
 	_report_progress(true)
 	HighpolyProfiler.mark("phase", "props: build finished, %d built in %.1f s"
 		% [_build_props, (Time.get_ticks_msec() - _t_build) / 1000.0])
