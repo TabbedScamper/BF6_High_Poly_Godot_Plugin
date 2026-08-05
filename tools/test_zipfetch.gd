@@ -59,10 +59,33 @@ func _init() -> void:
 	entries.sort_custom(func(a, b): return int(a["off"]) < int(b["off"]))
 	var want: Dictionary = {}
 	var picked: Array = []
-	for i in range(mini(N, entries.size())):
-		var e = entries[i + 5]
-		want[str(e["name"])] = true
+	# GLBS ONLY. This used to take the next N entries whatever they were, which
+	# was the same thing back when an archive held nothing else. A published
+	# archive now carries three files per prop — the glb, its .bctex textures
+	# and its .geom.res bake — so a blind slice picked mostly sidecars and then
+	# failed them for not starting with the glTF magic, which they have no
+	# reason to. Four of twelve passed, and it had been red since the format
+	# changed this morning.
+	var present: Dictionary = {}
+	for e in entries:
+		present[str(e["name"])] = true
+	for e in entries:
+		if picked.size() >= N:
+			break
+		var nm := str(e["name"])
+		if not nm.ends_with(".glb"):
+			continue
+		want[nm] = true
 		picked.append(e)
+		# AND ITS COMPANIONS, because that is what the client asks for. A prop
+		# is three files now and they sit together in the archive, so asking
+		# for glbs alone leaves a sidecar-shaped gap between each one and
+		# nothing coalesces: 12 props became 12 requests. With the companions
+		# they are one contiguous run, which is how Dumbo went from 2,735
+		# ranged reads to 110.
+		for c in [nm.get_basename() + ".bctex", nm + ".geom.res"]:
+			if present.has(c):
+				want[c] = true
 	var runs: Array = ZipFetch.plan(entries, want)
 	var bytes := 0
 	for e in picked: bytes += int(e["csize"])

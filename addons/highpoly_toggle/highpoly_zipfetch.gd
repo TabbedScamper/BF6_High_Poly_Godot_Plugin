@@ -42,6 +42,10 @@ const TAIL := 128 * 1024        # enough to find the end-of-central-directory
 const SIG_EOCD := 0x06054B50
 const SIG_CD := 0x02014B50
 const SIG_LOCAL := 0x04034B50
+const SIG_EOCD64 := 0x06064B50
+const SIG_EOCD64_LOC := 0x07064B50
+const Z64_EXTRA := 0x0001       # the ZIP64 extended information extra field
+const U32_MAX := 0xFFFFFFFF
 
 var _host: Node = null
 var _url := ""
@@ -73,11 +77,36 @@ func read_index() -> Array:
 	var eocd := _rfind_sig(tail, SIG_EOCD)
 	if eocd < 0:
 		return []
-	var cd_size := tail.decode_u32(eocd + 12)
-	var cd_off := tail.decode_u32(eocd + 16)
-	# zip64 keeps the real offsets elsewhere; not worth handling for archives
-	# that have never needed it, and the fallback covers it
-	if cd_off == 0xFFFFFFFF or cd_size == 0xFFFFFFFF or cd_size <= 0:
+	var cd_size := int(tail.decode_u32(eocd + 12))
+	var cd_off := int(tail.decode_u32(eocd + 16))
+
+	# ZIP64. This used to give up here, on the grounds that no archive had ever
+	# needed it and the whole-archive fallback covered the day one did. Both
+	# halves of that turned out to be wrong.
+	#
+	# Python's zipfile saturates a field at 2 GB, not 4 GB, so MP_Aftermath's
+	# 3.25 GB props.zip writes 0xFFFFFFFF as the offset of all 7,239 entries
+	# past that mark and puts the real value in a ZIP64 extra field. The check
+	# here only looked at the ARCHIVE-level fields, which were still real, so
+	# the parse walked straight past it and produced 7,239 entries all claiming
+	# to start at byte 4294967295. They coalesced into a single run beyond the
+	# end of the file, its range request came back empty, and the whole fetch
+	# failed with -1.
+	#
+	# The fallback did then cover it, in the sense that it pulled the archive
+	# whole: 3.3 GB in one stream, which is the thing the ranged path exists to
+	# avoid, and which stalled outright for the user who reported it.
+	if cd_off == U32_MAX or cd_size == U32_MAX:
+		var loc := _rfind_sig(tail, SIG_EOCD64_LOC)
+		if loc < 0 or loc + 16 > tail.size():
+			return []
+		var at := int(tail.decode_u64(loc + 8))
+		var e64 := await _range(at, at + 55)
+		if e64.size() < 56 or e64.decode_u32(0) != SIG_EOCD64:
+			return []
+		cd_size = int(e64.decode_u64(40))
+		cd_off = int(e64.decode_u64(48))
+	if cd_size <= 0 or cd_off <= 0:
 		return []
 	var cd := await _range(cd_off, cd_off + cd_size - 1)
 	if cd.size() < cd_size:
@@ -97,7 +126,17 @@ static func _parse_cd(cd: PackedByteArray) -> Array:
 		var nlen := cd.decode_u16(i + 28)
 		var elen := cd.decode_u16(i + 30)
 		var clen := cd.decode_u16(i + 32)
-		var off := cd.decode_u32(i + 42)
+		var off := int(cd.decode_u32(i + 42))
+		# Any of these three may be a 0xFFFFFFFF placeholder for a real 64-bit
+		# value in the extra field, and an entry past 2 GB routinely is.
+		if usize == U32_MAX or csize == U32_MAX or off == U32_MAX:
+			var z := _zip64(cd, i + 46 + nlen, elen, usize == U32_MAX,
+				csize == U32_MAX, off == U32_MAX)
+			if z.is_empty():
+				return []          # saturated with no extra to resolve it
+			usize = int(z.get("usize", usize))
+			csize = int(z.get("csize", csize))
+			off = int(z.get("off", off))
 		out.append({
 			"name": cd.slice(i + 46, i + 46 + nlen).get_string_from_utf8(),
 			"off": off, "csize": csize, "usize": usize,
@@ -105,6 +144,39 @@ static func _parse_cd(cd: PackedByteArray) -> Array:
 		})
 		i += 46 + nlen + elen + clen
 	return out
+
+
+# The ZIP64 extended information extra field, 0x0001.
+#
+# ONLY THE SATURATED FIELDS ARE PRESENT, in a fixed order: uncompressed size,
+# compressed size, local header offset. There is no tagging inside the record —
+# which of the three is there is decided entirely by which of the 32-bit fields
+# held 0xFFFFFFFF, so the caller has to say, and reading them in the wrong
+# order silently yields a plausible number that points nowhere.
+static func _zip64(cd: PackedByteArray, at: int, elen: int,
+		want_usize: bool, want_csize: bool, want_off: bool) -> Dictionary:
+	var end: int = mini(at + elen, cd.size())
+	var p := at
+	while p + 4 <= end:
+		var id := cd.decode_u16(p)
+		var sz := cd.decode_u16(p + 2)
+		if id != Z64_EXTRA:
+			p += 4 + sz
+			continue
+		var q := p + 4
+		var stop: int = mini(q + sz, end)
+		var out: Dictionary = {}
+		if want_usize:
+			if q + 8 > stop: return {}
+			out["usize"] = cd.decode_u64(q); q += 8
+		if want_csize:
+			if q + 8 > stop: return {}
+			out["csize"] = cd.decode_u64(q); q += 8
+		if want_off:
+			if q + 8 > stop: return {}
+			out["off"] = cd.decode_u64(q)
+		return out
+	return {}
 
 
 # Group the wanted entries into contiguous byte runs, each capped at CHUNK.
