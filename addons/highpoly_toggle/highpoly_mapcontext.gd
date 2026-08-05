@@ -1316,7 +1316,7 @@ func _prop_mesh(e: Dictionary, dir: String) -> Array:
 		"mt": FileAccess.get_modified_time(gp) if FileAccess.file_exists(gp) else 0,
 		"sz": _file_size(gp),
 	}
-	var m := _parse_prop_file(gp)
+	var m: Array = await _parse_prop_file(gp)
 	_mesh_cache[gp] = m
 	return m
 
@@ -1386,11 +1386,19 @@ const _TEX_SLOTS := [
 # The job arrays are static because a group task callable cannot carry state.
 # That is safe only because one build runs at a time (`_building` guards it);
 # if that ever stops being true this needs a real context object.
-static var _cj_src: Array = []       # images to compress
-static var _cj_norm: Array = []      # is that image a normal map (BC5, not BC1/3)
-static var _cj_out: Array = []       # results, index-matched
+# INSTANCE, not static, because the wait below has to yield frames and a static
+# function has no tree to yield to. They were static originally only because a
+# group-task Callable cannot carry state, which a bound method solves anyway.
+# Which layer is currently parsing, so the profiler can attribute the merge.
+# _merge_meshes is shared by the prop and skyline builders and cannot tell them
+# apart on its own, and the two answer very different questions.
+var _merge_who := "props"
 
-static func _compress_job(i: int) -> void:
+var _cj_src: Array = []              # images to compress
+var _cj_norm: Array = []             # is that image a normal map (BC5, not BC1/3)
+var _cj_out: Array = []              # results, index-matched
+
+func _compress_job(i: int) -> void:
 	var c := (_cj_src[i] as Image).duplicate() as Image
 	if vram_mode == VRAM_LOW:
 		c.resize(maxi(4, c.get_width() / 2), maxi(4, c.get_height() / 2),
@@ -1404,7 +1412,7 @@ static func _compress_job(i: int) -> void:
 		_cj_out[i] = c
 
 
-static func _compress_textures(m: Mesh) -> int:
+func _compress_textures(m: Mesh) -> int:
 	if m == null or vram_mode == VRAM_FULL:
 		return 0
 	# --- gather (main thread, cheap) ---------------------------------------
@@ -1445,8 +1453,22 @@ static func _compress_textures(m: Mesh) -> int:
 	_cj_out.resize(_cj_src.size())
 
 	# --- compress (worker threads) -----------------------------------------
+	# WAIT WITHOUT BLOCKING THE EDITOR. Moving compression onto worker threads
+	# made it 4.9x faster but did NOT stop the freezing, because
+	# wait_for_group_task_completion() parks the MAIN thread until the group is
+	# done — the work got shorter, the stall did not go away. It still measured
+	# 283 ms per prop in a session that was 70% wedged.
+	#
+	# Poll instead, handing the editor a frame each time round, so it keeps
+	# drawing and the progress bar keeps moving while the cores grind. The
+	# blocking call still has to happen once at the end: Godot requires it to
+	# release the group even when it has already finished, and skipping it leaks
+	# the task.
 	var gid := WorkerThreadPool.add_group_task(_compress_job, _cj_src.size(),
 		-1, false, "highpoly texture compression")
+	if is_inside_tree():
+		while not WorkerThreadPool.is_group_task_completed(gid):
+			await get_tree().process_frame
 	WorkerThreadPool.wait_for_group_task_completion(gid)
 
 	# --- publish (main thread, ~4 ms per 51) --------------------------------
@@ -1594,7 +1616,7 @@ func _parse_prop_file(gp: String) -> Array:
 		# is written below so the saving is baked into the cache rather than
 		# re-paid on every load.
 		var _tc := Time.get_ticks_msec()
-		var _n := _compress_textures(m)
+		var _n: int = await _compress_textures(m)
 		if _n > 0:
 			HighpolyProfiler.span("props: compress textures for VRAM",
 				Time.get_ticks_msec() - _tc)
@@ -2174,9 +2196,14 @@ func _all_meshes_and_xf(n: Node, pxf: Transform3D, out: Array) -> void:
 func _merge_meshes(pairs: Array) -> Array:
 	var _tm := Time.get_ticks_msec()
 	var _out := _merge_meshes_inner(pairs)
-	# "of which" because this runs INSIDE the mesh-load span — the report relies
-	# on the prefix to say so, otherwise the columns look like they should add up
-	HighpolyProfiler.span("  of which: merge surfaces",
+	# LABELLED BY CALLER, because "of which" was a lie. This runs from BOTH the
+	# prop path and the skyline path, so the report showed 287.5 s nested inside
+	# a 200.4 s parent — impossible, and it hid the actually useful question of
+	# which of the two was doing the merging. The prop half genuinely is nested
+	# inside "props: load mesh"; the skyline half is not nested in anything.
+	HighpolyProfiler.span(
+		"  of which: merge (props)" if _merge_who == "props"
+			else "skyline: merge mesh nodes",
 		Time.get_ticks_msec() - _tm)
 	return _out
 
@@ -2915,7 +2942,9 @@ func _build_backdrop_async(bd_root: Node3D, entries: Array, dir: String,
 				# GLBs carry one node per material section (Roof, Walls...);
 				# _extract_mesh took only the FIRST, which rendered the distant
 				# buildings as floating rooftops
-				meshes = _parse_prop_file(gp)
+				_merge_who = "skyline"
+				meshes = await _parse_prop_file(gp)
+				_merge_who = "props"
 		elif e.has("model"):
 			var bm := _mesh_for(str(e["model"]))
 			if bm != null:
@@ -2966,7 +2995,8 @@ func _build_props_async(props_root: Node3D, entries: Array, dir: String,
 		vram_check()      # reports once if memory is getting high; never stops
 		var gp := _prop_path(e, dir)
 		var _t0 := Time.get_ticks_msec()
-		var meshes := _prop_mesh(e, dir)    # the expensive part (GLB parse; cached)
+		_merge_who = "props"
+		var meshes: Array = await _prop_mesh(e, dir)  # the expensive part (GLB parse; cached)
 		HighpolyProfiler.span("props: load mesh (GLB parse + cache)",
 			Time.get_ticks_msec() - _t0)
 		var mesh: Mesh = meshes[0] if meshes.size() > 0 else null
@@ -3140,7 +3170,7 @@ func _refresh_props_async(props_root: Node3D, jobs: Array, gen: int) -> void:
 			"mt": FileAccess.get_modified_time(gp) if FileAccess.file_exists(gp) else 0,
 			"sz": _file_size(gp),
 		}
-		var meshes := _parse_prop_file(gp)
+		var meshes: Array = await _parse_prop_file(gp)
 		if meshes.is_empty():
 			failed += 1
 		else:
