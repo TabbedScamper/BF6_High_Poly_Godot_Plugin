@@ -328,10 +328,7 @@ func _shed_map_context() -> int:
 			shed += 1
 	if mapctx_variant != null: mapctx_variant.select(0)
 	if mapctx_variant_row != null: mapctx_variant_row.visible = false
-	# the lighting sub-toggles only exist alongside Lighting itself
-	for c in [mapctx_gi, mapctx_shadows, mapctx_maplights]:
-		if c != null: (c as Control).visible = false
-	if mapctx_fill_row != null: mapctx_fill_row.visible = false
+	_lighting_subs_enabled(false)   # the lighting sub-toggles go unavailable
 	if r != null:
 		HighpolyFx.clear(r)
 		HighpolyGamemode.clear(r)
@@ -754,10 +751,7 @@ func _enter_tree() -> void:
 	mapctx_light.tooltip_text = LIGHTING_TIP
 	mapctx_light.toggled.connect(func(v: bool):
 		if _locked(mapctx_light): return
-		if mapctx_gi: mapctx_gi.visible = v
-		if mapctx_shadows: mapctx_shadows.visible = v
-		if mapctx_maplights: mapctx_maplights.visible = v
-		if mapctx_fill_row: mapctx_fill_row.visible = v
+		_lighting_subs_enabled(v)
 		_lighting_changed()
 		_save_mapctx_state())
 	mc_chips.add_child(mapctx_light)
@@ -772,7 +766,7 @@ func _enter_tree() -> void:
 	# has, so the label says that instead of promising bounced light.
 	mapctx_gi = Theme_.chip("Contact shading")
 	mapctx_gi.button_pressed = true
-	mapctx_gi.visible = false
+	mapctx_gi.disabled = true
 	mapctx_gi.tooltip_text = "Darkens the creases where surfaces meet: under vehicles, inside doorways, along kerbs. This is the same contact shading the game uses, at the radius the map itself specifies. Costs some frame rate; switch it off if the view gets choppy."
 	mapctx_gi.toggled.connect(func(v: bool):
 		lbl.text = LightingScript.set_gi(EditorInterface.get_edited_scene_root(), v)
@@ -781,7 +775,7 @@ func _enter_tree() -> void:
 
 	mapctx_shadows = Theme_.chip("Shadows")
 	mapctx_shadows.button_pressed = true
-	mapctx_shadows.visible = false
+	mapctx_shadows.disabled = true
 	mapctx_shadows.tooltip_text = "Shadows cast by the sun. Costs frame rate. Switch it off if the view gets choppy."
 	mapctx_shadows.toggled.connect(func(v: bool):
 		lbl.text = LightingScript.set_shadows(EditorInterface.get_edited_scene_root(), v)
@@ -793,10 +787,10 @@ func _enter_tree() -> void:
 	# answers is "the shadowed side is pure black", and shadows are what put it
 	# there. Shown only alongside the shadow controls, hidden with them.
 	mapctx_fill_row = HBoxContainer.new()
-	mapctx_fill_row.visible = false
 	var fill_lbl := Label.new(); fill_lbl.text = "Interior light"
 	mapctx_fill_row.add_child(fill_lbl)
 	mapctx_fill = HSlider.new()
+	mapctx_fill.editable = false        # Lighting starts off; greyed, not hidden
 	mapctx_fill.min_value = 0; mapctx_fill.max_value = 60
 	mapctx_fill.step = 1; mapctx_fill.value = int(round(LightingScript.interior_fill * 100.0))
 	# An HSlider's minimum width is ZERO, and this row lives in an
@@ -825,7 +819,6 @@ func _enter_tree() -> void:
 	# reporting. Compressed is the default because it is 4x smaller for no
 	# visible difference on scenery; Low halves resolution as well, 16x.
 	mapctx_vram_row = HBoxContainer.new()
-	mapctx_vram_row.visible = false
 	var vram_lbl := Label.new()
 	vram_lbl.text = "Video memory"
 	mapctx_vram_row.add_child(vram_lbl)
@@ -855,7 +848,7 @@ func _enter_tree() -> void:
 
 	mapctx_maplights = Theme_.chip("Map lights")
 	mapctx_maplights.button_pressed = false
-	mapctx_maplights.visible = false
+	mapctx_maplights.disabled = true
 	mapctx_maplights.tooltip_text = "The street lights, signs and indoor lights the real level has, several thousand of them on some maps. Only the ones near your camera light up. Costs frame rate."
 	mapctx_maplights.toggled.connect(func(v: bool):
 		var _r := EditorInterface.get_edited_scene_root()
@@ -2218,10 +2211,7 @@ func _do_reset() -> void:
 	if mapctx_backdrop: mapctx_backdrop.set_pressed_no_signal(false)
 	if mapctx_water: mapctx_water.set_pressed_no_signal(false)
 	HighpolyMapContext.show_fx_cards = false
-	if mapctx_gi: mapctx_gi.visible = false
-	if mapctx_shadows: mapctx_shadows.visible = false
-	if mapctx_maplights: mapctx_maplights.visible = false
-	if mapctx_fill_row: mapctx_fill_row.visible = false
+	_lighting_subs_enabled(false)
 	if mapctx_variant_row: mapctx_variant_row.visible = false
 	if ovr_chk: ovr_chk.text = _override_label()
 	_override.clear()
@@ -2336,10 +2326,7 @@ func _check_scene_change() -> void:
 	if mapctx_fx:
 		mapctx_fx.set_pressed_no_signal(false)
 		HighpolyMapContext.show_fx_cards = false   # keep the card layer in step
-	if mapctx_gi: mapctx_gi.visible = false
-	if mapctx_shadows: mapctx_shadows.visible = false
-	if mapctx_maplights: mapctx_maplights.visible = false
-	if mapctx_fill_row: mapctx_fill_row.visible = false
+	_lighting_subs_enabled(false)
 	if mapctx_variant_row: mapctx_variant_row.visible = false
 	if col_chk: col_chk.set_pressed_no_signal(false)
 	if iso_chk:
@@ -2423,6 +2410,25 @@ func _apply_mapctx(r: Node, on: bool, objs: bool, tex: int, gen: int) -> void:
 		return              # user toggled again while props downloaded — stale state
 	lbl.text = mapctx.apply(r, on, true, tex, bd, wt)    # objects on top once here
 
+# Contact shading, Shadows, Map lights and Interior light: the four options that
+# only mean anything while Lighting is on.
+#
+# GREYED, NOT HIDDEN. They used to disappear, and a row that disappears drags
+# every row beneath it upwards — so switching Lighting moved the rest of the
+# panel under the user's cursor, and the next click could land on a control they
+# were not aiming at. Greyed, they stay put and simply stop responding, and the
+# panel keeps the same shape whatever is switched on.
+#
+# ONE FUNCTION because there were EIGHT places setting these four controls, and
+# they had already drifted: two of them forgot Map lights entirely, so it stayed
+# clickable after Lighting went off.
+func _lighting_subs_enabled(on: bool) -> void:
+	if mapctx_gi: mapctx_gi.disabled = not on
+	if mapctx_shadows: mapctx_shadows.disabled = not on
+	if mapctx_maplights: mapctx_maplights.disabled = not on
+	if mapctx_fill: mapctx_fill.editable = on
+
+
 func _mapctx_rebuild() -> void:
 	# rebuild with current toggles, no re-download (e.g. terrain detail changed)
 	if not mapctx_on.button_pressed: return
@@ -2441,9 +2447,7 @@ func _lighting_changed() -> void:
 		return
 	if map == "" or not LightingScript.has_data(map):
 		mapctx_light.set_pressed_no_signal(false)
-		if mapctx_gi: mapctx_gi.visible = false
-		if mapctx_shadows: mapctx_shadows.visible = false
-		if mapctx_fill_row: mapctx_fill_row.visible = false
+		_lighting_subs_enabled(false)
 		lbl.text = "No lighting data for this scene" if map != "" else "Open an MP_… level scene first"
 		return
 	lbl.text = LightingScript.apply(r, map,
@@ -2456,11 +2460,11 @@ func _lighting_changed() -> void:
 # grey the checkbox out when the open scene has no lighting data (called from
 # the dock's 0.5 s timer — cheap: one dictionary lookup)
 func _lighting_guard() -> void:
-	# The video-memory selector rides with the map-context sub-controls. Mirrored
-	# on the dock timer rather than at each of the several places that show or
-	# hide them, so there is one rule instead of several chances to miss one.
-	if mapctx_vram_row != null and mapctx_fill_row != null:
-		mapctx_vram_row.visible = mapctx_fill_row.visible
+	# Video memory used to ride along with the Lighting sub-controls, which meant
+	# it was INVISIBLE until somebody switched Lighting on. It is a scenery
+	# setting, nothing to do with lighting, and it is the one control the
+	# out-of-memory warning tells people to change — so it was pointing them at
+	# something they could not see. It is simply always there now.
 	if mapctx_light == null: return
 	var map: String = mapctx.map_of(EditorInterface.get_edited_scene_root())
 	var ok := map != "" and LightingScript.has_data(map)
@@ -2471,9 +2475,7 @@ func _lighting_guard() -> void:
 	mapctx_light.tooltip_text = LIGHTING_TIP if ok else LIGHTING_TIP_NONE
 	if not ok and mapctx_light.button_pressed:
 		mapctx_light.set_pressed_no_signal(false)
-		if mapctx_gi: mapctx_gi.visible = false
-		if mapctx_shadows: mapctx_shadows.visible = false
-		if mapctx_fill_row: mapctx_fill_row.visible = false
+		_lighting_subs_enabled(false)
 
 # one-time baked-in performance settings: multi-threaded rendering (zero
 # visual impact) + 2048 shadow atlas (negligible under the soft overcast sun).
@@ -2713,10 +2715,7 @@ func _restore_mapctx_state() -> void:
 		return
 	if bool(d.get("light", false)) and mapctx_light != null:
 		mapctx_light.set_pressed_no_signal(true)
-		if mapctx_gi: mapctx_gi.visible = true
-		if mapctx_shadows: mapctx_shadows.visible = true
-		if mapctx_maplights: mapctx_maplights.visible = true
-		if mapctx_fill_row: mapctx_fill_row.visible = true
+		_lighting_subs_enabled(true)
 		# restore the interior fill BEFORE the rig is built, so apply() reads the
 		# saved value rather than the static default and the view does not flash
 		# at 22% on the way to whatever the user actually chose
