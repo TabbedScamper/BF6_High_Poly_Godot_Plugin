@@ -161,7 +161,83 @@ func _close_live_files() -> void:
 # because the gap between two markers also contains everything else.
 # ---------------------------------------------------------------------------
 static var _active: HighpolyProfiler = null
-static var _spans: Dictionary = {}          # name -> {ms, n}
+static var _spans: Dictionary = {}          # name -> {ms, n, buckets}
+
+# ---------------------------------------------------------------------------
+# BREADCRUMBS: the only thing that survives a hard crash.
+#
+# Everything else here — samples, events, spans — exists only while a recording
+# is running, and a recording is something the user has to remember to start.
+# An editor that dies mid-build therefore leaves NOTHING: one session crashed
+# while building scenery and the session log stopped dead at its own header,
+# with no indication of which stage, which map, or which prop.
+#
+# So this is always on, unconditionally, recording or not. One line per stage,
+# flushed on every write, into a file that is ROTATED at startup. If the
+# previous run did not write its clean-exit marker, the last line of the
+# previous file is where it died — and the log header says so.
+#
+# Kept coarse enough to be cheap: phase boundaries and build slices, not every
+# prop. A few hundred appends across a whole load.
+# ---------------------------------------------------------------------------
+const CRUMB_DIR := "user://highpoly"
+const CRUMB_PATH := CRUMB_DIR + "/breadcrumbs.txt"
+const CRUMB_PREV := CRUMB_DIR + "/breadcrumbs-prev.txt"
+const CRUMB_CLEAN := "--- clean exit ---"
+static var _crumb_fh: FileAccess = null
+static var _crumb_boot := 0
+
+
+# Rotate last session's trail aside and open a fresh one. Safe to call twice.
+static func crumbs_begin() -> void:
+	if _crumb_fh != null:
+		return
+	HighpolyStore.ensure_dir(CRUMB_DIR)
+	if FileAccess.file_exists(CRUMB_PATH):
+		var prev := FileAccess.get_file_as_string(CRUMB_PATH)
+		var f := FileAccess.open(CRUMB_PREV, FileAccess.WRITE)
+		if f != null:
+			f.store_string(prev)
+			f.close()
+	_crumb_boot = Time.get_ticks_msec()
+	_crumb_fh = FileAccess.open(CRUMB_PATH, FileAccess.WRITE)
+	crumb("session", "started, plugin up")
+
+
+static func crumb(stage: String, detail := "") -> void:
+	if _crumb_fh == null:
+		return
+	# thread id included because a crash inside worker-thread work looks
+	# identical to one on the main thread until you can see which was last
+	_crumb_fh.store_line("%8.2f %s %-22s %s"
+		% [(Time.get_ticks_msec() - _crumb_boot) / 1000.0,
+			"main" if _on_main() else "wrkr", stage, detail])
+	_crumb_fh.flush()
+
+
+static func crumbs_end() -> void:
+	if _crumb_fh == null:
+		return
+	crumb("session", CRUMB_CLEAN)
+	_crumb_fh.close()
+	_crumb_fh = null
+
+
+# Where the PREVIOUS session stopped, or "" if it shut down cleanly. This is the
+# line the log header prints after a crash.
+static func last_session_end() -> String:
+	if not FileAccess.file_exists(CRUMB_PREV):
+		return ""
+	var txt := FileAccess.get_file_as_string(CRUMB_PREV)
+	if txt.contains(CRUMB_CLEAN):
+		return ""
+	var lines := txt.strip_edges().split("\n")
+	if lines.is_empty():
+		return ""
+	var tail: Array = []
+	for i in range(maxi(0, lines.size() - 6), lines.size()):
+		tail.append(str(lines[i]).strip_edges())
+	return "\n           ".join(PackedStringArray(tail))
 
 # MAIN THREAD ONLY. Both of these mutate shared Arrays/Dictionaries, and the
 # build is moving onto worker threads — a span() from four threads at once is a
@@ -182,14 +258,75 @@ static func mark(kind: String, text: String) -> void:
 static func span(name: String, ms: float) -> void:
 	if _active == null or not _active.recording or not _on_main():
 		return
-	var e: Dictionary = _spans.get(name, {"ms": 0.0, "n": 0})
+	var e: Dictionary = _spans.get(name, {"ms": 0.0, "n": 0, "buckets": {}})
 	e["ms"] = float(e["ms"]) + ms
 	e["n"] = int(e["n"]) + 1
+	# ALSO BUCKETED BY WHEN. A total plus a call count cannot tell a job that
+	# costs the same every time from one that gets steadily worse — and "the
+	# panel gets slower the more you have loaded" is precisely the second kind.
+	# Work that scales with what is already in the scene shows up here as a
+	# rising per-call cost and nowhere else.
+	var b := int((Time.get_ticks_msec() / 1000.0 - _active._t0) / SPAN_BUCKET_S)
+	var buckets: Dictionary = e["buckets"]
+	var slot: Array = buckets.get(b, [0.0, 0])
+	slot[0] = float(slot[0]) + ms
+	slot[1] = int(slot[1]) + 1
+	buckets[b] = slot
 	_spans[name] = e
+
+const SPAN_BUCKET_S := 15.0        # resolution of the per-phase growth curve
+
+
+# ---------------------------------------------------------------------------
+# PROGRESS LANES: what the panel was CLAIMING to be doing.
+#
+# The bars are the only thing a user sees, and they have gone wrong in ways the
+# rest of the instrumentation cannot see at all: a lane opened and never closed
+# (a bar stuck for the rest of the session), a stage that ran for half a minute
+# with no lane at all (the panel looking hung), and two lanes overlapping so the
+# label flickered between them.
+#
+# Every open and close funnels through highpoly_jobs, so recording it there
+# catches all of them for free, and the report can then say which lanes were
+# live at each moment, which never closed, and which stages had no bar.
+# ---------------------------------------------------------------------------
+static var _lanes: Dictionary = {}       # label -> {opened, closed, opens, ms}
+static var _lane_live: Dictionary = {}   # label -> opened-at seconds
+static var _lane_peak := 0
+
+
+static func lane_open(label: String) -> void:
+	if _active == null or not _active.recording or not _on_main():
+		return
+	if _lane_live.has(label):
+		return                               # already up; progress, not an open
+	var t := Time.get_ticks_msec() / 1000.0 - _active._t0
+	_lane_live[label] = t
+	_lane_peak = maxi(_lane_peak, _lane_live.size())
+	var e: Dictionary = _lanes.get(label, {"opened": t, "closed": -1.0, "opens": 0, "ms": 0.0})
+	e["opens"] = int(e["opens"]) + 1
+	_lanes[label] = e
+	_active.event("lane", "open  %s" % label)
+
+
+static func lane_close(label: String) -> void:
+	if _active == null or not _active.recording or not _on_main():
+		return
+	if not _lane_live.has(label):
+		return
+	var t := Time.get_ticks_msec() / 1000.0 - _active._t0
+	var held: float = t - float(_lane_live[label])
+	_lane_live.erase(label)
+	var e: Dictionary = _lanes.get(label, {"opened": t, "closed": -1.0, "opens": 1, "ms": 0.0})
+	e["closed"] = t
+	e["ms"] = float(e["ms"]) + held * 1000.0
+	_lanes[label] = e
+	_active.event("lane", "close %s  (%.1fs)" % [label, held])
 
 
 func _ready() -> void:
 	_active = self
+	crumbs_begin()      # always on: the only thing a hard crash leaves behind
 	_tick = Timer.new(); _tick.wait_time = 0.25; _tick.timeout.connect(_sample)
 	add_child(_tick)
 	_scan = Timer.new(); _scan.wait_time = 2.0; _scan.timeout.connect(_attribute)
@@ -197,6 +334,8 @@ func _ready() -> void:
 
 
 func start() -> String:
+	_spans.clear()
+	_lanes.clear(); _lane_live.clear(); _lane_peak = 0
 	_samples.clear(); _attrib.clear(); _events.clear(); _dl_series.clear()
 	_last_state = {}
 	_last_dl = {}
@@ -587,6 +726,83 @@ func _span_report() -> PackedStringArray:
 		out.append("  %-34s %8.1fs %8d %9.1fms  %s"
 			% [k.left(34), ms / 1000.0, n, ms / maxf(1.0, float(n)),
 				_bar(ms / maxf(1.0, total))])
+	out.append_array(_growth_report(keys))
+	return out
+
+
+# Which phases got SLOWER as the run went on. A job whose per-call cost climbs
+# is doing work proportional to what is already loaded, and that is a different
+# bug from one that is simply expensive — it is the shape behind "the panel gets
+# slower the more you have downloaded". Only phases with enough calls to have a
+# trend are worth printing.
+func _growth_report(keys: Array) -> PackedStringArray:
+	var out := PackedStringArray()
+	var rows: Array = []
+	for k in keys:
+		var e: Dictionary = _spans[k]
+		if int(e["n"]) < 12:
+			continue
+		var buckets: Dictionary = e.get("buckets", {})
+		if buckets.size() < 4:
+			continue
+		var bk: Array = buckets.keys()
+		bk.sort()
+		var cut: int = int(bk.size() / 3.0)
+		var first := _bucket_mean(buckets, bk.slice(0, maxi(1, cut)))
+		var last := _bucket_mean(buckets, bk.slice(bk.size() - maxi(1, cut)))
+		if first <= 0.0 or last <= 0.0:
+			continue
+		rows.append([last / first, k, first, last])
+	if rows.is_empty():
+		return out
+	rows.sort_custom(func(a, b): return float(a[0]) > float(b[0]))
+	out.append("")
+	out.append("  DID IT GET WORSE?  per-call cost, first third of the run vs last")
+	out.append("  %-34s %9s %9s %8s" % ["phase", "early", "late", "change"])
+	for r in rows:
+		var arrow := "steady"
+		if float(r[0]) >= 1.5:
+			arrow = "%.1fx WORSE" % float(r[0])
+		elif float(r[0]) <= 0.67:
+			arrow = "%.1fx better" % (1.0 / maxf(0.01, float(r[0])))
+		out.append("  %-34s %8.2fms %8.2fms %8s"
+			% [str(r[1]).left(34), float(r[2]), float(r[3]), arrow])
+	return out
+
+
+func _bucket_mean(buckets: Dictionary, keys: Array) -> float:
+	var ms := 0.0
+	var n := 0
+	for b in keys:
+		var slot: Array = buckets[b]
+		ms += float(slot[0])
+		n += int(slot[1])
+	return ms / maxf(1.0, float(n))
+
+
+# ---------- reporting: what the bars were claiming ----------
+func _lane_report() -> PackedStringArray:
+	var out := PackedStringArray()
+	if _lanes.is_empty():
+		return out
+	out.append("")
+	out.append("PROGRESS BARS  %d lane(s), at most %d on screen at once"
+		% [_lanes.size(), _lane_peak])
+	out.append("  A lane still open at the end is a BAR LEFT ON SCREEN; a long")
+	out.append("  stretch with no lane at all is the panel looking hung.")
+	out.append("  %-38s %8s %8s %7s %s" % ["lane", "opened", "held", "opens", ""])
+	var keys: Array = _lanes.keys()
+	keys.sort_custom(func(a, b): return float(_lanes[a]["opened"]) < float(_lanes[b]["opened"]))
+	for k in keys:
+		var e: Dictionary = _lanes[k]
+		var stuck: bool = _lane_live.has(k)
+		out.append("  %-38s %7.1fs %7.1fs %7d %s"
+			% [str(k).left(38), float(e["opened"]), float(e["ms"]) / 1000.0,
+				int(e["opens"]), "  <- STILL OPEN AT STOP" if stuck else ""])
+	if not _lane_live.is_empty():
+		out.append("  %d lane(s) never closed — those bars are stuck until the panel"
+			% _lane_live.size())
+		out.append("  is reloaded, and the next queued download waits behind them.")
 	return out
 
 
@@ -683,6 +899,7 @@ func _summarise() -> String:
 	var out := PackedStringArray()
 	out.append("PERFORMANCE  %d samples over %.0f s" % [_samples.size(), float(_samples[-1]["t"])])
 	out.append_array(_span_report())
+	out.append_array(_lane_report())
 	out.append_array(_blocking_report())
 	out.append_array(_download_report())
 	out.append_array(_timeline_report())

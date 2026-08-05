@@ -2020,7 +2020,9 @@ func _ensure_props_ranged(host: Node, map: String, url: String, miss: Array,
 		return false
 	var zf := ZipFetch.new(host, url)
 	status.call("Checking what %s scenery is already here…" % map)
+	HighpolyProfiler.crumb("fetch", "reading %s archive index" % map)
 	var entries: Array = await zf.read_index()
+	HighpolyProfiler.crumb("fetch", "index: %d entries" % entries.size())
 	if entries.is_empty():
 		Log.info("%s props: archive index unavailable, downloading it whole" % map)
 		return false
@@ -2065,6 +2067,7 @@ func _ensure_props_ranged(host: Node, map: String, url: String, miss: Array,
 		token = await job_queue.acquire(RANGED_JOB)
 	download_progress.emit(RANGED_JOB, 0, bytes)
 	var t0 := Time.get_ticks_msec()
+	HighpolyProfiler.crumb("fetch", "%d ranged read(s), %.0f MB" % [runs.size(), bytes / 1048576.0])
 	var written: int = await zf.fetch(runs, ProjectSettings.globalize_path(PROPS_CACHE),
 		func(done: int, files: int):
 			download_progress.emit(RANGED_JOB, done, bytes)
@@ -2233,6 +2236,7 @@ func ensure_props(host: Node, map: String, status: Callable) -> bool:
 				await host.get_tree().process_frame
 			slice_start = Time.get_ticks_msec()
 	stage_progress.emit(UNPACK_JOB, zfiles.size(), zfiles.size())   # clears the lane
+	HighpolyProfiler.crumb("unpack", "finished %d entries" % zfiles.size())
 	if skipped2 > 0:
 		Log.error("%s scenery: %d of %d pieces could not be written to %s"
 			% [map, skipped2, n + skipped2, ProjectSettings.globalize_path(PROPS_CACHE)])
@@ -3182,6 +3186,7 @@ func _build_backdrop_async(bd_root: Node3D, entries: Array, dir: String,
 	# the second half crawled: nothing about the pieces changes, only how much is
 	# on screen while the next one is prepared.
 	var bd_id := bd_root.get_instance_id()
+	HighpolyProfiler.crumb("skyline", "build started, %d piece(s)" % entries.size())
 	_begin_build_draw(bd_root)
 	for e in entries:
 		var meshes: Array = []
@@ -3235,6 +3240,7 @@ func _build_backdrop_async(bd_root: Node3D, entries: Array, dir: String,
 			frame_start = Time.get_ticks_msec()
 	_apply_radius()                 # final pass: the last slice obeys it too
 	_end_build_draw(bd_root)        # the finished skyline appears, here
+	HighpolyProfiler.crumb("skyline", "build finished, %d of %d" % [_bd_ok, _bd_total])
 	backdrop_progress.emit(_bd_total, _bd_total)
 	Log.debug("map context: skyline built, %d of %d piece(s)" % [_bd_ok, _bd_total])
 
@@ -3300,6 +3306,7 @@ func _build_props_async(props_root: Node3D, entries: Array, dir: String,
 	var _t_build := Time.get_ticks_msec()
 	_vram_warned = false
 	HighpolyProfiler.mark("phase", "props: build started, %d entries" % entries.size())
+	HighpolyProfiler.crumb("props", "build started, %d entries" % entries.size())
 	# DON'T DRAW THE HALF-BUILT MAP. The loop below hands a frame back every
 	# BUILD_FRAME_MS, and the editor spends that frame re-rendering everything
 	# placed so far — which grows as the build proceeds, so the build slows
@@ -3337,7 +3344,15 @@ func _build_props_async(props_root: Node3D, entries: Array, dir: String,
 			next_pf = ei + int(PREFETCH_BATCH * 0.5)  # top up before it runs dry
 			if not want.is_empty():
 				var _tp := Time.get_ticks_msec()
+				# CRUMBED EITHER SIDE. This dispatches glTF parsing AND texture
+				# compression onto worker threads, the newest and least proven
+				# work in the build. If the editor dies here the trail ends on
+				# "dispatch" instead of "returned", and that alone separates a
+				# worker-thread crash from a main-thread one.
+				HighpolyProfiler.crumb("prefetch", "dispatch %d file(s) at entry %d/%d"
+					% [want.size(), ei, entries.size()])
 				await _prefetch(want)
+				HighpolyProfiler.crumb("prefetch", "returned, %d cached" % _pf.size())
 				HighpolyProfiler.span("props: prefetch parse (worker threads)",
 					Time.get_ticks_msec() - _tp)
 				if gen != _build_gen:
@@ -3407,6 +3422,10 @@ func _build_props_async(props_root: Node3D, entries: Array, dir: String,
 			HighpolyProfiler.span("props: apply_radius on every yield",
 				Time.get_ticks_msec() - _t2)
 			_report_progress()
+			# Per SLICE, not per prop: ~40 ms of work apiece, so a crash narrows
+			# to a handful of props by name rather than to "somewhere in 2,761".
+			HighpolyProfiler.crumb("props", "at %d/%d  %s"
+				% [ei, entries.size(), str(e.get("mesh", e.get("model", "?")))])
 			if not is_inside_tree():        # host removed us mid-build: no tree to await
 				if gen == _build_gen:
 					_building = false
@@ -3429,6 +3448,7 @@ func _build_props_async(props_root: Node3D, entries: Array, dir: String,
 	_apply_radius()
 	_building = false
 	_pf_release()   # the tail batch is always over-fetched; free what went unused
+	HighpolyProfiler.crumb("props", "build finished, %d built" % _build_props)
 	_end_build_draw(props_root)   # the finished map appears, here
 	_report_progress(true)
 	HighpolyProfiler.mark("phase", "props: build finished, %d built in %.1f s"

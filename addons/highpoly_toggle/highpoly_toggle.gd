@@ -244,6 +244,36 @@ func _flash_mode() -> void:
 # Everything the recorder needs to say what the panel was set to. Flat strings
 # on purpose: the profiler turns any CHANGE into a timestamped event by
 # comparing values, so a nested structure would report as one opaque diff.
+# What the user changed, into the crash trail. The profiler already turns state
+# changes into timeline events, but only while a recording is running — and the
+# crash that prompted all this happened with nothing recording, so the trail
+# said nothing about which switch had just been thrown. This runs always.
+var _crumb_state := {}
+
+
+func _crumb_state_change() -> void:
+	var now := _perf_state()
+	if _crumb_state.is_empty():
+		_crumb_state = now
+		HighpolyProfiler.crumb("panel", _describe_state(now))
+		return
+	var diff: Array = []
+	for k in now.keys():
+		if _crumb_state.get(k) != now[k]:
+			diff.append("%s %s->%s" % [k, str(_crumb_state.get(k)), str(now[k])])
+	if diff.is_empty():
+		return
+	_crumb_state = now
+	HighpolyProfiler.crumb("panel", " ".join(PackedStringArray(diff)))
+
+
+func _describe_state(st: Dictionary) -> String:
+	var parts: Array = []
+	for k in st.keys():
+		parts.append("%s=%s" % [k, str(st[k])])
+	return " ".join(PackedStringArray(parts))
+
+
 func _perf_state() -> Dictionary:
 	var r := EditorInterface.get_edited_scene_root()
 	var chip := func(b: Button) -> String:
@@ -1221,6 +1251,7 @@ func _enter_tree() -> void:
 		# fixture. Which one it is should come from a recording rather than from
 		# whichever looks worst in the source.
 		var _tt := Time.get_ticks_msec()
+		_crumb_state_change()
 		_check_scene_change()
 		_lighting_guard()
 		if mapctx:
@@ -1289,6 +1320,10 @@ func _enter_tree() -> void:
 	_startup.call_deferred()
 
 func _exit_tree() -> void:
+	# The clean-exit marker. Its ABSENCE next session is what says the editor
+	# died rather than closed, so this has to run on the ordinary path — and it
+	# runs first, before any of the teardown below can throw and skip it.
+	HighpolyProfiler.crumbs_end()
 	if get_tree().node_added.is_connected(_on_node_added):
 		get_tree().node_added.disconnect(_on_node_added)
 	var esel := EditorInterface.get_selection()

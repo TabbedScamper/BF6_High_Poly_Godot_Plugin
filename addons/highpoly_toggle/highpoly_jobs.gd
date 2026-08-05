@@ -61,7 +61,14 @@ func ratio() -> float:
 	var k := _shown_activity()
 	return float(_acts[k]) if k != "" else 0.0
 
+# EVERY bar in the panel opens and closes through these two, which is why the
+# profiler is told here rather than at each of the dozen call sites. A recording
+# can then say which bars were up when, which overlapped, and which never
+# closed — the last being a bar stuck on screen for the rest of the session,
+# invisible to every other kind of instrumentation.
 func set_activity(label: String, done: int, total: int) -> void:
+	if not _acts.has(label):
+		HighpolyProfiler.lane_open(label)
 	_acts[label] = clampf(float(done) / float(total), 0.0, 1.0) if total > 0 else 0.0
 	changed.emit()
 
@@ -70,9 +77,12 @@ func set_activity(label: String, done: int, total: int) -> void:
 func clear_activity(label := "") -> void:
 	if label == "":
 		if _acts.is_empty(): return
+		for k in _acts.keys():
+			HighpolyProfiler.lane_close(str(k))
 		_acts.clear()
 	else:
 		if not _acts.has(label): return
+		HighpolyProfiler.lane_close(label)
 		_acts.erase(label)
 	changed.emit()
 func index() -> int: return _completed + 1        # 1-based, for "1/2"
@@ -94,6 +104,8 @@ func acquire(name: String) -> int:
 	_active = name
 	_ratio = 0.0
 	Log.info("Started: %s  (%d of %d)" % [name, index(), count()])
+	HighpolyProfiler.lane_open(name)
+	HighpolyProfiler.crumb("download", "start %s" % name)
 	changed.emit()
 	return id
 
@@ -105,6 +117,8 @@ func release(id: int, ok: bool, note := "") -> void:
 	if _active_id != id:
 		return                                    # already released, or never held
 	var name := _active
+	HighpolyProfiler.lane_close(name)
+	HighpolyProfiler.crumb("download", "%s %s" % ["done" if ok else "FAILED", name])
 	_active_id = 0
 	_active = ""
 	_ratio = 0.0
@@ -124,6 +138,10 @@ func release(id: int, ok: bool, note := "") -> void:
 func reset() -> void:
 	if _active_id != 0:
 		Log.warn("Interrupted: %s" % _active)
+		HighpolyProfiler.lane_close(_active)
+		HighpolyProfiler.crumb("download", "interrupted %s" % _active)
+	for k in _acts.keys():
+		HighpolyProfiler.lane_close(str(k))
 	_waiting.clear()
 	_active_id = 0
 	_active = ""

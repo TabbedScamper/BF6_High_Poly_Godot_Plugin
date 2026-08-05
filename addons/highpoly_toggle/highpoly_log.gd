@@ -204,8 +204,18 @@ static func header() -> String:
 		"           editor log of its own. Close Godot, start it again with the",
 		"           line below, reproduce the crash, then send that file:",
 		"           %s" % _crash_capture_cmd(),
-		"".rpad(60, "-"),
 	]
+	# Breadcrumbs run whether or not a recording is going and are rotated at
+	# startup, so if the LAST session never wrote its clean-exit marker, the tail
+	# of that file is where it died. Printed here because it is the first thing
+	# anyone wants after a crash, and because the alternative — "reproduce it
+	# with a log file attached" — asks the user to hit an intermittent crash a
+	# second time before learning anything at all.
+	var last := HighpolyProfiler.last_session_end()
+	if last != "":
+		lines.append("PREVIOUS SESSION DID NOT EXIT CLEANLY — it stopped here:")
+		lines.append("           %s" % last)
+	lines.append("".rpad(60, "-"))
 	return "\n".join(lines)
 
 
