@@ -86,6 +86,18 @@ func _init() -> void:
 	_check("a prop that carries its own images counts as complete",
 		not mc._prop_incomplete("__t_Textured"))
 
+	# 68 of Dumbo's 2,761 props have no textures at all and get no sidecar,
+	# correctly. Judged on the sidecar alone every one of them looks incomplete
+	# and re-downloads on every load, forever — the bake is what proves the
+	# prop came from a pre-baked archive and is simply untextured.
+	_write_stripped(cache + "/__t_NoTex.glb"); made.append("__t_NoTex.glb")
+	var g := FileAccess.open(cache + "/__t_NoTex.glb.geom.res", FileAccess.WRITE)
+	g.store_string("a bake, standing in for the real one")
+	g.close()
+	made.append("__t_NoTex.glb.geom.res")
+	_check("an untextured prop with a bake and no sidecar counts as complete",
+		not mc._prop_incomplete("__t_NoTex"))
+
 	for n in made:
 		DirAccess.remove_absolute(cache + "/" + str(n))
 	_check("the fixtures are cleaned up",

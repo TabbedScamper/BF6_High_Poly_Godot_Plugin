@@ -2161,6 +2161,15 @@ func _prop_incomplete(nm: String) -> bool:
 		return true
 	if FileAccess.file_exists("%s/%s%s" % [PROPS_CACHE, nm, BcTex.EXT]):
 		return false
+	# NOT EVERY PROP HAS TEXTURES. 68 of Dumbo's 2,761 carry no images at all,
+	# so bc_strip copies them through and they get no sidecar — correctly. The
+	# presence of a bake is what says this prop came from a pre-baked archive,
+	# which makes "no sidecar" a fact about the prop rather than a gap in the
+	# download. Without this they would every one of them look incomplete and
+	# re-fetch on every single load, forever.
+	if FileAccess.file_exists(gp + GEOM_SUFFIX) \
+			or FileAccess.file_exists(gp + _geom_part_suffix(0)):
+		return false
 	return _glb_has_no_images(gp)
 
 
