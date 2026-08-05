@@ -1,5 +1,11 @@
 # v1.5.0 — Seamless model sync (design)
 
+> **Historical.** This is the design note for 1.5.0, written before it was
+> built. The plugin is past 1.39 and the dock has changed a great deal since.
+> Kept because it records WHY the model-management buttons were removed, which
+> is still the reason they have not come back. Do not read it as a description
+> of the current dock; for that see the README.
+
 The goal of 1.5: **no model-management buttons**. Models arrive on their own,
 the scene you're looking at always comes first, stale data heals itself, and
 the one-time reorganization of existing installs is explained before it runs.

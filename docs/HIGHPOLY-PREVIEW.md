@@ -8,27 +8,28 @@ the game.
 
 ![concept] Low-poly proxy (saved, exported) ⇄ High-poly textured overlay (editor-only)
 
+> **What this document is for.** The matcher, the matching database and the
+> texture extraction. Those live here and nowhere else, and `ARCHITECTURE.md`
+> points back to this file for them.
+>
+> It is **not** the place to look for how to install the plugin (`README.md`)
+> or what each source file does (`ARCHITECTURE.md`). Sections 1 and 2 used to
+> repeat both, which meant the design contract was written out in three
+> separate files and free to drift in any of them.
+
 ---
 
 ## 1. Design contract
 
-- **The low-poly proxy is the source of truth.** It is what gets saved in the
-  `.tscn` and what the Portal exporter ships. Nothing in this system ever
-  modifies it.
-- **The high-poly is a disposable overlay.** Each swapped piece gets an
-  `owner = null` child node named `_HIPOLY_PREVIEW` — Godot never serializes
-  it, so it cannot leak into your scene file or your export. Reloading the
-  scene silently drops all overlays; one click brings them back.
-- **Toggle any time.** The High-Poly dock's Detail Mode dropdown drives the
-  whole scene; `Selected → Current Mode` / `Selected → Low-Poly` work per node.
+Stated once, in [ARCHITECTURE.md](ARCHITECTURE.md#design-contract-applies-to-everything).
+In short: the SDK's low-poly proxies are the source of truth, and everything
+this plugin draws is an `owner = null` overlay Godot never serializes.
 
-## 2. Installation (for a fresh SDK project)
+## 2. Installation
 
-1. Copy `addons/highpoly_toggle/` into the project's `addons/` folder.
-2. Enable it: Project → Project Settings → Plugins → "BF6 High-Poly Preview".
-3. That's it for normal use — the dock downloads models and map data on demand
-   (see the repository README). The rest of this document covers the
-   internals and the maintainer-side asset pipeline.
+See the [repository README](../README.md#install). For normal use the dock
+downloads models and map data on demand; the rest of this document is the
+maintainer-side pipeline and the internals.
 
 ## 3. Deploying assets for a level (maintainer / pipeline path)
 
@@ -138,13 +139,18 @@ game's Frostbite material compositing. Key facts (full history in
 ## 7. Performance notes
 
 - Overlays exist only in the editor; game exports are unaffected.
-- GLB textures are capped at 1024²; a full scene of ~1,300 overlays is
-  workable on a mid-range GPU. Use `Selected → High-Poly` to preview only the
-  area you're detailing if the editor gets heavy.
-- After deploying new GLBs, Godot needs a moment to import them; if a piece
-  doesn't swap on the first click, hit **Re-apply Scene** again once the
-  import finishes (the plugin skips assets that aren't imported yet rather
-  than erroring).
+- GLB textures are capped at 1024². If the editor gets heavy, pull the **Range**
+  slider down (it governs how far scenery, effects and lights keep drawing) or
+  set **Video memory** to Low.
+- Props ship pre-baked: a `.glb` with its images removed, a `.bctex` holding
+  those images deduplicated across the map, and a `.geom.res` of merged,
+  tangent-generated geometry. The client parses none of it. See the pipeline's
+  `bc_pipeline.py`.
+
+  *This section previously told the reader to press `Selected → High-Poly` and
+  `Re-apply Scene`. Both buttons were removed in 1.5.0 — see V15-DESIGN.md —
+  so the advice had been pointing at controls that did not exist for around
+  thirty releases.*
 
 ## 8. File map
 

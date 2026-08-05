@@ -167,14 +167,22 @@ demand.)
 
 ## How it works / contributing
 
-See [`docs/HIGHPOLY-PREVIEW.md`](docs/HIGHPOLY-PREVIEW.md) for the overlay
-design, the conservative auto-fitter, and the fix-a-mismatch playbook, and
-[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for what each script does and
-how the data + release pipelines fit together.
+Each document owns one thing, so there is a single place to correct when
+something changes:
+
+| document | what it owns | status |
+| --- | --- | --- |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | the design contract, what each source file does, the data flow | current |
+| [`docs/HIGHPOLY-PREVIEW.md`](docs/HIGHPOLY-PREVIEW.md) | the matcher, the matching database, the texture extraction, the auto-fitter | current |
+| [`docs/AUDIT-2026-08.md`](docs/AUDIT-2026-08.md) | a whole-system read with the evidence behind each optimisation path | partly superseded, see its header |
+| [`docs/V15-DESIGN.md`](docs/V15-DESIGN.md) | why the model-management buttons were removed | historical |
+| [`tools/menuaudit/`](tools/menuaudit) | extracts what each dock control actually does and flags the ones that would frustrate somebody | current |
 
 Found a broken model? Submit a fix through the
-[BF6 Model Viewer](https://github.com/TabbedScamper/BF6_Model_Viewer) — once
-approved it reaches every user's next **Update Models** click.
+[BF6 Model Viewer](https://github.com/TabbedScamper/BF6_Model_Viewer). Once
+approved it arrives on its own: the plugin diffs the manifest at startup and
+hourly, and there is nothing to press. (This used to say "your next **Update
+Models** click" — that button was removed in 1.5.0.)
 
 ## Research notes
 
