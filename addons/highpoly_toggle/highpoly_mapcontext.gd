@@ -2347,11 +2347,14 @@ func _ensure_props_ranged(host: Node, map: String, url: String, miss: Array,
 	# registry pass, props the library has since republished never heal; and
 	# without the package-accept the library's healing silently reverts what was
 	# just written.
-	if refresh:
-		var names: Array = []
-		for e in entries:
-			names.append(str(e["name"]))
-		_accept_package_props(map, names)
+	# WHATEVER WAS ACTUALLY FETCHED, refresh or not. This used to run only on a
+	# refresh, so a partial fetch left the props it had just written unaccepted
+	# — and _verify_props_registry then hashed every one of them, found they did
+	# not match the library's copy, and downloaded the library's version over the
+	# top, one at a time. That is the "Updating prop meshes to match the site"
+	# pass, and against a pre-baked archive it reverts the whole thing: the
+	# stripped glb it overwrites is the one the .bctex and .geom.res belong to.
+	_accept_package_props(map, want.keys())
 	var b := base_url() + "maps/%s/" % map
 	await _stamp_etag(host, map, _props_etag_key(), b + props_file())
 	await _verify_props_registry(host, map, status)
@@ -2496,8 +2499,9 @@ func ensure_props(host: Node, map: String, status: Callable) -> bool:
 	DirAccess.remove_absolute(tmp)
 	Log.info(("%s props: wrote %d of %d entries, %d already identical "
 		+ "(kept their fast-load cache)") % [map, n, zfiles.size(), same])
-	if refresh:
-		_accept_package_props(map, zfiles)
+	# Not only on a refresh — see the note in the ranged path. Anything written
+	# from the map package has to be accepted, or the registry pass reverts it.
+	_accept_package_props(map, zfiles)
 	await _stamp_etag(host, map, _props_etag_key(), b + props_file())
 	await _verify_props_registry(host, map, status)
 	status.call("%d prop meshes ready" % n)
@@ -2529,8 +2533,12 @@ func _accept_package_props(map: String, names) -> void:
 		# hash later, this entry no longer matches and the prop is re-verified
 		# exactly as before. Only "the library differs from the package we just
 		# unpacked" stops being treated as damage to repair.
+		# MERGE, do not replace. Starting from an empty index is only correct
+		# when `names` is the whole archive. A PARTIAL fetch — the healing pass
+		# that re-pulls some props — would throw away every previously accepted
+		# entry, and the next start would re-hash and re-download the lot.
 		var reg2: Dictionary = HighpolyStore.mesh_remote
-		var idx2: Dictionary = {}
+		var idx2: Dictionary = _props_index()
 		for zf2 in names:
 			var nm3 := str(zf2)
 			if not nm3.ends_with(".glb") or nm3.contains("/"):
