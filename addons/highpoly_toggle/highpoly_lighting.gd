@@ -858,6 +858,22 @@ static func _env_of(root: Node) -> Environment:
 # colour + intensity + radius + cones decoded from the level EBX). Too many to
 # run at once — the dock timer culls to the nearest `lights_range` metres.
 const LIGHTS_NODE := "_MAP_LIGHTS"
+
+# How long to work before handing a frame back. Was 30 ms, which sounded polite
+# and was anything but: a recording showed 753 slices doing 23.0 s of actual
+# work and spending 44.9 s WAITING for the frames in between, because by the
+# time the lights go in the whole map is drawn and a frame costs ~60 ms. Nearly
+# two thirds of that stage was the yielding itself.
+#
+# 120 ms cuts the slice count fourfold and the waiting with it, and 120 ms is
+# still well inside what reads as a responsive editor — the props build has used
+# a 40 ms budget against far heavier per-slice work all along.
+#
+# A static var rather than a const so a test can force the yielding path with a
+# tiny slice. Raising it to 120 made test_progress_lanes fail honestly: its
+# workload now finished inside ONE slice, so no intermediate progress was
+# reported and the assertion that the bar moves while running caught it.
+static var LIGHT_SLICE_MS := 120
 static var lights_range := 150.0
 
 static func clear_map_lights(root: Node) -> void:
@@ -901,7 +917,7 @@ static func set_map_lights(root: Node, on: bool, map: String,
 	var _tw := 0
 	for L in all:
 		seen += 1
-		if Time.get_ticks_msec() - slice >= 30:
+		if Time.get_ticks_msec() - slice >= LIGHT_SLICE_MS:
 			# split the WORK from the waiting: a slice that costs 30 ms and then
 			# waits 90 ms for a frame is a very different problem from one that
 			# costs 120 ms, and the bar looks identical either way

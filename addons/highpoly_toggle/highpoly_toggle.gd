@@ -1126,9 +1126,23 @@ func _enter_tree() -> void:
 	log_row.add_child(clear_log)
 
 	host = dock          # back to the panel itself: these two belong to no section
+	# THE STATUS LINE LIVES AT THE TOP. It is where every notification lands —
+	# how many models are local, what just downloaded, what a toggle did, what
+	# failed — and it sat underneath a screenful of controls, below the Log
+	# section, where it had to be scrolled to. Only the version and the credits
+	# belong at the bottom.
 	lbl = Label.new()
 	lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	# FIXED HEIGHT, two lines. This label's text changes constantly and ranges
+	# from "Map lights off" to a full sentence about a failed download; letting
+	# it size itself means every message of a different length reflows the entire
+	# panel and everything below it hops. Two lines is enough for the long ones
+	# and the height never changes, so nothing moves.
+	lbl.max_lines_visible = 2
+	lbl.custom_minimum_size.y = Theme_.fs(13) * 2.4
+	lbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	dock.add_child(lbl)
+	dock.move_child(lbl, 0)
 
 	var ver_lbl := Label.new()
 	ver_lbl.text = "v%s  ·  TabbedScamper & dfanz0r" % HighpolyUpdater.plugin_version()
@@ -1217,6 +1231,17 @@ func _enter_tree() -> void:
 			jobs.set_activity("Building the skyline", done, total)
 		else:
 			jobs.clear_activity("Building the skyline"))
+	# STORAGE WENT STALE. It was measured at startup and after a Check for
+	# Updates, and nowhere else — so downloading a whole map left the panel still
+	# reporting the kilobyte it had found before, which reads as the plugin
+	# having downloaded nothing at all. Anything that lands bytes on disk now
+	# schedules a re-measure.
+	#
+	# Debounced rather than immediate: the walk covers thousands of files, and a
+	# map load ends several transfers within a second of each other. One scan
+	# once it settles, not one per transfer.
+	mapctx.download_ended.connect(func(_label: String): _storage_dirty())
+	mapctx.build_finished.connect(func(_b: int): _storage_dirty())
 	mapctx.build_finished.connect(func(_built: int):
 		jobs.clear_activity("Building the level's scenery")
 		# sidecar-cached meshes load with the shader params they were SAVED
@@ -1983,6 +2008,21 @@ static func _fmt_n(n: int) -> String:
 # Recompute the usage line + the purge dropdown. Async: walking GBs of files
 # must never block the editor — dir_usage_async chunk-yields, and a newer scan
 # supersedes this one via _storage_gen (checked after every await).
+var _storage_timer: Timer
+
+
+# Ask for a re-measure "soon". Several transfers finish within a second of each
+# other at the end of a map load; this collapses them into one walk.
+func _storage_dirty() -> void:
+	if _storage_timer == null:
+		_storage_timer = Timer.new()
+		_storage_timer.one_shot = true
+		_storage_timer.wait_time = 2.0
+		_storage_timer.timeout.connect(_refresh_storage)
+		dock.add_child(_storage_timer)
+	_storage_timer.start()
+
+
 func _refresh_storage() -> void:
 	_storage_gen += 1
 	var gen := _storage_gen

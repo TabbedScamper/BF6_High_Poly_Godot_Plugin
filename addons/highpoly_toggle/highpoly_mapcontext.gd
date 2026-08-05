@@ -2079,6 +2079,13 @@ func _ensure_props_ranged(host: Node, map: String, url: String, miss: Array,
 	HighpolyProfiler.crumb("fetch", "%d ranged read(s), %.0f MB" % [runs.size(), bytes / 1048576.0])
 	var written: int = await zf.fetch(runs, ProjectSettings.globalize_path(PROPS_CACHE),
 		func(done: int, files: int):
+			# job_queue.report IS WHAT MOVES THE BAR. While a job holds the
+			# queue slot the bar reads its ratio from there and ignores the
+			# keyed activity lanes entirely, so emitting download_progress alone
+			# left the first bar of the map-objects pipeline sitting at 0% for
+			# the whole 14.6 s transfer — present, labelled, and never moving.
+			if job_queue != null:
+				job_queue.report(done, bytes)
 			download_progress.emit(RANGED_JOB, done, bytes)
 			if status.is_valid():
 				status.call("Downloading %s scenery: %d of %d pieces (%.0f of %.0f MB)"
@@ -3179,14 +3186,29 @@ static func _min_d2(xf: Array, cpos: Vector3) -> float:
 func _build_backdrop_async(bd_root: Node3D, entries: Array, dir: String,
 		textured: bool, mat: Material, gen: int) -> void:
 	var frame_start := Time.get_ticks_msec()
-	# THE SKYLINE DELIBERATELY DOES NOT PREFETCH, unlike the props. It was tried
-	# and reverted: backdrop meshes carry BLEND SHAPES, which props do not, and
-	# parsing them on worker threads produced a flood of
-	# `mesh_set_blend_shape_mode` errors from the renderer. The identical
-	# prefetch over 24 props produces exactly zero. Against that risk the gain
-	# was only 1.29x on the six heaviest files (1.99 s -> 1.54 s), because a
-	# backdrop's time goes into image decoding rather than anything a second
-	# core can help with.
+	# THE SKYLINE DELIBERATELY DOES NOT PREFETCH, unlike the props — and the
+	# reason recorded here for years was wrong.
+	#
+	# It used to say backdrop meshes carry BLEND SHAPES and that parsing them on
+	# workers produced `mesh_set_blend_shape_mode` errors. Re-tested against the
+	# real files: ZERO of the 14 heaviest Dumbo backdrops carry a blend shape at
+	# all. The objection was real, the explanation was not.
+	#
+	# What actually happens is worse. Prefetching backdrops SEGFAULTS Godot,
+	# reproducibly, and bisecting the worker job by stage says exactly where:
+	#
+	#   parse only (append_from_buffer)     survives, 42 ms/file on workers
+	#   + generate_scene                    SEGFAULT
+	#   + tangents                          completed, then died freeing
+	#   + compress (what props do)          SEGFAULT
+	#
+	# So generate_scene off the main thread is the unsafe call, and it is unsafe
+	# on CONTENT, not in general: the identical job over 60 props survives five
+	# runs out of five. Backdrops carry ~653 materials and ~706 textures apiece
+	# against a prop's ~13, and that is the difference.
+	#
+	# This costs 94.6 s of a cold load, all of it on the main thread, and it is
+	# the largest single item left. It is not worth an editor that dies.
 	#
 	# IT DOES HIDE ITSELF WHILE BUILDING, same as the props, and for the skyline
 	# it matters more than anywhere else: the backdrop is 3,118 draw calls from

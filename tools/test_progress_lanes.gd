@@ -46,8 +46,15 @@ func _init() -> void:
 	_lane_checks("FX", msg, N)
 
 	# ---- map lights -------------------------------------------------------
+	# Forced to a 1 ms slice. In production it is 120 ms, chosen because a
+	# recording showed the lights spending 44.9 s WAITING for frames against
+	# 23.0 s of actual work — but at 120 ms this test's workload finishes inside
+	# a single slice and never exercises the yielding at all.
+	var real_slice: int = Lighting.LIGHT_SLICE_MS
+	Lighting.LIGHT_SLICE_MS = 1
 	seen = []
 	msg = await Lighting.set_map_lights(root, true, MAP, _rec())
+	Lighting.LIGHT_SLICE_MS = real_slice
 	_lane_checks("map lights", msg, N)
 
 	# ---- the lane bookkeeping itself --------------------------------------
