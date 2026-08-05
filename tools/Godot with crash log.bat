@@ -39,6 +39,29 @@ if not defined GODOT (
     exit /b 1
 )
 
+rem THE PROJECT MANAGER MUST BE SKIPPED, or this captures the wrong process.
+rem Launched with no project, Godot shows the picker, prints "Editing project:
+rem ..." and then SPAWNS A SEPARATE EDITOR PROCESS and exits. The editor is a
+rem new process that never received --log-file, so the log stopped after three
+rem lines and this window announced Godot had closed while it was plainly still
+rem open. Handing it the project up front means the one process we start IS the
+rem editor.
+set "PROJ="
+if exist "%HERE%project.godot" set "PROJ=%HERE%"
+if not defined PROJ (
+    for /d %%D in ("%HERE%*") do (
+        if exist "%%~fD\project.godot" if not defined PROJ set "PROJ=%%~fD"
+    )
+)
+if not defined PROJ (
+    echo.
+    echo   Could not find a Godot project next to this file.
+    echo   Expected project.godot here, or in a folder such as GodotProject.
+    echo.
+    pause
+    exit /b 1
+)
+
 rem A timestamp, so relaunching after a crash cannot overwrite the log of
 rem the crash you were trying to capture. PowerShell is used because the
 rem built-in %DATE%/%TIME% change shape with regional settings.
@@ -47,14 +70,16 @@ set "LOG=%USERPROFILE%\Desktop\godot-crash-%STAMP%.log"
 
 echo.
 echo   Editor : %GODOT%
+echo   Project: %PROJ%
 echo   Log    : %LOG%
 echo.
 echo   Starting Godot. Use it as normal and make the problem happen.
 echo   Leave this window open; it will tell you when Godot has closed.
 echo.
 
-rem %* passes anything extra straight through to Godot.
-"%GODOT%" --log-file "%LOG%" %*
+rem --editor --path together open the project straight away, bypassing the
+rem picker. %* passes anything extra through, which is also how this is tested.
+"%GODOT%" --editor --path "%PROJ%" --log-file "%LOG%" %*
 
 echo.
 if exist "%LOG%" (
