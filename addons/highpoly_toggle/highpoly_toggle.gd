@@ -63,6 +63,8 @@ var mapctx_maptile: Button   # project the maptile decal over SDK terrain+assets
 var mapctx_fx: Button        # live GPU particles at the map's mined FX spawns
 var mapctx_light: Button     # game lighting (sun/sky/fog from the real map VE)
 var mapctx_gi: Button        # sub-toggle: SDFGI + SSAO (visible while lighting is on)
+var mapctx_vram_row: HBoxContainer   # video-memory selector (with the lighting subs)
+var mapctx_vram: OptionButton
 var mapctx_shadows: Button   # sub-toggle: sun shadows + overlay casting
 var mapctx_maplights: Button # sub-toggle: the map's mined light entities
 var mapctx_fill_row: HBoxContainer   # "Interior light" slider row (with the shadow controls)
@@ -753,6 +755,30 @@ func _enter_tree() -> void:
 			EditorInterface.get_edited_scene_root(), v / 100.0)
 		_save_mapctx_state())
 	mc_sub.add_child(mapctx_fill_row)
+
+	# Video memory. Textures arriving through GLTF at runtime never pass Godot's
+	# importer, so until now every scenery texture sat in video memory
+	# UNCOMPRESSED: Dumbo peaked at 8.5 GB, and a user's 12 GB card ran out
+	# during a build — which Godot answers by crashing outright rather than
+	# reporting. Compressed is the default because it is 4x smaller for no
+	# visible difference on scenery; Low halves resolution as well, 16x.
+	mapctx_vram_row = HBoxContainer.new()
+	mapctx_vram_row.visible = false
+	var vram_lbl := Label.new()
+	vram_lbl.text = "Video memory"
+	mapctx_vram_row.add_child(vram_lbl)
+	mapctx_vram = OptionButton.new()
+	mapctx_vram.add_item("Compressed (recommended)", MapContextScript.VRAM_COMPRESSED)
+	mapctx_vram.add_item("Low — for 4 GB cards", MapContextScript.VRAM_LOW)
+	mapctx_vram.add_item("Uncompressed (needs 12 GB+)", MapContextScript.VRAM_FULL)
+	mapctx_vram.tooltip_text = "How much video memory the scenery is allowed to use. Compressed looks the same as Uncompressed on scenery and uses a quarter of the memory. Choose Low if the editor runs out of memory or closes itself while a map loads. Changing this rebuilds the scenery cache once."
+	mapctx_vram.item_selected.connect(func(i: int):
+		MapContextScript.vram_mode = mapctx_vram.get_item_id(i)
+		_save_mapctx_state()
+		lbl.text = "Video memory: %s. Rebuild the map context to apply it." \
+			% mapctx_vram.get_item_text(i))
+	mapctx_vram_row.add_child(mapctx_vram)
+	mc_sub.add_child(mapctx_vram_row)
 
 	# (A pair of sun-position sliders lived here while the azimuth convention was
 	# being worked out against the running game. They did their job — SunRotationX
@@ -2245,6 +2271,11 @@ func _lighting_changed() -> void:
 # grey the checkbox out when the open scene has no lighting data (called from
 # the dock's 0.5 s timer — cheap: one dictionary lookup)
 func _lighting_guard() -> void:
+	# The video-memory selector rides with the map-context sub-controls. Mirrored
+	# on the dock timer rather than at each of the several places that show or
+	# hide them, so there is one rule instead of several chances to miss one.
+	if mapctx_vram_row != null and mapctx_fill_row != null:
+		mapctx_vram_row.visible = mapctx_fill_row.visible
 	if mapctx_light == null: return
 	var map: String = mapctx.map_of(EditorInterface.get_edited_scene_root())
 	var ok := map != "" and LightingScript.has_data(map)

@@ -1328,6 +1328,131 @@ static var mesh_cache_enabled := false
 # material at all (an untextured prop has nothing to lose), false only when a
 # material points at a texture that has been reduced to a 0x0 stub. Used to
 # decide whether a cached mesh may be trusted and whether one is worth writing.
+# --- VRAM: compress prop textures -------------------------------------------
+# Textures that arrive through GLTFDocument at runtime NEVER pass through
+# Godot's importer, so nothing ever applies VRAM compression to them. Measured
+# on the shipped props: every single one is uncompressed RGB8 or RGBA8, 147 MB
+# of GLB decodes to 639 MB resident, and a background prop costs 10.65 MB of
+# video memory. Dumbo peaked at 8526 MB, which is why a 12 GB card ran out
+# during the terrain build and Godot answered VK_ERROR_OUT_OF_DEVICE_MEMORY by
+# handing back a null buffer and then segfaulting.
+#
+# S3TC gives 5.1x on those same textures, half-res-plus-S3TC 20.4x. Measured
+# cost: first bake +12%, but the sidecar is then HALF the size and reads back
+# 1.9x faster, so every load after the first is quicker. Because the sidecar
+# stores its materials, compressing before the save bakes it in permanently.
+#
+# NORMAL MAPS GET BC5 (two channels), not BC1/BC3. Compressing a normal map as
+# DXT puts visible banding on every curved surface — it is the classic mistake
+# with this optimisation, and the fix costs one branch.
+enum { VRAM_FULL = 0, VRAM_COMPRESSED = 1, VRAM_LOW = 2 }
+static var vram_mode := VRAM_COMPRESSED
+
+# Sidecars are per vram mode: the pixels differ, so serving one baked under
+# another would silently show the wrong quality with no way to tell.
+static func _baked_suffix() -> String:
+	match vram_mode:
+		VRAM_LOW: return ".baked5l.res"
+		VRAM_FULL: return ".baked5f.res"
+		_: return ".baked5.res"
+
+const _TEX_SLOTS := [
+	BaseMaterial3D.TEXTURE_ALBEDO, BaseMaterial3D.TEXTURE_NORMAL,
+	BaseMaterial3D.TEXTURE_ROUGHNESS, BaseMaterial3D.TEXTURE_METALLIC,
+	BaseMaterial3D.TEXTURE_EMISSION, BaseMaterial3D.TEXTURE_AMBIENT_OCCLUSION,
+]
+
+# ONE TEXTURE CAN FILL SEVERAL SLOTS, and every slot has to be repointed at the
+# compressed copy. glTF packs roughness and metallic into a single image, so both
+# slots hold the same texture; a first version compressed it once, replaced only
+# the slot it happened to reach first, and left the other pointing at the
+# ORIGINAL — which keeps the uncompressed copy resident and undoes most of the
+# saving. It measured 1.8x instead of the 4.3x the per-texture ratios promised,
+# which is the only reason it was caught. So: compress each distinct texture
+# once, remember the replacement, then apply it everywhere it appears.
+static func _compress_textures(m: Mesh) -> int:
+	if m == null or vram_mode == VRAM_FULL:
+		return 0
+	var repl := {}          # original texture id -> compressed replacement
+	var failed := {}        # ids we could not compress, so we stop retrying them
+	var n := 0
+	for s in range(m.get_surface_count()):
+		var bm := m.surface_get_material(s) as BaseMaterial3D
+		if bm == null:
+			continue
+		for slot in _TEX_SLOTS:
+			var t := bm.get_texture(slot)
+			if t == null:
+				continue
+			var id := t.get_instance_id()
+			if repl.has(id):
+				bm.set_texture(slot, repl[id])
+				continue
+			if failed.has(id):
+				continue
+			var img := t.get_image()
+			# Already-compressed images cannot be resized or re-compressed, and
+			# very small ones cost nothing to leave alone — BC works on 4x4
+			# blocks, so anything under that is not worth touching.
+			if img == null or img.is_compressed() or img.get_width() < 8 or img.get_height() < 8:
+				failed[id] = true
+				continue
+			var c := img.duplicate() as Image
+			if vram_mode == VRAM_LOW:
+				c.resize(maxi(4, c.get_width() / 2), maxi(4, c.get_height() / 2),
+					Image.INTERPOLATE_BILINEAR)
+			var err: int
+			if slot == BaseMaterial3D.TEXTURE_NORMAL:
+				err = c.compress_from_channels(Image.COMPRESS_S3TC, Image.USED_CHANNELS_RG)
+			else:
+				err = c.compress(Image.COMPRESS_S3TC)
+			if err != OK:
+				failed[id] = true
+				continue
+			var tex := ImageTexture.create_from_image(c)
+			repl[id] = tex
+			bm.set_texture(slot, tex)
+			n += 1
+	return n
+
+
+# --- VRAM watchdog -----------------------------------------------------------
+# Godot does not survive running out of video memory. It does not raise, degrade
+# or fall back: the Vulkan allocation returns VK_ERROR_OUT_OF_DEVICE_MEMORY, the
+# buffer comes back null, several hundred cascading errors follow as meshes with
+# no vertex data are asked for triangle data, and then it segfaults. A user gets
+# a vanished editor and no explanation.
+#
+# We cannot read the card's capacity — get_device_total_memory() needs a debug
+# build and --extra-gpu-memory-tracking, so it reports 0 for everyone. We CAN
+# read our own usage. So this is a budget with a warning, not a capacity check,
+# and the number is deliberately conservative: 4 GB is comfortably under the
+# 12 GB card that died, because the crash margin includes framebuffers, the
+# editor's own resources and whatever else the machine is running.
+const VRAM_WARN_MB := 4096.0
+static var _vram_warned := false
+
+static func vram_used_mb() -> float:
+	var rd := RenderingServer.get_rendering_device()
+	if rd != null:
+		return float(rd.get_memory_usage(RenderingDevice.MEMORY_TOTAL)) / 1048576.0
+	return Performance.get_monitor(Performance.RENDER_VIDEO_MEM_USED) / 1048576.0
+
+# Returns true when the build should stop adding. Warns ONCE per build: this is
+# called from the build loop, and a message per prop would be thousands of lines.
+static func vram_over_budget() -> bool:
+	var mb := vram_used_mb()
+	if mb < VRAM_WARN_MB:
+		return false
+	if not _vram_warned:
+		_vram_warned = true
+		Log.warn(("video memory is at %.0f MB, which is where cards start to run "
+			+ "out. Godot CRASHES rather than reporting this, so the map context "
+			+ "is stopping here. Set Video memory to \"Low\" in the panel and "
+			+ "rebuild, or turn off Original map objects.") % mb)
+	return true
+
+
 static func _mesh_keeps_textures(m: Mesh) -> bool:
 	if m == null:
 		return false
@@ -1360,7 +1485,12 @@ func _parse_prop_file(gp: String) -> Array:
 	# baked4: baked3 sidecars cache meshes baked with tangents left in the source
 	# frame. The code fix alone would never reach anyone holding a cache — the
 	# sidecar IS the geometry, so correcting it means moving the suffix.
-	var baked := gp + ".baked4.res"
+	# baked5: the sidecar now stores VRAM-COMPRESSED textures, so a baked4 file
+	# holds the wrong pixels entirely. The suffix also carries the vram mode —
+	# switching between Full, Compressed and Low must not serve a cache baked
+	# under a different one, and encoding it here means the three can coexist
+	# instead of invalidating each other every time someone changes the setting.
+	var baked := gp + _baked_suffix()
 	if mesh_cache_enabled and FileAccess.file_exists(baked) \
 			and FileAccess.get_modified_time(baked) >= FileAccess.get_modified_time(gp):
 		var bm := ResourceLoader.load(baked, "Mesh", ResourceLoader.CACHE_MODE_REPLACE)
@@ -1398,6 +1528,15 @@ func _parse_prop_file(gp: String) -> Array:
 		_fx_animate_materials(m)
 		_wind_swap_materials(m)
 		_parallax_materials(m)
+		# AFTER the material passes, so anything that swaps a material in (wind,
+		# parallax, fx) has its textures compressed too, and BEFORE the sidecar
+		# is written below so the saving is baked into the cache rather than
+		# re-paid on every load.
+		var _tc := Time.get_ticks_msec()
+		var _n := _compress_textures(m)
+		if _n > 0:
+			HighpolyProfiler.span("props: compress textures for VRAM",
+				Time.get_ticks_msec() - _tc)
 		done.append(_with_lods(m))
 	# Sidecar only for the single-mesh case. A split prop is a handful of files
 	# per map (81 of 155 backdrops on Dumbo) and one .res holds one Resource, so
@@ -2701,8 +2840,16 @@ func _build_props_async(props_root: Node3D, entries: Array, dir: String,
 		textured: bool, flat_mat: Material, gen: int) -> void:
 	var frame_start := Time.get_ticks_msec()
 	var _t_build := Time.get_ticks_msec()
+	_vram_warned = false
 	HighpolyProfiler.mark("phase", "props: build started, %d entries" % entries.size())
 	for e in entries:
+		# Checked per entry rather than per yield: one prop can carry a lot of
+		# texture, and the point is to stop BEFORE the allocation that kills the
+		# editor, not shortly after it.
+		if vram_over_budget():
+			HighpolyProfiler.mark("phase", "props: STOPPED at %.0f MB of video memory"
+				% vram_used_mb())
+			break
 		var gp := _prop_path(e, dir)
 		var _t0 := Time.get_ticks_msec()
 		var meshes := _prop_mesh(e, dir)    # the expensive part (GLB parse; cached)
@@ -3097,7 +3244,8 @@ func purge_map(map: String, info: Dictionary) -> void:
 		var p := "%s/%s.glb" % [PROPS_CACHE, str(nm)]
 		if FileAccess.file_exists(p):
 			DirAccess.remove_absolute(p)
-		for sfx in [".baked.res", ".baked2.res", ".baked3.res", ".baked4.res"]:
+		for sfx in [".baked.res", ".baked2.res", ".baked3.res", ".baked4.res",
+				".baked5.res", ".baked5f.res", ".baked5l.res"]:
 			if FileAccess.file_exists(p + sfx):
 				DirAccess.remove_absolute(p + sfx)   # fast-startup sidecars
 		if idx.has(nm):
@@ -3196,10 +3344,14 @@ func cleanup_stale(map: String) -> int:
 				kill = true                     # v2 sidecar (lossy foliage swap)
 			elif f.ends_with(".tmp.glb"):
 				kill = true                     # torn mid-write leftover
-			elif f.ends_with(".baked4.res"):
-				kill = not FileAccess.file_exists(p.trim_suffix(".baked4.res"))
-			elif f.ends_with(".baked3.res"):
-				kill = true      # superseded: baked with tangents in the wrong frame
+			elif f.ends_with(".baked5.res") or f.ends_with(".baked5f.res") \
+					or f.ends_with(".baked5l.res"):
+				# current generation: keep unless the GLB it was baked from is gone
+				var stem := f.trim_suffix(".res")
+				stem = stem.substr(0, stem.rfind(".baked5"))
+				kill = not FileAccess.file_exists(p.get_base_dir() + "/" + stem)
+			elif f.ends_with(".baked3.res") or f.ends_with(".baked4.res"):
+				kill = true      # superseded: textures were left uncompressed
 			if kill:
 				DirAccess.remove_absolute(p)
 				removed += 1
