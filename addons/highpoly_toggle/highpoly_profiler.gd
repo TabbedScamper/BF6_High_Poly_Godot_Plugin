@@ -193,20 +193,63 @@ static func crumbs_begin() -> void:
 	if _crumb_fh != null:
 		return
 	HighpolyStore.ensure_dir(CRUMB_DIR)
-	if FileAccess.file_exists(CRUMB_PATH):
-		var prev := FileAccess.get_file_as_string(CRUMB_PATH)
+	# A CRASHED SESSION LEAVES ITS TRAIL IN A .tmp. Godot's FileAccess writes
+	# through a temporary file and renames it into place on close, so a process
+	# that dies never completes the rename — the crumbs are all there, under a
+	# name nothing looks at. The first real crash this was built for left
+	# breadcrumbs.txt9283425.tmp full of exactly the answer, while
+	# breadcrumbs.txt still held the previous clean session and the log header
+	# reported nothing wrong.
+	#
+	# So: adopt any leftover .tmp as the previous session before rotating.
+	var salvaged := ""
+	var d := DirAccess.open(CRUMB_DIR)
+	if d != null:
+		var best := ""
+		var best_at := -1
+		for f in d.get_files():
+			if not (f.begins_with("breadcrumbs.txt") and f.contains(".tmp")):
+				continue
+			var full := "%s/%s" % [CRUMB_DIR, f]
+			var at := int(FileAccess.get_modified_time(full))
+			if at > best_at:
+				best_at = at
+				best = full
+		if best != "":
+			salvaged = FileAccess.get_file_as_string(best)
+			DirAccess.remove_absolute(best)
+	if salvaged == "" and FileAccess.file_exists(CRUMB_PATH):
+		salvaged = FileAccess.get_file_as_string(CRUMB_PATH)
+	if salvaged != "":
 		var f := FileAccess.open(CRUMB_PREV, FileAccess.WRITE)
 		if f != null:
-			f.store_string(prev)
+			f.store_string(salvaged)
 			f.close()
 	_crumb_boot = Time.get_ticks_msec()
 	_crumb_fh = FileAccess.open(CRUMB_PATH, FileAccess.WRITE)
 	crumb("session", "started, plugin up")
 
 
+# LOCKED, because worker threads write here too. The whole point of tagging a
+# crumb with main/wrkr is that worker work can be crumbed, and sixteen threads
+# calling store_line on one shared FileAccess is a data race — which in a file
+# handle means interleaved lines at best and a crash at worst. Crumbing a crash
+# hunt with something that can itself crash would be a poor trade.
+static var _crumb_lock := Mutex.new()
+
+
 static func crumb(stage: String, detail := "") -> void:
 	if _crumb_fh == null:
 		return
+	_crumb_lock.lock()
+	if _crumb_fh == null:                  # closed while we waited
+		_crumb_lock.unlock()
+		return
+	_crumb_write(stage, detail)
+	_crumb_lock.unlock()
+
+
+static func _crumb_write(stage: String, detail := "") -> void:
 	# thread id included because a crash inside worker-thread work looks
 	# identical to one on the main thread until you can see which was last
 	_crumb_fh.store_line("%8.2f %s %-22s %s"
@@ -218,9 +261,13 @@ static func crumb(stage: String, detail := "") -> void:
 static func crumbs_end() -> void:
 	if _crumb_fh == null:
 		return
-	crumb("session", CRUMB_CLEAN)
-	_crumb_fh.close()
-	_crumb_fh = null
+	# under the same lock as the writers, or a worker mid-crumb loses its handle
+	_crumb_lock.lock()
+	if _crumb_fh != null:
+		_crumb_write("session", CRUMB_CLEAN)
+		_crumb_fh.close()
+		_crumb_fh = null
+	_crumb_lock.unlock()
 
 
 # Where the PREVIOUS session stopped, or "" if it shut down cleanly. This is the

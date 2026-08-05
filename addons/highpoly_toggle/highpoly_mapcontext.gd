@@ -4177,6 +4177,46 @@ var _bc_paths: Array = []
 var _bc_out: Array = []
 
 
+# HOW MUCH OF THE PARSE THE WORKER IS ALLOWED TO DO.
+#
+#   0  append_from_buffer only          the decode, which is the expensive part
+#   1  + generate_scene                 builds nodes, materials and textures
+#   2  + tangents
+#   3  + compress textures              what shipped, and what hangs
+#
+# A recorded crash ended on "dispatch 24 file(s) at entry 24/2761" with no
+# matching "returned", and the same pattern reproduces locally with a real
+# renderer: 600 props, hung solid at entry 216 for ten minutes, where headless
+# does the same work in 8.7 s. Headless never reproduces it because its dummy
+# renderer creates no GPU resources — which is the whole clue.
+#
+# Bisecting backdrops earlier gave the boundary: append_from_buffer survives,
+# + generate_scene segfaults. This makes the boundary a setting so the same
+# bisect can be run against the props reproduction rather than guessed at, and
+# so a user hitting the crash has something to turn down.
+#
+# BISECTED AGAINST THE REPRODUCTION, 600 real Dumbo props, real renderer:
+#
+#   0  exit 0, 600 of 600 built in 31.2 s        clean
+#   1  HUNG at entry 144, and left "Pages in use exist at exit in
+#      PagedAllocator" behind it                 corrupt
+#   3  finished the work in 25.1 s and then hung on teardown
+#
+# So the moment generate_scene runs on a worker the process is unstable —
+# sometimes mid-run, sometimes only at exit, which is exactly why this survived
+# five clean 24-prop tests and a dozen headless runs. It is the same boundary
+# the backdrops gave: append_from_buffer survives, + generate_scene does not.
+#
+# Stage 0 costs 31.2 s against 25.1 s, about 24%, because append_from_buffer IS
+# the expensive part — it carries the image decode, and that stays on the
+# workers. A quarter slower and stable beats a quarter faster and dead.
+#
+# Expected to become moot: on a stripped prop generate_scene has no textures to
+# create, and creating GPU resources off-thread is what appears to break. Worth
+# re-bisecting once the sidecar sets ship.
+static var prefetch_stage := 0
+
+
 func _prefetch_job(i: int) -> void:
 	var p: String = str(_pf_paths[i])
 	var bytes := FileAccess.get_file_as_bytes(p)
@@ -4187,8 +4227,24 @@ func _prefetch_job(i: int) -> void:
 	st.set_handle_binary_image(GLTFState.HANDLE_BINARY_EMBED_AS_UNCOMPRESSED)
 	var doc := GLTFDocument.new()
 	doc.append_from_buffer(bytes, p.get_base_dir(), st)
+	# CRUMBED AROUND generate_scene SPECIFICALLY. A recorded crash ended on
+	# "dispatch 24 file(s) at entry 24/2761" with no matching "returned", which
+	# says the editor died inside this function and nothing more. This job does
+	# four separable things and exactly one of them is already known to be
+	# dangerous — generate_scene segfaults on backdrops, proven twice, with and
+	# without their textures. If the next crash's last worker crumb is a
+	# "gen_scene" with no "gen_done" after it, that settles it for props too.
+	if prefetch_stage < 1:
+		# hand the parsed STATE over instead; the main thread builds the scene
+		_pf_scenes[i] = {"doc": doc, "st": st}
+		return
+	HighpolyProfiler.crumb("pf.gen_scene", p.get_file())
 	var sc := doc.generate_scene(st)
 	if sc == null:
+		return
+	HighpolyProfiler.crumb("pf.gen_done", p.get_file())
+	if prefetch_stage < 2:
+		_pf_scenes[i] = {"sc": sc}
 		return
 	HighpolyStore.ensure_scene_tangents(sc)     # mesh maths only: safe here
 	# and the sidecar's textures, if this prop ships stripped. Pure Image work,
@@ -4203,12 +4259,17 @@ func _prefetch_job(i: int) -> void:
 	# MeshInstance3D, PlaneMesh — and the experiment that "proved" the texture
 	# rule was creating those as well.
 	#
-	# Verified in a REAL EDITOR, not just headless (headless has no renderer, so
-	# it cannot answer a GPU question at all): five runs, no hang, no crash,
-	# 86 of 86 textures compressed either way, 27.8 ms per prop off the main
-	# thread — about 77 s of a 261 s Dumbo build.
+	# That test used 24 props in one batch and passed five times out of five. It
+	# was not wrong, it was too small: the same call over hundreds of props in
+	# rolling batches hangs a real editor solid. Scale was the variable nobody
+	# varied, which is why prefetch_stage exists above.
+	if prefetch_stage < 3:
+		_pf_scenes[i] = {"sc": sc}
+		return
+	HighpolyProfiler.crumb("pf.compress", p.get_file())
 	HighpolyStore.compress_scene_textures(sc, false, _pf_mode == VRAM_COMPRESSED)
-	_pf_scenes[i] = sc                          # handed over as-is, not packed
+	HighpolyProfiler.crumb("pf.compress_done", p.get_file())
+	_pf_scenes[i] = {"sc": sc}
 
 
 # Parse `paths` across all cores. Yields while they run so the editor stays
@@ -4230,11 +4291,13 @@ func _prefetch(paths: Array) -> void:
 	WorkerThreadPool.wait_for_group_task_completion(gid)
 	for i in range(paths.size()):
 		var sc: Variant = _pf_scenes[i]
-		if sc == null or not is_instance_valid(sc):
+		# a Dictionary now, not a Node: is_instance_valid on a Dictionary is
+		# false, which would have silently discarded every prefetched prop
+		if not (sc is Dictionary):
 			continue
 		var key := str(paths[i])
 		if _pf.has(key):                        # asked for twice: keep the first
-			(sc as Node).free()                 # MAIN thread, deliberately
+			_free_pf_entry(sc)                  # MAIN thread, deliberately
 			continue
 		_pf[key] = sc
 	for i in range(paths.size()):
@@ -4306,9 +4369,7 @@ func _bc_release() -> void:
 
 func _pf_release() -> void:
 	for k in _pf.keys():
-		var n: Variant = _pf[k]
-		if n != null and is_instance_valid(n):
-			(n as Node).free()                  # MAIN thread, deliberately
+		_free_pf_entry(_pf[k])                  # MAIN thread, deliberately
 	_pf.clear()
 	_pf_mode = -1
 	_bc_release()   # decoded textures belong to the same batch as the scenes
@@ -4317,11 +4378,45 @@ func _pf_release() -> void:
 # Returns a LIVE scene root that the caller owns and must free. Not a
 # PackedScene: every consumer instantiated one immediately anyway, and the
 # pack/instantiate round trip is what made the prefetch worthless (see above).
+# A prefetch entry is whatever the worker was allowed to finish: either a built
+# scene, or the parsed GLTFState for the main thread to build. Finishing it here
+# is what makes prefetch_stage adjustable without the consumer caring.
+func _finish_pf(entry: Variant) -> Node:
+	if not (entry is Dictionary):
+		return null
+	var d: Dictionary = entry
+	var sc: Node = d.get("sc")
+	if sc == null:
+		var doc: GLTFDocument = d.get("doc")
+		var st: GLTFState = d.get("st")
+		if doc == null or st == null:
+			return null
+		sc = doc.generate_scene(st)
+		if sc == null:
+			return null
+	if not is_instance_valid(sc):
+		return null
+	if prefetch_stage < 2:
+		HighpolyStore.ensure_scene_tangents(sc)
+	if prefetch_stage < 3:
+		HighpolyStore.compress_scene_textures(sc, false, vram_mode == VRAM_COMPRESSED)
+	return sc
+
+
+func _free_pf_entry(entry: Variant) -> void:
+	if not (entry is Dictionary):
+		return
+	var sc: Node = (entry as Dictionary).get("sc")
+	if sc != null and is_instance_valid(sc):
+		sc.free()
+
+
 func _load_external_glb(abs_or_res: String) -> Node:
 	# a prefetch worker may already have done the expensive half
 	if _pf.has(abs_or_res) and _pf_mode == vram_mode:
-		var inst: Node = _pf[abs_or_res]
+		var entry: Variant = _pf[abs_or_res]
 		_pf.erase(abs_or_res)
+		var inst := _finish_pf(entry)
 		if inst != null and is_instance_valid(inst):
 			# the worker generated the tangents and compressed the textures, so
 			# the only thing left is hanging a stripped prop's sidecar textures
