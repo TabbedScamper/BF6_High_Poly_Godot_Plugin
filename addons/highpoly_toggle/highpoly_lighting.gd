@@ -893,9 +893,21 @@ static func set_map_lights(root: Node, on: bool, map: String,
 	var slice := Time.get_ticks_msec()
 	var all: Array = d.get("lights", [])
 	var seen := 0
+	# TIMED, because a recording showed this holding its progress bar for 65.5 s
+	# with not one second of it attributed to anything. It had no spans at all —
+	# the phase table simply had a 65 s hole where the map lights were.
+	HighpolyProfiler.crumb("lights", "placing %d fixture(s) for %s" % [all.size(), map])
+	var _tl := Time.get_ticks_msec()
+	var _tw := 0
 	for L in all:
 		seen += 1
 		if Time.get_ticks_msec() - slice >= 30:
+			# split the WORK from the waiting: a slice that costs 30 ms and then
+			# waits 90 ms for a frame is a very different problem from one that
+			# costs 120 ms, and the bar looks identical either way
+			HighpolyProfiler.span("map lights: build fixtures",
+				Time.get_ticks_msec() - slice)
+			_tw = Time.get_ticks_msec()
 			if progress.is_valid():
 				progress.call(seen, all.size())
 			if root.is_inside_tree():
@@ -905,7 +917,10 @@ static func set_map_lights(root: Node, on: bool, map: String,
 			if not is_instance_valid(holder) or not holder.is_inside_tree():
 				if progress.is_valid():
 					progress.call(all.size(), all.size())   # never strand the bar
+				HighpolyProfiler.crumb("lights", "cancelled at %d of %d" % [seen, all.size()])
 				return "Map lights cancelled"
+			HighpolyProfiler.span("map lights: waiting for a frame",
+				Time.get_ticks_msec() - _tw)
 			slice = Time.get_ticks_msec()
 		if not (L is Dictionary): continue
 		if str(L.get("layer", "base")) != "base":
@@ -954,6 +969,8 @@ static func set_map_lights(root: Node, on: bool, map: String,
 	invalidate_light_cull()      # everything starts hidden: the next tick must run
 	if progress.is_valid():
 		progress.call(all.size(), all.size())
+	HighpolyProfiler.crumb("lights", "placed %d in %.1f s"
+		% [n, (Time.get_ticks_msec() - _tl) / 1000.0])
 	return "Map lights: %d loaded (nearest %d m lit)" % [n, int(lights_range)]
 
 # dock-timer culling: only lights near the editor camera render.

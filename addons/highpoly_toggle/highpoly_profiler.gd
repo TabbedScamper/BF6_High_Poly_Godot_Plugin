@@ -336,6 +336,7 @@ func _ready() -> void:
 func start() -> String:
 	_spans.clear()
 	_lanes.clear(); _lane_live.clear(); _lane_peak = 0
+	_mc_bytes = 0; _mc_ms = 0; _mc_n = 0
 	_samples.clear(); _attrib.clear(); _events.clear(); _dl_series.clear()
 	_last_state = {}
 	_last_dl = {}
@@ -646,6 +647,27 @@ static func _tris(m: Mesh) -> int:
 # problem was it" — the pipe being full, or the pipe being idle while we did
 # something else. Idle time with a non-empty queue is the interesting case: it
 # means work was available and we were not fetching it.
+# The DOWNLOADS section below reads the model-library worker pool and NOTHING
+# ELSE, so every map-context transfer has been invisible to it: a run that
+# pulled 1.8 GB of scenery reported "8 s of the 401 s" spent transferring. That
+# is the one number a user on a slow connection needs, and it was describing a
+# different download entirely. Map-context transfers report themselves here.
+static var _mc_bytes := 0
+static var _mc_ms := 0
+static var _mc_n := 0
+
+
+static func mapctx_transfer(bytes: int, ms: int, what := "") -> void:
+	if bytes <= 0:
+		return
+	_mc_bytes += bytes
+	_mc_ms += maxi(1, ms)
+	_mc_n += 1
+	crumb("transfer", "%s %.1f MB in %.1f s (%.0f MB/s)"
+		% [what, bytes / 1048576.0, ms / 1000.0,
+			bytes / 1048576.0 / maxf(0.001, ms / 1000.0)])
+
+
 func _download_report() -> PackedStringArray:
 	var out := PackedStringArray()
 	if _dl_series.is_empty():
@@ -679,8 +701,15 @@ func _download_report() -> PackedStringArray:
 	rates.sort()
 	out.append("")
 	out.append("DOWNLOADS")
-	out.append("  %.1f MB in %d file(s) over %.0f s  =  %.2f MB/s averaged over the whole recording"
+	out.append("  model library: %.1f MB in %d file(s) over %.0f s  =  %.2f MB/s averaged"
 		% [mb, files, span, mb / span])
+	if _mc_n > 0:
+		out.append("  map context:   %.1f MB in %d transfer(s), %.1f s moving = %.0f MB/s"
+			% [_mc_bytes / 1048576.0, _mc_n, _mc_ms / 1000.0,
+				_mc_bytes / 1048576.0 / maxf(0.001, _mc_ms / 1000.0)])
+		out.append("  TOTAL          %.1f MB — the scenery is most of it, and it used"
+			% ((_mc_bytes / 1048576.0) + mb))
+		out.append("                 to be missing from this section entirely")
 	if busy > 0.0:
 		out.append("  %.2f MB/s while actually transferring (%.0f s of the %.0f s)"
 			% [mb / busy, busy, span])

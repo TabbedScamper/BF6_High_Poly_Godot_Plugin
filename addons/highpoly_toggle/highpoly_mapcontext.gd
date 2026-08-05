@@ -366,6 +366,7 @@ func _download_with_progress(host: Node, url: String, to_file: String, status: C
 	download_progress.emit(label, 0, total_bytes)
 	var ok := false
 	var why := ""
+	var _tdl := Time.get_ticks_msec()   # for the transfer accounting on the way out
 	for attempt in range(3):
 		if attempt > 0:
 			if status.is_valid():
@@ -433,6 +434,14 @@ func _download_with_progress(host: Node, url: String, to_file: String, status: C
 	if ok and total_bytes > 0:
 		download_progress.emit(label, total_bytes, total_bytes)
 	download_ended.emit(label)
+	if ok:
+		var got := total_bytes
+		if got <= 0 and FileAccess.file_exists(to_file):
+			var fh := FileAccess.open(to_file, FileAccess.READ)
+			if fh != null:
+				got = fh.get_length()
+				fh.close()
+		HighpolyProfiler.mapctx_transfer(got, Time.get_ticks_msec() - _tdl, label)
 	if job_queue != null:
 		job_queue.release(token, ok, why if not ok else String.humanize_size(total_bytes))
 	elif not ok:
@@ -2075,6 +2084,7 @@ func _ensure_props_ranged(host: Node, map: String, url: String, miss: Array,
 				status.call("Downloading %s scenery: %d of %d pieces (%.0f of %.0f MB)"
 					% [map, files, want.size(), done / 1048576.0, bytes / 1048576.0]))
 	var ms: int = maxi(1, Time.get_ticks_msec() - t0)
+	HighpolyProfiler.mapctx_transfer(bytes, ms, "scenery")
 	download_progress.emit(RANGED_JOB, bytes, bytes)
 	download_ended.emit(RANGED_JOB)
 	if job_queue != null and token != 0:
@@ -3197,9 +3207,17 @@ func _build_backdrop_async(bd_root: Node3D, entries: Array, dir: String,
 				# GLBs carry one node per material section (Roof, Walls...);
 				# _extract_mesh took only the FIRST, which rendered the distant
 				# buildings as floating rooftops
+				# TIMED. Only the MERGES inside this call were instrumented, so a
+				# recording showed 13 s of "skyline: merge mesh nodes" sitting
+				# inside a 99 s skyline build and said nothing whatsoever about
+				# the other 86 — the largest unexplained block in the load, and
+				# invisible until the skyline got a progress lane of its own.
+				var _ts := Time.get_ticks_msec()
 				_merge_who = "skyline"
 				meshes = await _parse_prop_file(gp)
 				_merge_who = "props"
+				HighpolyProfiler.span("skyline: load mesh (GLB parse + cache)",
+					Time.get_ticks_msec() - _ts)
 		elif e.has("model"):
 			var bm := _mesh_for(str(e["model"]))
 			if bm != null:
@@ -3214,8 +3232,11 @@ func _build_backdrop_async(bd_root: Node3D, entries: Array, dir: String,
 			# orange, not green: the skyline is made of the level's own
 			# buildings, so untextured it should match the map objects in front
 			# of it rather than the ground under it
+			var _tm := Time.get_ticks_msec()
 			for msh: Mesh in meshes:
 				_add_multimesh(bdest, msh, e.get("xf", []), textured, mat)
+			HighpolyProfiler.span("skyline: place multimesh",
+				Time.get_ticks_msec() - _tm)
 			_bd_ok += 1
 		_bd_done += 1
 		if Time.get_ticks_msec() - frame_start >= BUILD_FRAME_MS:
