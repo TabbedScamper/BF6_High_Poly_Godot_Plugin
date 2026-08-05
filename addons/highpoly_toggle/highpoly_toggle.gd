@@ -791,7 +791,7 @@ func _enter_tree() -> void:
 	mapctx_maplights.tooltip_text = "The street lights, signs and indoor lights the real level has, several thousand of them on some maps. Only the ones near your camera light up. Costs frame rate."
 	mapctx_maplights.toggled.connect(func(v: bool):
 		var _r := EditorInterface.get_edited_scene_root()
-		lbl.text = LightingScript.set_map_lights(_r,
+		lbl.text = await LightingScript.set_map_lights(_r,
 				v and mapctx_light.button_pressed, mapctx.map_of(_r))
 		_save_mapctx_state())
 	mc_sub.add_child(mapctx_maplights)
@@ -2266,7 +2266,7 @@ func _lighting_changed() -> void:
 			mapctx_gi.button_pressed if mapctx_gi else true,
 			mapctx_shadows.button_pressed if mapctx_shadows else true)
 	if mapctx_maplights and mapctx_maplights.button_pressed:
-		lbl.text += " | " + LightingScript.set_map_lights(r, true, map)
+		lbl.text += " | " + await LightingScript.set_map_lights(r, true, map)
 
 # grey the checkbox out when the open scene has no lighting data (called from
 # the dock's 0.5 s timer — cheap: one dictionary lookup)

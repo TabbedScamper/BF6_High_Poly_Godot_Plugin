@@ -881,8 +881,21 @@ static func set_map_lights(root: Node, on: bool, map: String) -> String:
 	holder.name = LIGHTS_NODE
 	root.add_child(holder)
 	holder.owner = null
+	# YIELDS. A map carries thousands of fixtures — Dumbo added 11,641 nodes in
+	# one go — and building them between two frames was the last freeze in a
+	# recorded cold load: 23.1 seconds with nothing drawn and no input taken.
+	# Nothing here is atomic, so hand the editor a frame every ~30 ms.
 	var n := 0
+	var slice := Time.get_ticks_msec()
 	for L in d.get("lights", []):
+		if Time.get_ticks_msec() - slice >= 30:
+			if root.is_inside_tree():
+				await root.get_tree().process_frame
+			# the scene can be closed or the layer switched off mid-build; the
+			# holder going away is the signal to stop rather than to crash
+			if not is_instance_valid(holder) or not holder.is_inside_tree():
+				return "Map lights cancelled"
+			slice = Time.get_ticks_msec()
 		if not (L is Dictionary): continue
 		if str(L.get("layer", "base")) != "base":
 			continue                    # winter/gauntlet-only lights stay off
