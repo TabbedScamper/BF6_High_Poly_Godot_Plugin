@@ -12,6 +12,7 @@ class_name HighpolyMapContext
 # editor camera via a render-radius slider.
 
 const ZipFetch = preload("highpoly_zipfetch.gd")   # ranged prop fetch
+const BcTex = preload("highpoly_bctex.gd")        # textures shipped beside the mesh
 const NODE := "_MAP_CONTEXT"
 const CACHE := "user://mapcontext"
 # Download liveness. A dead connection is the one failure that never resolves
@@ -3220,7 +3221,31 @@ func _build_backdrop_async(bd_root: Node3D, entries: Array, dir: String,
 	var bd_id := bd_root.get_instance_id()
 	HighpolyProfiler.crumb("skyline", "build started, %d piece(s)" % entries.size())
 	_begin_build_draw(bd_root)
+	# ITS TEXTURES CAN BE PREFETCHED EVEN THOUGH ITS GEOMETRY CANNOT. The note
+	# above is about generate_scene, which segfaults out there. Decoding the
+	# texture sidecars is pure Image work, it is safe, and it is where 63% of a
+	# backdrop's parse went — so the half that CAN move, moves.
+	const BD_TEX_BATCH := 24
+	var tex_next := 0
+	var bd_paths: Array = []
 	for e in entries:
+		bd_paths.append("%s/%s" % [dir, e["glb"]] if e.has("glb") else "")
+	for ei in range(entries.size()):
+		var e = entries[ei]
+		if ei >= tex_next:
+			var want: Array = []
+			for j in range(ei, mini(ei + BD_TEX_BATCH, bd_paths.size())):
+				if str(bd_paths[j]) != "":
+					want.append(str(bd_paths[j]))
+			tex_next = ei + int(BD_TEX_BATCH * 0.5)   # top up before it runs dry
+			if not want.is_empty():
+				var _tt := Time.get_ticks_msec()
+				await _bctex_prefetch(want)
+				HighpolyProfiler.span("skyline: texture prefetch (worker threads)",
+					Time.get_ticks_msec() - _tt)
+				if gen != _build_gen:
+					_end_build_draw(bd_root)
+					return
 		var meshes: Array = []
 		if e.has("glb"):
 			var gp := "%s/%s" % [dir, e["glb"]]
@@ -4140,6 +4165,17 @@ var _pf_scenes: Array = []           # worker output, adopted into _pf below
 # different mode are dropped rather than served.
 var _pf_mode := -1
 
+# Textures decoded off the main thread, waiting to be bound to the meshes they
+# belong to. Filled by workers (BcTex.decode is pure Image work and safe
+# there), drained by _load_external_glb. Keyed by GLB path, like _pf.
+#
+# This is the half of the job that made stripping the images worth doing: the
+# skyline cannot prefetch its geometry at all — generate_scene segfaults on
+# backdrops — but it can prefetch its TEXTURES, which is where the time was.
+var _bc: Dictionary = {}
+var _bc_paths: Array = []
+var _bc_out: Array = []
+
 
 func _prefetch_job(i: int) -> void:
 	var p: String = str(_pf_paths[i])
@@ -4155,6 +4191,9 @@ func _prefetch_job(i: int) -> void:
 	if sc == null:
 		return
 	HighpolyStore.ensure_scene_tangents(sc)     # mesh maths only: safe here
+	# and the sidecar's textures, if this prop ships stripped. Pure Image work,
+	# which is the one kind of resource work that IS safe out here.
+	_bc_out[i] = _decode_side(p)
 	# AND THE TEXTURE COMPRESSION. This used to be the one part left on the main
 	# thread, on the strength of a comment saying compress_scene_textures "HANGS
 	# THE PROCESS" because "creating GPU textures off the main thread is the
@@ -4181,6 +4220,8 @@ func _prefetch(paths: Array) -> void:
 	_pf_paths = paths
 	_pf_scenes = []
 	_pf_scenes.resize(paths.size())
+	_bc_out = []
+	_bc_out.resize(paths.size())
 	var gid := WorkerThreadPool.add_group_task(_prefetch_job, paths.size(),
 		-1, false, "highpoly glb prefetch")
 	if is_inside_tree():
@@ -4196,13 +4237,73 @@ func _prefetch(paths: Array) -> void:
 			(sc as Node).free()                 # MAIN thread, deliberately
 			continue
 		_pf[key] = sc
+	for i in range(paths.size()):
+		var d: Variant = _bc_out[i] if i < _bc_out.size() else null
+		if d is Dictionary and not (d as Dictionary).is_empty():
+			_bc[str(paths[i])] = d
 	_pf_paths = []
 	_pf_scenes = []
+	_bc_out = []
 
 
 # Free whatever the placement loop never claimed. A cancelled or finished build
 # leaves live nodes in _pf, and clear() alone would leak every one of them —
 # these are Nodes now, not refcounted resources.
+# Decode a prop's texture sidecar, if it has one. Safe on a worker: nothing here
+# creates a Node, an ImageTexture or anything the renderer owns. Returns {} for
+# a prop that ships its textures inside the glb the old way, and every caller
+# treats that as "nothing to bind" rather than an error.
+func _decode_side(glb_path: String) -> Dictionary:
+	if not BcTex.exists(glb_path):
+		return {}
+	var d := BcTex.decode(BcTex.path_for(glb_path))
+	if d.is_empty():
+		return {}
+	# the expensive half, and the whole reason this runs out here
+	if vram_mode != VRAM_FULL:
+		BcTex.compress_decoded(d)
+	return d
+
+
+# The SKYLINE's version of a prefetch. Its geometry cannot be parsed on a worker
+# — generate_scene segfaults on backdrops, proven twice — but its textures can,
+# and that is where 63% of a backdrop's parse went. Decodes a batch of sidecars
+# across all cores while the main thread is still placing the previous one.
+func _bctex_prefetch(paths: Array) -> void:
+	var want: Array = []
+	for p in paths:
+		var s := str(p)
+		if not _bc.has(s) and BcTex.exists(s):
+			want.append(s)
+	if want.is_empty():
+		return
+	_bc_paths = want
+	_bc_out = []
+	_bc_out.resize(want.size())
+	var gid := WorkerThreadPool.add_group_task(_bctex_job, want.size(),
+		-1, false, "highpoly texture prefetch")
+	if is_inside_tree():
+		while not WorkerThreadPool.is_group_task_completed(gid):
+			await get_tree().process_frame
+	WorkerThreadPool.wait_for_group_task_completion(gid)
+	for i in range(want.size()):
+		var d: Variant = _bc_out[i]
+		if d is Dictionary and not (d as Dictionary).is_empty():
+			_bc[str(want[i])] = d
+	_bc_paths = []
+	_bc_out = []
+
+
+func _bctex_job(i: int) -> void:
+	_bc_out[i] = _decode_side(str(_bc_paths[i]))
+
+
+# Images are refcounted, so dropping the dictionary is enough — unlike _pf,
+# which holds Nodes and needs them freed by hand.
+func _bc_release() -> void:
+	_bc.clear()
+
+
 func _pf_release() -> void:
 	for k in _pf.keys():
 		var n: Variant = _pf[k]
@@ -4210,6 +4311,7 @@ func _pf_release() -> void:
 			(n as Node).free()                  # MAIN thread, deliberately
 	_pf.clear()
 	_pf_mode = -1
+	_bc_release()   # decoded textures belong to the same batch as the scenes
 
 
 # Returns a LIVE scene root that the caller owns and must free. Not a
@@ -4221,10 +4323,34 @@ func _load_external_glb(abs_or_res: String) -> Node:
 		var inst: Node = _pf[abs_or_res]
 		_pf.erase(abs_or_res)
 		if inst != null and is_instance_valid(inst):
-			# nothing left to do: the worker generated the tangents AND
-			# compressed the textures, so this is a straight hand-over
+			# the worker generated the tangents and compressed the textures, so
+			# the only thing left is hanging a stripped prop's sidecar textures
+			# on its materials — which has to happen here, because it creates
+			# GPU textures
+			_bind_side(inst, abs_or_res)
 			return inst
 	return _load_external_glb_uncached(abs_or_res)
+
+
+# Attach the textures a stripped glb does not carry. Prefers a copy a worker
+# already decoded; falls back to decoding inline, which is correct but is the
+# thing this whole design exists to avoid, so it says so in a recording.
+func _bind_side(inst: Node, glb_path: String) -> void:
+	if inst == null:
+		return
+	var d: Variant = _bc.get(glb_path)
+	if d is Dictionary:
+		_bc.erase(glb_path)
+	elif BcTex.exists(glb_path):
+		var _t := Time.get_ticks_msec()
+		d = _decode_side(glb_path)
+		HighpolyProfiler.span("textures: decoded on the MAIN thread (no prefetch)",
+			Time.get_ticks_msec() - _t)
+	if d is Dictionary and not (d as Dictionary).is_empty():
+		var _tb := Time.get_ticks_msec()
+		BcTex.bind(inst, d as Dictionary)
+		HighpolyProfiler.span("textures: bind to materials",
+			Time.get_ticks_msec() - _tb)
 
 
 func _load_external_glb_uncached(abs_or_res: String) -> Node:
@@ -4260,8 +4386,11 @@ func _load_external_glb_uncached(abs_or_res: String) -> Node:
 	doc.append_from_buffer(bytes, ProjectSettings.globalize_path(abs_or_res).get_base_dir(), st)
 	var scene := doc.generate_scene(st)
 	if scene == null: return null
-	# raw embedded textures are a memory bomb at scale — recompress to S3TC
+	# raw embedded textures are a memory bomb at scale — recompress to S3TC.
+	# A stripped prop has none to recompress and this is a cheap walk over
+	# nothing, so it costs the new path essentially zero.
 	HighpolyStore.compress_scene_textures(scene, true, vram_mode == VRAM_COMPRESSED)
+	_bind_side(scene, abs_or_res)
 	return scene
 
 func _add_cell_multimeshes(parent: Node3D, mesh: Mesh, xf: Array, textured: bool, flat_mat: Material, src := "") -> void:
