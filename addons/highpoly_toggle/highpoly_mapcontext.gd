@@ -2059,8 +2059,13 @@ func _merge_meshes(pairs: Array) -> Array:
 		Log.debug("map context: regenerated tangents for %d merged surface(s)"
 			% regenerated)
 	if meshes.size() > 1:
-		Log.debug("map context: %d materials exceeded the 255-surface ceiling, "
-			+ "split across %d meshes (no geometry dropped)"
+		# THE PARENTHESES ARE LOAD-BEARING: % binds TIGHTER than +, so without them
+		# only the second fragment is formatted — one placeholder against two
+		# arguments — and every merge logged "String formatting error: not all
+		# arguments converted" instead. 102 of them in one session. A parse check
+		# cannot see this; only running it can.
+		Log.debug(("map context: %d materials exceeded the 255-surface ceiling, "
+			+ "split across %d meshes (no geometry dropped)")
 			% [groups.size(), meshes.size()])
 	return meshes
 

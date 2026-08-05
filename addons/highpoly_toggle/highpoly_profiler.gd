@@ -110,6 +110,9 @@ func start() -> String:
 	_last_state = {}
 	_last_dl = {}
 	_peak = {"draws": 0, "objs": 0, "vram": 0.0, "nodes": 0}
+	# instance ids are recycled, so a stale entry could charge a new mesh the
+	# triangle count of a freed one
+	_tri_cache.clear()
 	_t0 = Time.get_ticks_msec() / 1000.0
 	recording = true
 	_tick.start(); _scan.start()
@@ -358,14 +361,37 @@ static func _range_culled(gi: GeometryInstance3D) -> bool:
 	return false
 
 
+# `surface_get_array_index_len` / `surface_get_array_len` are ARRAYMESH-ONLY.
+# Called on a PrimitiveMesh they do not merely return 0, they THROW — and the
+# throw propagated out of _attribute(), abandoning that entire scan. One
+# PlaneMesh (the water surface) was enough to kill roughly a third of the
+# attribution scans in a 17-minute recording, 181 errors, silently: the report
+# still printed, just built from the scans that happened to die late.
+#
+# Results are cached per mesh because the same meshes are re-walked every 2 s,
+# and the primitive path has to pull the arrays to count anything.
+static var _tri_cache: Dictionary = {}
+
 static func _tris(m: Mesh) -> int:
 	if m == null: return 0
+	var key := m.get_instance_id()
+	if _tri_cache.has(key):
+		return int(_tri_cache[key])
 	var t := 0
-	for s in range(m.get_surface_count()):
-		# face count without pulling the arrays: index count over 3
-		t += int(m.surface_get_array_index_len(s) / 3.0)
-		if m.surface_get_array_index_len(s) == 0:
-			t += int(m.surface_get_array_len(s) / 3.0)
+	var am := m as ArrayMesh
+	if am != null:
+		for s in range(am.get_surface_count()):
+			# face count without pulling the arrays: index count over 3
+			var idx := am.surface_get_array_index_len(s)
+			t += int(idx / 3.0) if idx > 0 else int(am.surface_get_array_len(s) / 3.0)
+	else:
+		for s in range(m.get_surface_count()):
+			var arr: Array = m.surface_get_arrays(s)
+			if arr.size() > Mesh.ARRAY_INDEX and arr[Mesh.ARRAY_INDEX] != null:
+				t += int((arr[Mesh.ARRAY_INDEX] as PackedInt32Array).size() / 3.0)
+			elif arr.size() > Mesh.ARRAY_VERTEX and arr[Mesh.ARRAY_VERTEX] != null:
+				t += int((arr[Mesh.ARRAY_VERTEX] as PackedVector3Array).size() / 3.0)
+	_tri_cache[key] = t
 	return t
 
 
