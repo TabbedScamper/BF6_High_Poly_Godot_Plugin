@@ -115,15 +115,24 @@ func event(kind: String, text: String) -> void:
 static var _active: HighpolyProfiler = null
 static var _spans: Dictionary = {}          # name -> {ms, n}
 
+# MAIN THREAD ONLY. Both of these mutate shared Arrays/Dictionaries, and the
+# build is moving onto worker threads — a span() from four threads at once is a
+# data race on `_spans`, which in GDScript means a corrupted dictionary or a
+# hard crash rather than a wrong number. Timing is not worth either, so work
+# done off-thread is simply not attributed and the report says so by omission.
+static func _on_main() -> bool:
+	return OS.get_thread_caller_id() == OS.get_main_thread_id()
+
+
 static func mark(kind: String, text: String) -> void:
-	if _active != null and _active.recording:
+	if _active != null and _active.recording and _on_main():
 		_active.event(kind, text)
 
 # Call with the elapsed milliseconds of a chunk of work. Costs are SUMMED per
 # name across the run, and the count comes with it: 2761 calls of 8 ms is a very
 # different problem from one call of 22 s, and both add up to the same total.
 static func span(name: String, ms: float) -> void:
-	if _active == null or not _active.recording:
+	if _active == null or not _active.recording or not _on_main():
 		return
 	var e: Dictionary = _spans.get(name, {"ms": 0.0, "n": 0})
 	e["ms"] = float(e["ms"]) + ms
