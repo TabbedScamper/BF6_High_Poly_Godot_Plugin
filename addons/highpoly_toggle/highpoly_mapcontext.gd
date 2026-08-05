@@ -1355,7 +1355,14 @@ static var vram_mode := VRAM_COMPRESSED
 
 # Sidecars are per vram mode: the pixels differ, so serving one baked under
 # another would silently show the wrong quality with no way to tell.
-static func _baked_suffix() -> String:
+# One numbered file per mesh of a split prop. Carries the vram mode for the same
+# reason the single-mesh suffix does: the three settings must not serve each
+# other's pixels.
+func _part_suffix(i: int) -> String:
+	return "%s.p%d.res" % [_baked_suffix().trim_suffix(".res"), i]
+
+
+func _baked_suffix() -> String:
 	match vram_mode:
 		VRAM_LOW: return ".baked5l.res"
 		VRAM_FULL: return ".baked5f.res"
@@ -1413,7 +1420,19 @@ func _compress_job(i: int) -> void:
 
 
 func _compress_textures(m: Mesh) -> int:
-	if m == null or vram_mode == VRAM_FULL:
+	# ONLY THE LOW MODE NEEDS THIS PASS, and running it otherwise is expensive
+	# rather than merely pointless. HighpolyStore.compress_scene_textures has
+	# ALREADY compressed everything during the parse, with better per-slot hints
+	# (COMPRESS_SOURCE_SRGB / NORMAL / GENERIC) and mipmaps. This walk would then
+	# call get_image() on every texture just to discover it is already
+	# compressed and skip it — and get_image() COPIES the data.
+	#
+	# On a prop with 13 textures that is a rounding error. A Dumbo skyline file
+	# carries 653 materials and 706 textures, and there are 155 of them, which is
+	# why the skyline stayed slow. Low mode still needs this pass because it
+	# resizes, and a compressed image cannot be resized — so in that mode the
+	# parse skips its own compression and leaves the work here.
+	if m == null or vram_mode != VRAM_LOW:
 		return 0
 	# --- gather (main thread, cheap) ---------------------------------------
 	# ONE TEXTURE CAN FILL SEVERAL SLOTS and every one has to be repointed. glTF
@@ -1574,6 +1593,41 @@ func _parse_prop_file(gp: String) -> Array:
 	# under a different one, and encoding it here means the three can coexist
 	# instead of invalidating each other every time someone changes the setting.
 	var baked := gp + _baked_suffix()
+
+	# A SPLIT PROP GETS A SIDECAR TOO, one file per part. It used to get none —
+	# "one .res holds one Resource, so caching a list would need its own
+	# container format" — and that meant the heaviest files in the map cached
+	# nothing and re-parsed on EVERY load, warm or cold. The six biggest Dumbo
+	# backdrops each split into three meshes, so the whole skyline was paying
+	# full parse cost forever, which is exactly the "it still takes a while"
+	# complaint. A container format was never needed: numbered files are enough.
+	var part0 := gp + _part_suffix(0)
+	if mesh_cache_enabled and FileAccess.file_exists(part0) \
+			and FileAccess.get_modified_time(part0) >= FileAccess.get_modified_time(gp):
+		var parts: Array = []
+		var i := 0
+		var bad := false
+		while true:
+			var pp := gp + _part_suffix(i)
+			if not FileAccess.file_exists(pp):
+				break
+			var pm := ResourceLoader.load(pp, "Mesh", ResourceLoader.CACHE_MODE_REPLACE)
+			if not (pm is Mesh) or not _mesh_keeps_textures(pm as Mesh):
+				bad = true
+				break
+			parts.append(pm)
+			i += 1
+		if not bad and parts.size() > 0:
+			return parts
+		# any part unusable makes the whole set unusable: a prop missing one of
+		# its meshes renders as a fragment, which reads as a bad model
+		var j := 0
+		while FileAccess.file_exists(gp + _part_suffix(j)):
+			DirAccess.remove_absolute(gp + _part_suffix(j))
+			j += 1
+		Log.warn("%s: split-mesh cache was incomplete, re-baking from the model"
+			% gp.get_file())
+
 	if mesh_cache_enabled and FileAccess.file_exists(baked) \
 			and FileAccess.get_modified_time(baked) >= FileAccess.get_modified_time(gp):
 		var bm := ResourceLoader.load(baked, "Mesh", ResourceLoader.CACHE_MODE_REPLACE)
@@ -1621,9 +1675,28 @@ func _parse_prop_file(gp: String) -> Array:
 			HighpolyProfiler.span("props: compress textures for VRAM",
 				Time.get_ticks_msec() - _tc)
 		done.append(_with_lods(m))
-	# Sidecar only for the single-mesh case. A split prop is a handful of files
-	# per map (81 of 155 backdrops on Dumbo) and one .res holds one Resource, so
-	# caching a list would need its own container format; those re-parse instead.
+	# A split prop caches as numbered parts (see the loader above). Written only
+	# when EVERY part is usable, so a half-written set can never be loaded back
+	# as a prop missing some of its meshes.
+	if mesh_cache_enabled and done.size() > 1:
+		var ok := true
+		for m in done:
+			if m == null or not _mesh_keeps_textures(m as Mesh):
+				ok = false
+				break
+		if ok:
+			var wrote := 0
+			for i in range(done.size()):
+				if ResourceSaver.save(done[i], gp + _part_suffix(i),
+						ResourceSaver.FLAG_COMPRESS) == OK:
+					wrote += 1
+				else:
+					break
+			if wrote != done.size():
+				for i in range(wrote):     # never leave a torn set behind
+					DirAccess.remove_absolute(gp + _part_suffix(i))
+
+	# Sidecar for the single-mesh case.
 	if mesh_cache_enabled and done.size() == 1 and done[0] != null \
 			and _mesh_keeps_textures(done[0]):
 		if ResourceSaver.save(done[0], baked, ResourceSaver.FLAG_COMPRESS) != OK:
@@ -2933,6 +3006,14 @@ static func _min_d2(xf: Array, cpos: Vector3) -> float:
 func _build_backdrop_async(bd_root: Node3D, entries: Array, dir: String,
 		textured: bool, mat: Material, gen: int) -> void:
 	var frame_start := Time.get_ticks_msec()
+	# THE SKYLINE DELIBERATELY DOES NOT PREFETCH, unlike the props. It was tried
+	# and reverted: backdrop meshes carry BLEND SHAPES, which props do not, and
+	# parsing them on worker threads produced a flood of
+	# `mesh_set_blend_shape_mode` errors from the renderer. The identical
+	# prefetch over 24 props produces exactly zero. Against that risk the gain
+	# was only 1.29x on the six heaviest files (1.99 s -> 1.54 s), because a
+	# backdrop's time goes into image decoding rather than anything a second
+	# core can help with.
 	for e in entries:
 		var meshes: Array = []
 		if e.has("glb"):
@@ -3771,7 +3852,7 @@ func _load_external_glb(abs_or_res: String) -> PackedScene:
 		var inst := ps.instantiate()
 		if inst != null:
 			# textures only: the worker already generated the tangents
-			HighpolyStore.compress_scene_textures(inst, false)
+			HighpolyStore.compress_scene_textures(inst, false, vram_mode == VRAM_COMPRESSED)
 			var out := PackedScene.new()
 			if out.pack(inst) == OK:
 				inst.queue_free()
@@ -3811,7 +3892,7 @@ func _load_external_glb_uncached(abs_or_res: String) -> PackedScene:
 	var scene := doc.generate_scene(st)
 	if scene == null: return null
 	# raw embedded textures are a memory bomb at scale — recompress to S3TC
-	HighpolyStore.compress_scene_textures(scene)
+	HighpolyStore.compress_scene_textures(scene, true, vram_mode == VRAM_COMPRESSED)
 	var ps := PackedScene.new(); ps.pack(scene); scene.queue_free()
 	return ps
 

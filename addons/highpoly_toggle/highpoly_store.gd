@@ -399,8 +399,11 @@ static func ensure_scene_tangents(root: Node) -> void:
 
 
 # MAIN THREAD ONLY (see ensure_scene_tangents). `tangents` is false when a
-# prefetch worker has already done that half.
-static func compress_scene_textures(root: Node, tangents := true) -> void:
+# prefetch worker has already done that half. `textures` is false in the Low
+# video-memory mode, where the caller compresses at HALF resolution afterwards
+# and compressing here first would make that impossible — a compressed image
+# cannot be resized.
+static func compress_scene_textures(root: Node, tangents := true, textures := true) -> void:
 	var seen_mats: Dictionary = {}   # material RID -> true
 	var swapped: Dictionary = {}     # old texture RID -> compressed ImageTexture
 	var stack: Array = [root]
@@ -427,7 +430,8 @@ static func compress_scene_textures(root: Node, tangents := true) -> void:
 			if seen_mats.has(rid):
 				continue
 			seen_mats[rid] = true
-			_compress_material(m as BaseMaterial3D, swapped)
+			if textures:
+				_compress_material(m as BaseMaterial3D, swapped)
 		# normal-mapped surfaces need TANGENTS or the renderer warns per draw
 		# (runtime-parsed GLBs ship without them) — generate once at parse
 		if tangents and n is MeshInstance3D and (n as MeshInstance3D).mesh is ArrayMesh:
