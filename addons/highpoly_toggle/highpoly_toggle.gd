@@ -1165,13 +1165,16 @@ func _enter_tree() -> void:
 	# status label + a real progress bar (meshes built / total)
 	mapctx.status_label = lbl
 	mapctx.build_progress.connect(func(done: int, total: int):
-		# same bar as the downloads: building the scenery is the second half of
-		# "getting the level in", and it was the one long job with its own bar
-		# somewhere else in the panel
+		# same bar as the downloads: building the scenery is the last stage of
+		# "getting the level in", and its label says which stage that is —
+		# 3/3 after an archive download and unpack, 2/2 when the props came in
+		# over ranged reads and there was no unpack stage at all. Without the
+		# step, a finished download read as a finished layer and the build that
+		# followed looked like the whole thing had started again.
 		if done < total:
-			jobs.set_activity("Building the level's scenery", done, total)
+			jobs.set_activity(mapctx.build_job, done, total)
 		else:
-			jobs.clear_activity("Building the level's scenery"))
+			jobs.clear_activity(mapctx.build_job))
 	# the third stage: unpacking the archive between the download finishing and
 	# the build starting. 31 s on Dumbo with no bar of any kind, which is why the
 	# panel looked stuck after the download completed.
@@ -1210,9 +1213,21 @@ func _enter_tree() -> void:
 	dock.add_child(_swap_timer)
 	mapctx_timer = Timer.new(); mapctx_timer.wait_time = 0.5
 	mapctx_timer.timeout.connect(func():
+		# INSTRUMENTED because the panel is reported to get slower the more has
+		# been loaded, even with nothing downloading. Everything below runs twice
+		# a second forever, and two of them scale with how much is in the scene:
+		# mapctx.tick() walks every prop cell built so far (re-parsing each cell
+		# key out of a string as it goes), and tick_lights walks every mined
+		# fixture. Which one it is should come from a recording rather than from
+		# whichever looks worst in the source.
+		var _tt := Time.get_ticks_msec()
 		_check_scene_change()
 		_lighting_guard()
-		if mapctx: mapctx.tick()
+		if mapctx:
+			var _t_ctx := Time.get_ticks_msec()
+			mapctx.tick()
+			HighpolyProfiler.span("panel tick: prop cell culling",
+				Time.get_ticks_msec() - _t_ctx)
 		# gamemode markers self-heal: full overlay rebuilds (and whatever
 		# else) can drop the _GAMEMODE node — if a variant is selected and
 		# the node is gone, re-apply it (cheap: small JSON + a few dozen nodes)
@@ -1228,7 +1243,10 @@ func _enter_tree() -> void:
 		var _cam3 := _vp3.get_camera_3d() if _vp3 else null
 		if _cam3:
 			var _r3 := EditorInterface.get_edited_scene_root()
+			var _t_lt := Time.get_ticks_msec()
 			LightingScript.tick_lights(_r3, _cam3.global_position)
+			HighpolyProfiler.span("panel tick: map-light culling",
+				Time.get_ticks_msec() - _t_lt)
 			# Local lighting zones follow the camera the way the game follows the
 			# player: entering an interior blends its exposure in, leaving blends
 			# it out. Costs an AABB test per zone (59 across the whole fleet, and
@@ -1242,8 +1260,12 @@ func _enter_tree() -> void:
 		# bar would sit there at whatever percent it had reached
 		# keyed clear: active_label() may now be showing the OTHER job, so
 		# gating on it would leave this lane stuck at whatever percent it reached
+		# mapctx.build_job, NOT a literal: the label carries the pipeline step
+		# ("3/3" after an archive, "2/2" after a ranged fetch), so a hardcoded
+		# copy here silently stops matching and this safety net quietly dies.
 		if mapctx and mapctx.is_build_done():
-			jobs.clear_activity("Building the level's scenery")
+			jobs.clear_activity(mapctx.build_job)
+		HighpolyProfiler.span("panel tick: total", Time.get_ticks_msec() - _tt)
 		# collision overlays follow objects the user moves/rescales
 		if col_chk.button_pressed or HighpolyCollision.has_isolation():
 			HighpolyCollision.refresh_transforms())

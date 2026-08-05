@@ -120,7 +120,19 @@ var job_queue: Node = null
 signal download_ended(label: String)
 # job labels, shared with the panel so a lane can be opened here and closed
 # there without the two drifting apart into two half-cleared bars
-const UNPACK_JOB := "Unpacking the level's scenery"
+# "Original map objects" is a PIPELINE, not one job, and the bar showed each
+# stage as if it were the whole thing — so a finished download read as a
+# finished layer and the build that followed looked like it had started over.
+# The step is in the label because that is what the bar prints; the "N/M" beside
+# the percentage counts queued DOWNLOADS, which is a different thing.
+#
+# Two steps when the props come in over ranged reads (the fetch writes the files
+# as it goes), three when it falls back to downloading and unpacking an archive.
+const UNPACK_JOB := "Unpacking the level's scenery (2/3)"
+const BUILD_JOB_OF3 := "Building the level's scenery (3/3)"
+const BUILD_JOB_OF2 := "Building the level's scenery (2/2)"
+# which of the two the build should announce; set by whichever fetch path ran
+var build_job := BUILD_JOB_OF3
 const BUILD_FRAME_MS := 40          # per-frame parse budget (always >=1 mesh per frame)
 const BUILD_REPORT_EVERY := 100     # print / progress-file cadence (meshes)
 var _build_gen := 0                 # generation: _clear() bumps it, cancelling in-flight builds
@@ -659,7 +671,15 @@ func _clear(root: Node, keep_backdrop := false) -> void:
 	_build_gen += 1
 	_building = false
 	_pf_release()         # prefetched scenes the cancelled build will never claim
-	_draw_hidden = false  # the Props node goes with the overlay below
+	_release_build_draw() # layer nodes go with the overlay freed below
+	# A cancelled build never reaches its final report, so its bar would stay on
+	# screen for the rest of the session — which is what "switching scenes locks
+	# up the progress bar" was. Send the terminal value the dock listens for, so
+	# whoever owns those lanes closes them.
+	if _build_total > 0:
+		build_progress.emit(_build_total, _build_total)
+	if _bd_total > 0:
+		backdrop_progress.emit(_bd_total, _bd_total)
 	# detach/stop the scatter BEFORE freeing the tree it lives under: its
 	# camera-follow tick holds MultiMeshInstance3D refs that must not outlive
 	# _MAP_CONTEXT (frees now interleave with running ticks across frames)
@@ -1980,7 +2000,8 @@ func props_ready(map: String) -> bool:
 	return _props_missing().is_empty()
 
 
-const RANGED_JOB := "Downloading the level's scenery"
+const RANGED_JOB := "Downloading the level's scenery (1/2)"
+const ARCHIVE_JOB := "Downloading the level's scenery (1/3)"
 
 
 # Fetch ONLY the missing props out of the published archive, using Range
@@ -1997,15 +2018,6 @@ func _ensure_props_ranged(host: Node, map: String, url: String, miss: Array,
 		refresh: bool, status: Callable) -> bool:
 	if url == "" or host == null:
 		return false
-	# A REFRESH goes the long way round, deliberately. Rewriting every prop is
-	# only half of what that path does: it also reconciles the model registry so
-	# the freshly unpacked package is not silently reverted by the library's
-	# healing pass four seconds later. That reconciliation is subtle, it was
-	# written to fix three consecutive re-downloads that all ended byte-identical
-	# to the stale copy, and duplicating it here to save a few seconds on a rare
-	# event is how it would get out of step.
-	if refresh:
-		return false
 	var zf := ZipFetch.new(host, url)
 	status.call("Checking what %s scenery is already here…" % map)
 	var entries: Array = await zf.read_index()
@@ -2013,9 +2025,21 @@ func _ensure_props_ranged(host: Node, map: String, url: String, miss: Array,
 		Log.info("%s props: archive index unavailable, downloading it whole" % map)
 		return false
 
+	# A REFRESH rewrites every prop, not only the absent ones. It has to be
+	# handled here rather than declined: a purged or first-time cache always
+	# arrives with the refresh flag set, so declining it meant the whole ranged
+	# path never ran on the one case it exists for. A recorded Dumbo load did
+	# exactly that — "refresh=true" and a 56 s archive download, with none of
+	# this code touched.
 	var want: Dictionary = {}
-	for nm in miss:
-		want["%s.glb" % nm] = true
+	if refresh:
+		for e in entries:
+			var nm0 := str(e["name"])
+			if nm0.ends_with(".glb") and not nm0.contains("/"):
+				want[nm0] = true
+	else:
+		for nm in miss:
+			want["%s.glb" % nm] = true
 	if want.is_empty():
 		return true                       # nothing to do; not a failure
 
@@ -2035,6 +2059,7 @@ func _ensure_props_ranged(host: Node, map: String, url: String, miss: Array,
 			(bytes + have) / 1048576.0, runs.size(), have / 1048576.0])
 
 	HighpolyStore.ensure_dir(PROPS_CACHE)
+	build_job = BUILD_JOB_OF2   # no unpack stage here: two steps, not three
 	var token := 0
 	if job_queue != null:
 		token = await job_queue.acquire(RANGED_JOB)
@@ -2061,10 +2086,17 @@ func _ensure_props_ranged(host: Node, map: String, url: String, miss: Array,
 		return false
 	Log.info("%s props: %d files in %.1f s (%.0f MB/s) - no archive, no unpack stage"
 		% [map, written, ms / 1000.0, bytes / 1048576.0 / (ms / 1000.0)])
-	# The same two things the archive path does on its way out, for the same
-	# reasons. Without the ETag stamp the next freshness check cannot tell this
-	# fetch ever happened and keeps flagging a refresh; without the registry
-	# pass, props the model library has since republished never heal.
+	# Exactly what the archive path does on its way out, through the same helper
+	# so the two cannot drift. Without the ETag stamp the next freshness check
+	# cannot tell this fetch happened and keeps flagging a refresh; without the
+	# registry pass, props the library has since republished never heal; and
+	# without the package-accept the library's healing silently reverts what was
+	# just written.
+	if refresh:
+		var names: Array = []
+		for e in entries:
+			names.append(str(e["name"]))
+		_accept_package_props(map, names)
 	var b := base_url() + "maps/%s/" % map
 	await _stamp_etag(host, map, _props_etag_key(), b + props_file())
 	await _verify_props_registry(host, map, status)
@@ -2106,9 +2138,10 @@ func ensure_props(host: Node, map: String, status: Callable) -> bool:
 	var props_url := await _ver_url(host, map, _props_etag_key(), b + props_file())
 	if await _ensure_props_ranged(host, map, props_url, miss, refresh, status):
 		return true
+	build_job = BUILD_JOB_OF3   # archive + unpack + build
 	var ok := await _download_with_progress(host,
 		props_url, tmp, status,
-		"Downloading prop meshes:", props_mb)
+		ARCHIVE_JOB, props_mb)
 	if not ok:
 		status.call("Prop mesh download failed (try again)"); return false
 	var zr := ZIPReader.new()
@@ -2208,6 +2241,17 @@ func ensure_props(host: Node, map: String, status: Callable) -> bool:
 	Log.info(("%s props: wrote %d of %d entries, %d already identical "
 		+ "(kept their fast-load cache)") % [map, n, zfiles.size(), same])
 	if refresh:
+		_accept_package_props(map, zfiles)
+	await _stamp_etag(host, map, _props_etag_key(), b + props_file())
+	await _verify_props_registry(host, map, status)
+	status.call("%d prop meshes ready" % n)
+	return true
+
+
+# What a refresh has to do BESIDES writing the files, shared by the archive path
+# and the ranged one so the two cannot drift. `names` is every entry in the
+# package (the ranged path has this from the zip index without downloading it).
+func _accept_package_props(map: String, names) -> void:
 		_props_refresh.erase(map)
 		_mesh_cache.clear()          # re-parse refreshed meshes on the next build
 		# ACCEPT the package copies instead of wiping the index.
@@ -2231,17 +2275,14 @@ func ensure_props(host: Node, map: String, status: Callable) -> bool:
 		# unpacked" stops being treated as damage to repair.
 		var reg2: Dictionary = HighpolyStore.mesh_remote
 		var idx2: Dictionary = {}
-		for zf2 in zfiles:
-			if not zf2.ends_with(".glb") or zf2.contains("/"):
+		for zf2 in names:
+			var nm3 := str(zf2)
+			if not nm3.ends_with(".glb") or nm3.contains("/"):
 				continue
-			var nm2 := zf2.get_basename()
+			var nm2 := nm3.get_basename()
 			if reg2.has(nm2):
 				idx2[nm2] = str((reg2[nm2] as Dictionary).get("hash", ""))
 		_save_props_index(idx2)
-	await _stamp_etag(host, map, _props_etag_key(), b + props_file())
-	await _verify_props_registry(host, map, status)
-	status.call("%d prop meshes ready" % n)
-	return true
 
 # ---------- registry-following prop meshes ----------
 func _props_index() -> Dictionary:
@@ -3132,6 +3173,16 @@ func _build_backdrop_async(bd_root: Node3D, entries: Array, dir: String,
 	# was only 1.29x on the six heaviest files (1.99 s -> 1.54 s), because a
 	# backdrop's time goes into image decoding rather than anything a second
 	# core can help with.
+	#
+	# IT DOES HIDE ITSELF WHILE BUILDING, same as the props, and for the skyline
+	# it matters more than anywhere else: the backdrop is 3,118 draw calls from
+	# 34 nodes — by far the largest single source in the whole overlay — and it
+	# was being re-rendered on every yielded frame while more of it was still
+	# being added. That is why the first half of a skyline build felt instant and
+	# the second half crawled: nothing about the pieces changes, only how much is
+	# on screen while the next one is prepared.
+	var bd_id := bd_root.get_instance_id()
+	_begin_build_draw(bd_root)
 	for e in entries:
 		var meshes: Array = []
 		if e.has("glb"):
@@ -3172,60 +3223,75 @@ func _build_backdrop_async(bd_root: Node3D, entries: Array, dir: String,
 			_apply_radius()
 			backdrop_progress.emit(_bd_done, _bd_total)
 			if not is_inside_tree():
+				_end_build_draw(bd_root)
 				return
 			await get_tree().process_frame
 			if gen != _build_gen:
+				_end_build_draw(bd_root)
 				return                  # superseded by a new apply()/_clear()
 			if not is_instance_valid(bd_root):
-				return                  # overlay freed under us
+				_forget_build_draw(bd_id)   # this layer only; props may still build
+				return
 			frame_start = Time.get_ticks_msec()
 	_apply_radius()                 # final pass: the last slice obeys it too
+	_end_build_draw(bd_root)        # the finished skyline appears, here
 	backdrop_progress.emit(_bd_total, _bd_total)
 	Log.debug("map context: skyline built, %d of %d piece(s)" % [_bd_ok, _bd_total])
 
 
 # --- keeping the work in progress off the screen ----------------------------
-# The build is invisible while it runs and revealed periodically, because
-# drawing it is what the build spends a third of its time on (see the note in
-# _build_props_async). These two are a pair: every exit from the builder MUST
-# call _end_build_draw, or the map stays hidden and reads as a failed build.
-const REVEAL_EVERY_MS := 2000
-var _draw_hidden := false
+# A layer is invisible while it builds and appears, complete, when it finishes.
+# Drawing the work in progress is what these builds spend a third of their time
+# on: every yield hands back a frame, the editor re-renders everything placed so
+# far, and the cost grows as the build proceeds, so the build slows itself down.
+# Measured on real props: at 30k draw calls a frame costs 34.0 ms visible and a
+# FLAT 4.2 ms hidden.
+#
+# It used to flash the layer on for one frame every 2 s, so you could watch it
+# fill in. That was worse than useless to look at — the whole map appeared and
+# vanished twice a minute — and it is gone. The progress bar reports the build
+# now, which is what a progress bar is for.
+#
+# Keyed by node, because the props and the skyline build concurrently and each
+# has to be restored to ITS OWN switch. Every exit from a builder MUST call
+# _end_build_draw: a layer left hidden looks exactly like a build that failed.
+var _hidden_builds: Dictionary = {}     # instance id -> node
 
 
-func _begin_build_draw(props_root: Node3D) -> void:
-	if props_root == null or not is_instance_valid(props_root):
+func _begin_build_draw(node: Node3D) -> void:
+	if node == null or not is_instance_valid(node):
 		return
-	if not _show_objects:
-		return               # already off by the user's own switch; leave it
-	props_root.visible = false
-	_draw_hidden = true
+	if not _restore_visible_for(node):
+		return                # already off by the user's own switch; leave it
+	node.visible = false
+	_hidden_builds[node.get_instance_id()] = node
 
 
-func _end_build_draw(props_root: Node3D) -> void:
-	if not _draw_hidden:
+func _end_build_draw(node: Node3D) -> void:
+	if node == null or not is_instance_valid(node):
 		return
-	_draw_hidden = false
-	if props_root == null or not is_instance_valid(props_root):
+	if not _hidden_builds.has(node.get_instance_id()):
 		return
-	# back to whatever the OBJECTS SWITCH says, not unconditionally on: the user
-	# can turn map objects off while the build is still running, and coming back
-	# to force them visible would undo that.
-	props_root.visible = _show_objects
+	_hidden_builds.erase(node.get_instance_id())
+	# back to whatever the LAYER'S OWN SWITCH says, not unconditionally on: the
+	# user can turn a layer off while its build is still running, and forcing it
+	# visible at the end would undo that.
+	node.visible = _restore_visible_for(node)
 
 
-func _reveal_tick(props_root: Node3D, last: int) -> int:
-	"""Show one frame's worth every REVEAL_EVERY_MS. Returns the new stamp."""
-	if not _draw_hidden or props_root == null or not is_instance_valid(props_root):
-		return last
-	if Time.get_ticks_msec() - last < REVEAL_EVERY_MS:
-		return last
-	props_root.visible = true
-	if is_inside_tree():
-		await get_tree().process_frame     # the one expensive frame, on purpose
-	if is_instance_valid(props_root):
-		props_root.visible = false
-	return Time.get_ticks_msec()
+func _release_build_draw() -> void:
+	_hidden_builds.clear()   # the whole overlay is going; every layer with it
+
+
+# One layer's node was freed under its builder. Erase by the id captured when
+# the build started: the other layer may still be mid-build, and clearing the
+# whole table would leave IT hidden forever.
+func _forget_build_draw(id: int) -> void:
+	_hidden_builds.erase(id)
+
+
+func _restore_visible_for(node: Node3D) -> bool:
+	return _show_backdrop if String(node.name).begins_with("Backdrop") else _show_objects
 
 
 func _build_props_async(props_root: Node3D, entries: Array, dir: String,
@@ -3245,12 +3311,11 @@ func _build_props_async(props_root: Node3D, entries: Array, dir: String,
 	# and 4.2 ms hidden — and the hidden cost is FLAT no matter how much has
 	# been placed, because nothing is being drawn.
 	#
-	# Hidden the whole way through would make the build a black box, so it is
-	# revealed for one frame every REVEAL_EVERY_MS: the map still fills in
-	# visibly, at a fraction of the cost. Restored by _end_build_draw() on every
-	# exit path — leaving it hidden would look exactly like a failed build.
+	# See _begin_build_draw for why this does not flash the layer on periodically
+	# any more. Restored on every exit path — a layer left hidden looks exactly
+	# like a build that failed.
+	var props_id := props_root.get_instance_id()
 	_begin_build_draw(props_root)
-	var last_reveal := Time.get_ticks_msec()
 	# Parse a batch ahead on the worker pool while the main thread places the
 	# previous one. PREFETCH_BATCH is a compromise: bigger batches parallelise
 	# better but hold more parsed scenes in memory at once, and video memory is
@@ -3349,7 +3414,7 @@ func _build_props_async(props_root: Node3D, entries: Array, dir: String,
 					_end_build_draw(props_root)
 					build_finished.emit(_build_props)
 				return
-			last_reveal = await _reveal_tick(props_root, last_reveal)
+
 			await get_tree().process_frame  # keep the editor smooth
 			if gen != _build_gen:
 				_end_build_draw(props_root)
@@ -3357,7 +3422,7 @@ func _build_props_async(props_root: Node3D, entries: Array, dir: String,
 			if not is_instance_valid(props_root):
 				_building = false           # scene/ctx freed underneath us
 				_pf_release()
-				_draw_hidden = false        # the node is gone; nothing to restore
+				_forget_build_draw(props_id)  # this layer only
 				build_finished.emit(_build_props)
 				return
 			frame_start = Time.get_ticks_msec()
@@ -3756,6 +3821,12 @@ func purge_everything() -> int:
 	# and the model index, or the panel keeps reporting a library that is gone
 	HighpolyStore.models().clear()
 	HighpolyStore.save()
+	# A transfer or a build in flight when the data went away will never report
+	# again, so its bar would sit on screen for the rest of the session and the
+	# next download would queue behind a slot nobody holds. jobs.reset() exists
+	# for exactly this and was only ever called on panel teardown.
+	if job_queue != null and job_queue.has_method("reset"):
+		job_queue.reset()
 	Log.info("Reset: removed all downloaded data (%d bytes freed)" % freed)
 	return freed
 
