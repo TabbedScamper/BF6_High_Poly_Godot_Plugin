@@ -1370,12 +1370,48 @@ const _TEX_SLOTS := [
 # saving. It measured 1.8x instead of the 4.3x the per-texture ratios promised,
 # which is the only reason it was caught. So: compress each distinct texture
 # once, remember the replacement, then apply it everywhere it appears.
+# COMPRESSION RUNS ON WORKER THREADS. Doing it inline cost 251 ms per prop on
+# the main thread — 136 s across a Dumbo build, contributing to an editor that
+# was wedged for 74% of the load with one 46-second freeze. Measured: Image
+# compression is safe off-thread (51/51 correct) and 4.9x faster across cores,
+# while the part that MUST stay on the main thread, create_from_image, is 4 ms
+# per 51 textures. So: gather, compress in parallel, then build the textures and
+# repoint the slots back here.
+#
+# The job arrays are static because a group task callable cannot carry state.
+# That is safe only because one build runs at a time (`_building` guards it);
+# if that ever stops being true this needs a real context object.
+static var _cj_src: Array = []       # images to compress
+static var _cj_norm: Array = []      # is that image a normal map (BC5, not BC1/3)
+static var _cj_out: Array = []       # results, index-matched
+
+static func _compress_job(i: int) -> void:
+	var c := (_cj_src[i] as Image).duplicate() as Image
+	if vram_mode == VRAM_LOW:
+		c.resize(maxi(4, c.get_width() / 2), maxi(4, c.get_height() / 2),
+			Image.INTERPOLATE_BILINEAR)
+	var err: int
+	if bool(_cj_norm[i]):
+		err = c.compress_from_channels(Image.COMPRESS_S3TC, Image.USED_CHANNELS_RG)
+	else:
+		err = c.compress(Image.COMPRESS_S3TC)
+	if err == OK:
+		_cj_out[i] = c
+
+
 static func _compress_textures(m: Mesh) -> int:
 	if m == null or vram_mode == VRAM_FULL:
 		return 0
-	var repl := {}          # original texture id -> compressed replacement
-	var failed := {}        # ids we could not compress, so we stop retrying them
-	var n := 0
+	# --- gather (main thread, cheap) ---------------------------------------
+	# ONE TEXTURE CAN FILL SEVERAL SLOTS and every one has to be repointed. glTF
+	# packs roughness and metallic into a single image, so both slots hold the
+	# same texture; an earlier version compressed it once, replaced only the slot
+	# it reached first and left the other pointing at the uncompressed original —
+	# which keeps it resident and undoes most of the saving. It measured 1.8x
+	# instead of 4.0x, which is the only reason it was caught.
+	_cj_src.clear(); _cj_norm.clear(); _cj_out.clear()
+	var index := {}         # texture id -> position in the job arrays
+	var slots_of := {}      # texture id -> [[material, slot], ...]
 	for s in range(m.get_surface_count()):
 		var bm := m.surface_get_material(s) as BaseMaterial3D
 		if bm == null:
@@ -1385,34 +1421,40 @@ static func _compress_textures(m: Mesh) -> int:
 			if t == null:
 				continue
 			var id := t.get_instance_id()
-			if repl.has(id):
-				bm.set_texture(slot, repl[id])
-				continue
-			if failed.has(id):
+			if not slots_of.has(id):
+				slots_of[id] = []
+			(slots_of[id] as Array).append([bm, slot])
+			if index.has(id):
 				continue
 			var img := t.get_image()
 			# Already-compressed images cannot be resized or re-compressed, and
 			# very small ones cost nothing to leave alone — BC works on 4x4
 			# blocks, so anything under that is not worth touching.
 			if img == null or img.is_compressed() or img.get_width() < 8 or img.get_height() < 8:
-				failed[id] = true
 				continue
-			var c := img.duplicate() as Image
-			if vram_mode == VRAM_LOW:
-				c.resize(maxi(4, c.get_width() / 2), maxi(4, c.get_height() / 2),
-					Image.INTERPOLATE_BILINEAR)
-			var err: int
-			if slot == BaseMaterial3D.TEXTURE_NORMAL:
-				err = c.compress_from_channels(Image.COMPRESS_S3TC, Image.USED_CHANNELS_RG)
-			else:
-				err = c.compress(Image.COMPRESS_S3TC)
-			if err != OK:
-				failed[id] = true
-				continue
-			var tex := ImageTexture.create_from_image(c)
-			repl[id] = tex
-			bm.set_texture(slot, tex)
-			n += 1
+			index[id] = _cj_src.size()
+			_cj_src.append(img)
+			_cj_norm.append(slot == BaseMaterial3D.TEXTURE_NORMAL)
+	if _cj_src.is_empty():
+		return 0
+	_cj_out.resize(_cj_src.size())
+
+	# --- compress (worker threads) -----------------------------------------
+	var gid := WorkerThreadPool.add_group_task(_compress_job, _cj_src.size(),
+		-1, false, "highpoly texture compression")
+	WorkerThreadPool.wait_for_group_task_completion(gid)
+
+	# --- publish (main thread, ~4 ms per 51) --------------------------------
+	var n := 0
+	for id in index:
+		var img: Image = _cj_out[int(index[id])]
+		if img == null:
+			continue
+		var tex := ImageTexture.create_from_image(img)
+		for pair in (slots_of[id] as Array):
+			(pair[0] as BaseMaterial3D).set_texture(pair[1], tex)
+		n += 1
+	_cj_src.clear(); _cj_norm.clear(); _cj_out.clear()
 	return n
 
 
@@ -1423,13 +1465,27 @@ static func _compress_textures(m: Mesh) -> int:
 # no vertex data are asked for triangle data, and then it segfaults. A user gets
 # a vanished editor and no explanation.
 #
-# We cannot read the card's capacity — get_device_total_memory() needs a debug
-# build and --extra-gpu-memory-tracking, so it reports 0 for everyone. We CAN
-# read our own usage. So this is a budget with a warning, not a capacity check,
-# and the number is deliberately conservative: 4 GB is comfortably under the
-# 12 GB card that died, because the crash margin includes framebuffers, the
-# editor's own resources and whatever else the machine is running.
-const VRAM_WARN_MB := 4096.0
+# IT WARNS, IT DOES NOT STOP — and the first version got that badly wrong.
+#
+# It stopped the build at 4 GB of total device memory, on the assumption that
+# 4 GB was "our props". It is not: get_memory_usage(MEMORY_TOTAL) counts
+# everything the rendering device holds, including the editor's own scene, the
+# terrain, the maptile and the skyline. On Dumbo that baseline is already
+# 4362 MB BEFORE a single prop exists, so the very first check tripped and the
+# build ended with `0 built in 0.0 s`. Every prop silently missing, on every
+# machine, with the only clue a line in the log.
+#
+# The deeper problem is that a fixed ceiling cannot be right: we cannot read the
+# card's capacity (get_device_total_memory needs a debug build and
+# --extra-gpu-memory-tracking, so it reports 0 for everyone), and the same
+# number that protects a 4 GB card would cripple a 24 GB one. A guard that
+# breaks working setups to maybe save failing ones is a bad trade — especially
+# now that compression cuts usage 4x and Low cuts it 16x, which is the actual
+# remedy.
+#
+# So this reports, loudly and once, and lets the build continue. The user is
+# told what to change; the decision stays theirs.
+const VRAM_WARN_MB := 6144.0
 static var _vram_warned := false
 
 static func vram_used_mb() -> float:
@@ -1438,19 +1494,19 @@ static func vram_used_mb() -> float:
 		return float(rd.get_memory_usage(RenderingDevice.MEMORY_TOTAL)) / 1048576.0
 	return Performance.get_monitor(Performance.RENDER_VIDEO_MEM_USED) / 1048576.0
 
-# Returns true when the build should stop adding. Warns ONCE per build: this is
-# called from the build loop, and a message per prop would be thousands of lines.
-static func vram_over_budget() -> bool:
+# Warns ONCE per build and always returns false: the build continues. Called
+# from the build loop, so a message per prop would be thousands of lines.
+static func vram_check() -> void:
+	if _vram_warned:
+		return
 	var mb := vram_used_mb()
 	if mb < VRAM_WARN_MB:
-		return false
-	if not _vram_warned:
-		_vram_warned = true
-		Log.warn(("video memory is at %.0f MB, which is where cards start to run "
-			+ "out. Godot CRASHES rather than reporting this, so the map context "
-			+ "is stopping here. Set Video memory to \"Low\" in the panel and "
-			+ "rebuild, or turn off Original map objects.") % mb)
-	return true
+		return
+	_vram_warned = true
+	Log.warn(("video memory is at %.0f MB. Cards run out somewhere above this, "
+		+ "and Godot CRASHES rather than reporting it. If the editor closes "
+		+ "itself while a map loads, set Video memory to \"Low\" in the panel "
+		+ "and rebuild. Carrying on for now.") % mb)
 
 
 static func _mesh_keeps_textures(m: Mesh) -> bool:
@@ -2843,13 +2899,7 @@ func _build_props_async(props_root: Node3D, entries: Array, dir: String,
 	_vram_warned = false
 	HighpolyProfiler.mark("phase", "props: build started, %d entries" % entries.size())
 	for e in entries:
-		# Checked per entry rather than per yield: one prop can carry a lot of
-		# texture, and the point is to stop BEFORE the allocation that kills the
-		# editor, not shortly after it.
-		if vram_over_budget():
-			HighpolyProfiler.mark("phase", "props: STOPPED at %.0f MB of video memory"
-				% vram_used_mb())
-			break
+		vram_check()      # reports once if memory is getting high; never stops
 		var gp := _prop_path(e, dir)
 		var _t0 := Time.get_ticks_msec()
 		var meshes := _prop_mesh(e, dir)    # the expensive part (GLB parse; cached)
