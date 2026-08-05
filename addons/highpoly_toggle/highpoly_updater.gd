@@ -109,6 +109,68 @@ static func _fetch(http: HTTPRequest, url: String) -> PackedByteArray:
 			return res[3]
 	return PackedByteArray()
 
+# GET straight to disk. Same retry/stall behaviour as _fetch, but the bytes go
+# to a file instead of a PackedByteArray, so a 300 MB model costs no RAM.
+#
+# WHY IT MATTERS BEYOND MEMORY: _fetch holds the whole body, and every worker
+# holds its own. At 8 workers on 200-330 MB buildings that is a multi-GB spike
+# with nothing to show for it, which is the most credible explanation for the
+# un-logged crashes. Streaming removes the ceiling on both file size and worker
+# count at once, which is what makes raising MAX_WORKERS safe.
+#
+# Writes to <dest>.part and renames on success. download_file points straight at
+# its target, so a transfer that dies half way would otherwise leave a truncated
+# GLB sitting exactly where a valid one belongs.
+static func fetch_to_file(http: HTTPRequest, url: String, dest: String) -> bool:
+	http.use_threads = true
+	http.timeout = 0.0
+	var part := dest + ".part"
+	for attempt in range(4):
+		if attempt > 0:
+			await http.get_tree().create_timer(0.4 * pow(2, attempt - 1)).timeout
+		http.download_file = part
+		var state := {"done": false, "ok": false}
+		var on_done := func(r: int, c: int, _h: PackedStringArray, _b: PackedByteArray):
+			state["done"] = true
+			state["ok"] = r == HTTPRequest.RESULT_SUCCESS and c == 200
+		http.request_completed.connect(on_done, CONNECT_ONE_SHOT)
+		if http.request(url) != OK:
+			if http.request_completed.is_connected(on_done):
+				http.request_completed.disconnect(on_done)
+			continue
+		var poll := 0.05
+		var idle := 0.0
+		var spent := 0.0
+		var last := 0
+		while not state["done"]:
+			await http.get_tree().create_timer(poll).timeout
+			spent += poll
+			var d := http.get_downloaded_bytes()
+			if d > last:
+				last = d
+				idle = 0.0
+			else:
+				idle += poll
+			poll = minf(poll * 1.6, 1.0)
+			if idle >= STALL_SECS or spent >= MAX_TRANSFER:
+				http.cancel_request()
+				Log.warn("download stalled after %s, retrying: %s"
+					% [Log.human_bytes(last), url])
+				break
+		if http.request_completed.is_connected(on_done):
+			http.request_completed.disconnect(on_done)
+		if bool(state["ok"]):
+			if FileAccess.file_exists(dest):
+				DirAccess.remove_absolute(dest)
+			if DirAccess.rename_absolute(part, dest) == OK:
+				return true
+			Log.warn("could not move the finished download into place: %s" % dest)
+			return false
+	if FileAccess.file_exists(part):
+		DirAccess.remove_absolute(part)
+	return false
+
+
 # HEAD request returning the response ETag ("" on failure) — used by map
 # context to detect republished map packages without downloading them.
 static func remote_etag(http: HTTPRequest, url: String) -> String:

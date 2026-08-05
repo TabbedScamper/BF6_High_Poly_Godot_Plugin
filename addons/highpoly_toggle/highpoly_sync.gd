@@ -24,9 +24,27 @@ signal manifest_refreshed()           # a NEW manifest was adopted (models chang
 # request, not the rate. _fetch() already retries 403/429/5xx with backoff, so if
 # the host does start pushing back this degrades rather than fails.
 #
-# 8 rather than 16 (which measured faster still) because these are HTTPRequest
-# nodes on the editor's own main loop, and the editor has to stay responsive.
-const MAX_WORKERS := 8
+# NOW 16. The objection to 16 was that these are HTTPRequest nodes on the
+# editor's main loop, and a finished request handed its ENTIRE body across a
+# signal as a PackedByteArray — a 300 MB copy landing on the main thread. Since
+# models stream to disk (fetch_to_file) the completed body is empty and nothing
+# large crosses over, so the cost that made 16 unattractive is gone.
+#
+# Re-measured on the live host, 48 small models, same connection:
+#     workers    MB/s    files/s
+#        1       5.67       3.6
+#        4      29.43      18.9
+#        8      57.13      36.7
+#       16      88.44      56.9   <- +55% over 8
+#       32      52.41      33.7   <- worse; the host pushes back
+# 32 is past the knee, so this is near the top rather than "more is better".
+#
+# The reason concurrency helps this much is that the work is LATENCY-bound, not
+# bandwidth-bound: one worker on small models manages 5.67 MB/s while one worker
+# on a single big file manages 46 MB/s on the same line. That ~8x gap is
+# per-request overhead, of which ~105 ms is connection setup that a keep-alive
+# client would avoid entirely (measured: 183 ms/file fresh vs 78 ms reused).
+const MAX_WORKERS := 16
 const RECHECK_SECS := 3600.0          # re-diff the manifest hourly
 # No new bytes for this long means the transfer is dead, not slow. Needed because
 # HTTPRequest.timeout defaults to 0 (wait forever): a socket that is accepted and
@@ -438,20 +456,32 @@ func _worker() -> void:
 		_active[nm] = true
 		progress_changed.emit()
 		var t0 := Time.get_ticks_msec()
-		var data := await HighpolyUpdater._fetch(http, base + str(rend["glb"]))
+		# Straight to disk. Buffering the whole body meant every worker held its
+		# own copy of whatever it was fetching, so 8 workers on 200-330 MB
+		# buildings was a multi-GB spike — and the bigger the file, the more
+		# likely it was needed. See HighpolyUpdater.fetch_to_file.
+		var dest := HighpolyStore.model_path(nm)
+		HighpolyStore.ensure_dir(HighpolyStore.MODELS_DIR)
+		var ok := await HighpolyUpdater.fetch_to_file(http, base + str(rend["glb"]), dest)
 		_active.erase(nm)
-		if data.is_empty():
+		var got := 0
+		if ok:
+			var fh := FileAccess.open(dest, FileAccess.READ)
+			if fh != null:
+				got = fh.get_length()
+				fh.close()
+		if not ok:
 			_failed[nm] = true
 			_fail_count += 1
 			Log.warn("download failed: %s (%s) after %s"
 				% [nm, str(rend["glb"]), Log.human_ms(Time.get_ticks_msec() - t0)])
-		elif HighpolyStore.ingest_bytes(nm, data, str(rend["hash"]), bool(e.get("nofit", false))):
+		elif HighpolyStore.ingest_downloaded(nm, str(rend["hash"]), bool(e.get("nofit", false))):
 			_done += 1
 			var ms := Time.get_ticks_msec() - t0
 			# A slow model names itself, with its size, instead of "took forever".
-			var line := "%s %s in %s [%s]" % [nm, Log.human_bytes(data.size()),
+			var line := "%s %s in %s [%s]" % [nm, Log.human_bytes(got),
 				Log.human_ms(ms), tier]
-			if ms >= 15000 or data.size() >= 100 * 1048576:
+			if ms >= 15000 or got >= 100 * 1048576:
 				Log.info("large download: " + line)
 			else:
 				Log.debug("got " + line)
