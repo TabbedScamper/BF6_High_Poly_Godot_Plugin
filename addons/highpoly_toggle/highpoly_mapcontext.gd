@@ -674,7 +674,30 @@ func _map_cache_complete(map: String) -> bool:
 # and will re-parent it into the new one, so its mesh list must survive — it is
 # what the distance culling walks, and clearing it would leave the skyline
 # on screen but unmanaged.
-func _clear(root: Node, keep_backdrop := false) -> void:
+# Can the map objects already on screen be re-parented rather than rebuilt?
+#
+# Split out of apply() because every one of these clauses is a way to get it
+# quietly wrong, and the wrong answers fail in opposite directions: too strict
+# and a terrain toggle costs a 231-second rebuild, too loose and the map keeps
+# props that no longer match what was asked for.
+func _can_keep_props(show_objects: bool, prev_objects: bool, map: String,
+		prev_map: String, tex_mode: int, prev_tex_mode: int) -> bool:
+	if not show_objects or not prev_objects:
+		return false                  # nothing to keep, or nothing was there
+	if map != prev_map:
+		return false                  # different level entirely
+	if tex_mode != prev_tex_mode:
+		return false                  # materials are baked per detail mode
+	# A HALF-BUILT SET MUST BE REBUILT. The builder filling it is cancelled by
+	# the generation bump in _clear, so keeping its partial output strands the
+	# map with however many props happened to be placed when the toggle was
+	# hit — and nothing would ever come back to finish them.
+	if _building or _build_total <= 0 or _build_done < _build_total:
+		return false
+	return true
+
+
+func _clear(root: Node, keep_backdrop := false, keep_props := false) -> void:
 	# cancel any in-flight background props build: the builder re-checks this
 	# generation after every await and stops dead once it changes (its nodes
 	# are freed with _MAP_CONTEXT below)
@@ -689,7 +712,7 @@ func _clear(root: Node, keep_backdrop := false) -> void:
 	# screen for the rest of the session — which is what "switching scenes locks
 	# up the progress bar" was. Send the terminal value the dock listens for, so
 	# whoever owns those lanes closes them.
-	if _build_total > 0:
+	if _build_total > 0 and not keep_props:
 		build_progress.emit(_build_total, _build_total)
 	if _bd_total > 0:
 		backdrop_progress.emit(_bd_total, _bd_total)
@@ -705,7 +728,11 @@ func _clear(root: Node, keep_backdrop := false) -> void:
 		if String(c.name).contains(NODE):
 			root.remove_child(c)
 			c.queue_free()
-	_cells.clear()
+	# The cells ARE the kept props' culling data — they index the very
+	# MultiMeshInstance3Ds being re-parented, so dropping them would leave the
+	# distance culling with nothing to cull.
+	if not keep_props:
+		_cells.clear()
 	if not keep_backdrop:
 		_bd_list.clear()
 	# drop the in-RAM caches so a re-apply re-reads the on-disk files (picks up
@@ -3099,6 +3126,7 @@ func apply(root: Node, enabled: bool, show_objects: bool, tex = true,
 	var prev_tex_mode := _ctx_tex_mode
 	var prev_map := _map
 	var prev_backdrop := _show_backdrop
+	var prev_objects := _show_objects
 	_active = enabled
 	_show_objects = show_objects
 	_show_backdrop = backdrop
@@ -3130,7 +3158,31 @@ func apply(root: Node, enabled: bool, show_objects: bool, tex = true,
 			if bd is Node3D:
 				old_ctx.remove_child(bd)
 				saved_bd = bd as Node3D
-	_clear(root, saved_bd != null)
+
+	# --- AND KEEP THE PROPS, for exactly the same reason -------------------
+	# The skyline got this treatment and the props did not, so switching
+	# Extended Terrain on AFTER the map objects had finished threw away all
+	# 2,761 of them and built them again from scratch. A recorded Dumbo session
+	# spent 231 s on the second build, ran `props: load mesh` 5,522 times
+	# instead of 2,761, and paid the fast-load sidecar write three times over —
+	# 311 s, the largest single phase in the run.
+	#
+	# Nothing about the terrain, the water or the skyline touches the props.
+	# They genuinely have to be rebuilt only when the MAP changes, when the
+	# detail mode changes (their materials are baked per mode), when the layer
+	# was off before, or when the build never finished — a HALF-BUILT set must
+	# be rebuilt, because the builder that was filling it has been cancelled
+	# and nothing would ever finish the job.
+	var saved_props: Node3D = null
+	if _can_keep_props(show_objects, prev_objects, map, prev_map, tex_mode,
+			prev_tex_mode):
+		var old_ctx2 := root.get_node_or_null(NODE)
+		if old_ctx2 != null:
+			var pr := old_ctx2.get_node_or_null("Props")
+			if pr is Node3D:
+				old_ctx2.remove_child(pr)
+				saved_props = pr as Node3D
+	_clear(root, saved_bd != null, saved_props != null)
 
 	# Load map data whenever we need geometry — terrain context OR objects.
 	var need_data := enabled or show_objects or backdrop or water
@@ -3345,7 +3397,19 @@ func apply(root: Node, enabled: bool, show_objects: bool, tex = true,
 	# you can drop them onto the SDK's own playable terrain alone. Untextured, they
 	# use the SDK's M_LevelAssets (shiny orange) placeholder to match the shipped
 	# assets; textured, they keep their own material.
-	if show_objects:
+	if show_objects and saved_props != null:
+		# Re-parented, not rebuilt. _build_total/_build_done and _cells are left
+		# untouched (see _clear's keep_props), so the status line still counts
+		# them and the distance culling keeps working on the meshes already
+		# there. _props_dir/_props_textured/_props_mat/_props_tex_mode are still
+		# describing this same set, because a change to any of them is what
+		# would have disqualified the salvage.
+		ctx.add_child(saved_props)
+		saved_props.owner = null
+		_apply_radius()
+		Log.debug("map context: kept the existing map objects (%d piece(s)) rather than rebuilding them"
+			% _build_total)
+	elif show_objects:
 		var props_root := Node3D.new(); props_root.name = "Props"
 		ctx.add_child(props_root); props_root.owner = null
 		# NON-BLOCKING: parsing ~2k unique GLBs + building their MultiMeshes
