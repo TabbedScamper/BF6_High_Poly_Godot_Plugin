@@ -198,6 +198,12 @@ static func header() -> String:
 		"data       %s" % ProjectSettings.globalize_path("user://"),
 		"free disk  %s" % _free_space(),
 		"godot log  %s" % _godot_log_hint(),
+		# Stated unconditionally, because the moment it is needed is AFTER the
+		# editor has died — too late to go looking for how to have captured it.
+		"if it crashed  this log stops dead at the crash, and Godot writes NO",
+		"           editor log of its own. Close Godot, start it again with the",
+		"           line below, reproduce the crash, then send that file:",
+		"           %s" % _crash_capture_cmd(),
 		"".rpad(60, "-"),
 	]
 	return "\n".join(lines)
@@ -206,11 +212,55 @@ static func header() -> String:
 # Renderer/engine complaints (missing tangents, shader errors) never reach this
 # log — they are Godot's, not ours. Point at where they DO live rather than
 # leaving a reader to conclude the engine was quiet.
+#
+# THIS USED TO SEND PEOPLE SOMEWHERE THE ANSWER CANNOT BE. When no file was
+# found it said "engine file logging is off (Project Settings > Debug > File
+# Logging)", and a user chasing an editor crash duly turned that on and waited
+# hours for a logs folder that was never going to appear. The setting governs a
+# RUNNING PROJECT (and headless runs); the editor process does not write it.
+# Measured: every log in this project is byte-identical 445-byte output from
+# headless invocations, across a day in which the editor ran for hours and
+# produced none. There is no %APPDATA%/Godot/logs either.
+#
+# For an EDITOR crash the only reliable capture on Windows is the console build
+# that ships in the same zip — the normal exe detaches from the console, so
+# redirecting it to a file gets you nothing.
+#
+# It also only ever looked for "godot.log" and "godot.1.log". Godot rotates to
+# TIMESTAMPED names (godot2026-08-04T17.26.21.log), so the moment the current
+# file was absent it reported "off" while several real logs sat beside it.
 static func _godot_log_hint() -> String:
-	for p in ["user://logs/godot.log", "user://logs/godot.1.log"]:
-		if FileAccess.file_exists(p):
-			return ProjectSettings.globalize_path(p) + "  (engine messages)"
-	return "engine file logging is off (Project Settings > Debug > File Logging)"
+	var newest := ""
+	var newest_at := -1
+	var d := DirAccess.open("user://logs")
+	if d != null:
+		for fn in d.get_files():
+			if not fn.ends_with(".log"):
+				continue
+			var p := "user://logs/" + fn
+			var at := int(FileAccess.get_modified_time(p))
+			if at > newest_at:
+				newest_at = at
+				newest = p
+	if newest != "":
+		return "%s  (engine messages; the EDITOR does not write here — see below)" \
+			% ProjectSettings.globalize_path(newest)
+	return "none — the editor writes no log file of its own (see below)"
+
+
+# The exact command that captures an editor crash, with THIS install's real
+# paths already filled in, so it is copy-and-paste rather than a puzzle.
+#
+# --log-file is the answer, NOT Godot's *_console.exe: the console build is a
+# separate executable that the Portal SDK does not ship, so telling people to
+# use it sends them off to find a download. --log-file is built into the editor
+# they already have and was verified to capture a real editor session.
+static func _crash_capture_cmd() -> String:
+	var exe := OS.get_executable_path()
+	var dst := OS.get_system_dir(OS.SYSTEM_DIR_DESKTOP)
+	if dst == "":
+		dst = ProjectSettings.globalize_path("user://").rstrip("/")
+	return "\"%s\" --log-file \"%s/godot-crash.log\"" % [exe, dst]
 
 # Returns the saved path, or "" if it could not be written.
 static func save() -> String:
