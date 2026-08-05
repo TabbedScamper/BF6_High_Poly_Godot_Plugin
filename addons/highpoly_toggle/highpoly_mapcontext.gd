@@ -638,7 +638,11 @@ func _map_cache_complete(map: String) -> bool:
 	return true
 
 # ---------- apply / build ----------
-func _clear(root: Node) -> void:
+# keep_backdrop: apply() has lifted the finished skyline out of the old context
+# and will re-parent it into the new one, so its mesh list must survive — it is
+# what the distance culling walks, and clearing it would leave the skyline
+# on screen but unmanaged.
+func _clear(root: Node, keep_backdrop := false) -> void:
 	# cancel any in-flight background props build: the builder re-checks this
 	# generation after every await and stops dead once it changes (its nodes
 	# are freed with _MAP_CONTEXT below)
@@ -657,7 +661,8 @@ func _clear(root: Node) -> void:
 			root.remove_child(c)
 			c.queue_free()
 	_cells.clear()
-	_bd_list.clear()
+	if not keep_backdrop:
+		_bd_list.clear()
 	# drop the in-RAM caches so a re-apply re-reads the on-disk files (picks up
 	# prop textures / terrain layers updated since the last apply)
 	_mesh_cache.clear()
@@ -2565,6 +2570,11 @@ func apply(root: Node, enabled: bool, show_objects: bool, tex = true,
 		backdrop := false, water := false) -> String:
 	var tex_mode: int = (2 if tex else 0) if tex is bool else int(tex)
 	var textured := tex_mode == 2
+	# PREVIOUS state, captured before it is overwritten: the skyline salvage
+	# below depends on what the LAST apply() built, not this one.
+	var prev_tex_mode := _ctx_tex_mode
+	var prev_map := _map
+	var prev_backdrop := _show_backdrop
 	_active = enabled
 	_show_objects = show_objects
 	_show_backdrop = backdrop
@@ -2573,7 +2583,30 @@ func apply(root: Node, enabled: bool, show_objects: bool, tex = true,
 	if root == null: return "No scene open"
 	var map := map_of(root)
 	if map == "": return "Open a level scene (MP_…) first"
-	_clear(root)
+
+	# --- KEEP THE SKYLINE ACROSS A REBUILD --------------------------------
+	# Every layer toggle lands here, and this used to _clear() the entire map
+	# context and rebuild all of it. The skyline is 155 files of GLB parsing
+	# and texture work on Dumbo, measured at 375 SECONDS. So switching Water on
+	# after the horizon had finished threw the horizon away and spent another
+	# six minutes rebuilding something already on screen — then did it again
+	# for the next toggle. In a recorded session that was two 375 s rebuilds
+	# before the props were even allowed to start.
+	#
+	# Nothing about Water, Objects or FX changes the skyline. It genuinely has
+	# to be rebuilt only when the MAP changes, when the detail mode changes
+	# (its materials are baked per mode), or when it never finished. Otherwise
+	# lift it out before the teardown and re-parent it afterwards.
+	var saved_bd: Node3D = null
+	if backdrop and prev_backdrop and map == prev_map and tex_mode == prev_tex_mode \
+			and _bd_total > 0 and _bd_done >= _bd_total:
+		var old_ctx := root.get_node_or_null(NODE)
+		if old_ctx != null:
+			var bd := old_ctx.get_node_or_null("Backdrop")
+			if bd is Node3D:
+				old_ctx.remove_child(bd)
+				saved_bd = bd as Node3D
+	_clear(root, saved_bd != null)
 
 	# Load map data whenever we need geometry — terrain context OR objects.
 	var need_data := enabled or show_objects or backdrop or water
@@ -2735,7 +2768,19 @@ func apply(root: Node, enabled: bool, show_objects: bool, tex = true,
 	# rivers and sea, Backdrops the horizon around it, and Original map objects
 	# the level's own props. Each is separately switchable because they answer
 	# different questions about a build.
-	if backdrop:
+	# Re-parented, not rebuilt. _bd_total/_bd_done/_bd_ok and _bd_list are left
+	# untouched (see _clear's keep_backdrop), so progress reporting and the
+	# distance culling keep working on the meshes that are already there.
+	# NOTE the two early returns above cannot strand this node: both require
+	# `not backdrop`, and saved_bd is only ever set when backdrop is true.
+	if backdrop and saved_bd != null:
+		ctx.add_child(saved_bd)
+		saved_bd.owner = null
+		bd_total = _bd_total          # so the status line still counts them
+		bd_ok = _bd_ok
+		Log.debug("map context: kept the existing skyline (%d piece(s)) rather than rebuilding it"
+			% _bd_list.size())
+	elif backdrop:
 		var bd_root := Node3D.new(); bd_root.name = "Backdrop"
 		ctx.add_child(bd_root); bd_root.owner = null
 		# NON-BLOCKING, for the same reason the props layer is. Each entry is a
