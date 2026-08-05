@@ -25,6 +25,16 @@ var ovr_chk: Button          # per-selection detail override (live, contextual l
 var _override: Array = []      # nodes currently carrying the override
 # relative preloads: the plugin works from ANY folder under addons/ (users
 # often drop the whole repo zip in, nesting the plugin one level deeper)
+# WRITTEN ONCE because it is applied from two places. The chip sets it when the
+# panel is built and _sync_maptile_control() sets it again on every scene
+# change, and the second copy had drifted into a different voice entirely
+# ("Project the map-tile colour over the SDK terrain + assets") — so the plain
+# wording was replaced by jargon the moment anyone opened a scene, which is to
+# say almost nobody ever saw it.
+const MAPTILE_TIP := "Lays the map's aerial photo over the ground so it looks \
+like the real place instead of flat colour. Turn it off if it makes buildings \
+look muddy."
+
 const PreviewsScript = preload("highpoly_previews.gd")
 const ProfilerScript = preload("highpoly_profiler.gd")
 const MapContextScript = preload("highpoly_mapcontext.gd")
@@ -98,7 +108,7 @@ var log_count: Label
                                # download (typed by base, like mapctx/sync — the
                                # global class name isn't registered until a scan)
 var pause_btn: Button
-var check_btn: Button          # manual "Check for Updates" (forces a registry re-check)
+var check_btn: Button          # manual "Check for updates" (forces a registry re-check)
 var scope_btn: OptionButton    # sync scope: current scene only / all models
 var quality_btn: OptionButton  # texture tier for the library: web / full in-game
 var _edited_root: Node = null  # tracks the active scene to detect tab switches
@@ -119,7 +129,7 @@ var _storage_gen := 0          # supersedes an in-flight usage scan
 # Each rung answers two questions that used to be tangled into one:
 #
 #   id  entry                             your placed pieces   the level around them
-#   0   Low-Poly — what you export        SDK proxies          nothing, no download
+#   0   Low-Poly (what you export)        SDK proxies          nothing, no download
 #   3   Low-Poly + Minimal Downloads      SDK proxies          real, untextured
 #   1   High-Poly (no textures)           real, clay           real, untextured
 #   2   High-Poly (full textures)         real, textured       real, textured
@@ -173,9 +183,9 @@ func _ctx_allowed() -> bool:
 func _mode_hint() -> String:
 	match (mode_btn.get_selected_id() if mode_btn else MODE_SDK):
 		MODE_SDK:
-			return " — showing only what the SDK ships; nothing downloads on this setting"
+			return ": showing only what the SDK ships, and nothing downloads on this setting"
 		MODE_LIGHT:
-			return " — your pieces are what you export, the level around them is real but untextured"
+			return ": your pieces are what you export, and the level around them is real but untextured"
 		_:
 			return ""
 
@@ -201,7 +211,7 @@ func _gate(c: Control, what: String, back := 0) -> Control:
 	if c == null: return c
 	c.set_meta("gate_what", what)
 	c.set_meta("gate_back", back)
-	c.tooltip_text += "\n\nNeeds a download, so it is unavailable on \"Low-Poly — what you export\"."
+	c.tooltip_text += "\n\nNeeds a download, so it is unavailable on \"Low-Poly (what you export)\"."
 	_gated.append(c)
 	return c
 
@@ -344,7 +354,7 @@ func _enter_tree() -> void:
 	banner.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
 	dock.add_child(banner)
 
-	# ---- the one download bar, shown in place of "Check for Updates" ----
+	# ---- the one download bar, shown in place of "Check for updates" ----
 	# One bar, not a stack: only one transfer runs at a time now, so a stack
 	# could only ever show one moving row and several idle ones.
 	jobs = JobsScript.new()
@@ -395,7 +405,7 @@ func _enter_tree() -> void:
 	dock.add_child(_centred(pause_btn))
 
 	check_btn = Button.new()
-	check_btn.text = "Check for Updates"
+	check_btn.text = "Check for updates"
 	check_btn.tooltip_text = "Checks for newly fixed models straight away. This happens by itself every hour, so you rarely need to press it."
 	check_btn.pressed.connect(_check_updates_now)
 	dock.add_child(_centred(check_btn))
@@ -416,7 +426,7 @@ func _enter_tree() -> void:
 	quality_btn = OptionButton.new()
 	quality_btn.add_item("Textures: web quality (smaller)", 0)
 	quality_btn.add_item("Textures: full in-game quality", 1)
-	quality_btn.tooltip_text = "The map you're editing always uses full in-game textures. This sets quality for the REST of the library: web keeps it small; full matches the game everywhere (a much larger download)."
+	quality_btn.tooltip_text = "The map you're editing always uses full in-game textures. This sets quality for the rest of the library: web keeps it small; full matches the game everywhere (a much larger download)."
 	quality_btn.item_selected.connect(func(_i): _quality_changed())
 	dock.add_child(quality_btn)
 
@@ -472,7 +482,7 @@ func _enter_tree() -> void:
 	# it pixel-identical to entry 1 and left no way to see your real export.
 	for id in Modes.ORDER:      # cheapest rung first
 		mode_btn.add_item(Modes.label(id), id)
-	mode_btn.tooltip_text = "Low-Poly — what you export: only what the SDK ships, and nothing is downloaded.\n\nLow-Poly + Minimal Downloads: your own pieces stay exactly as you export them, but the real level is brought in around them — ground, water, skyline, lighting and the level's own objects — untextured, so it stays small.\n\nHigh-Poly: your pieces are swapped for the real game models too, in clay or with their real textures."
+	mode_btn.tooltip_text = "Low-Poly (what you export): only what the SDK ships, and nothing is downloaded.\n\nLow-Poly + Minimal Downloads: your own pieces stay exactly as you export them, but the real level is brought in around them, untextured so it stays small: ground, water, skyline, lighting and the level's own objects.\n\nHigh-Poly: your pieces are swapped for the real game models too, in clay or with their real textures."
 	mode_btn.selected = 0
 	mode_btn.item_selected.connect(func(_i): _mode_changed())
 	host.add_child(mode_btn)
@@ -693,7 +703,7 @@ func _enter_tree() -> void:
 	# clay, High-Poly textured = real textures. See _mapctx_tex_mode().)
 
 	mapctx_maptile = Theme_.chip("Ground photo")
-	mapctx_maptile.tooltip_text = "Lays the map's aerial photo over the ground so it looks like the real place instead of flat colour. Turn it off if it makes buildings look muddy."
+	mapctx_maptile.tooltip_text = MAPTILE_TIP
 	mapctx_maptile.toggled.connect(func(v: bool):
 		# instant ACTIVE add/remove (set_maptile) — no overlay rebuild, no
 		# generation bump: a running props build keeps going, and the decal
@@ -747,7 +757,7 @@ func _enter_tree() -> void:
 	mapctx_gi = Theme_.chip("Contact shading")
 	mapctx_gi.button_pressed = true
 	mapctx_gi.visible = false
-	mapctx_gi.tooltip_text = "Darkens the creases where surfaces meet — under vehicles, inside doorways, along kerbs. This is the same contact shading the game uses, at the radius the map itself specifies. Costs some frame rate; switch it off if the view gets choppy."
+	mapctx_gi.tooltip_text = "Darkens the creases where surfaces meet: under vehicles, inside doorways, along kerbs. This is the same contact shading the game uses, at the radius the map itself specifies. Costs some frame rate; switch it off if the view gets choppy."
 	mapctx_gi.toggled.connect(func(v: bool):
 		lbl.text = LightingScript.set_gi(EditorInterface.get_edited_scene_root(), v)
 		_save_mapctx_state())
@@ -780,7 +790,7 @@ func _enter_tree() -> void:
 	mapctx_fill.custom_minimum_size = Vector2(150, 0)
 	mapctx_fill.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	mapctx_fill.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	mapctx_fill.tooltip_text = "Lifts the darkest areas — inside buildings, under bridges, the shadowed side of a wall — so you can see what you are working on. At zero the lighting is strictly what the sky reaches, which is the calibrated match to the real game and leaves interiors black. Preview only: it changes nothing about your map."
+	mapctx_fill.tooltip_text = "Lifts the darkest areas, such as inside buildings, under bridges and the shadowed side of a wall, so you can see what you are working on. At zero the lighting is strictly what the sky reaches, which is the calibrated match to the real game and leaves interiors black. Preview only: it changes nothing about your map."
 	mapctx_fill_row.add_child(mapctx_fill)
 	mapctx_fill_val = Label.new()
 	mapctx_fill_val.text = "%d%%" % int(mapctx_fill.value)
@@ -811,8 +821,14 @@ func _enter_tree() -> void:
 	mapctx_vram.item_selected.connect(func(i: int):
 		MapContextScript.vram_mode = mapctx_vram.get_item_id(i)
 		_save_mapctx_state()
-		lbl.text = "Video memory: %s. Rebuild the map context to apply it." \
-			% mapctx_vram.get_item_text(i))
+		# REBUILD, the way Scenery batching two rows down already does. These are
+		# adjacent dropdowns, both say in their tooltip that changing them
+		# rebuilds the scenery, and only one of them did it. This one told the
+		# user to "rebuild the map context" instead, which is not the name of
+		# anything in the panel, so the setting looked applied and was not.
+		lbl.text = "Video memory: %s. Rebuilding so it takes effect." \
+			% mapctx_vram.get_item_text(i)
+		_mapctx_changed())
 	mapctx_vram_row.add_child(mapctx_vram)
 	mc_sub.add_child(mapctx_vram_row)
 
@@ -870,7 +886,7 @@ func _enter_tree() -> void:
 	# else. Kept unshown because the overlay code reads its state.
 	mapctx_optimize = Theme_.chip("Hide far pieces")
 	mapctx_optimize.button_pressed = true
-	mapctx_optimize.tooltip_text = "Stops drawing the pieces YOU placed once they are far from the camera, so a busy map keeps running smoothly. They are still there, still selectable, and nothing is left out when you export."
+	mapctx_optimize.tooltip_text = "Stops drawing the pieces you placed yourself once they are far from the camera, so a busy map keeps running smoothly. They are still there, still selectable, and nothing is left out when you export."
 	mapctx_optimize.toggled.connect(func(on: bool):
 		var _r := EditorInterface.get_edited_scene_root()
 		var _rad := 800.0
@@ -1579,7 +1595,7 @@ func _check_updates_now() -> void:
 	# in Low-Poly it skipped the map package entirely, and in any mode the guard
 	# meant a map already touched this session was declared "ready" without a
 	# single request to the server. So a republished map could not be picked up
-	# by pressing Check for Updates — only by restarting the editor. Refreshing
+	# by pressing Check for updates — only by restarting the editor. Refreshing
 	# the map package is cheap (it pulls mapdata.zip, not the multi-GB prop
 	# tiers; those still follow the map-context build and the current mode).
 	if r != null:
@@ -1653,7 +1669,7 @@ func _centred(b: Button) -> Button:
 	b.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	return b
 
-# The bar stands in for the Check for Updates button while anything is
+# The bar stands in for the Check for updates button while anything is
 # downloading, so the panel never shows both a button and a bar for the same
 # thing. "45%  1/2" is this job's progress and which of the queued jobs it is.
 # Colour carries the level so an error is findable in a long list without
@@ -2122,13 +2138,13 @@ func _purge_selected() -> void:
 Also frees %d high-poly model(s) only %s uses (%s)." % [
 			hp_n, map, _human_size(int(info.get("hp_bytes", 0)))]
 	if int(info.get("shared", 0)) > 0:
-		txt += "\n%d objects are shared with other downloaded maps and will be KEPT: purging never breaks another map." % int(info.get("shared", 0))
+		txt += "\n%d object(s) are shared with other downloaded maps and are kept, so deleting this one never breaks another." % int(info.get("shared", 0))
 	if open_map == map:
-		txt += "\n\nWARNING: this is the map you currently have OPEN: its Map Context overlay will be removed."
-	txt += "\n\nPurging is always safe: everything re-downloads on demand."
+		txt += "\n\nThis is the map you have open, so the borrowed scenery around it will disappear."
+	txt += "\n\nThis is always safe: everything downloads again when you need it."
 	var dlg := ConfirmationDialog.new()
 	dlg.dialog_text = txt
-	dlg.ok_button_text = "Purge"
+	dlg.ok_button_text = "Delete"
 	dlg.confirmed.connect(func():
 		_do_purge(map, info, open_map == map)
 		dlg.queue_free())
@@ -2592,7 +2608,7 @@ func _save_mapctx_state() -> void:
 # Plugin/editor START only (not scene switches): put the overlay back the way
 # this map had it — checkboxes, range, lighting, detail mode — and kick the
 # normal background build. Updated models flow in via the standard staleness
-# checks (registry refresh + GLB mtime vs sidecar), i.e. "Check for Updates"
+# checks (registry refresh + GLB mtime vs sidecar), i.e. "Check for updates"
 # semantics without the clicks.
 # The SDK has its own map-texture decal (3D toolbar -> Download/Apply Texture)
 # and it SAVES into the level. When it's there, ours stands down so the ground
@@ -2605,10 +2621,10 @@ func _sync_maptile_control() -> void:
 	mapctx_maptile.disabled = theirs != null
 	if theirs != null:
 		mapctx_maptile.text = "Ground photo (the SDK's is on)"
-		mapctx_maptile.tooltip_text = "This level already has the SDK's own map texture, applied from the 3D toolbar and saved in the scene, so the preview decal stays off. Two of them would darken the ground twice.\n\nNote the SDK's decal projects onto EVERYTHING beneath it, including high-poly models that already have their real textures. Delete the '%s' node under Static to go back to the preview decal, which leaves them alone." % String(theirs.name)
+		mapctx_maptile.tooltip_text = "This level already has the SDK's own map texture, applied from the 3D toolbar and saved in the scene, so the preview decal stays off. Two of them would darken the ground twice.\n\nNote that the SDK's decal projects onto everything beneath it, including high-poly models that already have their real textures. Delete the '%s' node under Static to go back to the preview decal, which leaves them alone." % String(theirs.name)
 	else:
 		mapctx_maptile.text = "Ground photo"
-		mapctx_maptile.tooltip_text = "Project the map-tile colour over the SDK terrain + assets. Skips high-poly models and the extended terrain, which carry their own real textures. Turn off if it still tints something you'd rather see raw."
+		mapctx_maptile.tooltip_text = MAPTILE_TIP
 
 func _restore_mapctx_state() -> void:
 	var r := EditorInterface.get_edited_scene_root()
@@ -2823,7 +2839,7 @@ func _mode_changed() -> void:
 		sync.check_now()
 	lbl.text += _mode_hint()
 	if shed > 0:
-		lbl.text += ". %d borrowed layer(s) switched off — still downloaded, back the moment you climb a rung" % shed
+		lbl.text += ". %d borrowed layer(s) switched off. They are still downloaded and come back the moment you climb a rung" % shed
 	# The map-context overlay follows the same dropdown (orange / clay /
 	# textured). Re-skin what is already built rather than rebuild it: the full
 	# apply() starts with _clear() and re-parses every prop, so changing Detail

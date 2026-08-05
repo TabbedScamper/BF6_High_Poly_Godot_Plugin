@@ -213,7 +213,7 @@ static func header() -> String:
 	# second time before learning anything at all.
 	var last := HighpolyProfiler.last_session_end()
 	if last != "":
-		lines.append("PREVIOUS SESSION DID NOT EXIT CLEANLY — it stopped here:")
+		lines.append("PREVIOUS SESSION DID NOT EXIT CLEANLY. It stopped here:")
 		lines.append("           %s" % last)
 	lines.append("".rpad(60, "-"))
 	return "\n".join(lines)
@@ -253,9 +253,9 @@ static func _godot_log_hint() -> String:
 				newest_at = at
 				newest = p
 	if newest != "":
-		return "%s  (engine messages; the EDITOR does not write here — see below)" \
+		return "%s  (engine messages; the EDITOR does not write here, see below)" \
 			% ProjectSettings.globalize_path(newest)
-	return "none — the editor writes no log file of its own (see below)"
+	return "none: the editor writes no log file of its own (see below)"
 
 
 # The exact command that captures an editor crash, with THIS install's real

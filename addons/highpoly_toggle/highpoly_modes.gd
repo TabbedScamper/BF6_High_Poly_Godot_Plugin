@@ -38,7 +38,7 @@ const TEX := 2
 const ORDER: Array = [SDK, LIGHT, GREY, TEX]
 
 const LABELS: Dictionary = {
-	SDK: "Low-Poly — what you export (nothing downloads)",
+	SDK: "Low-Poly (what you export, nothing downloads)",
 	LIGHT: "Low-Poly + Minimal Downloads",
 	GREY: "High-Poly (no textures)",
 	TEX: "High-Poly (full textures)",
