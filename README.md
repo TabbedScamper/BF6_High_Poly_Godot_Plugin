@@ -176,6 +176,7 @@ something changes:
 | [`docs/HIGHPOLY-PREVIEW.md`](docs/HIGHPOLY-PREVIEW.md) | the matcher, the matching database, the texture extraction, the auto-fitter | current |
 | [`docs/AUDIT-2026-08.md`](docs/AUDIT-2026-08.md) | a whole-system read with the evidence behind each optimisation path | partly superseded, see its header |
 | [`docs/V15-DESIGN.md`](docs/V15-DESIGN.md) | why the model-management buttons were removed | historical |
+| [`docs/V20-DESIGN.md`](docs/V20-DESIGN.md) | the v2.0 plan: read the player's own game install instead of downloading, so nothing is hosted or redistributed | **proposed** |
 | [`tools/menuaudit/`](tools/menuaudit) | extracts what each dock control actually does and flags the ones that would frustrate somebody | current |
 
 Found a broken model? Submit a fix through the
