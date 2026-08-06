@@ -185,6 +185,22 @@ approved it arrives on its own: the plugin diffs the manifest at startup and
 hourly, and there is nothing to press. (This used to say "your next **Update
 Models** click" — that button was removed in 1.5.0.)
 
+## What is in this addon, and where it came from
+
+**No Battlefield content ships with this plugin.** Everything in
+`addons/highpoly_toggle/` is our own work: the GDScript, the shaders, the
+launch animation (`waves.ogv`), the water styling, the logo, the UI font.
+
+Game art is never bundled. It is read from the player's own installed copy of
+Battlefield 6 — see [`docs/V20-DESIGN.md`](docs/V20-DESIGN.md).
+
+This has not always been true, and it is written down because it was not
+obvious: until 2026-08-06 the addon carried 24 MB of extracted game textures
+(a panoramic sky, fire and smoke sheets, ground and cliff layers). They were
+small next to the downloaded models and nobody noticed they were being handed
+to every installer. They have been removed from the tree and from every commit
+of the history.
+
 ## Research notes
 
 [`research/`](research/) publishes what we've worked out about BF6's asset
