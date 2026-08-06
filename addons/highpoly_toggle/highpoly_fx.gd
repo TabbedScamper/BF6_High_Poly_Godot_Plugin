@@ -213,9 +213,17 @@ static func _colour_of(gp: Variant, fb: Dictionary) -> Color:
 
 
 static func _sheet_for(gp: Variant, fb: Dictionary) -> String:
-	# The plugin ships the two sheets that cover the most-placed FX. A graph
-	# naming any other sheet falls back to the closest bundled one rather than
-	# drawing an untextured quad.
+	# THESE SHEETS USED TO SHIP INSIDE THE ADDON, and they are Battlefield art:
+	# fire_6x36.png and smoke_8x64.png, 5.5 MB of it. So every install of this
+	# plugin handed someone a copy of EA's textures, entirely separately from
+	# the download service — which is the same thing the takedown was about,
+	# just quieter. They are gone, from the tree and from the history.
+	#
+	# v2.0 reads them from the player's own installation like everything else
+	# (see docs/V20-DESIGN.md). Until that lands, an emitter with no sheet
+	# draws untextured, which is why the existence check below matters: handing
+	# back a path that does not resolve gets a broken texture and an error per
+	# emitter, and that reads as a bug rather than a missing feature.
 	var base := (HighpolyFx as Script).resource_path.get_base_dir() + "/fx_textures"
 	var key := str(fb.get("sheet_key", ""))
 	if gp is Dictionary:
@@ -224,10 +232,11 @@ static func _sheet_for(gp: Variant, fb: Dictionary) -> String:
 			key = "fire"
 		elif s.contains("smoke") or s.contains("clastic") or s.contains("puff"):
 			key = "smoke"
+	var p := ""
 	match key:
-		"fire":  return base + "/fire_6x36.png"
-		"smoke": return base + "/smoke_8x64.png"
-	return ""
+		"fire":  p = base + "/fire_6x36.png"
+		"smoke": p = base + "/smoke_8x64.png"
+	return p if p != "" and ResourceLoader.exists(p) else ""
 
 
 static func _emitter(cls: String, effect: String, gp: Variant) -> GPUParticles3D:
