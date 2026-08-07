@@ -337,6 +337,9 @@ func base_url() -> String:
 	return HighpolyUpdater.manifest_url().get_base_dir() + "/"
 
 func has_data(map: String) -> bool:
+	# An open game source IS data for its map, and needs no download at all.
+	if game_source != null and game_source.level == map.to_lower():
+		return true
 	return FileAccess.file_exists("%s/%s/placements.json" % [CACHE, map])
 
 func _fetch_once(host: Node, url: String, to_file := "") -> PackedByteArray:
@@ -1179,7 +1182,30 @@ func _terrain_shader_mat(map: String) -> ShaderMaterial:
 		_splat_n = int(sp["slices"])
 	return m
 
+# READ FROM THE GAME INSTEAD OF THE DOWNLOAD.
+#
+# Set by whoever opened a HighpolyGameSource; null means the old path. It is
+# NOT opened here on demand, deliberately: a cold open is ~85 s (mounting the
+# install, indexing 223k partition guids, walking the level), and _load_data is
+# called from the middle of a build on the main thread. Opening it here would
+# freeze the editor for a minute and a half with no way to show progress.
+#
+# So the contract is: the caller opens it, asynchronously, with a progress bar,
+# and hands over something already usable.
+var game_source = null
+
+
 func _load_data(map: String) -> bool:
+	# The game source carries its own placements, in this exact shape, so the
+	# whole build path below is unchanged — see highpoly_gamesource.map_data().
+	if game_source != null and game_source.level == map.to_lower():
+		_data = game_source.map_data()
+		_map = map
+		_world_min = float((_data["world"] as Dictionary).get("min", -2048))
+		_cell_size = float(cell_override) if cell_override > 0 else 512.0
+		_load_prop_layers(map)
+		return true
+
 	var p := "%s/%s/placements.json" % [CACHE, map]
 	if not FileAccess.file_exists(p): return false
 	var d: Variant = JSON.parse_string(FileAccess.get_file_as_string(p))
@@ -1412,6 +1438,22 @@ static func _file_size(p: String) -> int:
 # bundle (`glb`) when available â€” the accurate path â€” else the res:// SDK proxy
 # (`model`) fallback for meshes we haven't extracted yet.
 func _prop_mesh(e: Dictionary, dir: String) -> Array:
+	# FROM THE INSTALL, when the map came from there. `mesh` is a MeshSet res
+	# name rather than a cached file stem, and this is the only place that
+	# distinction exists — everything downstream just gets a Mesh.
+	#
+	# UNTEXTURED. Materials resolve through the ShaderBlockDepot chain, which is
+	# not ported yet, so these come back as geometry with no maps. That is why
+	# nothing selects this source by default.
+	if game_source != null and bool(_data.get("from_game", false)):
+		var key := str(e.get("mesh", ""))
+		if _mesh_cache.has(key):
+			return _mesh_cache[key]
+		var gm: Mesh = game_source.mesh_for(key)
+		var got: Array = [gm] if gm != null else []
+		_mesh_cache[key] = got
+		return got
+
 	var gp := _prop_path(e, dir)
 	if gp == "":
 		if not e.has("model"):

@@ -16,10 +16,12 @@ class_name BF6Source
 # paths alphabetically already produced that because "Data" < "Update", which
 # is right by accident — so the order is explicit here instead.
 
-const BF6Toc := preload("res://bf6_toc.gd")
-const BF6Bundle := preload("res://bf6_bundle.gd")
-const BF6Cas := preload("res://bf6_cas.gd")
-const BF6Container := preload("res://bf6_container.gd")
+# These four are GLOBAL CLASSES (class_name BF6Toc, BF6Bundle, BF6Cas,
+# BF6Container), so nothing has to be preloaded to reach them — and preloading
+# them by a res:// root path was a hidden requirement that the file sit at the
+# project root. True in the bare test project, false in the plugin, where the
+# whole stack lives under addons/highpoly_toggle: the addon failed to parse with
+# "Preload file res://bf6_toc.gd does not exist" the moment it was packaged.
 
 var game := ""
 var error := ""
