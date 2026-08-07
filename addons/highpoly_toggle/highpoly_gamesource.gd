@@ -81,6 +81,29 @@ var _depot_cache := {}
 # video memory the download path used to ask for.
 var _tex_cache := {}                   # texture res name -> ImageTexture
 var _mat_cache := {}                   # "<scope>|<state key>" -> Material
+var _mat_by_look := {}                 # "<albedo>|<normal>|<emissive>" -> Material
+
+# SHARING A BUILT MESH ACROSS SCOPES.
+#
+# map_data groups placements by (mesh, scope) because a shader state key is only
+# unique within a scope. Measured on mp_dumbo that turns 2,117 distinct meshes
+# into 5,498 groups: 3,381 of them (61%) are a mesh that has already been read
+# from the CAS, parsed and turned into an ArrayMesh once. Parsing is 56.9 s of
+# an 87 s build, so those repeats are the single largest item in it.
+#
+# They are only repeats if the RESULT is the same, and it usually is: of the
+# 1,266 meshes placed from more than one scope, 1,174 (93%) resolve to
+# byte-identical texture sets in every one, 34 genuinely differ, and 58 resolve
+# nothing anywhere. So the share is conditional on the materials, not assumed
+# from the mesh name — the 34 that differ still get a mesh each.
+#
+# `_keys_for` is what makes the test cheap. The ordered list of merge keys is a
+# property of the MeshSet alone, so once one scope has parsed a mesh, any other
+# scope can work out what its materials WOULD be from depot lookups alone and
+# skip the parse entirely when they match.
+var _keys_for := {}                    # "<res>#<lod>" -> [merge keys, in order]
+var _mesh_by_sig := {}                 # "<res>#<lod>#<material ids>" -> Mesh
+var n_mesh_shared := 0
 var _group_meta := {}                  # group key -> [res name, scope, a src]
 
 # Off skips material resolution entirely, so a caller can measure geometry on
@@ -1027,6 +1050,9 @@ var t_res := 0
 var t_parse := 0
 var t_mat := 0
 var n_meshes := 0
+# How much the per-material merge below is actually buying, in draw calls.
+var n_sections := 0
+var n_surfaces := 0
 
 
 func mesh_for(group_key: String, lod := 0) -> Mesh:
@@ -1043,6 +1069,20 @@ func mesh_for(group_key: String, lod := 0) -> Mesh:
 		scope = str(parts[1])
 	if res_name == "":
 		return null
+	# HAS THIS MESH ALREADY BEEN BUILT WITH THESE MATERIALS?
+	#
+	# Only askable once some scope has parsed it, because the answer depends on
+	# the order its sections merge in — which is why this is a cache lookup and
+	# not a rule. Everything here is depot lookups against caches; no CAS read,
+	# no parse.
+	var kc := "%s#%d" % [res_name, lod]
+	var known = _keys_for.get(kc)
+	if known is Array:
+		var sig := _sig_for(kc, known as Array, scope)
+		if _mesh_by_sig.has(sig):
+			n_mesh_shared += 1
+			return _mesh_by_sig[sig]
+
 	var d := src.get_res(res_name)
 	if d.is_empty():
 		return null
@@ -1074,45 +1114,138 @@ func mesh_for(group_key: String, lod := 0) -> Mesh:
 	if not (secs is Array) or (secs as Array).is_empty():
 		return null
 
-	var am := ArrayMesh.new()
+	# ONE SURFACE PER MATERIAL, not one per section.
+	#
+	# A surface IS a draw call, and this whole overlay is draw-call bound —
+	# proven linear at about 2.6 us each, with 60 fps needing roughly 6k against
+	# tens of thousands. A MeshSet splits its geometry into sections for the
+	# game's own streaming and culling reasons, and several sections of one mesh
+	# routinely bind the SAME shader state: emitting a surface each hands Godot
+	# a batch it cannot merge and a draw call it did not need.
+	#
+	# This is the same mistake the download path made and fixed. There the merge
+	# key compared material IDENTITY rather than content and the skyline came out
+	# at 49,966 surfaces; keying on content took it to 550 and the frame rate
+	# from 7.7 to 83 fps. Here identity IS content: material_for caches per
+	# (scope, state key) and hands back the same object every time, so the state
+	# key is the merge key and no comparison is needed at all.
+	#
+	# Sections with no material resolved are merged together too, under key 0 —
+	# they will all be drawn with Godot's default anyway, so splitting them buys
+	# nothing.
+	var by_mat := {}                # merge key -> [verts, normals, uvs, indices]
+	var order: Array = []           # insertion order, so the result is stable
+	var want_normals := {}
+	var want_uvs := {}
 	for s in secs:
 		var sec: Dictionary = s
 		var verts = sec.get("verts")
 		if not (verts is PackedVector3Array) or (verts as PackedVector3Array).is_empty():
 			continue
-		var n: int = (verts as PackedVector3Array).size()
-		var arr := []
-		arr.resize(Mesh.ARRAY_MAX)
-		arr[Mesh.ARRAY_VERTEX] = verts
-		# Length-checked before use: Godot rejects the whole surface if an
-		# attribute array disagrees with the vertex count, and a section that
-		# carries no normals hands back an empty one rather than nothing.
-		var nrm = sec.get("normals")
-		if nrm is PackedVector3Array and (nrm as PackedVector3Array).size() == n:
-			arr[Mesh.ARRAY_NORMAL] = nrm
-		var uv = sec.get("uvs")
-		if uv is PackedVector2Array and (uv as PackedVector2Array).size() == n:
-			arr[Mesh.ARRAY_TEX_UV] = uv
 		var idx = sec.get("indices")
 		if not (idx is PackedInt32Array) or (idx as PackedInt32Array).is_empty():
 			continue
-		arr[Mesh.ARRAY_INDEX] = idx
+		var n: int = (verts as PackedVector3Array).size()
+		var key := int(sec.get("state_key", 0))
+		if not by_mat.has(key):
+			by_mat[key] = [PackedVector3Array(), PackedVector3Array(),
+				PackedVector2Array(), PackedInt32Array()]
+			order.append(key)
+			want_normals[key] = true
+			want_uvs[key] = true
+		# PULLED OUT INTO LOCALS AND WRITTEN BACK, which is not stylistic.
+		#
+		# A PackedVector3Array is a VALUE in GDScript, so `acc[0].append_array(v)`
+		# appends to a temporary copy and throws it away. The first version of
+		# this loop did exactly that for the vertices, normals and UVs — only the
+		# indices were assigned back — and every merged surface came out with an
+		# empty vertex array: "Condition array_len == 0 is true", thousands of
+		# times, on a mesh that had just been read correctly.
+		var acc: Array = by_mat[key]
+		var av: PackedVector3Array = acc[0]
+		var an: PackedVector3Array = acc[1]
+		var au: PackedVector2Array = acc[2]
+		var ai: PackedInt32Array = acc[3]
+		var base: int = av.size()
+		av.append_array(verts)
+		# Length-checked before use: Godot rejects the whole surface if an
+		# attribute array disagrees with the vertex count, and a section that
+		# carries no normals hands back an empty one rather than nothing. Merged,
+		# it is worse than a rejected surface — one section without normals would
+		# leave the accumulated array short and silently misalign every section
+		# after it. So a group where ANY section lacks an attribute drops that
+		# attribute for the whole group.
+		var nrm = sec.get("normals")
+		if nrm is PackedVector3Array and (nrm as PackedVector3Array).size() == n:
+			an.append_array(nrm)
+		else:
+			want_normals[key] = false
+		var uv = sec.get("uvs")
+		if uv is PackedVector2Array and (uv as PackedVector2Array).size() == n:
+			au.append_array(uv)
+		else:
+			want_uvs[key] = false
+		for i in (idx as PackedInt32Array):
+			ai.push_back(i + base)
+		by_mat[key] = [av, an, au, ai]
+
+	var am := ArrayMesh.new()
+	var kept: Array = []
+	for key in order:
+		var acc: Array = by_mat[key]
+		var verts: PackedVector3Array = acc[0]
+		if verts.is_empty() or (acc[3] as PackedInt32Array).is_empty():
+			continue
+		var arr := []
+		arr.resize(Mesh.ARRAY_MAX)
+		arr[Mesh.ARRAY_VERTEX] = verts
+		if bool(want_normals[key]) \
+				and (acc[1] as PackedVector3Array).size() == verts.size():
+			arr[Mesh.ARRAY_NORMAL] = acc[1]
+		if bool(want_uvs[key]) \
+				and (acc[2] as PackedVector2Array).size() == verts.size():
+			arr[Mesh.ARRAY_TEX_UV] = acc[2]
+		arr[Mesh.ARRAY_INDEX] = acc[3]
 		am.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr)
+		# `kept`, not `order`: a key whose sections all dropped out contributes no
+		# surface, so recording it would put the surface list and the key list out
+		# of step — and _sig_for reads them as parallel.
+		kept.append(key)
 		var _t2 := Time.get_ticks_usec()
-		var mat = material_for(int(sec.get("state_key", 0)), scope) \
-			if build_materials else null
+		var mat = material_for(int(key), scope) if build_materials else null
 		var _dm := Time.get_ticks_usec() - _t2
 		t_mat += _dm
 		mat_us += _dm
 		if mat != null:
 			am.surface_set_material(am.get_surface_count() - 1, mat)
+	n_sections += secs.size()
+	n_surfaces += am.get_surface_count()
 	# Parse covers everything from the MeshSet header to the finished ArrayMesh
 	# — read_lod plus the surface building — with the material time subtracted
 	# out, because the materials are interleaved into that loop and counting
 	# them twice would make the two halves sum to more than the whole.
 	t_parse += (Time.get_ticks_usec() - _t1) - mat_us
 	n_meshes += 1
-	return am if am.get_surface_count() > 0 else null
+	if am.get_surface_count() == 0:
+		return null
+	# Recorded so the NEXT scope to want this mesh can decide without parsing.
+	_keys_for[kc] = kept
+	_mesh_by_sig[_sig_for(kc, kept, scope)] = am
+	return am
+
+
+# What this mesh WOULD look like under `scope`, as a string: the identity of the
+# Material each merge key resolves to. Material objects are shared by content
+# (see _look_key), so two scopes that dress a mesh the same way produce the same
+# signature — which is the whole point, since object identity alone never would.
+func _sig_for(kc: String, keys: Array, scope: String) -> String:
+	if not build_materials:
+		return kc
+	var parts: Array = [kc]
+	for k in keys:
+		var m = material_for(int(k), scope)
+		parts.append("0" if m == null else str((m as Material).get_instance_id()))
+	return "#".join(PackedStringArray(parts))
 
 
 # ---------------------------------------------------------------------------
@@ -1143,6 +1276,26 @@ func material_for(state_key: int, scope: String):
 	var slots: Dictionary = dep.textures_for(state_key, pair[1])
 	slots.erase("constants")
 
+	# KEYED ON WHAT IT LOOKS LIKE, not on where it was found.
+	#
+	# Two subworlds that place the same prop resolve it through two different
+	# depots and two different state keys, and 1,174 of the 1,266 meshes placed
+	# from several scopes (93%) come back with byte-identical texture sets. Keyed
+	# per (scope, key) those became two StandardMaterial3Ds holding the same
+	# textures — which is only a little waste on its own, but it also makes the
+	# two meshes incomparable, and that is what forces the same geometry to be
+	# parsed once per scope. Sharing the material is what lets mesh_for share the
+	# mesh.
+	#
+	# This is the download path's lesson arriving on the game path: there the
+	# merge key compared material identity rather than content, and fixing it
+	# took the skyline from 49,966 surfaces to 550.
+	var look := _look_key(slots)
+	if _mat_by_look.has(look):
+		var shared = _mat_by_look[look]
+		_mat_cache[ck] = shared
+		return shared
+
 	var mat := StandardMaterial3D.new()
 	var any := false
 	# basecolor_veg is the vegetation sheet and takes precedence where both are
@@ -1166,11 +1319,24 @@ func material_for(state_key: int, scope: String):
 		# procedural and bind only noise and weathering sheets. Cached as null so
 		# it is not re-resolved, and counted separately from a missing depot.
 		_mat_cache[ck] = null
+		_mat_by_look[look] = null
 		return null
 	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
 	_mat_cache[ck] = mat
+	_mat_by_look[look] = mat
 	tex_stats["materials"] = int(tex_stats["materials"]) + 1
 	return mat
+
+
+# The three slots the material actually reads, in a fixed order. Deliberately
+# NOT every slot the depot binds: two states that differ only in a weathering
+# sheet we never sample produce the same StandardMaterial3D, and treating them
+# as different would keep the meshes apart for a difference that cannot be seen.
+func _look_key(slots: Dictionary) -> String:
+	return "%s|%s|%s" % [
+		str(slots.get("basecolor_veg", slots.get("basecolor", ""))),
+		str(slots.get("normal", slots.get("normal_vt", ""))),
+		str(slots.get("emissive", ""))]
 
 
 func _texture_for(file_guid, is_normal := false):

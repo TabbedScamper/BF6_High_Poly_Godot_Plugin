@@ -4080,10 +4080,17 @@ func _build_props_async(props_root: Node3D, entries: Array, dir: String,
 	# already the thing that kills low-end cards.
 	const PREFETCH_BATCH := 48
 	var next_pf := 0
+	# NOTHING TO PREFETCH FROM THE INSTALL. The prefetch parses GLB files on
+	# worker threads, and a game-sourced entry has no GLB — but _prop_path still
+	# hands back a plausible-looking path for one, so every batch queued 48 files
+	# that do not exist and the pool spent 7.2 s of a recorded build failing to
+	# open them. The real parse for this path is inside game_source.mesh_for,
+	# which is a different problem (56.9 s, and the next one worth solving).
+	var from_game: bool = game_source != null and bool(_data.get("from_game", false))
 	for ei in range(entries.size()):
 		var e = entries[ei]
 		vram_check()      # reports once if memory is getting high; never stops
-		if ei >= next_pf:
+		if ei >= next_pf and not from_game:
 			# COLLECT THE BATCH IN FLIGHT FIRST. Its results have to be in _pf and
 			# _bc before `want` is built below, or every path it just parsed looks
 			# uncached and gets queued a second time.
@@ -4277,6 +4284,15 @@ func _build_props_async(props_root: Node3D, entries: Array, dir: String,
 			"game source: %d meshes — read %.1f s, parse %.1f s, materials %.1f s"
 			% [int(game_source.n_meshes), game_source.t_res / 1e6,
 			   game_source.t_parse / 1e6, game_source.t_mat / 1e6])
+		HighpolyProfiler.mark("phase",
+			"game source: %d MeshSet sections merged to %d surfaces (%.2fx)"
+			% [int(game_source.n_sections), int(game_source.n_surfaces),
+			   float(game_source.n_sections) / maxf(1.0, float(game_source.n_surfaces))])
+		HighpolyProfiler.mark("phase",
+			"game source: %d meshes parsed, %d served from another scope (%.0f%%)"
+			% [int(game_source.n_meshes), int(game_source.n_mesh_shared),
+			   100.0 * game_source.n_mesh_shared
+			   / maxf(1.0, float(game_source.n_meshes + game_source.n_mesh_shared))])
 		var ts: Dictionary = game_source.tex_stats
 		HighpolyProfiler.mark("phase",
 			"game source textures: %d decoded, %d reused, %d failed, "
