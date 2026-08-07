@@ -505,6 +505,54 @@ static func run(host: Node, dock: Node, mapctx: Node) -> void:
 		for i in range(int(cfg["settle_frames"])):
 			await _tree.process_frame
 		rep.merge(await _fly(_tree, samples))
+
+		# ---- what is each layer costing? ---------------------------------
+		#
+		# ONE BUILD, MANY FLIGHTS. Rebooting per layer costs a boot, a scan and a
+		# 66 s build each time, and compares runs that were built separately. The
+		# scene is already here: switch a layer off, fly the same path, switch it
+		# back, and the difference is that layer's cost with everything else held
+		# identical.
+		#
+		# A shorter path for these — every Nth sample of the recorded flight, so
+		# it still covers the whole route rather than a corner of it.
+		if bool(cfg.get("sweep", false)) and is_instance_valid(host):
+			var stride: int = maxi(1, int(cfg.get("sweep_stride", 4)))
+			var short: Array = []
+			for i in range(0, samples.size(), stride):
+				short.append(samples[i])
+			var sweep := {}
+			for layer in ["mapctx_backdrop", "mapctx_objects", "mapctx_water",
+						  "mapctx_light", "mapctx_maplights", "mapctx_fx"]:
+				var b = host.get(layer)
+				if b == null or not (b is Button) or not (b as Button).button_pressed:
+					continue
+				var btn: Button = b
+				btn.button_pressed = false          # emits toggled
+				# Let the teardown finish: some layers free thousands of nodes.
+				for i in range(30):
+					await _tree.process_frame
+				var off := await _fly(_tree, short)
+				btn.button_pressed = true
+				for i in range(30):
+					await _tree.process_frame
+				sweep[layer] = {
+					"median_ms": off.get("median_ms", 0.0),
+					"draws_mean": off.get("draws_mean", 0),
+					"frames": off.get("frames", 0),
+				}
+				_say("autorun: without %-18s median %6.1f ms, %6d draws"
+						% [layer.replace("mapctx_", ""),
+						   off.get("median_ms", 0.0), off.get("draws_mean", 0)])
+			# The same short path with EVERYTHING on, so the comparisons are
+			# against a like-for-like reference rather than the full-length run.
+			var ref := await _fly(_tree, short)
+			sweep["_all_on"] = {"median_ms": ref.get("median_ms", 0.0),
+								"draws_mean": ref.get("draws_mean", 0),
+								"frames": ref.get("frames", 0)}
+			_say("autorun: with    everything        median %6.1f ms, %6d draws"
+					% [ref.get("median_ms", 0.0), ref.get("draws_mean", 0)])
+			rep["sweep"] = sweep
 	rep["scene_nodes"] = _count_nodes(root)
 	rep["engine"] = _engine()
 	rep["census"] = _surface_census(root)
