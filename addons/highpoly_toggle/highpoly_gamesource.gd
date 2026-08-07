@@ -35,10 +35,17 @@ var log_fn := Callable()
 
 
 func _say(s: String) -> void:
-	if log_fn.is_valid():
-		log_fn.call(s)
-	else:
+	if not log_fn.is_valid():
 		print(s)
+		return
+	# DEFERRED OFF THE MAIN THREAD. open_map runs on a worker and the plugin's
+	# logger writes into an editor Control, which is main-thread-only — the same
+	# trap the progress callback fell into, and the same fix. call_deferred puts
+	# it on the main thread's queue instead of refusing it.
+	if OS.get_thread_caller_id() != OS.get_main_thread_id():
+		log_fn.call_deferred(s)
+	else:
+		log_fn.call(s)
 
 
 # A blueprint X owns the MeshSet X_mesh, falling back to X itself. This is the
@@ -89,6 +96,16 @@ var build_materials := true
 # costs a byte range rather than a decompress, and is the same ceiling the
 # packaged .bctex set was published at.
 var texture_max_dim := 1024
+
+# WHERE THE OPEN GOES, per phase, in ms. There is no point optimising this
+# without it: the three phases have completely different fixes (a mount is
+# bundle metadata, the index is 223k EBX headers, the walk is instance decoding)
+# and a single total says nothing about which one to touch. `_cached` records
+# whether the walk came from its cache, because a warm run's phase split is a
+# different measurement from a cold one and mixing them is how a 50x speedup
+# gets attributed to the wrong change.
+var timings := {}
+
 var tex_dims := {}                     # "WxH fFMT mip" -> count
 var tex_stats := {"decoded": 0, "reused": 0, "failed": 0, "no_depot": 0,
 	"no_key": 0, "materials": 0}
@@ -110,6 +127,9 @@ static func available(game_dir := "") -> bool:
 func open_map(map: String, game_dir := "", progress := Callable()) -> bool:
 	error = ""
 	level = map.to_lower()
+	timings.clear()
+	var t_all := Time.get_ticks_msec()
+	var t := Time.get_ticks_msec()
 	src = BF6Source.new()
 	if not src.open(game_dir):
 		error = src.error
@@ -119,6 +139,8 @@ func open_map(map: String, game_dir := "", progress := Callable()) -> bool:
 	if not src.mount(level):
 		error = src.last_error()
 		return false
+	timings["mount"] = Time.get_ticks_msec() - t
+	t = Time.get_ticks_msec()
 
 	types = BF6Types.new()
 	var exe := ""
@@ -141,9 +163,13 @@ func open_map(map: String, game_dir := "", progress := Callable()) -> bool:
 	for g in LIGHT_TYPES:
 		walk.want_types[str(g)] = "light"
 	walk.want_fields = LIGHT_FIELDS
+	timings["typeinfo"] = Time.get_ticks_msec() - t
+	t = Time.get_ticks_msec()
 	walk.build_catalog(func(done, total, found):
 		if progress.is_valid():
 			progress.call("indexing partitions", done, total))
+	timings["partition index"] = Time.get_ticks_msec() - t
+	t = Time.get_ticks_msec()
 
 	# WHICH BUNDLES OWN A DEPOT, handed to the walk BEFORE it runs so every row
 	# records the scope it was placed under. A section's shader state key is only
@@ -163,6 +189,9 @@ func open_map(map: String, game_dir := "", progress := Callable()) -> bool:
 	if not walk.run_cached(level):
 		error = str(walk.stats.get("error", "the placement walk produced nothing"))
 		return false
+	timings["placement walk"] = Time.get_ticks_msec() - t
+	timings["_total"] = Time.get_ticks_msec() - t_all
+	timings["_cached"] = 1 if walk.stats.get("from_cache", false) else 0
 	_say("game source: %s — %d placements%s" % [map, walk.rows.size(),
 		"  (cached)" if walk.stats.get("from_cache", false) else ""])
 	return true
@@ -181,18 +210,53 @@ func open_map(map: String, game_dir := "", progress := Callable()) -> bool:
 var _open_result := false
 var _open_done := false
 
+# THE PROGRESS THE WORKER RECORDED, read by the pump on the main thread.
+#
+# The obvious wiring — hand the caller's progress Callable to open_map and let
+# the worker call it — is wrong, and wrong in the way that produces a working
+# build and a screenful of errors. The caller's callback sets a Label's text,
+# and Control.text reaches queue_redraw, update_minimum_size and
+# update_configuration_warnings, none of which may be touched off the main
+# thread. Godot refuses each one by name, once per call: the partition index
+# reports 223k times and buried the run in half a megabyte of stack traces.
+#
+# So the worker only ASSIGNS, and the frame pump below — which is already on the
+# main thread, because it is awaiting process_frame — is what calls the caller
+# back. No lock: these are three independent variables written by one thread and
+# read by another for display, and the worst a torn read can do is show a stale
+# percentage for one frame.
+var _prog_stage := ""
+var _prog_done := 0
+var _prog_total := 0
+
 
 func open_async(host: Node, map: String, game_dir := "",
 		progress := Callable()) -> bool:
 	_open_done = false
 	_open_result = false
+	_prog_stage = ""
+	_prog_done = 0
+	_prog_total = 0
 	var task := func():
-		_open_result = open_map(map, game_dir, progress)
+		_open_result = open_map(map, game_dir,
+			func(stage: String, done: int, total: int):
+				_prog_stage = stage
+				_prog_done = done
+				_prog_total = total)
 		_open_done = true
 	var tid := WorkerThreadPool.add_task(task, true, "bf6 game source open")
+	var last := ""
 	while not WorkerThreadPool.is_task_completed(tid):
 		if host == null or not is_instance_valid(host) or host.get_tree() == null:
 			break
+		if progress.is_valid() and _prog_stage != "":
+			# Reported once a frame at most, whatever the worker does. The
+			# partition index calls its callback per bundle; forwarding every one
+			# would rebuild the label's layout 223k times for 60 visible states.
+			var now := "%s %d/%d" % [_prog_stage, _prog_done, _prog_total]
+			if now != last:
+				last = now
+				progress.call(_prog_stage, _prog_done, _prog_total)
 		await host.get_tree().process_frame
 	WorkerThreadPool.wait_for_task_completion(tid)
 	return _open_result and _open_done
@@ -208,7 +272,32 @@ func open_async(host: Node, map: String, game_dir := "",
 # `mesh` here is the resolved RES name rather than a file stem, and _prop_mesh
 # is what knows the difference. Nothing else in the build path needs to.
 # ---------------------------------------------------------------------------
+# BUILT ONCE PER MAP, and this is not a micro-optimisation.
+#
+# _load_data is called from more places than the build: showing or hiding a
+# layer, reskinning, the range tick, a variant switch. On the download path each
+# call re-parsed a JSON file, which is wasteful and survivable. Here it would
+# re-composite a 4097x4097 heightfield, rebuild 45,736 triangles of road, and
+# re-emit 7,878 lights and 624 FX points — measured in one session log running
+# three times before the build even started.
+#
+# Keyed on the cache directory because that is what changes the RESULT: the
+# terrain and the light and FX files are written there, so a different directory
+# is a different answer rather than the same one.
+var _map_data := {}
+var _map_data_key := "￿"          # not "" — that is a legitimate key
+
+
 func map_data(cache_dir := "") -> Dictionary:
+	if _map_data_key == cache_dir and not _map_data.is_empty():
+		return _map_data
+	var out := _build_map_data(cache_dir)
+	_map_data = out
+	_map_data_key = cache_dir
+	return out
+
+
+func _build_map_data(cache_dir: String) -> Dictionary:
 	var by_mesh := {}
 	var by_bd := {}
 	var dropped := 0
@@ -283,20 +372,26 @@ func map_data(cache_dir := "") -> Dictionary:
 		"from_game": true,
 	}
 	if cache_dir != "":
+		var t := Time.get_ticks_msec()
 		var hm := terrain(cache_dir)
 		if not hm.is_empty():
 			out["heightmap"] = hm
+		timings["terrain"] = Time.get_ticks_msec() - t
+		t = Time.get_ticks_msec()
 		# ORDER MATTERS: the roads are draped on the heightfield terrain() just
 		# composited, so they cannot be built before it.
 		var rd := roads()
 		if rd != null:
 			out["roads"] = rd
+		timings["roads"] = Time.get_ticks_msec() - t
+		t = Time.get_ticks_msec()
 		# Written as the files the light and FX layers already read, rather than
 		# handed over in memory. Those two layers are toggled long after the build
 		# — from the dock, on demand — so the data has to outlive this call, and a
 		# file in the map's own cache is what the rest of the plugin means by that.
 		out["lights"] = lights(cache_dir)
 		out["fx"] = fx(cache_dir)
+		timings["lights + fx"] = Time.get_ticks_msec() - t
 	var w := water()
 	if not w.is_empty():
 		out["water"] = w
@@ -633,9 +728,10 @@ func water() -> Array:
 # ---------------------------------------------------------------------------
 # THE MAP'S LIGHTS.
 #
-# 11,641 fixtures on Dumbo, collected on the placement walk rather than by a
-# second pass: a light inherits the composed world transform of whichever prefab
-# holds it, so mining it IS the walk.
+# 7,878 fixtures on Dumbo — 4,470 spot and 3,408 omni, the same set and the same
+# split lights_mine.py produces — collected on the placement walk rather than by
+# a second pass: a light inherits the composed world transform of whichever
+# prefab holds it, so mining it IS the walk.
 #
 # The type guids and field hashes are baked in as constants because they have to
 # be. The exe's reflection tables carry name HASHES and no names, and the hash is
@@ -919,7 +1015,22 @@ func resolve_mesh(mesh_path: String) -> String:
 # the group key from map_data() and both the mesh and its scope are recovered
 # from it, so a caller never has to carry them separately.
 # ---------------------------------------------------------------------------
+# WHERE A MESH'S TIME GOES, accumulated across the whole build in microseconds.
+#
+# Split three ways because the three want different fixes and the total says
+# nothing about which: reading and decompressing the resource is I/O against the
+# CAS, parsing it is byte work that could go on a worker thread, and the
+# material is a depot lookup plus a texture decode and a GPU upload that cannot.
+# Guessing which dominates is how the last two optimisation attempts this
+# session went wrong.
+var t_res := 0
+var t_parse := 0
+var t_mat := 0
+var n_meshes := 0
+
+
 func mesh_for(group_key: String, lod := 0) -> Mesh:
+	var _t0 := Time.get_ticks_usec()
 	var res_name := group_key
 	var scope := ""
 	if _group_meta.has(group_key):
@@ -935,6 +1046,9 @@ func mesh_for(group_key: String, lod := 0) -> Mesh:
 	var d := src.get_res(res_name)
 	if d.is_empty():
 		return null
+	t_res += Time.get_ticks_usec() - _t0
+	var _t1 := Time.get_ticks_usec()
+	var mat_us := 0
 	var info := _ms.parse(d)
 	if info.is_empty():
 		return null
@@ -984,10 +1098,20 @@ func mesh_for(group_key: String, lod := 0) -> Mesh:
 			continue
 		arr[Mesh.ARRAY_INDEX] = idx
 		am.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr)
+		var _t2 := Time.get_ticks_usec()
 		var mat = material_for(int(sec.get("state_key", 0)), scope) \
 			if build_materials else null
+		var _dm := Time.get_ticks_usec() - _t2
+		t_mat += _dm
+		mat_us += _dm
 		if mat != null:
 			am.surface_set_material(am.get_surface_count() - 1, mat)
+	# Parse covers everything from the MeshSet header to the finished ArrayMesh
+	# — read_lod plus the surface building — with the material time subtracted
+	# out, because the materials are interleaved into that loop and counting
+	# them twice would make the two halves sum to more than the whole.
+	t_parse += (Time.get_ticks_usec() - _t1) - mat_us
+	n_meshes += 1
 	return am if am.get_surface_count() > 0 else null
 
 

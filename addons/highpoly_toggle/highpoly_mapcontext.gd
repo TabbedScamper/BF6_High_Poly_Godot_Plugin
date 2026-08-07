@@ -595,6 +595,20 @@ func _purge_terrain_cache(map: String) -> void:
 # separate downloads trip. Idempotent: if placements.json is already cached and
 # all backdrop files present, does nothing. status is Callable(String).
 func download_map(host: Node, map: String, status: Callable, force := false) -> bool:
+	# NOTHING TO DOWNLOAD when the map came out of the install.
+	#
+	# The toggle already returns before calling this on the game path, and that
+	# was not enough: half a dozen other places reach for the download — a layer
+	# switch, a variant change, the props verifier — and each of them found the
+	# network. A recorded session built Dumbo from the game in 203 s and then sat
+	# in "Downloading the level's scenery (1/3)" failing against a server it did
+	# not need, which on a machine with no connection is a long wait for an error
+	# about data that is already on screen.
+	#
+	# Guarding the function rather than the callers is the point: a new caller
+	# added later is covered without anyone remembering to.
+	if game_source != null and game_source.level == map.to_lower():
+		return true
 	var b := base_url() + "maps/%s/" % map
 	var dir := "%s/%s" % [CACHE, map]
 	HighpolyStore.ensure_dir(dir)
@@ -1445,9 +1459,12 @@ func _prop_mesh(e: Dictionary, dir: String) -> Array:
 	# name rather than a cached file stem, and this is the only place that
 	# distinction exists — everything downstream just gets a Mesh.
 	#
-	# UNTEXTURED. Materials resolve through the ShaderBlockDepot chain, which is
-	# not ported yet, so these come back as geometry with no maps. That is why
-	# nothing selects this source by default.
+	# TEXTURED. Each section's shader state key resolves through the
+	# ShaderBlockDepot of the scope it was placed under, which is what
+	# game_source.material_for does — so these arrive dressed, not bare. (This
+	# note used to say the opposite; the depot chain landed and the comment did
+	# not, which is exactly how a reader gets called "untextured" for a week
+	# after it stopped being.)
 	if game_source != null and bool(_data.get("from_game", false)):
 		var key := str(e.get("mesh", ""))
 		if _mesh_cache.has(key):
@@ -2671,6 +2688,12 @@ func _ensure_props_ranged(host: Node, map: String, url: String, miss: Array,
 
 
 func ensure_props(host: Node, map: String, status: Callable) -> bool:
+	# Same guard as download_map, and for the same reason: a game-sourced map's
+	# prop meshes come out of the MeshSets, so there is no per-prop GLB to be
+	# missing and nothing to fetch. _props_missing() works off the packaged
+	# registry and would report every one of the 5,498 groups absent.
+	if game_source != null and game_source.level == map.to_lower():
+		return true
 	if not _load_data(map): return false
 	var refresh: bool = _props_refresh.get(map, false)
 	var miss := _props_missing()
@@ -3869,7 +3892,24 @@ func _build_backdrop_async(bd_root: Node3D, entries: Array, dir: String,
 					_end_build_draw(bd_root)
 					return
 		var meshes: Array = []
-		if e.has("glb"):
+		# FROM THE INSTALL, the same as the props. map_data() splits the walk's
+		# StaticModelGroup rows emitted straight from the level root into a
+		# `backdrop` list — all 155 of the packaged skyline meshes are among
+		# them and all 155 resolve to a MeshSet — and this is what draws them.
+		#
+		# Without this branch the skyline silently does not exist on the game
+		# path: an entry carries neither `glb` nor `model`, both tests fail, and
+		# the loop counts it done having built nothing. It looks like a slow
+		# build rather than a missing one, and the session harness waits out its
+		# whole timeout for a surface census that will never move off zero.
+		if game_source != null and bool(_data.get("from_game", false)) \
+				and e.has("mesh"):
+			# AWAITED like the props loop does. The game branch of _prop_mesh
+			# returns without yielding, but _prop_mesh is a coroutine either way
+			# and calling one bare hands back a state object rather than the
+			# Array — which then reads as "no meshes" and builds nothing.
+			meshes = await _prop_mesh(e, dir)
+		elif e.has("glb"):
 			var gp := "%s/%s" % [dir, e["glb"]]
 			if FileAccess.file_exists(gp):
 				# merge ALL mesh nodes like the props path â€” the rebuilt skyline
@@ -4221,6 +4261,29 @@ func _build_props_async(props_root: Node3D, entries: Array, dir: String,
 	HighpolyProfiler.mark("phase", "textures: %d distinct of %d wanted (%d reused), %d GPU"
 		% [int(_ps["misses"]), int(_ps["hits"]) + int(_ps["misses"]),
 		   int(_ps["hits"]), int(_ps["textures"])])
+	# WHERE A GAME-SOURCED BUILD ACTUALLY WENT. "props: load mesh" is one span
+	# covering three unrelated costs — the CAS read, the MeshSet parse and the
+	# depot-plus-texture material work — and they want completely different
+	# fixes: the first is I/O, the second could move to a worker thread, the
+	# third cannot because it uploads to the GPU. A single total picks none.
+	if game_source != null and int(game_source.n_meshes) > 0:
+		HighpolyProfiler.span("props: game source — read the resource (CAS)",
+			int(game_source.t_res / 1000))
+		HighpolyProfiler.span("props: game source — parse + build the ArrayMesh",
+			int(game_source.t_parse / 1000))
+		HighpolyProfiler.span("props: game source — materials (depot + textures)",
+			int(game_source.t_mat / 1000))
+		HighpolyProfiler.mark("phase",
+			"game source: %d meshes — read %.1f s, parse %.1f s, materials %.1f s"
+			% [int(game_source.n_meshes), game_source.t_res / 1e6,
+			   game_source.t_parse / 1e6, game_source.t_mat / 1e6])
+		var ts: Dictionary = game_source.tex_stats
+		HighpolyProfiler.mark("phase",
+			"game source textures: %d decoded, %d reused, %d failed, "
+			% [int(ts.get("decoded", 0)), int(ts.get("reused", 0)),
+			   int(ts.get("failed", 0))]
+			+ "%d materials, %.0f MB of pixels"
+			% [int(ts.get("materials", 0)), float(ts.get("bytes", 0)) / 1048576.0])
 	build_finished.emit(_build_props)
 
 # Progress: emit the signal (the toggle dock drives a ProgressBar off it) and

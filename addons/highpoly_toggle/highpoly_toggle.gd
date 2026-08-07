@@ -113,6 +113,10 @@ var mapctx_timer: Timer
 # in-flight handler (which may be awaiting a long download). A superseded
 # handler must NEVER apply its captured — now stale — checkbox state.
 var _mapctx_gen := 0
+
+# True while a game-source open is in flight. Every layer toggle re-enters
+# _mapctx_changed, and without this each one starts its own read of the install.
+var _gs_opening := false
 var update_btn: Button         # "Update Plugin to vX.Y.Z" — hidden until a newer version exists
 var banner: Label              # legacy-mode notice ("reorganization pending")
 var sync_lbl: Label
@@ -2937,7 +2941,22 @@ func _mapctx_changed() -> void:
 	# 1.3 s, all cached under the mounted TOCs' signature so a game patch
 	# invalidates it. It runs on a worker with the dock still live — see
 	# HighpolyGameSource.open_async.
+	# ONE OPEN AT A TIME, and this is not a tidiness point.
+	#
+	# _mapctx_changed runs on every one of the layer toggles — on, objects,
+	# backdrop, water, textures — and each of them reached this guard while the
+	# first open was still awaiting, saw game_source still null, and started
+	# another. A recorded session opened the same map SIX times. Warm that is six
+	# times 1.4 s; cold it is six threads all missing the same walk cache and
+	# each paying the full 85 s, because none of them has written the cache yet.
+	#
+	# A later arrival waits for the one in flight rather than starting its own.
+	while _gs_opening:
+		await get_tree().process_frame
+		if gen != _mapctx_gen:
+			return
 	if mapctx.game_source == null and HighpolyGameSource.available():
+		_gs_opening = true
 		lbl.text = "Reading %s from your Battlefield 6 install…" % map
 		var gs = HighpolyGameSource.new()
 		var ok_g: bool = await gs.open_async(dock, map, "",
@@ -2945,8 +2964,24 @@ func _mapctx_changed() -> void:
 				lbl.text = ("%s — %s %d%%" % [map, stage,
 					int(100.0 * done / maxf(1.0, float(total)))]) if total > 0 \
 					else ("%s — %s…" % [map, stage]))
+		# CLEARED BEFORE THE GENERATION CHECK, not after. Returning with the flag
+		# still set leaves every later toggle spinning on `while _gs_opening`
+		# forever, and a superseded generation is the normal way out of here.
+		_gs_opening = false
 		if gen != _mapctx_gen:
 			return
+		# INTO THE PHASE TABLE, per phase rather than as one total. A session
+		# report with an 85 s hole in it labelled "reading the install" is not a
+		# measurement — the mount, the partition index and the walk have nothing
+		# in common and want opposite fixes, and only the split says which one is
+		# costing the user their minute.
+		for k in gs.timings:
+			if str(k).begins_with("_"):
+				continue
+			HighpolyProfiler.span("game source: %s" % k, int(gs.timings[k]))
+		HighpolyProfiler.crumb("game source", "%s in %d ms%s"
+			% [map, int(gs.timings.get("_total", 0)),
+			   "  (walk cached)" if int(gs.timings.get("_cached", 0)) == 1 else ""])
 		if ok_g:
 			mapctx.game_source = gs
 		else:
