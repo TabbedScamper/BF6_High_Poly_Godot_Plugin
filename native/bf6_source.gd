@@ -184,8 +184,13 @@ func mount(level := "", progress := Callable(), use_cache := true,
 	# be resident. That is ~100 ms per big toc rather than the 21 s bundle
 	# sweep, and it is why the cache stores the index but not the parse.
 	var sig := ""
+	# Remembered for the partition index, which caches under the same identity:
+	# it is derived from these exact TOCs, so it must go stale with them.
+	_sig = ""
+	_level = level
 	if use_cache:
 		sig = _signature(paths)
+		_sig = sig
 		if _load_cache(_cache_path(level, sig)):
 			stats["ms"] = Time.get_ticks_msec() - t0
 			return true
@@ -331,6 +336,113 @@ func res_info(name: String):
 	if e == null:
 		return null
 	return {"name": name, "size": e[4], "type": e[5], "rid": e[6]}
+
+
+# ---------------------------------------------------------------------------
+# PARTITION GUID -> EBX NAME: the one index that cannot come from metadata.
+#
+# An EBX import names its target by PARTITION GUID, and that GUID lives inside
+# the target's own payload, in the EFIX fixup. It appears in no TOC and in no
+# bundle table, so there is nothing to look it up in — the engine builds the
+# index by reading every catalogued EBX header once, and so must we.
+#
+# This is what guid_index_<map>.tsv used to be, and that file was built by
+# walking a 277 GB dump. Replacing it is the whole point: with this, a placement
+# walk needs the player's install and nothing else. No dump, no download.
+#
+# ITERATED IN BUNDLE ORDER, which is not cosmetic. Entries that sit together in
+# a bundle read from the same CAS region, and touching them in catalogue order
+# instead measured about 15x worse in the Python original.
+#
+# '.ebx' is appended deliberately. The traversal decides whether an import is a
+# PARTITION to recurse into or a RESOURCE to emit by testing for that suffix, so
+# handing back bare names would silently turn every recursion into a leaf.
+var _pidx = null
+var _sig := ""
+var _level := ""
+
+
+func partition_index(progress := Callable()) -> Dictionary:
+	if _pidx != null:
+		return _pidx
+	var cp := _pidx_cache_path()
+	if cp != "" and FileAccess.file_exists(cp):
+		var f := FileAccess.open(cp, FileAccess.READ)
+		if f != null:
+			var d = f.get_var()
+			f.close()
+			if typeof(d) == TYPE_DICTIONARY and not (d as Dictionary).is_empty():
+				_pidx = d
+				return _pidx
+
+	var names: Array = ebx.keys()
+	names.sort_custom(func(a, b):
+		var ea: Array = ebx[a]
+		var eb: Array = ebx[b]
+		if int(ea[0]) != int(eb[0]):
+			return int(ea[0]) < int(eb[0])
+		if int(ea[1]) != int(eb[1]):
+			return int(ea[1]) < int(eb[1])
+		return int(ea[2]) < int(eb[2]))
+
+	var out := {}
+	var done := 0
+	for name in names:
+		var g := _efix_guid(_read_seg(ebx[name]))
+		# First name wins, so the result is stable across runs rather than
+		# dependent on iteration order.
+		if g != "" and not out.has(g):
+			out[g] = str(name) + ".ebx"
+		done += 1
+		if progress.is_valid() and done % 2000 == 0:
+			progress.call(done, names.size(), out.size())
+	_pidx = out
+	if cp != "":
+		var wf := FileAccess.open(cp, FileAccess.WRITE)
+		if wf != null:
+			wf.store_var(out)
+			wf.close()
+	return _pidx
+
+
+# A partition's own GUID, out of its EFIX fixup.
+#
+# Deliberately NOT done by handing the bytes to the deserializer: this is a
+# RIFF chunk walk and a 16-byte read, while BF6Ebx is the layer ABOVE this one —
+# it needs the type tables out of the exe, and a source that cannot index itself
+# without them would be a circular dependency for no gain. Twelve lines is the
+# cheaper answer.
+func _efix_guid(raw: PackedByteArray) -> String:
+	if raw.size() < 12 or raw.slice(0, 4).get_string_from_ascii() != "RIFF":
+		return ""
+	var o := 12
+	while o + 8 <= raw.size():
+		var cid := raw.slice(o, o + 4).get_string_from_ascii()
+		var sz := int(raw.decode_u32(o + 4))
+		if cid == "EFIX":
+			var s := o + 8
+			if s + 16 > raw.size():
+				return ""
+			# .NET Guid mixed-endian, matching BF6Ebx.guid_str: first three
+			# groups little-endian, last eight bytes as they lie. The two MUST
+			# agree — this index is looked up with keys that reader produces.
+			return "%08x-%04x-%04x-%s-%s" % [raw.decode_u32(s),
+				raw.decode_u16(s + 4), raw.decode_u16(s + 6),
+				raw.slice(s + 8, s + 10).hex_encode(),
+				raw.slice(s + 10, s + 16).hex_encode()]
+		o += 8 + sz
+		if o % 2 == 1:
+			o += 1
+	return ""
+
+
+# Keyed on the same TOC signature as the segment index: this is derived from
+# those exact files, so it has to go stale when they do (a game patch).
+func _pidx_cache_path() -> String:
+	if _sig == "":
+		return ""
+	return "user://bf6_pidx_%s_v%d_%s.idx" % [
+			_level if _level != "" else "shared", CACHE_VERSION, _sig]
 
 
 # A chunk's FULL data, from whichever of the two sources holds it.

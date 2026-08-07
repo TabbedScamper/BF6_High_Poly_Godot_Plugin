@@ -1,4 +1,9 @@
 extends RefCounted
+# Named, like the rest of the stack. Without this the only way to reach it is
+# preload("res://bf6_ebx.gd"), which ties every consumer to the file sitting at
+# the project root — true in the test project and false in the plugin, where it
+# lives under addons/. A global class works from either.
+class_name BF6Ebx
 
 # RIFF-EBX: the container parse and the value deserializer, driven by the type
 # layouts in bf6_types.gd.

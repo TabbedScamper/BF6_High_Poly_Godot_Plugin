@@ -1,4 +1,5 @@
 extends RefCounted
+class_name BF6Types      # see the note in bf6_ebx.gd on why these are named
 
 # Frostbite type layouts, read out of the game's own executable.
 #
