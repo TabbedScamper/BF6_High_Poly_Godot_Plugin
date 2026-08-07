@@ -3909,6 +3909,12 @@ func _build_backdrop_async(bd_root: Node3D, entries: Array, dir: String,
 			# and calling one bare hands back a state object rather than the
 			# Array — which then reads as "no meshes" and builds nothing.
 			meshes = await _prop_mesh(e, dir)
+			# A suspension point the skyline loop did not have before: the scene
+			# can be closed or the layer switched off across it, and everything
+			# below assumes bd_root is still there.
+			if gen != _build_gen or not is_instance_valid(bd_root):
+				_end_build_draw(bd_root)
+				return
 		elif e.has("glb"):
 			var gp := "%s/%s" % [dir, e["glb"]]
 			if FileAccess.file_exists(gp):
@@ -4003,7 +4009,17 @@ func _build_backdrop_async(bd_root: Node3D, entries: Array, dir: String,
 var _hidden_builds: Dictionary = {}     # instance id -> node
 
 
-func _begin_build_draw(node: Node3D) -> void:
+# UNTYPED PARAMETERS, and that is the fix rather than a slip.
+#
+# Both of these guard with is_instance_valid, and with a `node: Node3D`
+# signature that guard can never run: GDScript checks the argument's type at
+# the call, and a previously-freed Object fails that check with "the
+# Object-derived class of argument 1 (previously freed) is not a subclass of the
+# expected argument class" before the body is entered. Every exit path in both
+# builders calls _end_build_draw, several of them precisely because the node was
+# freed underneath them, so the one case the guard exists for was the one case
+# it could not handle.
+func _begin_build_draw(node) -> void:
 	if node == null or not is_instance_valid(node):
 		return
 	if not _restore_visible_for(node):
@@ -4012,7 +4028,7 @@ func _begin_build_draw(node: Node3D) -> void:
 	_hidden_builds[node.get_instance_id()] = node
 
 
-func _end_build_draw(node: Node3D) -> void:
+func _end_build_draw(node) -> void:
 	if node == null or not is_instance_valid(node):
 		return
 	if not _hidden_builds.has(node.get_instance_id()):
@@ -4293,6 +4309,14 @@ func _build_props_async(props_root: Node3D, entries: Array, dir: String,
 			% [int(game_source.n_meshes), int(game_source.n_mesh_shared),
 			   100.0 * game_source.n_mesh_shared
 			   / maxf(1.0, float(game_source.n_meshes + game_source.n_mesh_shared))])
+		HighpolyProfiler.span("props: game source — load cached geometry",
+			int(game_source.t_geom_load / 1000))
+		HighpolyProfiler.span("props: game source — save geometry to the cache",
+			int(game_source.t_geom_save / 1000))
+		HighpolyProfiler.mark("phase",
+			"game source geometry cache: %d loaded (%.1f s), %d saved (%.1f s)"
+			% [int(game_source.n_geom_loaded), game_source.t_geom_load / 1e6,
+			   int(game_source.n_geom_saved), game_source.t_geom_save / 1e6])
 		var ts: Dictionary = game_source.tex_stats
 		HighpolyProfiler.mark("phase",
 			"game source textures: %d decoded, %d reused, %d failed, "

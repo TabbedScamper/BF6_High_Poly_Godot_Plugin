@@ -213,6 +213,7 @@ func open_map(map: String, game_dir := "", progress := Callable()) -> bool:
 		error = str(walk.stats.get("error", "the placement walk produced nothing"))
 		return false
 	timings["placement walk"] = Time.get_ticks_msec() - t
+	_geom_open()
 	timings["_total"] = Time.get_ticks_msec() - t_all
 	timings["_cached"] = 1 if walk.stats.get("from_cache", false) else 0
 	_say("game source: %s — %d placements%s" % [map, walk.rows.size(),
@@ -1083,6 +1084,22 @@ func mesh_for(group_key: String, lod := 0) -> Mesh:
 			n_mesh_shared += 1
 			return _mesh_by_sig[sig]
 
+	# FROM DISK, if this map has been built before on this install. The geometry
+	# is the expensive half — 25.6 s of a 50.9 s build against 8.3 s of
+	# materials — and it is identical every time until the game is patched, at
+	# which point the TOC signature in the directory name changes and the whole
+	# cache is orphaned rather than stale.
+	#
+	# This is a file derived from the player's own install, not a download. The
+	# same standard the walk cache and height_game.r16 already meet.
+	var cached = _geom_load(kc)
+	if cached is ArrayMesh:
+		var ckeys := _keys_of(cached as ArrayMesh)
+		_keys_for[kc] = ckeys
+		_dress(cached as ArrayMesh, ckeys, scope)
+		_mesh_by_sig[_sig_for(kc, ckeys, scope)] = cached
+		return cached as ArrayMesh
+
 	var d := src.get_res(res_name)
 	if d.is_empty():
 		return null
@@ -1207,17 +1224,17 @@ func mesh_for(group_key: String, lod := 0) -> Mesh:
 			arr[Mesh.ARRAY_TEX_UV] = acc[2]
 		arr[Mesh.ARRAY_INDEX] = acc[3]
 		am.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr)
+		# THE MERGE KEY, STORED AS THE SURFACE'S NAME. It is what decides which
+		# material this surface takes, it has to survive a round trip through the
+		# geometry cache, and a surface name is the one place a Mesh already
+		# carries a string per surface. The alternative was a second index file
+		# beside every mesh, which is another thing to keep in step and another
+		# thing to be missing.
+		am.surface_set_name(am.get_surface_count() - 1, str(key))
 		# `kept`, not `order`: a key whose sections all dropped out contributes no
 		# surface, so recording it would put the surface list and the key list out
 		# of step — and _sig_for reads them as parallel.
 		kept.append(key)
-		var _t2 := Time.get_ticks_usec()
-		var mat = material_for(int(key), scope) if build_materials else null
-		var _dm := Time.get_ticks_usec() - _t2
-		t_mat += _dm
-		mat_us += _dm
-		if mat != null:
-			am.surface_set_material(am.get_surface_count() - 1, mat)
 	n_sections += secs.size()
 	n_surfaces += am.get_surface_count()
 	# Parse covers everything from the MeshSet header to the finished ArrayMesh
@@ -1228,10 +1245,105 @@ func mesh_for(group_key: String, lod := 0) -> Mesh:
 	n_meshes += 1
 	if am.get_surface_count() == 0:
 		return null
+	# SAVED BEFORE THE MATERIALS GO ON, which is the whole design of the cache.
+	# A geometry-only mesh is the expensive part and the part that is identical
+	# in every scope; the materials are 8.3 s against the parse's 25.6 s, they
+	# dedup across the map, and saving them would embed the same textures behind
+	# thousands of separate files.
+	_geom_save(kc, kept, am)
+	_dress(am, kept, scope)
 	# Recorded so the NEXT scope to want this mesh can decide without parsing.
 	_keys_for[kc] = kept
 	_mesh_by_sig[_sig_for(kc, kept, scope)] = am
 	return am
+
+
+# ---------------------------------------------------------------------------
+# THE GEOMETRY CACHE.
+#
+# One .res per (MeshSet, LOD), holding the merged ArrayMesh with its surfaces
+# named after their merge keys and NO materials. Keyed by directory on the level
+# and the mounted TOCs' signature, so a game patch orphans the whole thing at
+# once instead of leaving one stale mesh behind the rest.
+#
+# Materials are deliberately not in it. They are a third of the cost, they dedup
+# hard across the map — 1,192 materials for 5,655 groups — and saving them would
+# embed the same textures behind thousands of separate files, turning a ~460 MB
+# cache into a multi-gigabyte one.
+var geom_cache := true
+var _geom_dir := ""
+var n_geom_loaded := 0
+var n_geom_saved := 0
+var t_geom_load := 0
+var t_geom_save := 0
+
+
+func _geom_open() -> void:
+	_geom_dir = ""
+	if not geom_cache or src == null:
+		return
+	var sig := src.signature()
+	if sig == "":
+		return
+	var d := "user://bf6_geom/%s_%s" % [level, sig]
+	if DirAccess.make_dir_recursive_absolute(d) != OK and not DirAccess.dir_exists_absolute(d):
+		return
+	_geom_dir = d
+
+
+# md5 of the key, not the key: a MeshSet name is a long path with slashes in it,
+# and those are directories rather than characters as far as a file name is
+# concerned.
+func _geom_path(kc: String) -> String:
+	return "%s/%s.res" % [_geom_dir, kc.md5_text()]
+
+
+func _geom_load(kc: String):
+	if _geom_dir == "":
+		return null
+	var p := _geom_path(kc)
+	if not ResourceLoader.exists(p):
+		return null
+	var t := Time.get_ticks_usec()
+	# CACHE_MODE_IGNORE: this reader keeps its own share table (_mesh_by_sig),
+	# which is keyed on the materials as well as the mesh. Letting Godot's
+	# resource cache hand the same instance to two callers would put a mesh from
+	# one scope into another with no way to tell.
+	var r = ResourceLoader.load(p, "ArrayMesh", ResourceLoader.CACHE_MODE_IGNORE)
+	t_geom_load += Time.get_ticks_usec() - t
+	if not (r is ArrayMesh) or (r as ArrayMesh).get_surface_count() == 0:
+		return null
+	n_geom_loaded += 1
+	return r
+
+
+func _geom_save(kc: String, keys: Array, am: ArrayMesh) -> void:
+	if _geom_dir == "" or keys.is_empty():
+		return
+	var t := Time.get_ticks_usec()
+	if ResourceSaver.save(am, _geom_path(kc)) == OK:
+		n_geom_saved += 1
+	t_geom_save += Time.get_ticks_usec() - t
+
+
+# The merge keys a cached mesh carries, recovered from its surface names.
+func _keys_of(am: ArrayMesh) -> Array:
+	var out: Array = []
+	for i in range(am.get_surface_count()):
+		out.append(int(am.surface_get_name(i)))
+	return out
+
+
+# Put this scope's materials on a mesh whose surfaces are already built.
+func _dress(am: ArrayMesh, keys: Array, scope: String) -> void:
+	if not build_materials:
+		return
+	var _t := Time.get_ticks_usec()
+	for i in range(mini(keys.size(), am.get_surface_count())):
+		var mat = material_for(int(keys[i]), scope)
+		if mat != null:
+			am.surface_set_material(i, mat)
+	t_mat += Time.get_ticks_usec() - _t
 
 
 # What this mesh WOULD look like under `scope`, as a string: the identity of the
