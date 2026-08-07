@@ -502,6 +502,26 @@ static func run(host: Node, dock: Node, mapctx: Node) -> void:
 		_finish(_tree, cfg, rep)
 		return
 
+	# THE MAP'S OWN OCCLUDERS, if it shipped any and the session asked for them.
+	#
+	# 867 authored quads and boxes on Dumbo. Off by default in the config so that
+	# a run measures the same thing as every earlier run unless it says
+	# otherwise — a layer that silently switched itself on would make every
+	# comparison in the history meaningless.
+	if bool(cfg.get("occluders", false)):
+		var pj := "%s/%s/placements.json" % [mapctx.CACHE, str(cfg["map"])]
+		var occ: Array = []
+		var raw := FileAccess.get_file_as_string(pj)
+		if raw != "":
+			var d = JSON.parse_string(raw)
+			if d is Dictionary and (d as Dictionary).has("occluders"):
+				occ = (d as Dictionary)["occluders"]
+		rep["occluder_records"] = occ.size()
+		rep["occluders"] = HighpolyOccluders.apply(root, true, occ)
+		_say("autorun: %s" % rep["occluders"])
+		for i in range(30):
+			await _tree.process_frame
+
 	var samples := _load_path(str(cfg["flight"]))
 	rep["flight_samples"] = samples.size()
 	if samples.is_empty():
