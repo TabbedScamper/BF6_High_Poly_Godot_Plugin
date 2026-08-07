@@ -37,6 +37,10 @@ class_name HighpolyAutorun
 
 const ENV := "BF6_AUTORUN"
 
+# Dialog titles seen during a run, and how often. Reported so a cancelled
+# prompt is visible instead of being mistaken for a broken project.
+static var _dialogs_seen := {}
+
 const Log = preload("highpoly_log.gd")
 const FlightPath = preload("highpoly_flightpath.gd")
 const LightingScript = preload("highpoly_lighting.gd")
@@ -61,6 +65,7 @@ static func config() -> Dictionary:
 		"water": true, "flight": "", "out": "", "settle_frames": 30,
 		"build_timeout_s": 900, "radius": 1.0e9,
 		"lighting": true, "gi": true, "shadows": true, "map_lights": true,
+		"vram_mode": -1,
 	}
 	if v != "" and v != "1" and FileAccess.file_exists(v):
 		var j = JSON.parse_string(FileAccess.get_file_as_string(v))
@@ -152,6 +157,33 @@ static func run(host: Node, dock: Node, mapctx: Node) -> void:
 			prog["total"] = t
 			prog["at"] = Time.get_ticks_msec()
 			(prog["samples"] as Array).append([prog["at"], d]))
+	# THE SKYLINE IS A SECOND BUILD WITH ITS OWN LANE, and waiting only for the
+	# props one meant every flight began while the backdrop was still building —
+	# main-thread work landing in the middle of the frames being timed. On a map
+	# where the skyline IS 61% of the cost that is not a small error, and it is
+	# why the flight numbers drifted between otherwise identical runs.
+	#
+	# _build_backdrop_async emits backdrop_progress and no "finished" signal, so
+	# the end condition is done reaching total rather than an event.
+	var bd := {"done": 0, "total": 0, "at": Time.get_ticks_msec()}
+	if mapctx.has_signal("backdrop_progress"):
+		mapctx.backdrop_progress.connect(func(d, t):
+			bd["done"] = d
+			bd["total"] = t
+			bd["at"] = Time.get_ticks_msec())
+
+	# VIDEO MEMORY IS THE SETTING MOST LIKELY TO DECIDE THE FRAME RATE on this
+	# map, so it has to be sweepable rather than whatever the dock last saved.
+	#
+	# Measured on a 16 GB RTX 4080: the scene asks for 18.4 GB, 17.3 GB of it
+	# textures. Past the card's limit the driver spills to system memory over
+	# PCIe and every frame that touches an evicted texture stalls - a far better
+	# explanation of 130 ms frames than 49,277 draw calls, which a 4080 does not
+	# struggle with.
+	if int(cfg.get("vram_mode", -1)) >= 0:
+		mapctx.vram_mode = int(cfg["vram_mode"])
+	rep["vram_mode"] = mapctx.vram_mode
+
 
 	t0 = Time.get_ticks_msec()
 	var status: String = mapctx.apply(root, true, bool(cfg["objects"]),
@@ -250,6 +282,29 @@ static func run(host: Node, dock: Node, mapctx: Node) -> void:
 		await host.get_tree().process_frame
 	rep["radius"] = radius
 
+	# WAIT FOR THE SKYLINE TOO. The props build signalling "finished" says
+	# nothing about the backdrop, which runs alongside it and finishes later on
+	# this map: 155 pieces, and the heaviest geometry in the scene.
+	if bool(cfg["backdrop"]):
+		var bt0 := Time.get_ticks_msec()
+		var bquiet := 0
+		while Time.get_ticks_msec() - bt0 < limit:
+			await host.get_tree().process_frame
+			if int(bd["total"]) > 0 and int(bd["done"]) >= int(bd["total"]):
+				break
+			# It emits nothing at all if the layer had no work to do, so a
+			# stretch of silence with no progress ends the wait rather than
+			# burning the whole build budget on a layer that already finished.
+			if Time.get_ticks_msec() - int(bd["at"]) > 20000:
+				bquiet = 1
+				break
+		rep["backdrop_ms"] = Time.get_ticks_msec() - bt0
+		rep["backdrop_done"] = int(bd["done"])
+		rep["backdrop_total"] = int(bd["total"])
+		rep["backdrop_quiet"] = bquiet
+		_say("autorun: skyline %d/%d after a further %.1f s"
+				% [bd["done"], bd["total"], rep["backdrop_ms"] / 1000.0])
+
 	var samples := _load_path(str(cfg["flight"]))
 	rep["flight_samples"] = samples.size()
 	if samples.is_empty():
@@ -264,6 +319,7 @@ static func run(host: Node, dock: Node, mapctx: Node) -> void:
 	rep["scene_nodes"] = _count_nodes(root)
 	rep["engine"] = _engine()
 	rep["census"] = _surface_census(root)
+	rep["dialogs_seen"] = _dialogs_seen
 	# The crumb trail, which is the only record that survives a crash. If the
 	# editor dies mid-run there is no report at all, and this is what the next
 	# session reads to find out where it died.
@@ -342,14 +398,26 @@ static func _dismiss_dialogs() -> int:
 		var nm := str(w.name)
 		if nm.begins_with("Highpoly"):
 			continue
+		# RECORDED, NOT BLINDLY CLOSED. Hiding whatever appears is how an
+		# unattended run silently cancels something it needed: the SDK fetches a
+		# map's content on demand and ASKS FIRST, so dismissing its prompt
+		# leaves the level an empty shell whose assets "do not exist" — which
+		# then reads as a corrupted project rather than a cancelled download.
+		#
+		# So the title goes in the report and only dialogs known to be safe to
+		# close are closed. Anything else is left alone and named, and a run
+		# that hangs behind one says which one.
+		var title := ""
 		if w is AcceptDialog:
-			# hide() rather than pressing OK: OK on an unknown dialog can mean
-			# "overwrite", "delete" or "reimport", and guessing on a project
-			# that is not ours is not worth the convenience.
+			title = (w as AcceptDialog).title
+		elif w is Window:
+			title = (w as Window).title
+		_dialogs_seen[title] = int(_dialogs_seen.get(title, 0)) + 1
+		var low := title.to_lower()
+		var safe := low.contains("error") or low.contains("warning") \
+				or low.contains("debugger") or low.contains("output")
+		if safe and w is AcceptDialog:
 			(w as AcceptDialog).hide()
-			n += 1
-		elif w is FileDialog:
-			(w as FileDialog).hide()
 			n += 1
 	return n
 
