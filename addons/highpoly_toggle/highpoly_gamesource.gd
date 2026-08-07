@@ -75,6 +75,21 @@ var _depot_cache := {}
 var _tex_cache := {}                   # texture res name -> ImageTexture
 var _mat_cache := {}                   # "<scope>|<state key>" -> Material
 var _group_meta := {}                  # group key -> [res name, scope, a src]
+
+# Off skips material resolution entirely, so a caller can measure geometry on
+# its own. The whole-map build costs +12.8 GB of static memory and the split
+# between geometry and textures is not guessable — the download path holds
+# ~3.4 GB doing a comparable job, so this is the difference between "inherent"
+# and "a pooling bug", and those want opposite fixes.
+var build_materials := true
+
+# Largest texture edge to load. 0 loads whatever the game ships, which for
+# Dumbo is 8.2 GB of mostly-2K BC7 for one map — against 460 MB for all of its
+# geometry. 1024 takes the embedded chunk instead of the streamed one, which
+# costs a byte range rather than a decompress, and is the same ceiling the
+# packaged .bctex set was published at.
+var texture_max_dim := 1024
+var tex_dims := {}                     # "WxH fFMT mip" -> count
 var tex_stats := {"decoded": 0, "reused": 0, "failed": 0, "no_depot": 0,
 	"no_key": 0, "materials": 0}
 
@@ -158,7 +173,20 @@ func open_map(map: String, game_dir := "", progress := Callable()) -> bool:
 # ---------------------------------------------------------------------------
 func map_data() -> Dictionary:
 	var by_mesh := {}
+	var by_bd := {}
 	var dropped := 0
+	# THE SKYLINE IS ALREADY IN THE WALK — measured, not assumed. All 155 of the
+	# packaged backdrop meshes appear among the rows and all 155 resolve to a
+	# MeshSet, so the 1,247 MB the download spends on it buys nothing the install
+	# does not already have.
+	#
+	# Telling it apart: every backdrop row is a StaticModelGroup emitted directly
+	# from the LEVEL ROOT partition, which is where MAP_LOADING 6.6 says vista
+	# instancing lives. That rule catches all 155 plus 30 further SMG rows the
+	# packaged pipeline had filed as props — and the packaged split is OUR
+	# classification rather than the game's, so those 30 are a content
+	# disagreement with an old heuristic, not an error against ground truth.
+	var root_ref := str(walk.stats.get("root", "")).to_lower()
 	var lo := Vector3(INF, INF, INF)
 	var hi := Vector3(-INF, -INF, -INF)
 	for r in walk.rows:
@@ -175,17 +203,21 @@ func map_data() -> Dictionary:
 		# those placements together would dress half of them from the wrong one.
 		var scope := str(row.get("scope", ""))
 		var gkey := "%s|%s" % [res_name, scope]
-		if not by_mesh.has(gkey):
-			by_mesh[gkey] = PackedFloat32Array()
+		var is_bd: bool = root_ref != "" \
+			and str(row.get("src", "")).to_lower() == root_ref \
+			and str(row.get("kind", "")).begins_with("smg")
+		var into: Dictionary = by_bd if is_bd else by_mesh
+		if not into.has(gkey):
+			into[gkey] = PackedFloat32Array()
 			_group_meta[gkey] = [res_name, scope, str(row.get("src", ""))]
-		var a: PackedFloat32Array = by_mesh[gkey]
+		var a: PackedFloat32Array = into[gkey]
 		# The same 12-float layout placements.json uses: basis rows then origin.
 		for i in range(4):
 			var v: Vector3 = (xf as Array)[i]
 			a.push_back(v.x)
 			a.push_back(v.y)
 			a.push_back(v.z)
-		by_mesh[gkey] = a
+		into[gkey] = a
 		var o: Vector3 = (xf as Array)[3]
 		lo = Vector3(minf(lo.x, o.x), minf(lo.y, o.y), minf(lo.z, o.z))
 		hi = Vector3(maxf(hi.x, o.x), maxf(hi.y, o.y), maxf(hi.z, o.z))
@@ -193,6 +225,9 @@ func map_data() -> Dictionary:
 	var props: Array = []
 	for k in by_mesh:
 		props.append({"mesh": k, "xf": Array(by_mesh[k] as PackedFloat32Array)})
+	var backdrop: Array = []
+	for k in by_bd:
+		backdrop.append({"mesh": k, "xf": Array(by_bd[k] as PackedFloat32Array)})
 
 	# _world_min is the origin of the cell grid, and placements.json ships it
 	# per map. Derived here from the placements themselves rather than assumed:
@@ -201,12 +236,12 @@ func map_data() -> Dictionary:
 	var wmin: float = -2048.0
 	if lo.x < INF:
 		wmin = floorf(minf(lo.x, lo.z) / 512.0) * 512.0
-	_say("game source: %d distinct meshes, %d placements, %d rows with no "
-		% [props.size(), walk.rows.size() - dropped, dropped]
-		+ "geometry (gameplay objects)")
+	_say("game source: %d prop groups, %d skyline groups, %d placements, "
+		% [props.size(), backdrop.size(), walk.rows.size() - dropped]
+		+ "%d rows with no geometry (gameplay objects)" % dropped)
 	return {
 		"props": props,
-		"backdrop": [],
+		"backdrop": backdrop,
 		"world": {"min": wmin},
 		"from_game": true,
 	}
@@ -304,7 +339,8 @@ func mesh_for(group_key: String, lod := 0) -> Mesh:
 			continue
 		arr[Mesh.ARRAY_INDEX] = idx
 		am.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr)
-		var mat = material_for(int(sec.get("state_key", 0)), scope)
+		var mat = material_for(int(sec.get("state_key", 0)), scope) \
+			if build_materials else null
 		if mat != null:
 			am.surface_set_material(am.get_surface_count() - 1, mat)
 	return am if am.get_surface_count() > 0 else null
@@ -346,7 +382,7 @@ func material_for(state_key: int, scope: String):
 	if albedo != null:
 		mat.albedo_texture = albedo
 		any = true
-	var nrm = _texture_for(slots.get("normal", slots.get("normal_vt")))
+	var nrm = _texture_for(slots.get("normal", slots.get("normal_vt")), true)
 	if nrm != null:
 		mat.normal_enabled = true
 		mat.normal_texture = nrm
@@ -368,7 +404,7 @@ func material_for(state_key: int, scope: String):
 	return mat
 
 
-func _texture_for(file_guid):
+func _texture_for(file_guid, is_normal := false):
 	if file_guid == null or str(file_guid) == "":
 		return null
 	var asset = walk.gi.get(str(file_guid))
@@ -385,12 +421,50 @@ func _texture_for(file_guid):
 		_tex_cache[an] = null
 		tex_stats["failed"] = int(tex_stats["failed"]) + 1
 		return null
-	var got := _tex.decode(raw, func(form): return src.get_chunk(str(form)))
+	var got := _tex.decode(raw, func(form): return src.get_chunk(str(form)),
+		texture_max_dim)
 	if got.is_empty() or not (got.get("image") is Image):
 		_tex_cache[an] = null
 		tex_stats["failed"] = int(tex_stats["failed"]) + 1
 		return null
-	var t := ImageTexture.create_from_image(got["image"] as Image)
+	# COMPRESS BEFORE UPLOADING, which is the difference between 12.8 GB and
+	# something a machine can hold.
+	#
+	# Measured over the whole map: geometry alone costs +460 MB, geometry with
+	# textures +12,775 MB — so 2,229 textures were taking 12.3 GB, about 5.5 MB
+	# each. A 1024x1024 block-compressed texture is half a megabyte; 5.5 MB is
+	# an uncompressed RGBA8 (or worse, a half-float) sitting resident, which is
+	# exactly what the download path found on ITS textures before the .bctex
+	# pool: "every single one is uncompressed RGB8 or RGBA8, 147 MB of GLB
+	# decodes to 639 MB resident", fixed there by S3TC for 5.1x.
+	#
+	# Some arrive already block-compressed straight out of the game, and
+	# is_compressed() skips those. NORMAL MAPS GET BC5: compressing a normal map
+	# as DXT puts visible banding on every curved surface, and it is the classic
+	# mistake with this optimisation.
+	var img := got["image"] as Image
+	# WHAT IS ACTUALLY RESIDENT, recorded per texture. Compressing before upload
+	# turned out to be a no-op — every image already arrives block-compressed
+	# from the game — yet 2,229 of them still cost 12.3 GB, about 5.5 MB each.
+	# A 1024x1024 BC1 is half a megabyte, so either these are much larger than
+	# 1K or they carry full mip chains, and those want different fixes. Measured
+	# rather than guessed a third time.
+	# The CHUNK matters as much as the size. A streamed chunk is mip 0 on its
+	# own, so there is no smaller level in it to take; an embedded chunk carries
+	# the tail of the chain and a resolution cap can simply pick a lower mip for
+	# free. Which one these arrive in decides whether capping is a slice or a
+	# decompress-and-resize.
+	var key := "%dx%d f%d %s%s" % [img.get_width(), img.get_height(),
+		img.get_format(), str(got.get("chunk", "?")),
+		" mip" if img.has_mipmaps() else ""]
+	tex_dims[key] = int(tex_dims.get(key, 0)) + 1
+	tex_stats["bytes"] = int(tex_stats.get("bytes", 0)) + img.get_data().size()
+	if not img.is_compressed() and img.get_width() >= 4 and img.get_height() >= 4:
+		img.compress(Image.COMPRESS_S3TC,
+			Image.COMPRESS_SOURCE_NORMAL if is_normal
+				else Image.COMPRESS_SOURCE_GENERIC)
+		tex_stats["compressed"] = int(tex_stats.get("compressed", 0)) + 1
+	var t := ImageTexture.create_from_image(img)
 	_tex_cache[an] = t
 	tex_stats["decoded"] = int(tex_stats["decoded"]) + 1
 	return t

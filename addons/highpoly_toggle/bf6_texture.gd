@@ -237,7 +237,25 @@ static func chunk_forms(guid_hex: String) -> Array:
 # Tries the chunk the header nominates, then the other. The fallback is not a
 # preference: if mip0's chunk is genuinely absent, decoding the tail mips gives a
 # smaller but correct image, which beats returning nothing.
-func decode(res: PackedByteArray, fetch: Callable) -> Dictionary:
+# `max_dim` caps the resolution WITHOUT decompressing anything.
+#
+# The game's textures are large: over a whole Dumbo build, 1,328 of 2,229 are
+# 2048x2048 BC7 and 116 are 4096x4096, which is 8.2 GB resident for one map
+# against 460 MB for all of its geometry. They are not duplicated (86% of
+# requests are cache hits) and not uncompressed — they are simply the shipping
+# assets at full size, and the old download path fitted in less only because the
+# pipeline had already downscaled them before publishing.
+#
+# The cap works because of how the two chunks divide the mip chain, measured
+# over 1,053 real textures: EVERY level at 2048 or above came from the STREAMED
+# chunk and every level below it from the EMBEDDED one. The streamed chunk is
+# mip 0 on its own, so there is no smaller level inside it — but the embedded
+# chunk is already there, holding the tail of the chain. So capping is a matter
+# of asking for the other chunk first, and costs a byte range rather than a
+# decompress-and-resize.
+#
+# 0 keeps the old behaviour exactly: preferred chunk first, other as fallback.
+func decode(res: PackedByteArray, fetch: Callable, max_dim := 0) -> Dictionary:
 	error = ""
 	var hdr := header(res)
 	if hdr.is_empty() or int(hdr["dxgi"]) == 0:
@@ -249,6 +267,12 @@ func decode(res: PackedByteArray, fetch: Callable) -> Dictionary:
 		return {}
 
 	var first := which_chunk(hdr)
+	# Only when the declared size actually exceeds the cap. A texture already
+	# under it must keep its preferred chunk, or a 512x512 would be pulled down
+	# to whatever tail the other chunk happens to hold.
+	if max_dim > 0 and first == "streamed" \
+			and (int(hdr["width"]) > max_dim or int(hdr["height"]) > max_dim):
+		first = "embedded"
 	var order := [first, "embedded" if first == "streamed" else "streamed"]
 	var why := ""                    # what actually went wrong, for the caller
 	for which in order:

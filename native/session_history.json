@@ -4757,6 +4757,411 @@
    "force_killed": false,
    "when": "2026-08-07 13:24:44",
    "note": ""
+  },
+  {
+   "apply_status": "driven through the dock",
+   "backdrop_done": 155,
+   "backdrop_ms": 1620,
+   "backdrop_surfaces": 550,
+   "backdrop_total": 155,
+   "boot_ms": 19816,
+   "build_done": 2761,
+   "build_ms": 31134,
+   "build_sampled": false,
+   "build_stalled": false,
+   "build_timed_out": false,
+   "build_total": 2761,
+   "cell": 0,
+   "census": {
+    "Backdrop": {
+     "instances": 155,
+     "nodes": 156,
+     "surfaces": 550,
+     "visible": true,
+     "visible_in_tree": true
+    },
+    "Props": {
+     "instances": 44925,
+     "nodes": 4245,
+     "surfaces": 14801,
+     "visible": true,
+     "visible_in_tree": true
+    },
+    "Terrain": {
+     "instances": 256,
+     "nodes": 257,
+     "surfaces": 256,
+     "visible": true,
+     "visible_in_tree": true
+    },
+    "Water": {
+     "instances": 1,
+     "nodes": 2,
+     "surfaces": 1,
+     "visible": true,
+     "visible_in_tree": true
+    },
+    "_MAP_CONTEXT": {
+     "instances": 0,
+     "nodes": 0,
+     "surfaces": 0,
+     "visible": true,
+     "visible_in_tree": true
+    }
+   },
+   "census_surfaces": 15608,
+   "dialogs_dismissed": 0,
+   "dialogs_seen": {},
+   "dock_controls": {
+    "mapctx_backdrop": true,
+    "mapctx_gi": true,
+    "mapctx_light": true,
+    "mapctx_maplights": true,
+    "mapctx_objects": true,
+    "mapctx_on": true,
+    "mapctx_shadows": true,
+    "mapctx_water": true,
+    "mode": 2,
+    "range": 3500.0
+   },
+   "dock_sync_ms": 96,
+   "draws_mean": 3760,
+   "draws_peak": 16051,
+   "editor_cam_stuck": 455,
+   "editor_cam_tried": 455,
+   "engine": {
+    "buffer_mb": 819.1,
+    "mem_static_mb": 3316.4,
+    "nodes": 25950,
+    "objects": 248979,
+    "orphans": 294,
+    "prims": 3809389,
+    "resources": 11697,
+    "texture_mb": 6838.5,
+    "vram_mb": 7838.3
+   },
+   "flight_samples": 455,
+   "frames": 1545,
+   "godot": "4.6.3-stable (official)",
+   "headless": false,
+   "hitches": 100,
+   "import_scan_ms": 25522,
+   "last_crumb": "",
+   "lighting": "MP_Dumbo game lighting: sun az 125\u00c2\u00b0 el 29\u00c2\u00b0, 120000 lux",
+   "low1_ms": 69.86,
+   "map": "MP_Dumbo",
+   "map_lights": "No light data for MP_Dumbo",
+   "mean_ms": 18.34,
+   "median_ms": 9.89,
+   "open_ms": 5388,
+   "p95_ms": 56.17,
+   "p99_ms": 62.26,
+   "phases": {
+    "panel tick: map-light culling": {
+     "each_ms": 0.0,
+     "n": 16,
+     "s": 0.0
+    },
+    "panel tick: prop cell culling": {
+     "each_ms": 0.38,
+     "n": 16,
+     "s": 0.006
+    },
+    "panel tick: total": {
+     "each_ms": 0.63,
+     "n": 16,
+     "s": 0.01
+    },
+    "props: ResourceLoader.load(.geom.res)": {
+     "each_ms": 1.73,
+     "n": 2761,
+     "s": 4.777
+    },
+    "props: apply_radius on every yield": {
+     "each_ms": 0.31,
+     "n": 42,
+     "s": 0.013
+    },
+    "props: create multimesh cells": {
+     "each_ms": 0.14,
+     "n": 2761,
+     "s": 0.394
+    },
+    "props: load mesh (GLB parse + cache)": {
+     "each_ms": 7.35,
+     "n": 2761,
+     "s": 20.28
+    },
+    "props: material passes (of which)": {
+     "each_ms": 4.98,
+     "n": 2761,
+     "s": 13.759
+    },
+    "props: prefetch parse (worker threads)": {
+     "each_ms": 469.78,
+     "n": 9,
+     "s": 4.228
+    },
+    "props: textures, all of it (of which)": {
+     "each_ms": 0.12,
+     "n": 2761,
+     "s": 0.345
+    },
+    "props: waiting for the yielded frame": {
+     "each_ms": 45.55,
+     "n": 42,
+     "s": 1.913
+    },
+    "skyline: load mesh (GLB parse + cache)": {
+     "each_ms": 14.35,
+     "n": 155,
+     "s": 2.225
+    },
+    "skyline: place multimesh": {
+     "each_ms": 0.13,
+     "n": 155,
+     "s": 0.02
+    },
+    "skyline: texture prefetch (worker threads)": {
+     "each_ms": 0.85,
+     "n": 13,
+     "s": 0.011
+    },
+    "skyline: waiting for the yielded frame": {
+     "each_ms": 1252.25,
+     "n": 4,
+     "s": 5.009
+    },
+    "textures: bind to materials": {
+     "each_ms": 0.12,
+     "n": 2693,
+     "s": 0.317
+    }
+   },
+   "probe_draws": 15442,
+   "props_built": 2761,
+   "props_per_s": 128.5,
+   "radius": 1000000000.0,
+   "reused_open_scene": true,
+   "scene": "res://Levels/MP_Dumbo.tscn",
+   "scene_nodes": 4761,
+   "scene_nodes_at_open": 48,
+   "shadow_draws_mean": 118,
+   "shadow_draws_peak": 577,
+   "started_unix": 1786132636.989,
+   "total_ms": 114684,
+   "vram_mode": 1,
+   "worst_ms": 99.24,
+   "wall_s": 117.4,
+   "vram_mb": 7838.3,
+   "texture_mb": 6838.5,
+   "mem_static_mb": 3316.4,
+   "force_killed": false,
+   "when": "2026-08-07 14:58:54",
+   "note": ""
+  },
+  {
+   "apply_status": "driven through the dock",
+   "backdrop_done": 155,
+   "backdrop_ms": 1725,
+   "backdrop_surfaces": 550,
+   "backdrop_total": 155,
+   "boot_ms": 19005,
+   "build_done": 2761,
+   "build_ms": 30352,
+   "build_sampled": false,
+   "build_stalled": false,
+   "build_timed_out": false,
+   "build_total": 2761,
+   "cell": 0,
+   "census": {
+    "Backdrop": {
+     "instances": 155,
+     "nodes": 156,
+     "surfaces": 550,
+     "visible": true,
+     "visible_in_tree": true
+    },
+    "Props": {
+     "instances": 44925,
+     "nodes": 4245,
+     "surfaces": 14801,
+     "visible": true,
+     "visible_in_tree": true
+    },
+    "Terrain": {
+     "instances": 256,
+     "nodes": 257,
+     "surfaces": 256,
+     "visible": true,
+     "visible_in_tree": true
+    },
+    "Water": {
+     "instances": 1,
+     "nodes": 2,
+     "surfaces": 1,
+     "visible": true,
+     "visible_in_tree": true
+    },
+    "_MAP_CONTEXT": {
+     "instances": 0,
+     "nodes": 0,
+     "surfaces": 0,
+     "visible": true,
+     "visible_in_tree": true
+    }
+   },
+   "census_surfaces": 15608,
+   "dialogs_dismissed": 0,
+   "dialogs_seen": {},
+   "dock_controls": {
+    "mapctx_backdrop": true,
+    "mapctx_gi": true,
+    "mapctx_light": true,
+    "mapctx_maplights": true,
+    "mapctx_objects": true,
+    "mapctx_on": true,
+    "mapctx_shadows": true,
+    "mapctx_water": true,
+    "mode": 2,
+    "range": 3500.0
+   },
+   "dock_sync_ms": 0,
+   "draws_mean": 4110,
+   "draws_peak": 16051,
+   "editor_cam_stuck": 455,
+   "editor_cam_tried": 455,
+   "engine": {
+    "buffer_mb": 819.1,
+    "mem_static_mb": 3314.7,
+    "nodes": 25950,
+    "objects": 248955,
+    "orphans": 294,
+    "prims": 3809389,
+    "resources": 11685,
+    "texture_mb": 6838.5,
+    "vram_mb": 7838.3
+   },
+   "flight_samples": 455,
+   "frames": 1559,
+   "godot": "4.6.3-stable (official)",
+   "headless": false,
+   "hitches": 188,
+   "import_scan_ms": 25123,
+   "last_crumb": "",
+   "lighting": "MP_Dumbo game lighting: sun az 125\u00c2\u00b0 el 29\u00c2\u00b0, 120000 lux",
+   "low1_ms": 66.63,
+   "map": "MP_Dumbo",
+   "map_lights": "No light data for MP_Dumbo",
+   "mean_ms": 18.85,
+   "median_ms": 10.69,
+   "open_ms": 5097,
+   "p95_ms": 53.4,
+   "p99_ms": 57.95,
+   "phases": {
+    "panel tick: map-light culling": {
+     "each_ms": 0.0,
+     "n": 16,
+     "s": 0.0
+    },
+    "panel tick: prop cell culling": {
+     "each_ms": 0.44,
+     "n": 16,
+     "s": 0.007
+    },
+    "panel tick: total": {
+     "each_ms": 0.56,
+     "n": 16,
+     "s": 0.009
+    },
+    "props: ResourceLoader.load(.geom.res)": {
+     "each_ms": 1.65,
+     "n": 2761,
+     "s": 4.568
+    },
+    "props: apply_radius on every yield": {
+     "each_ms": 0.3,
+     "n": 43,
+     "s": 0.013
+    },
+    "props: create multimesh cells": {
+     "each_ms": 0.12,
+     "n": 2761,
+     "s": 0.336
+    },
+    "props: load mesh (GLB parse + cache)": {
+     "each_ms": 7.46,
+     "n": 2761,
+     "s": 20.6
+    },
+    "props: material passes (of which)": {
+     "each_ms": 5.2,
+     "n": 2761,
+     "s": 14.344
+    },
+    "props: prefetch parse (worker threads)": {
+     "each_ms": 424.78,
+     "n": 9,
+     "s": 3.823
+    },
+    "props: textures, all of it (of which)": {
+     "each_ms": 0.12,
+     "n": 2761,
+     "s": 0.342
+    },
+    "props: waiting for the yielded frame": {
+     "each_ms": 36.21,
+     "n": 43,
+     "s": 1.557
+    },
+    "skyline: load mesh (GLB parse + cache)": {
+     "each_ms": 12.05,
+     "n": 155,
+     "s": 1.868
+    },
+    "skyline: place multimesh": {
+     "each_ms": 0.17,
+     "n": 155,
+     "s": 0.027
+    },
+    "skyline: texture prefetch (worker threads)": {
+     "each_ms": 0.77,
+     "n": 13,
+     "s": 0.01
+    },
+    "skyline: waiting for the yielded frame": {
+     "each_ms": 1346.33,
+     "n": 3,
+     "s": 4.039
+    },
+    "textures: bind to materials": {
+     "each_ms": 0.12,
+     "n": 2693,
+     "s": 0.32
+    }
+   },
+   "probe_draws": 15442,
+   "props_built": 2761,
+   "props_per_s": 138.4,
+   "radius": 1000000000.0,
+   "reused_open_scene": true,
+   "scene": "res://Levels/MP_Dumbo.tscn",
+   "scene_nodes": 4761,
+   "scene_nodes_at_open": 51,
+   "shadow_draws_mean": 125,
+   "shadow_draws_peak": 577,
+   "started_unix": 1786132905.653,
+   "stutters": 359,
+   "total_ms": 113381,
+   "vram_mode": 1,
+   "worst_ms": 94.94,
+   "wall_s": 116.0,
+   "vram_mb": 7838.3,
+   "texture_mb": 6838.5,
+   "mem_static_mb": 3314.7,
+   "force_killed": false,
+   "when": "2026-08-07 15:03:22",
+   "note": ""
   }
  ]
 }

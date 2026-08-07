@@ -1048,10 +1048,25 @@ static func _fly(_tree: SceneTree, samples: Array) -> Dictionary:
 	for t in times:
 		mean += t
 	mean /= float(times.size())
+	# FIXED THRESHOLDS, because the old one moved with the thing it measured.
+	#
+	# It was `t > max(50, mean * 3)`. At the recorded baseline's 32.1 ms mean the
+	# bar sat at 96.3 ms; once the map reached an 18.3 ms mean the bar fell to
+	# 54.9 ms — so the same flight was judged against a threshold 41 ms lower,
+	# the count went 1 -> 100, and the table dutifully printed "9900% WORSE" for
+	# a map that had just got twice as fast. Every hitch figure in this project's
+	# history is scaled to its own run's mean and none of them are comparable.
+	#
+	# Absolute now, and two of them, because they answer different questions:
+	# 33.3 ms is a frame that missed 30 fps and is FELT as a stutter; 50 ms is a
+	# visible lurch. Neither depends on how good the rest of the run was.
 	var hitches := 0
+	var stutters := 0
 	for t in times:
-		if t > maxf(50.0, mean * 3.0):
+		if t > 50.0:
 			hitches += 1
+		if t > 33.3:
+			stutters += 1
 
 	var sorted := times.duplicate()
 	sorted.sort()
@@ -1082,7 +1097,8 @@ static func _fly(_tree: SceneTree, samples: Array) -> Dictionary:
 		"p99_ms": snappedf(sorted[mini(n - 1, int(n * 0.99))], 0.01),
 		"low1_ms": snappedf(low1, 0.01),
 		"worst_ms": snappedf(sorted[n - 1], 0.01),
-		"hitches": hitches,
+		"hitches50": hitches,
+		"hitches33": stutters,
 		"draws_mean": int(dsum / maxi(1, n)),
 		"draws_peak": dmax,
 		"shadow_draws_mean": int(ssum / maxi(1, n)),
