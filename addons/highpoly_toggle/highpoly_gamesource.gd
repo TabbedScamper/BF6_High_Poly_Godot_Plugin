@@ -361,12 +361,37 @@ func _build_map_data(cache_dir: String) -> Dictionary:
 			into[gkey] = PackedFloat32Array()
 			_group_meta[gkey] = [res_name, scope, str(row.get("src", ""))]
 		var a: PackedFloat32Array = into[gkey]
-		# The same 12-float layout placements.json uses: basis rows then origin.
-		for i in range(4):
-			var v: Vector3 = (xf as Array)[i]
-			a.push_back(v.x)
-			a.push_back(v.y)
-			a.push_back(v.z)
+		# TRANSPOSED ON THE WAY OUT, and this is the whole of the 12-float
+		# convention rather than a detail of it.
+		#
+		# The walk emits right/up/forward as three vectors, each the world
+		# direction of the placement's local X, Y and Z — which is the honest
+		# reading of a Frostbite LinearTransform and the convention its own
+		# composition uses. The downstream format is the other one: _xform()
+		# builds `basis.x = (f0, f3, f6)`, i.e. it reads the flattened 12 as a
+		# row-major matrix and takes its COLUMNS. Handing it our vectors in order
+		# gives it the transpose of the rotation, which for an orthonormal basis
+		# is the INVERSE rotation.
+		#
+		# This failure passes every cheap check. The translation is untouched, so
+		# every object lands in exactly the right place; a transposed rotation is
+		# still perfectly orthonormal, so an orthonormality audit passes it; and
+		# it is invisible on any placement whose rotation happens to be
+		# symmetric. It shows up only as "everything is in the right spot but
+		# facing the wrong way" — which is exactly how it was reported.
+		#
+		# The Python pipeline does this in spec_to_raw.py and measured it there:
+		# 73.6% of placements differed by exactly a transpose, and the other
+		# 26.3% were the symmetric cases where the transpose equals the original.
+		# That 26.3% is why a spot check of a handful of props can look fine.
+		var r0: Vector3 = (xf as Array)[0]
+		var r1: Vector3 = (xf as Array)[1]
+		var r2: Vector3 = (xf as Array)[2]
+		var o3: Vector3 = (xf as Array)[3]
+		a.push_back(r0.x); a.push_back(r1.x); a.push_back(r2.x)
+		a.push_back(r0.y); a.push_back(r1.y); a.push_back(r2.y)
+		a.push_back(r0.z); a.push_back(r1.z); a.push_back(r2.z)
+		a.push_back(o3.x); a.push_back(o3.y); a.push_back(o3.z)
 		into[gkey] = a
 		var o: Vector3 = (xf as Array)[3]
 		lo = Vector3(minf(lo.x, o.x), minf(lo.y, o.y), minf(lo.z, o.z))
