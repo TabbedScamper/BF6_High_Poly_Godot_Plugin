@@ -191,8 +191,159 @@ func _init() -> void:
 					int(v["size"]), bool(v["allow_raw"]))
 			return {"bytes": d.size()})
 
+	await _render_bench()
 	_report()
 	quit(0)
+
+
+# RENDERING STAGES. Everything left to decide — MultiMesh against direct
+# RenderingServer instances, occluders, how far mesh_lod_threshold can go — is
+# a rendering change, and the reader benchmarks say nothing about any of it.
+#
+# So: build the SAME geometry two ways in a real viewport and read the engine's
+# own counters. The question that matters is not frame time in isolation, it is
+# DRAW CALLS, because the engine merges plain MeshInstance3Ds that share
+# mesh+material+LOD into one instanced call and never merges MultiMesh.
+#
+# Runs headless. There is no GPU in a headless run, so frame TIME here is not
+# a frame rate — it is CPU-side cull, sort and render-list construction, which
+# happens to be exactly the term the MultiMesh question turns on.
+func _render_bench() -> void:
+	if filter != "" and not filter.begins_with("render"):
+		return
+	# HEADLESS CANNOT MEASURE THIS. --headless installs RendererDummy, which
+	# draws nothing and reports every counter as zero — the first run of this
+	# stage returned draw_calls 0 for all three strategies with identical frame
+	# times, which reads like "no difference" and actually means "no renderer".
+	# bench.py runs the render pass in a windowed Godot for this reason.
+	if DisplayServer.get_name() == "headless":
+		print("  (render stages skipped: headless has no renderer and reports"
+				+ " zero for every counter — run bench.py --render)")
+		return
+	var mesh := BoxMesh.new()
+	mesh.size = Vector3.ONE
+	var mat := StandardMaterial3D.new()
+	mesh.material = mat
+
+	# One layout per strategy, same 8,000 boxes in the same places.
+	var n := 8000
+	var placements: Array[Transform3D] = []
+	var side := int(ceil(sqrt(float(n))))
+	for i in range(n):
+		var x := float(i % side) * 3.0
+		var z := float(i / side) * 3.0
+		placements.append(Transform3D(Basis(), Vector3(x, 0.0, z)))
+
+	var root := Node3D.new()
+	get_root().add_child(root)
+	var cam := Camera3D.new()
+	cam.current = true
+	# ADD FIRST, THEN AIM. look_at() needs the node in the tree — called before
+	# add_child it errors with "Node not inside tree" and leaves the camera at
+	# the origin, so the benchmark silently measures a different view than the
+	# one it describes.
+	root.add_child(cam)
+	cam.position = Vector3(side * 1.5, 120.0, side * 1.5 + 200.0)
+	cam.look_at(Vector3(side * 1.5, 0.0, side * 1.5))
+	cam.far = 4000.0
+
+	# A) one MultiMesh per CELL, which is what the plugin does today
+	var a := Node3D.new()
+	root.add_child(a)
+	var per_cell := 64
+	var cells := int(ceil(float(n) / float(per_cell)))
+	for c in range(cells):
+		var mm := MultiMesh.new()
+		mm.transform_format = MultiMesh.TRANSFORM_3D
+		mm.mesh = mesh
+		var lo := c * per_cell
+		var hi := mini(lo + per_cell, n)
+		mm.instance_count = hi - lo
+		var buf := PackedFloat32Array()
+		buf.resize((hi - lo) * 12)
+		var w := 0
+		for i in range(lo, hi):
+			var t := placements[i]
+			# row-major 3x4: basis rows interleaved with origin components
+			buf[w] = t.basis.x.x; buf[w+1] = t.basis.y.x; buf[w+2] = t.basis.z.x; buf[w+3] = t.origin.x
+			buf[w+4] = t.basis.x.y; buf[w+5] = t.basis.y.y; buf[w+6] = t.basis.z.y; buf[w+7] = t.origin.y
+			buf[w+8] = t.basis.x.z; buf[w+9] = t.basis.y.z; buf[w+10] = t.basis.z.z; buf[w+11] = t.origin.z
+			w += 12
+		mm.buffer = buf
+		var mmi := MultiMeshInstance3D.new()
+		mmi.multimesh = mm
+		a.add_child(mmi)
+	await _settle()
+	var ra := await _counters()
+	ra["strategy"] = "multimesh_cells"
+	ra["nodes"] = cells
+	_record("render_multimesh", ra)
+	a.queue_free()
+	await _settle()
+
+	# B) one MeshInstance3D per prop — the merge path
+	var b := Node3D.new()
+	root.add_child(b)
+	for i in range(n):
+		var mi := MeshInstance3D.new()
+		mi.mesh = mesh
+		mi.transform = placements[i]
+		b.add_child(mi)
+	await _settle()
+	var rb := await _counters()
+	rb["strategy"] = "meshinstance_nodes"
+	rb["nodes"] = n
+	_record("render_meshinstance", rb)
+	b.queue_free()
+	await _settle()
+
+	# C) direct RenderingServer instances — no nodes at all
+	var rs := RenderingServer
+	var scenario := root.get_world_3d().scenario
+	var rids: Array[RID] = []
+	for i in range(n):
+		var inst := rs.instance_create2(mesh.get_rid(), scenario)
+		rs.instance_set_transform(inst, placements[i])
+		rids.append(inst)
+	await _settle()
+	var rc := await _counters()
+	rc["strategy"] = "rs_instances"
+	rc["nodes"] = 0
+	_record("render_rs_direct", rc)
+	for r in rids:
+		rs.free_rid(r)
+	root.queue_free()
+
+
+func _settle() -> void:
+	# Counters are per-frame and the first frame after a scene change is not
+	# representative; let it stabilise before reading.
+	for _i in range(6):
+		await process_frame
+
+
+func _counters() -> Dictionary:
+	var vp := get_root()
+	var t0 := Time.get_ticks_usec()
+	for _i in range(10):
+		await process_frame
+	var per_frame := (Time.get_ticks_usec() - t0) / 10.0
+	return {
+		"draw_calls": vp.get_render_info(Viewport.RENDER_INFO_TYPE_VISIBLE,
+				Viewport.RENDER_INFO_DRAW_CALLS_IN_FRAME),
+		"objects": vp.get_render_info(Viewport.RENDER_INFO_TYPE_VISIBLE,
+				Viewport.RENDER_INFO_OBJECTS_IN_FRAME),
+		"primitives": vp.get_render_info(Viewport.RENDER_INFO_TYPE_VISIBLE,
+				Viewport.RENDER_INFO_PRIMITIVES_IN_FRAME),
+		"frame_us": int(per_frame),
+	}
+
+
+func _record(name: String, info: Dictionary) -> void:
+	results.append({"name": name, "runs": 1,
+			"min_us": int(info.get("frame_us", 0)),
+			"med_us": int(info.get("frame_us", 0)), "info": info})
+	print("  %-18s %s" % [name, info])
 
 
 func _prepare() -> void:
