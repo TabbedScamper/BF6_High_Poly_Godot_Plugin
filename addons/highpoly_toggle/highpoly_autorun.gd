@@ -921,23 +921,43 @@ static func _fly(_tree: SceneTree, samples: Array) -> Dictionary:
 	var times: Array[float] = []
 	var draws: Array[int] = []
 	var shadow_draws: Array[int] = []
+	# REPLAY AT THE RECORDED SPEED, not one sample per frame.
+	#
+	# Advancing a sample every frame ties the camera's SPEED to the frame rate:
+	# at 134 ms a frame the route takes 61 s, and with the scene hidden at 10 ms
+	# a frame the same route takes 4.5 s — a thirteen times faster fly-through.
+	# Anything the renderer does over TIME rather than per frame (shadow cascade
+	# updates, SDFGI convergence, LOD hysteresis, culling coherence) is then
+	# answering a different question in each configuration.
+	#
+	# The recorder samples at 20 Hz, so each sample is held for its 50 ms of wall
+	# clock and every frame drawn in that window is timed. A slow config gets one
+	# frame per sample exactly as before; a fast one gets several, which is more
+	# data rather than a different route.
+	var hold_us := 50000
 	for s in samples:
 		cam.global_transform = s
-		var t0 := Time.get_ticks_usec()
-		await _tree.process_frame
-		times.append((Time.get_ticks_usec() - t0) / 1000.0)
-		# BOTH PASSES. RENDER_INFO_TYPE_VISIBLE counts only the camera pass;
-		# shadow rendering is counted separately under _TYPE_SHADOW. Reading
-		# just the first made the draw-call total identical to the digit across
-		# a shadow-cascade change, a blend-splits change and turning lighting on
-		# — which looked like the measurement was stuck rather than like it was
-		# measuring the wrong half.
-		draws.append(sub.get_render_info(
-				Viewport.RENDER_INFO_TYPE_VISIBLE,
-				Viewport.RENDER_INFO_DRAW_CALLS_IN_FRAME))
-		shadow_draws.append(sub.get_render_info(
-				Viewport.RENDER_INFO_TYPE_SHADOW,
-				Viewport.RENDER_INFO_DRAW_CALLS_IN_FRAME))
+		var until := Time.get_ticks_usec() + hold_us
+		while true:
+			var t0 := Time.get_ticks_usec()
+			await _tree.process_frame
+			times.append((Time.get_ticks_usec() - t0) / 1000.0)
+			# BOTH PASSES. RENDER_INFO_TYPE_VISIBLE counts only the camera pass;
+			# shadow rendering is counted separately under _TYPE_SHADOW. Reading
+			# just the first made the draw-call total identical to the digit
+			# across a shadow-cascade change, a blend-splits change and turning
+			# lighting on — which looked like the measurement was stuck rather
+			# than like it was measuring the wrong half.
+			draws.append(sub.get_render_info(
+					Viewport.RENDER_INFO_TYPE_VISIBLE,
+					Viewport.RENDER_INFO_DRAW_CALLS_IN_FRAME))
+			shadow_draws.append(sub.get_render_info(
+					Viewport.RENDER_INFO_TYPE_SHADOW,
+					Viewport.RENDER_INFO_DRAW_CALLS_IN_FRAME))
+			# At least one frame per sample, then keep drawing until this
+			# sample's slice of wall clock is spent.
+			if Time.get_ticks_usec() >= until:
+				break
 		if cam.global_transform.origin.distance_to(s.origin) < 0.5:
 			stuck += 1
 	var tried := samples.size()
