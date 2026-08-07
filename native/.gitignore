@@ -8,3 +8,6 @@ extension_api.json
 *.lib
 *.exp
 *.pdb
+_benchproj/
+bench_history.json
+bench_baseline.json
