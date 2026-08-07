@@ -260,12 +260,19 @@ func open_ebx(ref: String):
 	var nm := ref
 	if nm.to_lower().ends_with(".ebx"):
 		nm = nm.substr(0, nm.length() - 4)
+	var tr := Time.get_ticks_usec()
 	var data := src.get_ebx(nm)
+	t_read += Time.get_ticks_usec() - tr
 	if data.is_empty():
 		_bump("missing_partition")
 		return null
-	var e := BF6Ebx.new(types, gi)
-	if not e.parse(data):
+	var tp := Time.get_ticks_usec()
+	# One layout cache for the whole walk, not one per partition — see the note
+	# on BF6Ebx._init.
+	var e := BF6Ebx.new(types, gi, _layouts)
+	var ok := e.parse(data)
+	t_parse += Time.get_ticks_usec() - tp
+	if not ok:
 		_bump("parse_fail")
 		return null
 	# Deliberately NOT cached on success: a level's partitions are visited once
@@ -345,6 +352,56 @@ static func _visible_at(enabled: Array, visible: Array, i: int) -> bool:
 # ---------------------------------------------------------------------------
 # traversal (MAP_LOADING 6.5)
 # ---------------------------------------------------------------------------
+# Where the walk's time goes, split so the three costs are separable: reading
+# and decompressing the partition, parsing its header, and decoding instances.
+# They want completely different fixes and the total says nothing about which.
+var t_read := 0
+var t_parse := 0
+var t_decode := 0
+var n_instances := 0
+var n_skipped := 0
+
+# EVERY field visit() looks at. If a type declares none of these, visiting an
+# instance of it cannot do anything: the SMG branch needs Members, the transform
+# composition needs BlueprintTransform, the subworld bridge needs BundleName, the
+# recursion needs Blueprint, and the descent needs one of the three child arrays.
+# Miss one and the walk silently loses geometry, so this list and visit() have to
+# be kept in step BY HAND — nothing here can check that automatically. What can
+# be checked is the outcome, and test_walk.gd does: it runs the walk with
+# `skip_types` off and on and requires the two to produce identical rows. A
+# field dropped from this list shows up there as missing placements.
+const WALK_FIELDS: Array = [F_SMG_MEMBERS, F_BP_TRANSFORM, F_EXCLUDED,
+	F_BUNDLENAME, F_BLUEPRINT, F_OBJECTS, F_DATAREFS, F_SUBWORLD_COMPONENTS]
+
+# Off makes the walk decode every instance, which is the reference behaviour.
+var skip_types := true
+var _type_matters_cache := {}          # type guid hex -> bool
+var _layouts := {}                     # type guid hex -> layout, shared by every partition
+
+
+func _type_matters(dz, i: int) -> bool:
+	if not skip_types:
+		return true
+	var tb: PackedByteArray = dz.instance_type_bytes(i)
+	if tb.is_empty():
+		return false                    # no type, nothing to decode
+	var k := tb.hex_encode()
+	var hit = _type_matters_cache.get(k)
+	if hit != null:
+		return hit
+	# Resolved ONCE per type across the whole map, not once per instance: there
+	# are a few thousand types against 268,587 instances.
+	var lay: Dictionary = types.layout_full(tb)
+	var yes := false
+	if not lay.is_empty():
+		for fld in lay.get("fields", []):
+			if WALK_FIELDS.has(int((fld as Dictionary)["nameHash"])):
+				yes = true
+				break
+	_type_matters_cache[k] = yes
+	return yes
+
+
 func walk(ref, parent: Array, guard: Dictionary, depth := 0) -> void:
 	if depth > MAX_DEPTH or ref == null:
 		return
@@ -359,7 +416,25 @@ func walk(ref, parent: Array, guard: Dictionary, depth := 0) -> void:
 	sub_guard[key] = true
 	_bump("partitions")
 	for i in range(dz.instance_offsets.size()):
+		n_instances += 1
+		# CAN THIS INSTANCE POSSIBLY MATTER? visit() reads exactly the fields in
+		# WALK_FIELDS, so an instance whose type declares NONE of them is a
+		# provable no-op — not a heuristic, an equivalence. Decoding it means
+		# building a Dictionary of every field of every nested struct and then
+		# throwing it away.
+		#
+		# This is where the walk's time is: reading and decompressing all 11,748
+		# partitions costs 1.6 s and parsing their headers 0.6 s, against ~102 s
+		# decoding 268,587 instances.
+		if not _type_matters(dz, i):
+			n_skipped += 1
+			continue
+		# TIMED AROUND read_instance ALONE. Wrapping the loop instead counted
+		# nested walk() calls inside their own parents' windows and reported
+		# 598 s of decoding inside a 104 s walk.
+		var td := Time.get_ticks_usec()
 		var inst = dz.read_instance(i)
+		t_decode += Time.get_ticks_usec() - td
 		if not (inst is Dictionary):
 			_bump("inst_fail")
 			continue
@@ -480,4 +555,9 @@ func run(level_rel: String) -> bool:
 	stats["root"] = start
 	walk(start, IDENT, {}, 0)
 	stats["rows"] = rows.size()
+	stats["ms_read"] = int(t_read / 1000)
+	stats["ms_parse"] = int(t_parse / 1000)
+	stats["ms_decode"] = int(t_decode / 1000)
+	stats["instances"] = n_instances
+	stats["instances_skipped"] = n_skipped
 	return not rows.is_empty()

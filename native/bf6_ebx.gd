@@ -64,9 +64,21 @@ var _inst_type := {}                 # instance index -> type guid bytes
 var _lay_cache := {}
 
 
-func _init(types_reader = null, guid_index := {}) -> void:
+# `layout_cache` is accepted from the caller so it can OUTLIVE one partition.
+#
+# Type layouts are global — a type has the same fields wherever it appears — but
+# this cache used to be per-EBX, so a map that opens 11,748 partitions resolved
+# and re-copied the same layouts once per partition. layout_full() hands back a
+# deep copy on every call, so that is not just a lookup being repeated, it is a
+# fields array being duplicated tens of thousands of times.
+#
+# Passing one in rather than making it static keeps it tied to the types reader
+# that filled it: two readers over different executables have different layouts
+# for the same guid, and a static cache would silently serve one to the other.
+func _init(types_reader = null, guid_index := {}, layout_cache := {}) -> void:
 	_types = types_reader
 	_guid_index = guid_index
+	_lay_cache = layout_cache
 
 
 static func guid_str(b: PackedByteArray) -> String:
@@ -182,6 +194,15 @@ func instance_guid(i: int) -> String:
 func instance_type(i: int) -> String:
 	var g = _inst_type.get(i)
 	return guid_str(g) if g != null else ""
+
+
+# The RAW type guid, for callers that want to look a layout up rather than
+# compare a string. instance_type() formats one every call, and a caller doing
+# that per instance across a map pays for a quarter of a million string builds
+# it then only uses as a dictionary key.
+func instance_type_bytes(i: int) -> PackedByteArray:
+	var g = _inst_type.get(i)
+	return g if g != null else PackedByteArray()
 
 
 func read_instance(idx: int, depth := 0) -> Dictionary:

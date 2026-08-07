@@ -38,9 +38,22 @@ func _init() -> void:
 	if args.size() < 2:
 		print("usage: test_walk.gd -- <ref.json> <level_rel> [game_dir]")
 		quit(2); return
-	var ref_path := str(args[0])
-	var level_rel := str(args[1])
-	var game := str(args[2]) if args.size() > 2 else ""
+	# Flags scanned rather than positional. An empty "" placeholder for the game
+	# directory does not survive the shell, so a trailing flag slid into the
+	# game-dir slot and the run died on "no Data/layout.toc under --verify-skip".
+	var verify_skip := false
+	var pos: Array = []
+	for a in args:
+		if str(a) == "--verify-skip":
+			verify_skip = true
+		elif str(a) != "":
+			pos.append(str(a))
+	if pos.size() < 2:
+		print("usage: test_walk.gd -- <ref.json> <level_rel> [game_dir] [--verify-skip]")
+		quit(2); return
+	var ref_path := str(pos[0])
+	var level_rel := str(pos[1])
+	var game := str(pos[2]) if pos.size() > 2 else ""
 	var level := level_rel.replace("\\", "/").rstrip("/").get_file()
 
 	var t0 := Time.get_ticks_msec()
@@ -235,10 +248,40 @@ func _init() -> void:
 	for e in examples:
 		print("   %s" % e)
 
+	# ---- is the type skip actually equivalent? ------------------------------
+	# The skip claims an instance whose type declares none of WALK_FIELDS cannot
+	# contribute. That is an argument, and arguments about which fields matter
+	# are exactly what has gone wrong in this walker before. So it is checked:
+	# same map, skipping off, and the two row sets must be identical. Only worth
+	# the second 100 s when the fast path has already agreed with Python.
+	var skip_ok := true
+	if verify_skip:
+		var w2 = BF6Walk.new(src, types)
+		w2.by_name = w.by_name
+		w2.gi = w.gi
+		w2.skip_types = false
+		var t2 := Time.get_ticks_msec()
+		w2.run(level_rel)
+		print("\nSKIP    off: %d rows in %d ms (decoded %d instances)"
+			% [w2.rows.size(), Time.get_ticks_msec() - t2, w2.n_instances])
+		print("        on : %d rows in %d ms (skipped %d of %d)"
+			% [w.rows.size(), walk_ms, w.n_skipped, w.n_instances])
+		var t2a := _tally(w2.rows)
+		skip_ok = w2.rows.size() == w.rows.size() and t2a.size() == ours_by.size()
+		if skip_ok:
+			for kk in t2a:
+				if int(t2a[kk]) != int(ours_by.get(kk, 0)):
+					skip_ok = false
+					print("        count differs for %s: %d vs %d"
+						% [kk, int(t2a[kk]), int(ours_by.get(kk, 0))])
+					break
+		print("        %s" % ("EQUIVALENT" if skip_ok
+			else "NOT EQUIVALENT — the skip is dropping placements"))
+
 	var pass_all: bool = (w.rows.size() == ref_rows.size()
 		and only_ours.is_empty() and only_ref.is_empty()
 		and diff_count.is_empty() and unmatched == 0
-		and pos_bad == 0 and basis_bad == 0)
+		and pos_bad == 0 and basis_bad == 0 and skip_ok)
 	print("\n%s" % ("PASS — the GDScript walk agrees with Python"
 		if pass_all else "FAIL — see above"))
 	quit(0 if pass_all else 1)
