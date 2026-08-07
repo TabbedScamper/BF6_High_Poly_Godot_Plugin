@@ -1,0 +1,445 @@
+extends RefCounted
+
+# MeshSet geometry reader, in GDScript, reading the game's own bytes.
+#
+# The Python meshset_read.py has done this for the pipeline since the extractor
+# started dying with EndOfStreamException on rail covers, grips, gadget
+# projectiles and battle pickups. This is that reader ported, so Godot can turn
+# a RES payload into a renderable mesh WITHOUT a 277 GB dump sitting between the
+# game and the editor.
+#
+# Layout per formats/MESHSET_GEOMETRY.md in the shared research repo:
+#   - the RES payload opens with a 16-byte leading header; EVERY stored offset
+#     in the file is relative to that base, so absolute = stored + 16
+#   - the MeshSet header carries LodOffsets[6], MeshType, LodCount, SectionCount
+#   - each LOD record holds sectionCount/sectionOffset, index format, the
+#     vertex/index buffer sizes and the geometry ChunkId
+#   - each 368-byte section record holds material name, stride, primitive and
+#     vertex counts, StartIndex, VertexOffset and two 100-byte geometry decls
+#   - the chunk is [vertex buffer][index buffer]; vertex data is SoA per stream
+#
+# LOD RECORD SIZE IS READ, NOT ASSUMED. BF6 ships both 176-byte and 192-byte LOD
+# records and hardcoding either misreads the other.
+#
+# PARITY WITH THE PYTHON IS THE POINT. Every other reader in this stack was
+# accepted only after producing byte-identical output to its Python twin over a
+# real corpus, and this one has to clear the same bar — the geometry it returns
+# is what the whole overlay is made of, and a subtly wrong decode looks like a
+# bad model rather than a bad reader.
+#
+#   parse(bytes)                -> Dictionary, header + lods + sections
+#   read_lod(bytes, lod, chunk) -> Array of {material, verts, uvs, normals, idx}
+
+const BASE := 16                  # every stored offset is relative to this
+const SECTION_SIZE := 368
+const DECL_SIZE := 100
+
+# VertexElementUsage
+const U_POS := 1
+const U_NORMAL := 6
+const U_UV0 := 33
+const U_UV1 := 34
+
+# VertexElementFormat -> byte size
+const FMT_SIZE := {
+	1: 4, 2: 8, 3: 12, 4: 16,          # Float / Float2 / Float3 / Float4
+	5: 2, 6: 4, 7: 6, 8: 8,            # Half / Half2 / Half3 / Half4
+	10: 4, 11: 4, 12: 4, 13: 4,        # Byte4 / Byte4N / UByte4 / UByte4N
+	14: 2, 15: 4, 16: 6, 17: 8,        # Short..Short4
+	18: 2, 19: 4, 20: 6, 21: 8,        # ShortN..Short4N
+	22: 4, 23: 8, 24: 4, 25: 8,        # UShort2 / UShort4 / UShort2N / UShort4N
+	50: 1,
+}
+
+var error := ""
+
+
+# ---------------------------------------------------------------------------
+# header
+# ---------------------------------------------------------------------------
+
+func parse(d: PackedByteArray) -> Dictionary:
+	error = ""
+	if d.size() < BASE + 0xA0:
+		error = "too short to be a MeshSet (%d bytes)" % d.size()
+		return {}
+	var lod_stride := int(d.decode_u32(0))
+	if lod_stride != 176 and lod_stride != 192:
+		lod_stride = 176
+	var h := BASE
+	var lod_offs: Array[int] = []
+	for i in range(6):
+		lod_offs.append(int(d.decode_s64(h + 0x20 + i * 8)))
+	var name := _cstr(d, int(d.decode_s64(h + 0x60)) + BASE)
+	var mesh_type := d[h + 0x6C]
+	var lod_count := int(d.decode_u16(h + 0x9C))
+	var section_count := int(d.decode_u16(h + 0x9E))
+
+	var lods: Array = []
+	for li in range(mini(lod_count, 6)):
+		var lo: int = lod_offs[li] + BASE
+		if lo <= 0 or lo >= d.size() - lod_stride:
+			continue
+		var sec_count := int(d.decode_u32(lo + 0x08))
+		var sec_off := int(d.decode_s64(lo + 0x0C)) + BASE
+		var idx_fmt := int(d.decode_u32(lo + 0x54))
+		var idx_size := int(d.decode_s32(lo + 0x58))
+		var vtx_size := int(d.decode_s32(lo + 0x5C))
+		var chunk := d.slice(lo + 0x74, lo + 0x84)
+		var inline_off := int(d.decode_u32(lo + 0x84))
+		var lname := _cstr(d, int(d.decode_s64(lo + 0x94)) + BASE)
+		if sec_count > 4096 or sec_off <= 0 or sec_off >= d.size():
+			continue
+		lods.append({
+			"index": li, "section_count": sec_count,
+			"sections": _sections(d, sec_off, sec_count),
+			"idx32": idx_fmt == 46, "index_size": idx_size,
+			"vertex_size": vtx_size, "chunk_id": chunk,
+			"name": lname, "inline_offset": inline_off,
+		})
+	return {"name": name, "mesh_type": mesh_type, "lod_count": lod_count,
+			"section_count": section_count, "lod_stride": lod_stride,
+			"lods": lods, "size": d.size()}
+
+
+func _cstr(d: PackedByteArray, off: int) -> String:
+	if off <= 0 or off >= d.size():
+		return ""
+	var e := off
+	while e < d.size() and d[e] != 0:
+		e += 1
+	return d.slice(off, e).get_string_from_ascii()
+
+
+# 100-byte GeometryDeclaration -> {elements, streams}
+func _decl(d: PackedByteArray, off: int) -> Dictionary:
+	if off + DECL_SIZE > d.size():
+		return {"elements": [], "streams": []}
+	var els: Array = []
+	for i in range(16):
+		var p := off + i * 4
+		els.append([d[p], d[p + 1], d[p + 2], d[p + 3]])   # usage, fmt, off, stream
+	var strs: Array = []
+	for i in range(16):
+		var p := off + 64 + i * 2
+		strs.append([d[p], d[p + 1]])                       # stride, classification
+	var ne := d[off + 96]
+	var ns := d[off + 97]
+	return {"elements": els.slice(0, ne), "streams": strs.slice(0, ns)}
+
+
+func _sections(d: PackedByteArray, off: int, count: int) -> Array:
+	var out: Array = []
+	for i in range(count):
+		var p := off + i * SECTION_SIZE
+		if p + SECTION_SIZE > d.size():
+			break
+		var mat := _cstr(d, int(d.decode_s64(p + 0x08)) + BASE)
+		var bpv := d[p + 0x1A]                  # bonesPerVertex, after u16 count
+		var decl := _decl(d, p + 0x64)
+		if bpv > 0:
+			# Skinned: the SECOND declaration adds the bone data and supersedes
+			# the first, but only when it actually declares formats — an empty
+			# one means the first is still the real thing.
+			var d2 := _decl(d, p + 0xC8)
+			var any := false
+			for e in d2["elements"]:
+				if int(e[1]) != 0:
+					any = true
+					break
+			if any:
+				decl = d2
+		out.append({
+			"index": i, "material": mat,
+			"stride": d[p + 0x1E],
+			"prim_count": int(d.decode_u32(p + 0x20)),
+			"start_index": int(d.decode_u32(p + 0x24)),
+			"vertex_offset": int(d.decode_u32(p + 0x28)),
+			"vertex_count": int(d.decode_u32(p + 0x2C)),
+			"bones_per_vertex": bpv,
+			"elements": decl["elements"], "streams": decl["streams"],
+		})
+	return out
+
+
+# The MeshSet's own AxisAlignedBox at base+0x00 -> [min, max].
+#
+# Written by the game's own tools, which makes it an OUTSIDE ORACLE: the decode
+# can be checked against it without the parse grading its own homework. The
+# spec's size identity (VertexBufferSize == sum of vertexCount * stride) is NOT
+# usable for this — it reports a mismatch on meshes the external extractor reads
+# perfectly, so a correct parse would be rejected for being right.
+func declared_box(d: PackedByteArray) -> Array:
+	if d.size() < BASE + 32:
+		return []
+	return [Vector3(d.decode_float(BASE), d.decode_float(BASE + 4),
+					d.decode_float(BASE + 8)),
+			Vector3(d.decode_float(BASE + 16), d.decode_float(BASE + 20),
+					d.decode_float(BASE + 24))]
+
+
+# ---------------------------------------------------------------------------
+# geometry
+# ---------------------------------------------------------------------------
+
+# Geometry for MeshSets that carry no chunk (ChunkId all zero).
+#
+# Those store the buffers inside the MeshSet itself, addressed by each LOD's
+# InlineDataOffset. The offsets are relative to a common data base at the TAIL
+# of the file, not to the file start: on smokegrenade_projectile the LOD offsets
+# are 0 / 108528 / 163792 / 194432 and each equals the previous LOD's offset
+# plus its own vertex+index sizes, so the base is recovered as
+# filesize - (lastOffset + lastVertexSize + lastIndexSize).
+func inline_buffer(d: PackedByteArray, info: Dictionary, L: Dictionary) -> PackedByteArray:
+	var span := 0
+	for x in info["lods"]:
+		span = maxi(span, int(x["inline_offset"]) + int(x["vertex_size"])
+				+ int(x["index_size"]))
+	var base := d.size() - span
+	if base < 0:
+		error = "inline span %d exceeds file %d" % [span, d.size()]
+		return PackedByteArray()
+	var start: int = base + int(L["inline_offset"])
+	return d.slice(start, start + int(L["vertex_size"]) + int(L["index_size"]))
+
+
+static func chunk_forms(chunk_id: PackedByteArray) -> Array:
+	"""Both spellings of a ChunkId.
+
+	§4 of MESHSET_GEOMETRY.md: a LOD's ChunkId is stored plain, but chunk
+	indexes are keyed reversed in places, so BOTH have to be tried. Forgetting
+	it fails on a SUBSET of meshes rather than all of them, which is the worst
+	kind of bug to find later.
+	"""
+	var fwd := chunk_id.hex_encode()
+	var rev := PackedByteArray(chunk_id)
+	rev.reverse()
+	return [fwd, rev.hex_encode()]
+
+
+# -> [{material, verts, uvs, normals, indices}] for renderable sections.
+#
+# `chunk` is the LOD's [vertex buffer][index buffer], which the caller fetches
+# (the source knows how; this reader does not). Pass an empty array for an
+# inline MeshSet and it will be recovered from the file itself.
+func read_lod(d: PackedByteArray, lod := 0, chunk := PackedByteArray(),
+		keep_shadow := false) -> Array:
+	error = ""
+	var info := parse(d)
+	if info.is_empty() or lod >= (info["lods"] as Array).size():
+		return []
+	var L: Dictionary = info["lods"][lod]
+
+	var buf := chunk
+	if buf.is_empty():
+		buf = inline_buffer(d, info, L)
+	var vsize := int(L["vertex_size"])
+	var isize := int(L["index_size"])
+	if buf.size() < vsize + isize:
+		error = "geometry short: %d < %d+%d" % [buf.size(), vsize, isize]
+		return []
+
+	var idx32: bool = L["idx32"]
+	var out: Array = []
+	for s in L["sections"]:
+		var vcount := int(s["vertex_count"])
+		var pcount := int(s["prim_count"])
+		if pcount == 0 or vcount == 0:
+			continue
+		var low := str(s["material"]).to_lower()
+		if not keep_shadow and (low.contains("shadow") or low.contains("zonly")
+				or low.contains("depth")):
+			continue
+
+		# EVERY UV channel, in declared order. BF6 props carry up to four: UV0
+		# tiles across many units while a later channel is the per-object bake
+		# unwrap that fits 0..1, and the material chain chooses between them.
+		# Keeping only the first means a prop has no bake channel to find and is
+		# textured with tiling coordinates whatever its material wanted —
+		# stretched or repeated rather than missing, which is much harder to
+		# spot than an absent texture.
+		var voff := int(s["vertex_offset"])
+		var streams: Array = s["streams"]
+		var pos: PackedFloat32Array = PackedFloat32Array()
+		var pos_comps := 0
+		var nrm: PackedFloat32Array = PackedFloat32Array()
+		var nrm_comps := 0
+		var uv_sets: Array = []
+		for el in s["elements"]:
+			var usage := int(el[0])
+			if usage == U_POS and pos.is_empty():
+				var r := _read_attr(buf, voff, vcount, el, streams)
+				if not r.is_empty():
+					pos = r[0]
+					pos_comps = r[1]
+			elif usage == U_NORMAL and nrm.is_empty():
+				var r2 := _read_attr(buf, voff, vcount, el, streams)
+				if not r2.is_empty():
+					nrm = r2[0]
+					nrm_comps = r2[1]
+			elif usage == U_UV0 or usage == U_UV1:
+				var r3 := _read_attr(buf, voff, vcount, el, streams)
+				if not r3.is_empty() and int(r3[1]) >= 2:
+					uv_sets.append([r3[0], int(r3[1])])
+		if pos.is_empty() or pos_comps < 3:
+			continue
+
+		var verts := PackedVector3Array()
+		verts.resize(vcount)
+		for i in range(vcount):
+			var o := i * pos_comps
+			verts[i] = Vector3(pos[o], pos[o + 1], pos[o + 2])
+
+		var uvs := PackedVector2Array()
+		if uv_sets.is_empty():
+			uvs.resize(vcount)
+		else:
+			var src: PackedFloat32Array = uv_sets[0][0]
+			var c: int = uv_sets[0][1]
+			uvs.resize(vcount)
+			for i in range(vcount):
+				uvs[i] = Vector2(src[i * c], src[i * c + 1])
+
+		var normals := PackedVector3Array()
+		if nrm_comps >= 3:
+			normals.resize(vcount)
+			for i in range(vcount):
+				var o2 := i * nrm_comps
+				normals[i] = Vector3(nrm[o2], nrm[o2 + 1], nrm[o2 + 2])
+
+		var idx := _read_indices(buf, vsize, isize, idx32,
+				int(s["start_index"]), pcount, vcount, voff)
+		if idx.is_empty():
+			continue
+		out.append({"material": s["material"], "verts": verts, "uvs": uvs,
+					"normals": normals, "indices": idx,
+					"uv_sets": uv_sets.size()})
+	return out
+
+
+func _read_indices(buf: PackedByteArray, vsize: int, isize: int, idx32: bool,
+		start: int, prim_count: int, vcount: int, voff: int) -> PackedInt32Array:
+	var out := PackedInt32Array()
+	var stride := 4 if idx32 else 2
+	var need := prim_count * 3
+	var first := vsize + start * stride
+	if first + need * stride > vsize + isize:
+		return out
+
+	var raw := PackedInt32Array()
+	raw.resize(need)
+	if idx32:
+		for i in range(need):
+			raw[i] = int(buf.decode_u32(first + i * 4))
+	else:
+		for i in range(need):
+			raw[i] = int(buf.decode_u16(first + i * 2))
+
+	# Spec 3.2: indices are normally section-local, but some LOD0s store
+	# vertex-buffer-absolute values. Retry with VertexOffset removed, and only
+	# keep the retry if it lands every index inside the section.
+	var hi := 0
+	for v in raw:
+		hi = maxi(hi, v)
+	if hi >= vcount and voff > 0:
+		var ok := true
+		for i in range(need):
+			var v2 := raw[i] - voff
+			if v2 < 0 or v2 >= vcount:
+				ok = false
+				break
+		if ok:
+			for i in range(need):
+				raw[i] -= voff
+
+	# Spec 3.3: the game winds CCW, Godot wants the opposite, so each triangle
+	# is emitted with its last two indices swapped. Degenerate and
+	# out-of-section triangles are dropped rather than clamped — a clamped index
+	# makes a visible sliver that reads as a broken model.
+	out.resize(need)
+	var w := 0
+	for t in range(prim_count):
+		var a := raw[t * 3]
+		var b := raw[t * 3 + 1]
+		var c := raw[t * 3 + 2]
+		if a < 0 or b < 0 or c < 0 or a >= vcount or b >= vcount or c >= vcount:
+			continue
+		if a == b or b == c or a == c:
+			continue
+		out[w] = a
+		out[w + 1] = c
+		out[w + 2] = b
+		w += 3
+	out.resize(w)
+	return out
+
+
+# Decode one vertex element across `count` vertices. -> [PackedFloat32Array,
+# components] or [] when the element cannot be read.
+#
+# SoA PER STREAM: each stream's sub-buffer sits back to back from the section's
+# VertexOffset, so a stream's base is the sum of every earlier stream's stride
+# times the vertex count — NOT the section stride, which is the sum of all of
+# them. Getting this wrong reads plausible-looking garbage rather than failing.
+func _read_attr(buf: PackedByteArray, base: int, count: int, el: Array,
+		streams: Array) -> Array:
+	var fmt := int(el[1])
+	var off := int(el[2])
+	var si := int(el[3])
+	if si >= streams.size():
+		return []
+	var sstride := int(streams[si][0])
+	var size: int = FMT_SIZE.get(fmt, 0)
+	if size == 0 or sstride == 0:
+		return []
+	var sbase := base
+	for s in range(si):
+		sbase += int(streams[s][0]) * count
+	if sbase + (count - 1) * sstride + off + size > buf.size():
+		return []
+
+	var comps := _components(fmt)
+	if comps == 0:
+		return []
+	var out := PackedFloat32Array()
+	out.resize(count * comps)
+	for i in range(count):
+		var p := sbase + i * sstride + off
+		var o := i * comps
+		match fmt:
+			1, 2, 3, 4:                                   # Float1..4
+				for c in range(comps):
+					out[o + c] = buf.decode_float(p + c * 4)
+			5, 6, 7, 8:                                   # Half1..4
+				for c in range(comps):
+					out[o + c] = buf.decode_half(p + c * 2)
+			14, 15, 16, 17:                               # Short1..4
+				for c in range(comps):
+					out[o + c] = float(buf.decode_s16(p + c * 2))
+			18, 19, 20, 21:                               # ShortN family
+				for c in range(comps):
+					out[o + c] = float(buf.decode_s16(p + c * 2)) / 32767.0
+			22, 23:                                       # UShort2 / UShort4
+				for c in range(comps):
+					out[o + c] = float(buf.decode_u16(p + c * 2))
+			24, 25:                                       # UShort2N / UShort4N
+				for c in range(comps):
+					out[o + c] = float(buf.decode_u16(p + c * 2)) / 65535.0
+			11, 13:                                       # Byte4N / UByte4N
+				for c in range(comps):
+					out[o + c] = float(buf[p + c]) / 255.0
+			10, 12:                                       # Byte4 / UByte4
+				for c in range(comps):
+					out[o + c] = float(buf[p + c])
+			_:
+				return []
+	return [out, comps]
+
+
+func _components(fmt: int) -> int:
+	match fmt:
+		1, 5, 14, 18, 50: return 1
+		2, 6, 15, 19, 22, 24: return 2
+		3, 7, 16, 20: return 3
+		4, 8, 10, 11, 12, 13, 17, 21, 23, 25: return 4
+	return 0
