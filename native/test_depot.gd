@@ -77,6 +77,30 @@ func _init() -> void:
 		and dep.key_to_record.size() == int(rdep["keys"])
 	print("\nCONTAINER %s" % ("MATCH" if container_ok else "DIFFER"))
 
+	# EVERY BLOB, not just the ones a sampled mesh happens to reach.
+	#
+	# _parse_blob requires the entry stream to consume the record EXACTLY, so
+	# parsing all of them tests the inline size table against every parameter
+	# in the file rather than the handful the join touches. That table is the
+	# part most likely to be subtly wrong: entries are packed with no
+	# alignment, so one bad size desynchronises everything after it, and the
+	# HLSL array packing (4 + 16*(n-1) + scalar, last element unpadded) is
+	# exactly the kind of rule that is easy to state two ways.
+	var t1 := Time.get_ticks_msec()
+	var blob_ok := 0
+	var blob_bad := 0
+	var first_err := ""
+	for i in range(dep.records.size()):
+		if (dep.params(i, dbytes) as Array).is_empty():
+			blob_bad += 1
+			if first_err == "":
+				first_err = dep.error
+		else:
+			blob_ok += 1
+	print("BLOBS     %d of %d parse to their exact end (%d ms)%s"
+		% [blob_ok, dep.records.size(), Time.get_ticks_msec() - t1,
+		   "  first error: " + first_err if blob_bad > 0 else ""])
+
 	# ---- join + slots ------------------------------------------------------
 	var ms := BF6MeshSet.new()
 	var sec_total := 0
@@ -170,7 +194,7 @@ func _init() -> void:
 	for e in examples:
 		print("   %s" % e)
 
-	var ok: bool = container_ok and key_bad == 0 and found_bad == 0 \
+	var ok: bool = container_ok and blob_bad == 0 and key_bad == 0 and found_bad == 0 \
 		and slot_missing == 0 and slot_extra == 0 and slot_wrong == 0 \
 		and slot_same > 0
 	print("\n%s" % ("PASS — the GDScript depot agrees with Python"
