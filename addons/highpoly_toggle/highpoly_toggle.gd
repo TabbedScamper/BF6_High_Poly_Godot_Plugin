@@ -185,11 +185,30 @@ func _mode() -> int:
 func _textured() -> bool:
 	return Modes.textured(mode_btn.get_selected_id()) if mode_btn else true
 
-# True on every rung except the one that fetches nothing at all. Everything the
-# Map Context section offers costs a download, so this is the single gate they
-# all share — see _gate/_locked.
+# True on every rung except the one that fetches nothing at all — OR whenever
+# the open map's data is already on disk.
+#
+# The gate exists so nothing starts a download the user did not ask for. It was
+# written as "the mode must be one that downloads", which was the same thing
+# back when the only way to have map data was to fetch it. It is not the same
+# thing now: data can be installed locally, and in that case turning a layer on
+# downloads nothing at all. The old rule locked the whole Map Context section
+# against data sitting right there in the cache.
+#
+# Checked against the OPEN map rather than "any map is cached", so the message
+# still fires correctly when you switch to a map you have not got.
 func _ctx_allowed() -> bool:
-	return mode_btn != null and Modes.downloads(mode_btn.get_selected_id())
+	if mode_btn != null and Modes.downloads(mode_btn.get_selected_id()):
+		return true
+	# map_of() reads the identity off the edited scene root's name, so it is
+	# known BEFORE anything is applied. mapctx._map is only set during apply,
+	# and using it here would be circular: you could not turn a layer on until
+	# you had already turned one on.
+	if mapctx != null:
+		var m: String = MapContextScript.map_of(EditorInterface.get_edited_scene_root())
+		if m != "" and mapctx.has_data(m):
+			return true
+	return false
 
 # Say what the current mode is SHOWING, in the status line.
 #
@@ -247,9 +266,9 @@ func _locked(c: Control) -> bool:
 		(c as Button).set_pressed_no_signal(false)
 	elif c is OptionButton:
 		(c as OptionButton).select(int(c.get_meta("gate_back", 0)))
-	lbl.text = ("%s has to be downloaded, and this setting downloads nothing. "
-		+ "Choose \"Low-Poly + Minimal Downloads\" above to get it untextured, "
-		+ "or either High-Poly setting for the full version.") \
+	lbl.text = ("%s is not on this machine for the open map, and this setting "
+		+ "fetches nothing. Either install the map's data locally, or choose a "
+		+ "High-Poly setting above.") \
 		% str(c.get_meta("gate_what", "That"))
 	_flash_mode()
 	return true
