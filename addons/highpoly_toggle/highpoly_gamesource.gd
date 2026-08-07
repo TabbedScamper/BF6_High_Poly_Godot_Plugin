@@ -46,6 +46,8 @@ func _say(s: String) -> void:
 # wrong is silent: looking the blueprint path up directly resolves 0 of 2,727.
 const MESH_SUFFIX := "_mesh"
 
+const SHADERSTATE := "_win32_shaderstate/"
+
 var src: BF6Source = null
 var types: BF6Types = null
 var walk: BF6Walk = null
@@ -55,6 +57,26 @@ var error := ""
 # blueprint path (lowercased, no .ebx) -> res name, or "" for "known to have none"
 var _res_for := {}
 var _ms := BF6MeshSet.new()
+var _tex := BF6Texture.new()
+
+# bundle asset path -> depot res name, and the parsed depots, kept because a map
+# touches a few dozen of the 15,391 the mount carries.
+var _depot_bundles := {}
+var _depot_cache := {}
+
+# ONE ImageTexture PER TEXTURE, and one material per shader state.
+#
+# The same lesson the .bctex pool taught, one layer up: Dumbo's props reference
+# 29,166 textures resolving to far fewer distinct assets, and a state key IS a
+# material state — the depot itself deduplicates blobs by content, 39,559 keys
+# onto 6,319 records. Building an ImageTexture or a material per section would
+# re-upload the same pixels thousands of times, which is exactly the 14.5 GB of
+# video memory the download path used to ask for.
+var _tex_cache := {}                   # texture res name -> ImageTexture
+var _mat_cache := {}                   # "<scope>|<state key>" -> Material
+var _group_meta := {}                  # group key -> [res name, scope, a src]
+var tex_stats := {"decoded": 0, "reused": 0, "failed": 0, "no_depot": 0,
+	"no_key": 0, "materials": 0}
 
 
 # Is there a game to read at all? Cheap: no mount, no parse. Used to decide
@@ -100,6 +122,20 @@ func open_map(map: String, game_dir := "", progress := Callable()) -> bool:
 	walk.build_catalog(func(done, total, found):
 		if progress.is_valid():
 			progress.call("indexing partitions", done, total))
+
+	# WHICH BUNDLES OWN A DEPOT, handed to the walk BEFORE it runs so every row
+	# records the scope it was placed under. A section's shader state key is only
+	# unique within a scope, and the scope is the subworld that MOUNTED the
+	# prefab — an ancestor in the walk graph, with no path relationship to the
+	# partition the placement sits in. Matching by directory instead resolved
+	# 54.7% of sections; this resolves 99.5%.
+	for rn in src.res.keys():
+		var n := str(rn)
+		var at := n.find(SHADERSTATE)
+		if at > 0 and n.find("shaderblockdepot", at) > 0:
+			_depot_bundles[n.substr(0, at)] = n
+	for d in _depot_bundles:
+		walk.scope_index[str(d)] = str(d)
 	if progress.is_valid():
 		progress.call("reading placements", 0, 0)
 	if not walk.run_cached(level):
@@ -134,16 +170,22 @@ func map_data() -> Dictionary:
 		var xf = row["xf"]
 		if not (xf is Array) or (xf as Array).size() < 4:
 			continue
-		if not by_mesh.has(res_name):
-			by_mesh[res_name] = PackedFloat32Array()
-		var a: PackedFloat32Array = by_mesh[res_name]
+		# GROUPED BY (MESH, SCOPE), not by mesh alone. The same mesh placed from
+		# two subworlds looks its textures up in two different depots, so folding
+		# those placements together would dress half of them from the wrong one.
+		var scope := str(row.get("scope", ""))
+		var gkey := "%s|%s" % [res_name, scope]
+		if not by_mesh.has(gkey):
+			by_mesh[gkey] = PackedFloat32Array()
+			_group_meta[gkey] = [res_name, scope, str(row.get("src", ""))]
+		var a: PackedFloat32Array = by_mesh[gkey]
 		# The same 12-float layout placements.json uses: basis rows then origin.
 		for i in range(4):
 			var v: Vector3 = (xf as Array)[i]
 			a.push_back(v.x)
 			a.push_back(v.y)
 			a.push_back(v.z)
-		by_mesh[res_name] = a
+		by_mesh[gkey] = a
 		var o: Vector3 = (xf as Array)[3]
 		lo = Vector3(minf(lo.x, o.x), minf(lo.y, o.y), minf(lo.z, o.z))
 		hi = Vector3(maxf(hi.x, o.x), maxf(hi.y, o.y), maxf(hi.z, o.z))
@@ -193,11 +235,21 @@ func resolve_mesh(mesh_path: String) -> String:
 # coarser ones for draw-call reasons, so the level is a parameter rather than a
 # constant even though nothing passes it yet.
 #
-# UNTEXTURED FOR NOW, and that is the honest state of this: materials resolve
-# through the ShaderBlockDepot, which is not ported. A prop comes back with
-# geometry and no maps. See the note in highpoly_mapcontext where this is used.
+# TEXTURED, via the section's shader state key and the depot for `scope`. Pass
+# the group key from map_data() and both the mesh and its scope are recovered
+# from it, so a caller never has to carry them separately.
 # ---------------------------------------------------------------------------
-func mesh_for(res_name: String, lod := 0) -> Mesh:
+func mesh_for(group_key: String, lod := 0) -> Mesh:
+	var res_name := group_key
+	var scope := ""
+	if _group_meta.has(group_key):
+		var m: Array = _group_meta[group_key]
+		res_name = str(m[0])
+		scope = str(m[1])
+	elif group_key.contains("|"):
+		var parts := group_key.split("|")
+		res_name = str(parts[0])
+		scope = str(parts[1])
 	if res_name == "":
 		return null
 	var d := src.get_res(res_name)
@@ -252,4 +304,111 @@ func mesh_for(res_name: String, lod := 0) -> Mesh:
 			continue
 		arr[Mesh.ARRAY_INDEX] = idx
 		am.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr)
+		var mat = material_for(int(sec.get("state_key", 0)), scope)
+		if mat != null:
+			am.surface_set_material(am.get_surface_count() - 1, mat)
 	return am if am.get_surface_count() > 0 else null
+
+
+# ---------------------------------------------------------------------------
+# The material one shader state binds, or null when nothing resolves.
+#
+# Cached per (scope, key): the depot deduplicates blobs by content — 39,559 keys
+# onto 6,319 records — so building one material per SECTION would make thousands
+# of identical StandardMaterial3Ds and upload the same pixels behind each.
+# ---------------------------------------------------------------------------
+func material_for(state_key: int, scope: String):
+	if state_key == 0:
+		tex_stats["no_key"] = int(tex_stats["no_key"]) + 1
+		return null
+	var ck := "%s|%s" % [scope, BF6Depot.key_hex(state_key)]
+	if _mat_cache.has(ck):
+		return _mat_cache[ck]
+
+	var pair = _depot_for(scope)
+	if pair == null:
+		tex_stats["no_depot"] = int(tex_stats["no_depot"]) + 1
+		_mat_cache[ck] = null
+		return null
+	var dep: BF6Depot = pair[0]
+	if not dep.key_to_record.has(state_key):
+		tex_stats["no_key"] = int(tex_stats["no_key"]) + 1
+		_mat_cache[ck] = null
+		return null
+	var slots: Dictionary = dep.textures_for(state_key, pair[1])
+	slots.erase("constants")
+
+	var mat := StandardMaterial3D.new()
+	var any := false
+	# basecolor_veg is the vegetation sheet and takes precedence where both are
+	# bound; normal_vt is the architecture normal paired with a tiling basecolor.
+	var albedo = _texture_for(slots.get("basecolor_veg", slots.get("basecolor")))
+	if albedo != null:
+		mat.albedo_texture = albedo
+		any = true
+	var nrm = _texture_for(slots.get("normal", slots.get("normal_vt")))
+	if nrm != null:
+		mat.normal_enabled = true
+		mat.normal_texture = nrm
+		any = true
+	var emis = _texture_for(slots.get("emissive"))
+	if emis != null:
+		mat.emission_enabled = true
+		mat.emission_texture = emis
+		any = true
+	if not any:
+		# A state with no albedo is NOT necessarily a failure: some materials are
+		# procedural and bind only noise and weathering sheets. Cached as null so
+		# it is not re-resolved, and counted separately from a missing depot.
+		_mat_cache[ck] = null
+		return null
+	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	_mat_cache[ck] = mat
+	tex_stats["materials"] = int(tex_stats["materials"]) + 1
+	return mat
+
+
+func _texture_for(file_guid):
+	if file_guid == null or str(file_guid) == "":
+		return null
+	var asset = walk.gi.get(str(file_guid))
+	if asset == null:
+		return null
+	var an := str(asset).to_lower()
+	if an.ends_with(".ebx"):
+		an = an.substr(0, an.length() - 4)
+	if _tex_cache.has(an):
+		tex_stats["reused"] = int(tex_stats["reused"]) + 1
+		return _tex_cache[an]
+	var raw := src.get_res(an)
+	if raw.is_empty():
+		_tex_cache[an] = null
+		tex_stats["failed"] = int(tex_stats["failed"]) + 1
+		return null
+	var got := _tex.decode(raw, func(form): return src.get_chunk(str(form)))
+	if got.is_empty() or not (got.get("image") is Image):
+		_tex_cache[an] = null
+		tex_stats["failed"] = int(tex_stats["failed"]) + 1
+		return null
+	var t := ImageTexture.create_from_image(got["image"] as Image)
+	_tex_cache[an] = t
+	tex_stats["decoded"] = int(tex_stats["decoded"]) + 1
+	return t
+
+
+func _depot_for(scope: String):
+	if scope == "":
+		return null
+	if _depot_cache.has(scope):
+		return _depot_cache[scope]
+	var name = _depot_bundles.get(scope)
+	if name == null:
+		_depot_cache[scope] = null
+		return null
+	var b := src.get_res(str(name))
+	if b.is_empty():
+		_depot_cache[scope] = null
+		return null
+	var dep := BF6Depot.new()
+	_depot_cache[scope] = [dep, b] if dep.parse(b) else null
+	return _depot_cache[scope]
