@@ -1031,6 +1031,237 @@
    "force_killed": false,
    "when": "2026-08-07 02:14:11",
    "note": "FINAL: bake + BUILD_FRAME_MS 500 + no sidecar writes"
+  },
+  {
+   "apply_status": "MP_Dumbo: terrain 2, 155 surroundings, building 2761 object meshes\u00e2\u20ac\u00a6, SPLAT terrain (6 layer slices, no decal)",
+   "boot_ms": 19777,
+   "build_done": 2761,
+   "build_ms": 32737,
+   "build_sampled": false,
+   "build_stalled": false,
+   "build_timed_out": false,
+   "build_total": 2761,
+   "census": {
+    "Backdrop": {
+     "instances": 289,
+     "nodes": 290,
+     "surfaces": 49966
+    },
+    "Props": {
+     "instances": 44925,
+     "nodes": 13439,
+     "surfaces": 40581
+    },
+    "Terrain": {
+     "instances": 256,
+     "nodes": 257,
+     "surfaces": 256
+    },
+    "Water": {
+     "instances": 1,
+     "nodes": 2,
+     "surfaces": 1
+    }
+   },
+   "dialogs_dismissed": 1,
+   "draws_mean": 49277,
+   "draws_peak": 77060,
+   "editor_cam_stuck": 455,
+   "editor_cam_tried": 455,
+   "engine": {
+    "buffer_mb": 767.6,
+    "mem_static_mb": 4489.8,
+    "nodes": 35278,
+    "objects": 425429,
+    "orphans": 294,
+    "prims": 6050437,
+    "resources": 162826,
+    "texture_mb": 17345.6,
+    "vram_mb": 18292.3
+   },
+   "flight_samples": 455,
+   "frames": 455,
+   "godot": "4.6.3-stable (official)",
+   "headless": false,
+   "hitches": 0,
+   "last_crumb": "",
+   "lighting": "MP_Dumbo game lighting: sun az 125\u00c2\u00b0 el 29\u00c2\u00b0, 120000 lux",
+   "low1_ms": 240.93,
+   "map": "MP_Dumbo",
+   "map_lights": "No light data for MP_Dumbo",
+   "mean_ms": 124.2,
+   "median_ms": 132.06,
+   "open_ms": 31621,
+   "p95_ms": 174.97,
+   "p99_ms": 199.19,
+   "props_built": 2761,
+   "props_per_s": 139.0,
+   "radius": 1000000000.0,
+   "scene": "res://Levels/MP_Dumbo.tscn",
+   "scene_nodes": 14089,
+   "shadow_draws_mean": 227,
+   "shadow_draws_peak": 1004,
+   "started_unix": 1786107367.694,
+   "total_ms": 149519,
+   "worst_ms": 329.93,
+   "wall_s": 154.2,
+   "force_killed": false,
+   "when": "2026-08-07 07:58:22",
+   "note": "EXPERIMENT: no generate_lods"
+  },
+  {
+   "apply_status": "MP_Dumbo: terrain 2, 155 surroundings, building 2761 object meshes\u00e2\u20ac\u00a6, SPLAT terrain (6 layer slices, no decal)",
+   "boot_ms": 18818,
+   "build_done": 2761,
+   "build_ms": 50381,
+   "build_sampled": false,
+   "build_stalled": false,
+   "build_timed_out": false,
+   "build_total": 2761,
+   "census": {
+    "Backdrop": {
+     "instances": 289,
+     "nodes": 290,
+     "surfaces": 49966
+    },
+    "Props": {
+     "instances": 44925,
+     "nodes": 13439,
+     "surfaces": 40581
+    },
+    "Terrain": {
+     "instances": 256,
+     "nodes": 257,
+     "surfaces": 256
+    },
+    "Water": {
+     "instances": 1,
+     "nodes": 2,
+     "surfaces": 1
+    }
+   },
+   "dialogs_dismissed": 1,
+   "draws_mean": 49277,
+   "draws_peak": 77062,
+   "editor_cam_stuck": 455,
+   "editor_cam_tried": 455,
+   "engine": {
+    "buffer_mb": 844.1,
+    "mem_static_mb": 4521.6,
+    "nodes": 35278,
+    "objects": 425429,
+    "orphans": 294,
+    "prims": 6035649,
+    "resources": 160065,
+    "texture_mb": 17345.7,
+    "vram_mb": 18368.9
+   },
+   "flight_samples": 455,
+   "frames": 455,
+   "godot": "4.6.3-stable (official)",
+   "headless": false,
+   "hitches": 0,
+   "last_crumb": "",
+   "lighting": "MP_Dumbo game lighting: sun az 125\u00c2\u00b0 el 29\u00c2\u00b0, 120000 lux",
+   "low1_ms": 250.92,
+   "map": "MP_Dumbo",
+   "map_lights": "No light data for MP_Dumbo",
+   "mean_ms": 124.44,
+   "median_ms": 130.82,
+   "open_ms": 30388,
+   "p95_ms": 174.67,
+   "p99_ms": 204.76,
+   "props_built": 2761,
+   "props_per_s": 65.4,
+   "radius": 1000000000.0,
+   "scene": "res://Levels/MP_Dumbo.tscn",
+   "scene_nodes": 14089,
+   "shadow_draws_mean": 227,
+   "shadow_draws_peak": 1004,
+   "started_unix": 1786107777.946,
+   "total_ms": 164959,
+   "worst_ms": 356.21,
+   "wall_s": 169.6,
+   "force_killed": false,
+   "when": "2026-08-07 08:05:28",
+   "note": "LOD chain baked into geom.res"
+  },
+  {
+   "apply_status": "MP_Dumbo: terrain 2, 155 surroundings, building 2761 object meshes\u00e2\u20ac\u00a6, SPLAT terrain (6 layer slices, no decal)",
+   "boot_ms": 19325,
+   "build_done": 2761,
+   "build_ms": 46682,
+   "build_sampled": false,
+   "build_stalled": false,
+   "build_timed_out": false,
+   "build_total": 2761,
+   "census": {
+    "Backdrop": {
+     "instances": 289,
+     "nodes": 290,
+     "surfaces": 49966
+    },
+    "Props": {
+     "instances": 44925,
+     "nodes": 13439,
+     "surfaces": 40581
+    },
+    "Terrain": {
+     "instances": 256,
+     "nodes": 257,
+     "surfaces": 256
+    },
+    "Water": {
+     "instances": 1,
+     "nodes": 2,
+     "surfaces": 1
+    }
+   },
+   "dialogs_dismissed": 1,
+   "draws_mean": 49277,
+   "draws_peak": 77060,
+   "editor_cam_stuck": 455,
+   "editor_cam_tried": 455,
+   "engine": {
+    "buffer_mb": 844.2,
+    "mem_static_mb": 4521.7,
+    "nodes": 35278,
+    "objects": 425428,
+    "orphans": 294,
+    "prims": 6035609,
+    "resources": 160065,
+    "texture_mb": 17345.6,
+    "vram_mb": 18369.0
+   },
+   "flight_samples": 455,
+   "frames": 455,
+   "godot": "4.6.3-stable (official)",
+   "headless": false,
+   "hitches": 0,
+   "last_crumb": "",
+   "lighting": "MP_Dumbo game lighting: sun az 125\u00c2\u00b0 el 29\u00c2\u00b0, 120000 lux",
+   "low1_ms": 244.38,
+   "map": "MP_Dumbo",
+   "map_lights": "No light data for MP_Dumbo",
+   "mean_ms": 124.81,
+   "median_ms": 131.53,
+   "open_ms": 30757,
+   "p95_ms": 175.32,
+   "p99_ms": 206.24,
+   "props_built": 2761,
+   "props_per_s": 73.0,
+   "radius": 1000000000.0,
+   "scene": "res://Levels/MP_Dumbo.tscn",
+   "scene_nodes": 14089,
+   "shadow_draws_mean": 227,
+   "shadow_draws_peak": 1004,
+   "started_unix": 1786108869.981,
+   "total_ms": 161946,
+   "worst_ms": 335.06,
+   "wall_s": 166.8,
+   "force_killed": false,
+   "when": "2026-08-07 08:23:37",
+   "note": "restored good state"
   }
  ]
 }
