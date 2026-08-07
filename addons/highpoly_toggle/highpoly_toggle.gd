@@ -58,6 +58,7 @@ const SyncScript = preload("highpoly_sync.gd")
 const HighpolyCollision = preload("highpoly_collision.gd")
 const HighpolyDoors = preload("highpoly_doors.gd")
 const FlightPath = preload("highpoly_flightpath.gd")
+const GameDir = preload("highpoly_gamedir.gd")
 const HighpolyVariants = preload("highpoly_variants.gd")
 const LightingScript = preload("highpoly_lighting.gd")
 const PlacedCull = preload("highpoly_placedcull.gd")
@@ -1036,6 +1037,62 @@ func _enter_tree() -> void:
 			lbl.text = ("Flight path saved: %d samples at %s" % [n, p]) if p != "" \
 					else "Nothing recorded — the camera never moved.")
 	storage_chips.add_child(flight_chk)
+
+	# --- Game folder --------------------------------------------------------
+	# The one setting that must be right before anything else works, now that
+	# scenery is read from the install rather than downloaded. It gets a live
+	# verdict instead of a silent text box, because a wrong path here produces
+	# no useful error anywhere else in the plugin — every switch stays live and
+	# simply shows nothing.
+	var game_row := HBoxContainer.new()
+	host.add_child(game_row)
+	var game_lbl := Label.new()
+	game_lbl.text = "Game folder"
+	game_row.add_child(game_lbl)
+	var game_edit := LineEdit.new()
+	game_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	game_edit.placeholder_text = "…/steamapps/common/Battlefield 6"
+	game_row.add_child(game_edit)
+	var game_browse := Button.new()
+	game_browse.text = "Browse…"
+	game_row.add_child(game_browse)
+	var game_status := Label.new()
+	game_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	host.add_child(game_status)
+
+	var game_check := func(p: String, remember: bool) -> bool:
+		var r: Dictionary = GameDir.verify(p)
+		game_status.text = str(r["why"])
+		game_status.modulate = (Color(0.55, 0.85, 0.55) if bool(r["ok"])
+				else Color(0.95, 0.65, 0.45))
+		if bool(r["ok"]) and remember:
+			GameDir.save(p)
+		return bool(r["ok"])
+
+	var found: String = GameDir.autodetect()
+	game_edit.text = found if found != "" else GameDir.saved()
+	if game_edit.text != "":
+		game_check.call(game_edit.text, found != "")
+	else:
+		game_status.text = "Choose the folder Battlefield 6 is installed in — the one that contains Data."
+		game_status.modulate = Color(0.95, 0.65, 0.45)
+
+	game_edit.text_submitted.connect(func(t: String): game_check.call(t, true))
+	game_edit.focus_exited.connect(func(): game_check.call(game_edit.text, true))
+	game_browse.pressed.connect(func():
+		var fd := FileDialog.new()
+		fd.file_mode = FileDialog.FILE_MODE_OPEN_DIR
+		fd.access = FileDialog.ACCESS_FILESYSTEM
+		fd.title = "Select your Battlefield 6 install folder"
+		if game_edit.text != "":
+			fd.current_dir = game_edit.text
+		fd.dir_selected.connect(func(d: String):
+			game_edit.text = d
+			game_check.call(d, true)
+			fd.queue_free())
+		fd.canceled.connect(func(): fd.queue_free())
+		EditorInterface.get_base_control().add_child(fd)
+		fd.popup_centered_ratio(0.6))
 
 	var purge_row := HBoxContainer.new(); host.add_child(purge_row)
 	purge_maps = OptionButton.new()
