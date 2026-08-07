@@ -118,12 +118,33 @@ func _init() -> void:
 				assets += pay.ebx.size() + pay.res.size() + pay.chunks.size()
 		return {"bundles": n, "assets": assets})
 
-	_bench("mount", repeat, func():
+	# THE ITERATION STAGE. The cold sweep is uniform, so 1,500 bundles measure
+	# the same rate as 18,533 and take a second instead of twenty. This is what
+	# you run while changing the sweep; it reports a PROJECTION, and the name
+	# says so, because a projection confirmed by nothing is a guess with a
+	# decimal point.
+	_bench("mount_rate", repeat, func():
+		var s = BF6Source.new()
+		s.open(game)
+		s.mount(level, Callable(), false, 1500)
+		return {"bundles_per_sec": s.stats.get("bundles_per_sec"),
+				"projected_full_ms": s.stats.get("projected_full_ms")})
+
+	# The real cold number, once, to keep the projection honest.
+	if filter == "" or filter == "mount_cold":
+		_bench("mount_cold", 1, func():
+			var s = BF6Source.new()
+			s.open(game)
+			s.mount(level, Callable(), false)
+			return {"ebx": s.ebx.size(), "res": s.res.size(),
+					"bundles": int(s.stats.get("bundles_opened", 0))})
+
+	_bench("mount_cached", repeat, func():
 		var s = BF6Source.new()
 		s.open(game)
 		s.mount(level)
 		return {"ebx": s.ebx.size(), "res": s.res.size(),
-				"bundles": int(s.stats.get("bundles_opened", 0))})
+				"cached": s.stats.get("from_cache", false)})
 
 	# reads reuse one mounted source; mounting inside them would drown the
 	# thing being measured
@@ -135,6 +156,19 @@ func _init() -> void:
 		var small := _pick_res(0)
 		var large := _pick_res(1)
 		var chunk := _pick_chunk()
+
+		# A read that FAILS is instant, so a broken reader benchmarks as a huge
+		# win. A stale index cache did exactly that here: every lookup returned
+		# zero bytes and the harness reported -97% on get_res_small. Anything
+		# measuring a read now asserts it actually got the bytes.
+		var want_small := int(_src.res[small][4])
+		var probe: PackedByteArray = _src.get_res(small)
+		if probe.size() != want_small:
+			print("  ABORT: get_res returned %d bytes, expected %d (%s)"
+					% [probe.size(), want_small, _src.error])
+			print("  the reader is broken; timings would be meaningless")
+			quit(1)
+			return
 
 		_bench("get_res_small", repeat * 20, func():
 			var d: PackedByteArray = _src.get_res(small)
