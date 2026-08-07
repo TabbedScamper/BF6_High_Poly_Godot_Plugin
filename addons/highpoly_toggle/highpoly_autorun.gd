@@ -39,6 +39,7 @@ const ENV := "BF6_AUTORUN"
 
 const Log = preload("highpoly_log.gd")
 const FlightPath = preload("highpoly_flightpath.gd")
+const LightingScript = preload("highpoly_lighting.gd")
 
 
 static func requested() -> bool:
@@ -59,6 +60,7 @@ static func config() -> Dictionary:
 		"map": "MP_Dumbo", "mode": 2, "objects": true, "backdrop": true,
 		"water": true, "flight": "", "out": "", "settle_frames": 30,
 		"build_timeout_s": 900, "radius": 1.0e9,
+		"lighting": true, "gi": true, "shadows": true, "map_lights": true,
 	}
 	if v != "" and v != "1" and FileAccess.file_exists(v):
 		var j = JSON.parse_string(FileAccess.get_file_as_string(v))
@@ -179,7 +181,14 @@ static func run(host: Node, dock: Node, mapctx: Node) -> void:
 		# that nothing moved for ten minutes wastes the run and reports the
 		# wrong thing; a build that stops advancing is a hang, and it is worth
 		# saying so at the slice it died on.
-		if now - last_change > stall_ms and last_seen > 0:
+		# NOT A STALL ONCE EVERY PROP IS PLACED. The build emits no progress
+		# while it finishes — flushing the fast-load cache, applying the final
+		# cull — so the tail is legitimately silent for a while, and calling
+		# that a hang reported build_stalled at 2759 of 2761 on a build that
+		# completed perfectly well.
+		var placed_all: bool = prog["total"] > 0 and last_seen >= int(prog["total"])
+		var quiet_limit: int = stall_ms * 4 if placed_all else stall_ms
+		if now - last_change > quiet_limit and last_seen > 0:
 			stalled = true
 			break
 		if sample_ms > 0 and now - t0 >= sample_ms and last_seen > 0:
@@ -215,6 +224,23 @@ static func run(host: Node, dock: Node, mapctx: Node) -> void:
 				   "  TIMED OUT" if rep["build_timed_out"] else ""])
 
 	# ---- fly ---------------------------------------------------------------
+	# LIGHTING IS A SEPARATE SWITCH, and leaving it off invalidated a whole
+	# round of measurements. apply() takes backdrop and water but NOT lighting,
+	# so every run so far had no sun, no shadows and no map lights — which is
+	# why changing the shadow cascades moved the draw-call count by exactly
+	# zero, three times running. An unlit map is also nothing like the game.
+	if bool(cfg.get("lighting", true)) and LightingScript.has_data(str(cfg["map"])):
+		var lit: String = LightingScript.apply(root, str(cfg["map"]),
+				bool(cfg.get("gi", true)), bool(cfg.get("shadows", true)))
+		rep["lighting"] = lit
+		if bool(cfg.get("map_lights", true)):
+			rep["map_lights"] = await LightingScript.set_map_lights(
+					root, true, str(cfg["map"]), Callable())
+		_say("autorun: lighting — %s" % lit)
+	else:
+		rep["lighting"] = "off (no data)" \
+				if not LightingScript.has_data(str(cfg["map"])) else "off"
+
 	# NOTHING CULLED. The range slider defaults well below the map, so a flight
 	# over a culled map measures the cost of not drawing things — which is not
 	# the cost being hunted. 1e9 is the slider's own "no cull" value.
@@ -237,6 +263,7 @@ static func run(host: Node, dock: Node, mapctx: Node) -> void:
 		rep.merge(await _fly(host, samples))
 	rep["scene_nodes"] = _count_nodes(root)
 	rep["engine"] = _engine()
+	rep["census"] = _surface_census(root)
 	# The crumb trail, which is the only record that survives a crash. If the
 	# editor dies mid-run there is no report at all, and this is what the next
 	# session reads to find out where it died.
@@ -338,6 +365,47 @@ static func _windows(n: Node, depth: int) -> Array:
 	return out
 
 
+# Where the draw calls come from, by layer.
+#
+# A total is not actionable: 49,277 says the map is expensive and nothing about
+# what to change. A draw call is issued per SURFACE per visible instance, so
+# counting surfaces under each layer of _MAP_CONTEXT points straight at whatever
+# is worth attacking — and it is cheap enough to record on every run.
+#
+# Counts what is THERE, not what is on screen. A frustum-accurate count would
+# vary along the flight and could not be compared between runs.
+static func _surface_census(root: Node) -> Dictionary:
+	var out := {}
+	var ctx := root.get_node_or_null("_MAP_CONTEXT") if root != null else null
+	if ctx == null:
+		return out
+	for layer in ctx.get_children():
+		var acc := {"nodes": 0, "instances": 0, "surfaces": 0}
+		_census_walk(layer, acc)
+		if int(acc["surfaces"]) > 0:
+			out[str(layer.name)] = acc
+	return out
+
+
+static func _census_walk(n: Node, acc: Dictionary) -> void:
+	acc["nodes"] = int(acc["nodes"]) + 1
+	if n is MultiMeshInstance3D:
+		var mmi := n as MultiMeshInstance3D
+		if mmi.multimesh != null and mmi.multimesh.mesh != null:
+			# A MultiMesh batches its INSTANCES but not its surfaces: the draw
+			# cost is one call per surface, however many copies it holds.
+			acc["instances"] = int(acc["instances"]) + mmi.multimesh.instance_count
+			acc["surfaces"] = int(acc["surfaces"]) \
+					+ mmi.multimesh.mesh.get_surface_count()
+	elif n is MeshInstance3D:
+		var mi := n as MeshInstance3D
+		if mi.mesh != null:
+			acc["instances"] = int(acc["instances"]) + 1
+			acc["surfaces"] = int(acc["surfaces"]) + mi.mesh.get_surface_count()
+	for c in n.get_children():
+		_census_walk(c, acc)
+
+
 static func _fly(host: Node, samples: Array) -> Dictionary:
 	# OUR OWN VIEWPORT ONTO THE EDITOR'S WORLD, rather than driving the editor
 	# camera.
@@ -400,44 +468,42 @@ static func _fly(host: Node, samples: Array) -> Dictionary:
 	if was_focused != null:
 		es.set_setting(k_focused, 0)
 
-	# ALSO MOVE THE EDITOR'S OWN CAMERA, so the flight is visible on screen.
-	#
-	# Measuring through our own viewport is correct but invisible: the editor
-	# sits still while the numbers are taken, which looks exactly like a flight
-	# that never ran. Writing the spatial editor's Camera3D directly MAY be
-	# overwritten — Node3DEditorViewport recomputes it from its own cursor — so
-	# rather than assume either way this writes it and checks whether it held,
-	# and the report says how often. A stick rate near zero means the view is
-	# decorative; near one means it is the same flight the numbers came from.
-	var evp := EditorInterface.get_editor_viewport_3d(0)
-	var ecam: Camera3D = evp.get_camera_3d() if evp != null else null
+	# The camera being written IS the editor's, so the stick check is now a
+	# self-check rather than an experiment: it confirms the write held for the
+	# frame that was timed. Measured at 455 of 455 when this was still a
+	# separate probe, which is what allowed the private viewport to be dropped.
 	var stuck := 0
-	var tried := 0
-
 	var times: Array[float] = []
 	var draws: Array[int] = []
+	var shadow_draws: Array[int] = []
 	for s in samples:
 		cam.global_transform = s
-		if ecam != null:
-			ecam.global_transform = s
-			tried += 1
 		var t0 := Time.get_ticks_usec()
 		await host.get_tree().process_frame
 		times.append((Time.get_ticks_usec() - t0) / 1000.0)
+		# BOTH PASSES. RENDER_INFO_TYPE_VISIBLE counts only the camera pass;
+		# shadow rendering is counted separately under _TYPE_SHADOW. Reading
+		# just the first made the draw-call total identical to the digit across
+		# a shadow-cascade change, a blend-splits change and turning lighting on
+		# — which looked like the measurement was stuck rather than like it was
+		# measuring the wrong half.
 		draws.append(sub.get_render_info(
 				Viewport.RENDER_INFO_TYPE_VISIBLE,
 				Viewport.RENDER_INFO_DRAW_CALLS_IN_FRAME))
-		if ecam != null and ecam.global_transform.origin.distance_to(
-				s.origin) < 0.5:
+		shadow_draws.append(sub.get_render_info(
+				Viewport.RENDER_INFO_TYPE_SHADOW,
+				Viewport.RENDER_INFO_DRAW_CALLS_IN_FRAME))
+		if cam.global_transform.origin.distance_to(s.origin) < 0.5:
 			stuck += 1
+	var tried := samples.size()
 
 	if was_unfocused != null:
 		es.set_setting(k_unfocused, was_unfocused)
 	if was_focused != null:
 		es.set_setting(k_focused, was_focused)
-	# free(), not queue_free(): the report is written and the tree torn down in
-	# the same frame, and a deferred free would never run.
-	sub.free()
+	# NOTHING TO FREE. `sub` is the editor's OWN viewport now, not a private one
+	# — an earlier version created its own and freed it here, and leaving that
+	# free() behind after the switch would have destroyed the editor's 3D view.
 	if times.is_empty():
 		return {"flight_error": "no frames recorded"}
 
@@ -462,10 +528,15 @@ static func _fly(host: Node, samples: Array) -> Dictionary:
 		low1 += sorted[i]
 	low1 /= float(worst_n)
 	var dsum := 0
+	var ssum := 0
+	var smax := 0
 	var dmax := 0
 	for d in draws:
 		dsum += d
 		dmax = maxi(dmax, d)
+	for s in shadow_draws:
+		ssum += s
+		smax = maxi(smax, s)
 
 	return {
 		"frames": n,
@@ -480,6 +551,8 @@ static func _fly(host: Node, samples: Array) -> Dictionary:
 		"hitches": hitches,
 		"draws_mean": int(dsum / maxi(1, n)),
 		"draws_peak": dmax,
+		"shadow_draws_mean": int(ssum / maxi(1, n)),
+		"shadow_draws_peak": smax,
 	}
 
 

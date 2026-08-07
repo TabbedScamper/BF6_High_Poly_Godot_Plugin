@@ -4,12 +4,12 @@ class_name HighpolyLighting
 # Game lighting for the map-context overlay: mimics each BF6 map's real sun +
 # sky + fog inside the editor, from data extracted out of the game's per-level
 # VisualEnvironment EBX (ve_mp_<map>_base*: OutdoorLight component) and its
-# sky-gradient texture (t_*_gradientsky_*, BC6H HDR — zenith/horizon/ground
+# sky-gradient texture (t_*_gradientsky_*, BC6H HDR â€” zenith/horizon/ground
 # colours sampled offline).
 #
 # Injected as one owner=null "_GAME_LIGHTING" node under the level root:
-#   DirectionalLight3D  — real sun azimuth/elevation/colour/relative intensity
-#   WorldEnvironment    — gradient-derived sky (ambient from it), depth fog
+#   DirectionalLight3D  â€” real sun azimuth/elevation/colour/relative intensity
+#   WorldEnvironment    â€” gradient-derived sky (ambient from it), depth fog
 #                         tinted with the map's horizon colour, ACES tonemap,
 #                         soft glow
 # Nothing is saved or exported; removing the node restores the editor's own
@@ -22,18 +22,18 @@ class_name HighpolyLighting
 #   RETRACTED: this block used to read "= (cos az, sin az)" and claim the
 #   convention was photo-verified on MP_Badlands within ~3 degrees. It was not.
 #   That reading is mirrored and 90 degrees out, and Badlands is precisely the
-#   map where a hand check is least reliable — open terrain with a 10-degree
+#   map where a hand check is least reliable â€” open terrain with a 10-degree
 #   red sun, no vertical edges to read a shadow against. A claim of verification
 #   is worth nothing without saying what it was checked AGAINST.
-#   "lux" = the VE's SunIntensity (real illuminance) — mapped to a relative
+#   "lux" = the VE's SunIntensity (real illuminance) â€” mapped to a relative
 #   DirectionalLight energy below (the editor has no physical light units).
 #
-# MP_Capstone is absent FROM TABLE ONLY — its toc was never EBX-extracted when
+# MP_Capstone is absent FROM TABLE ONLY â€” its toc was never EBX-extracted when
 # that table was built. It has since been mined like every other map and its
 # lighting arrives in the map package (54 fields, sun 157.03/31.0, with a sky),
 # so the map is fully supported. It is the only map with no TABLE fallback,
 # which is what made the mined-cache bug grey its Lighting chip out entirely
-# while every other map merely degraded in silence — see mined().
+# while every other map merely degraded in silence â€” see mined().
 
 const NODE := "_GAME_LIGHTING"
 
@@ -47,13 +47,13 @@ const TABLE := {
 	# Aftermath: the level's active VE preset is ve_mp_aftermath_sunsetovercast_03
 	# (sun az/el/lux/colour below are ITS values). The sky the game shows is the
 	# preset's PanoramicTexture import t_mp_aftermath_panoramicsky_sunsetovercast_07
-	# (BC6H 8192x2048 equirect, GUID-verified) — "pano" swaps the gradient
+	# (BC6H 8192x2048 equirect, GUID-verified) â€” "pano" swaps the gradient
 	# ProceduralSky for that real panorama. "fog" 0.0 = photo-verified (the 21
 	# PhotoMatch references show no atmospheric fog; the el<16 haze formula below
 	# is a fallback heuristic, not Aftermath data).
 	# "pano_lum" = the panorama's MEASURED mean luminance (BC6H decode, 65k
-	# samples): the game's sky is authored in physical HDR units (~8,900 —
-	# real overcast-sky cd/m²) and auto-exposed in-game; the editor renders it
+	# samples): the game's sky is authored in physical HDR units (~8,900 â€”
+	# real overcast-sky cd/mÂ²) and auto-exposed in-game; the editor renders it
 	# raw, which read as a PURE WHITE screen. Normalizing by the measured mean
 	# puts the sky on the same ~1.0 scale the exp calibration was built on.
 	"MP_Aftermath": {"az": 237.90, "el": 12.90, "lux": 24000, "exp": 0.45,
@@ -111,7 +111,7 @@ static func has_data(map: String) -> bool:
 # THE MINED VisualEnvironment
 #
 # TABLE above is 7 hand-maintained values per map. The map package now carries
-# 56, read straight out of the level's VisualEnvironment preset — sun, sky, fog,
+# 56, read straight out of the level's VisualEnvironment preset â€” sun, sky, fog,
 # exposure, colour grading, white balance, ambient occlusion, GI and shadow
 # cascades. Where a map has them, they win; TABLE stays as the fallback for
 # anyone whose map data predates this, and for the handful of fields the mine
@@ -135,7 +135,7 @@ static var _mined_stamp: Dictionary = {}    # map -> mtime the entry was read fr
 #     TABLE's 7 values: no sky, no fog, no colour grading, no AO, none of it,
 #     with nothing said about why.
 #
-# Re-reading every call is not the answer either — placements.json runs to tens
+# Re-reading every call is not the answer either â€” placements.json runs to tens
 # of MB on a big map and this is called twice a second. So key the cache on the
 # file's modification time: one stat instead of a parse, and it also picks up a
 # REPUBLISHED package, which the old code could not do at all.
@@ -186,7 +186,7 @@ static func _col(v: Variant, fallback: Color) -> Color:
 	return Color(float(a[0]), float(a[1]), float(a[2]))
 
 # The same array, normalised, plus how bright it was. BF6 stores fog colour and
-# similar as HDR radiance — `(1385, 2132, 3072)` is a sky blue at ~3072 — so hue
+# similar as HDR radiance â€” `(1385, 2132, 3072)` is a sky blue at ~3072 â€” so hue
 # and magnitude have to be separated rather than clamped.
 static func _col_hdr(v: Variant, fallback: Color) -> Array:
 	if not (v is Array) or (v as Array).size() < 3:
@@ -201,7 +201,7 @@ static func _col_hdr(v: Variant, fallback: Color) -> Array:
 #
 # az is BF6's SunRotationX, which is a COMPASS BEARING: 0 points along +Z and
 # turns toward +X. This used to be read as a maths-convention angle (0 along +X,
-# turning toward +Z), which is both mirrored AND 90 degrees out — the two errors
+# turning toward +Z), which is both mirrored AND 90 degrees out â€” the two errors
 # together are why fitting either one alone never explained the result.
 #
 #     compass A -> (sin A, 0, cos A)        our old az -> (cos az, 0, sin az)
@@ -214,7 +214,7 @@ static func _col_hdr(v: Variant, fallback: Color) -> Array:
 #
 # EVIDENCE. Nothing shipped can settle a sun angle: the sky panoramas contain no
 # sun disc (verified by rendering all 22 and crushing exposure until only real
-# highlights survive — every one goes black; the engine draws the disc itself,
+# highlights survive â€” every one goes black; the engine draws the disc itself,
 # DrawSunDisc = 1 everywhere), the maptiles are flat-lit with no cast shadows,
 # and the SDK ships no DirectionalLight. So this was settled against the running
 # game, by hand, through the dock's sun sliders:
@@ -222,7 +222,7 @@ static func _col_hdr(v: Variant, fallback: Color) -> Array:
 #     MP_Aftermath  predicted 212.1   set 211.0   off by 1.1 deg
 #     MP_Capstone   predicted 293.0   set 284.5   off by 8.5 deg
 #     MP_Badlands   predicted  96.0   set  71.5   off by 24.5 deg
-# The constant is 90 exactly, DERIVED, with no free parameter — and Dumbo was
+# The constant is 90 exactly, DERIVED, with no free parameter â€” and Dumbo was
 # calibrated twice, independently, moving 327.5 -> 325.5, i.e. converging on a
 # number nobody fitted. The two tight maps are dense city grids where a shadow
 # can be read against a street; the two loose ones are open terrain where it
@@ -237,7 +237,7 @@ static func _col_hdr(v: Variant, fallback: Color) -> Array:
 # NO MAP IS HAND-SET, AND NONE MAY BE. The calibration identified WHICH
 # CONVENTION the data is written in; it did not supply a value. What ships is
 # this one formula, applied identically everywhere, and every map's sun still
-# comes from its own SunRotationX/Y in its own VisualEnvironment — including the
+# comes from its own SunRotationX/Y in its own VisualEnvironment â€” including the
 # maps nobody has ever looked at, and any map added later. The dock's sun
 # sliders are a diagnostic that writes to a JSON for analysis; they feed nothing
 # into apply(), and a per-map fudge table must never be added here.
@@ -256,7 +256,7 @@ static func sun_energy(lux: float) -> float:
 	return clampf(1.7 * pow(lux / 120000.0, 0.45), 0.15, 2.2)
 
 # overlay meshes built while this is false stay shadow-off (the background
-# builder consults it) — kept in sync by apply()/set_shadows()
+# builder consults it) â€” kept in sync by apply()/set_shadows()
 static var cast_shadows := true
 
 # Fraction of ambient held back from sky visibility so enclosed spaces keep a
@@ -302,13 +302,17 @@ static func apply(root: Node, map: String, gi := true, shadows := true) -> Strin
 	sun.light_energy = sun_energy(float(e["lux"]))
 	sun.visible = sun.light_energy > 0.0
 	sun.shadow_enabled = shadows
-	# 1500 m: shadows previously cut off 600 m out — on city-scale maps whole
+	# 1500 m: shadows previously cut off 600 m out â€” on city-scale maps whole
 	# blocks past the street you were on rendered shadowless ("shadows don't
 	# show very well"). Note the Aftermath preset is a 24,000-lux overcast sun
 	# vs a full-sky ambient: its shadows ARE soft/shallow in the game photos
-	# too — depth here should match the references, not a clear-noon look.
+	# too â€” depth here should match the references, not a clear-noon look.
 	sun.directional_shadow_max_distance = 1500.0
 	sun.directional_shadow_mode = DirectionalLight3D.SHADOW_PARALLEL_4_SPLITS
+	# Kept ON. Blending the cascades fixes the seam between splits, and the
+	# draw-call saving from turning it off was measured at nothing: the whole
+	# shadow pass is 203 draw calls against 49,277 for the camera pass, so
+	# shadows are simply not the cost on this map.
 	sun.directional_shadow_blend_splits = true
 	sun.light_angular_distance = 0.5      # soft-edged sun shadows (sun disc size)
 	rig.add_child(sun)
@@ -316,13 +320,13 @@ static func apply(root: Node, map: String, gi := true, shadows := true) -> Strin
 	# --- sky + environment ---
 	# Maps with a "pano" entry use the REAL sky: the VE preset's PanoramicTexture
 	# (equirect BC6H HDR, extracted from the dump into addons/highpoly_toggle/sky/).
-	# That texture IS what the game renders behind the level — clouds, glow and
+	# That texture IS what the game renders behind the level â€” clouds, glow and
 	# horizon come from data, not from gradient-colour approximation.
 	var sky := Sky.new()
 	var pano_tex: Texture2D = null
 	var pano_scale := 0.0
 	# The map package's own sky, converted from the level's PanoramicTexture.
-	# EXR because Godot cannot load .dds at runtime — that limitation is why the
+	# EXR because Godot cannot load .dds at runtime â€” that limitation is why the
 	# one sky this plugin used to have was welded into its own zip, and why only
 	# one map ever had a real sky.
 	var sp := "%s/%s/sky.exr" % [CACHE, map]
@@ -338,7 +342,7 @@ static func apply(root: Node, map: String, gi := true, shadows := true) -> Strin
 	if pano_tex == null and e.has("pano"):
 		# legacy: the one sky bundled inside the plugin. Already multiplied
 		# through, so it is normalised by its MEASURED luminance, not by
-		# LuminanceScale — the two disagree for exactly this reason.
+		# LuminanceScale â€” the two disagree for exactly this reason.
 		var pp := "res://addons/highpoly_toggle/sky/" + str(e["pano"])
 		if ResourceLoader.exists(pp):
 			pano_tex = load(pp)
@@ -361,7 +365,7 @@ static func apply(root: Node, map: String, gi := true, shadows := true) -> Strin
 		mat.sky_horizon_color = e["hor"]
 		mat.ground_horizon_color = e["hor"]
 		mat.ground_bottom_color = e["gnd"]
-		mat.sun_angle_max = 20.0          # generous halo — reads like the game's glow
+		mat.sun_angle_max = 20.0          # generous halo â€” reads like the game's glow
 		mat.sun_curve = 0.12
 		sky.sky_material = mat
 
@@ -369,7 +373,7 @@ static func apply(root: Node, map: String, gi := true, shadows := true) -> Strin
 	env.background_mode = Environment.BG_SKY
 	env.sky = sky
 	# INTERIOR FILL. With sky_contribution at 1.0 every scrap of ambient came
-	# from how much SKY a surface can see, so anything enclosed got none —
+	# from how much SKY a surface can see, so anything enclosed got none â€”
 	# and with sdfgi_use_occlusion and SSAO on top, interiors resolved to
 	# black. That is defensible physically: the 11,640 authored lights that
 	# actually light those rooms in-game are not instantiated here, so there
@@ -394,7 +398,7 @@ static func apply(root: Node, map: String, gi := true, shadows := true) -> Strin
 	# game's absolute HDR scale (BC6H values normalised; the game auto-exposes,
 	# the editor doesn't), so maps with near-white gradients render 2-3x hot.
 	# "exp" per map = tonemap exposure calibrated against paired in-game
-	# reference photos (median-luminance match, _DevTools/photomatch) — game
+	# reference photos (median-luminance match, _DevTools/photomatch) â€” game
 	# data, not taste. Maps without a calibrated value keep 1.0.
 	env.tonemap_exposure = float(e.get("exp", 1.0))
 	env.glow_enabled = true
@@ -420,14 +424,14 @@ static func apply(root: Node, map: String, gi := true, shadows := true) -> Strin
 	#
 	# What the game actually has is ambient from its skybox plus contact AO. We
 	# already have the real panorama driving ambient (AMBIENT_SOURCE_SKY above),
-	# so the honest editor equivalent is that plus SSAO — no voxelisation, no
+	# so the honest editor equivalent is that plus SSAO â€” no voxelisation, no
 	# cascades, nothing to flicker.
 	env.sdfgi_enabled = false
 	# GTAO's editor equivalent. Radius/intensity and, importantly, whether it
 	# touches direct light come from the map's own AO component in _apply_mined.
 	env.ssao_enabled = gi
 	if gi:
-		# half-resolution AO buffer — near-identical look, large GPU saving.
+		# half-resolution AO buffer â€” near-identical look, large GPU saving.
 		# Runtime call: doesn't touch project settings.
 		RenderingServer.gi_set_use_half_resolution(true)
 
@@ -441,7 +445,7 @@ static func apply(root: Node, map: String, gi := true, shadows := true) -> Strin
 	_base_exposure = env.tonemap_exposure
 	load_zones(map)
 	# depth fog: per-map "fog" density when photo/VE-verified (0.0 = the map has
-	# none — e.g. Aftermath, confirmed against all 21 PhotoMatch references).
+	# none â€” e.g. Aftermath, confirmed against all 21 PhotoMatch references).
 	# Maps without a mined value keep the old horizon-haze heuristic until they
 	# get their own PhotoMatch pass.
 	var fog_density: float = float(e["fog"]) if e.has("fog") \
@@ -461,16 +465,16 @@ static func apply(root: Node, map: String, gi := true, shadows := true) -> Strin
 	rig.owner = null           # editor-only: never saved, never exported
 	for c in rig.get_children():
 		c.owner = null
-	# sync the overlay's shadow casting with the checkbox — flips the built
+	# sync the overlay's shadow casting with the checkbox â€” flips the built
 	# meshes live, no rebuild (grass scatter stays shadow-off: GPU cost)
 	cast_shadows = shadows
 	var ctx := root.get_node_or_null("_MAP_CONTEXT")
 	if ctx != null:
 		_set_shadows(ctx, shadows)
-	return "%s game lighting: sun az %.0f° el %.0f°, %s lux" % [
+	return "%s game lighting: sun az %.0fÂ° el %.0fÂ°, %s lux" % [
 		map, float(e["az"]), float(e["el"]), String.num_uint64(int(e["lux"]))]
 
-# live sub-toggles (dock checkboxes under "Game lighting") — operate on the
+# live sub-toggles (dock checkboxes under "Game lighting") â€” operate on the
 # existing rig/overlay, nothing rebuilds
 # Apply the authored VE systems onto a Godot Environment + sun.
 #
@@ -480,7 +484,7 @@ static func apply(root: Node, map: String, gi := true, shadows := true) -> Strin
 # dropped. 6500 K is the neutral point: it returns white and changes nothing.
 # Kept deliberately, though nothing calls it right now: it is the conversion the
 # white-balance field needs once the direction is settled (see the note in
-# _apply_mined). Verified against known values — 6500 K returns ~neutral, 3200 K
+# _apply_mined). Verified against known values â€” 6500 K returns ~neutral, 3200 K
 # is red-biased, 9000 K blue-biased.
 static func _kelvin(k: float) -> Color:
 	var t: float = clampf(k, 1000.0, 40000.0) / 100.0
@@ -503,7 +507,7 @@ static func _kelvin(k: float) -> Color:
 # that author it want no correction at all.
 const WB_NEUTRAL := 6500.0
 
-# Per-channel gain that makes light of `kelvin` render as white — the ratio, not
+# Per-channel gain that makes light of `kelvin` render as white â€” the ratio, not
 # the illuminant. Normalised to preserve luminance so this shifts hue only.
 static func _wb_gain(kelvin: float) -> Color:
 	var n := _kelvin(WB_NEUTRAL)
@@ -525,7 +529,7 @@ static func _apply_mined(env: Environment, sun: DirectionalLight3D, m: Dictionar
 	# --- sun disc ------------------------------------------------------------
 	# DrawSunDisc is true on every map read, so the engine paints a disc over the
 	# panorama rather than relying on one baked into it. SunSize units are NOT
-	# established (0.005 / 0.002), so it is not converted to degrees — the
+	# established (0.005 / 0.002), so it is not converted to degrees â€” the
 	# existing angular distance stands and only the on/off is honoured.
 	if m.has("sun_disc") and not bool(m["sun_disc"]):
 		sun.light_angular_distance = 0.0
@@ -587,14 +591,14 @@ static func _apply_mined(env: Environment, sun: DirectionalLight3D, m: Dictionar
 	# Applied as a von Kries gain, which is a CORRECTION, not a tint. This was
 	# unapplied for a while because the first attempt multiplied the sun by the
 	# black-body colour of the authored temperature and made mp_dumbo read as a
-	# sunset — the authored SunColor is already warm at (1.0, 0.776, 0.617), and
+	# sunset â€” the authored SunColor is already warm at (1.0, 0.776, 0.617), and
 	# the 5600 K multiplier pushed green/red from 0.776 to 0.728, further toward
 	# orange. That was backwards: "white balance 5600 K" means TREAT 5600 K AS
 	# WHITE, so it should cancel warmth of that temperature, not add it.
 	#
 	# What was missing was the neutral point, and the fleet supplies it: 6500 K
 	# is the most common authored value and the standard D65 render white point.
-	# Reading the field against 6500 makes the whole thing fall out — the gain is
+	# Reading the field against 6500 makes the whole thing fall out â€” the gain is
 	# kelvin(6500)/kelvin(T), every 6500 K map comes out an exact (1,1,1) no-op,
 	# and mp_dumbo's 5600 K becomes (0.950, 1.009, 1.055), a mild COOLING that
 	# moves the sun's green/red from 0.776 to 0.824. That is the correction the
@@ -602,7 +606,7 @@ static func _apply_mined(env: Environment, sun: DirectionalLight3D, m: Dictionar
 	# read as evening.
 	#
 	# It goes in adjustment_color_correction rather than onto the sun, because a
-	# camera white balance acts on the whole frame — sky and ambient included.
+	# camera white balance acts on the whole frame â€” sky and ambient included.
 	# A 1D gradient from black to the gain is exactly a per-channel linear gain.
 	# Luminance-normalised so this only shifts hue: brightness is the exposure
 	# field's job, and letting white balance move it would double-count.
@@ -644,7 +648,7 @@ static func _apply_mined(env: Environment, sun: DirectionalLight3D, m: Dictionar
 	# NOT used as a runtime ambient colour, deliberately.
 	#
 	# SkyBoxSkyColor / SkyBoxGroundColor are inputs to ENLIGHTEN, the game's
-	# offline radiosity bake — they describe the skybox the bake sees, not a
+	# offline radiosity bake â€” they describe the skybox the bake sees, not a
 	# colour to tint the frame with. They are also not all in 0..1: across the
 	# fleet they run from (0.05, 0.05, 0.06) on mp_badlands to (8192, 8192, 8192)
 	# on mp_limestone, whose SkyBoxSunLightColor is 32768. Assigning that to
@@ -659,7 +663,7 @@ static func set_gi(root: Node, on: bool) -> String:
 	var we := (rig.get_node_or_null("GameEnvironment") as WorldEnvironment) if rig != null else null
 	if we == null or we.environment == null:
 		return "Game lighting is off"
-	# SDFGI stays off whichever way this goes — see the block in apply(). The
+	# SDFGI stays off whichever way this goes â€” see the block in apply(). The
 	# chip now toggles the contact shading the game actually has (GTAO), not
 	# Godot's real-time GI, which made the scene worse than leaving it off.
 	we.environment.sdfgi_enabled = false
@@ -667,7 +671,7 @@ static func set_gi(root: Node, on: bool) -> String:
 	return "Contact shading " + ("on" if on else "off")
 
 # Interior fill, live. Holding a fraction of ambient back from sky visibility
-# keeps enclosed spaces from going black — see interior_fill and the block in
+# keeps enclosed spaces from going black â€” see interior_fill and the block in
 # apply(). No rebuild needed: the ambient split is a plain Environment property.
 static func set_interior_fill(root: Node, amount: float) -> String:
 	interior_fill = clampf(amount, 0.0, 1.0)
@@ -679,8 +683,8 @@ static func set_interior_fill(root: Node, amount: float) -> String:
 	return "Interior light %d%%" % int(round(interior_fill * 100.0))
 
 
-# (The sun-calibration scaffolding lived here — a live re-aim plus a writer for
-# user://mapcontext/_sun_calibration.json — while the azimuth convention was
+# (The sun-calibration scaffolding lived here â€” a live re-aim plus a writer for
+# user://mapcontext/_sun_calibration.json â€” while the azimuth convention was
 # being established against the running game. It is gone: SunRotationX is a
 # compass bearing, sun_dir() says so with the derivation, and
 # tools/test_sun_convention.gd locks it in. Nothing about the sun is adjustable
@@ -733,7 +737,7 @@ static func _set_shadows(n: Node, on: bool) -> void:
 		# terrain, roads) and it must win over everything below it. The size
 		# rule alone could not express it: a backdrop cluster is 500+ m across,
 		# so it clears any extent threshold and this walk switched 6,627 skyline
-		# surfaces back on — 26,508 draw calls — every time Shadows was toggled.
+		# surfaces back on â€” 26,508 draw calls â€” every time Shadows was toggled.
 		if n.has_meta("no_shadow"):
 			allow = false
 		elif on and n.has_meta("lod_sz"):
@@ -756,15 +760,15 @@ static func clear(root: Node) -> void:
 # ---------- local lighting zones: interiors, alleys, dark spots -------------
 #
 # HOW THE GAME DOES IT. A level's local presets are not alternative environments
-# — they are thin overrides carrying only the components they change, and on
+# â€” they are thin overrides carrying only the components they change, and on
 # every map read that is the EXPOSURE component alone. The game blends one in by
 # proximity: a proximity node drives a gate, the gate writes the VE reference
 # object's `Visibility`, which is a 0..1 blend weight (traced edge by edge in
-# bf6-research formats/VISUAL_ENVIRONMENT.md §1b).
+# bf6-research formats/VISUAL_ENVIRONMENT.md Â§1b).
 #
 # So an interior in BF6 is the camera's exposure changing, NOT the ambient being
 # lifted. The "Interior light" slider raises ambient, which is a different thing
-# that happens to look similar — it is kept as a comfort control, but this is the
+# that happens to look similar â€” it is kept as a comfort control, but this is the
 # game's own behaviour and it runs off the map's own numbers.
 #
 # A preset carries no volume, so the zone comes from where it was placed: the
@@ -856,7 +860,7 @@ static func _env_of(root: Node) -> Environment:
 # ---------- map lights (mined placements: user://mapcontext/<map>/lights.json) ----------
 # 3,716 real light entities on Aftermath (PbrSpot/Sphere/Rect/Tube, positions +
 # colour + intensity + radius + cones decoded from the level EBX). Too many to
-# run at once — the dock timer culls to the nearest `lights_range` metres.
+# run at once â€” the dock timer culls to the nearest `lights_range` metres.
 const LIGHTS_NODE := "_MAP_LIGHTS"
 
 # How long to work before handing a frame back. Was 30 ms, which sounded polite
@@ -866,7 +870,7 @@ const LIGHTS_NODE := "_MAP_LIGHTS"
 # two thirds of that stage was the yielding itself.
 #
 # 120 ms cuts the slice count fourfold and the waiting with it, and 120 ms is
-# still well inside what reads as a responsive editor — the props build has used
+# still well inside what reads as a responsive editor â€” the props build has used
 # a 40 ms budget against far heavier per-slice work all along.
 #
 # A static var rather than a const so a test can force the yielding path with a
@@ -901,8 +905,8 @@ static func set_map_lights(root: Node, on: bool, map: String,
 	holder.name = LIGHTS_NODE
 	root.add_child(holder)
 	holder.owner = null
-	# YIELDS. A map carries thousands of fixtures — Dumbo added 11,641 nodes in
-	# one go — and building them between two frames was the last freeze in a
+	# YIELDS. A map carries thousands of fixtures â€” Dumbo added 11,641 nodes in
+	# one go â€” and building them between two frames was the last freeze in a
 	# recorded cold load: 23.1 seconds with nothing drawn and no input taken.
 	# Nothing here is atomic, so hand the editor a frame every ~30 ms.
 	var n := 0
@@ -910,7 +914,7 @@ static func set_map_lights(root: Node, on: bool, map: String,
 	var all: Array = d.get("lights", [])
 	var seen := 0
 	# TIMED, because a recording showed this holding its progress bar for 65.5 s
-	# with not one second of it attributed to anything. It had no spans at all —
+	# with not one second of it attributed to anything. It had no spans at all â€”
 	# the phase table simply had a 65 s hole where the map lights were.
 	HighpolyProfiler.crumb("lights", "placing %d fixture(s) for %s" % [all.size(), map])
 	var _tl := Time.get_ticks_msec()
@@ -959,7 +963,7 @@ static func set_map_lights(root: Node, on: bool, map: String,
 		# raw Frostbite photometric intensity -> relative energy (empirical
 		# divisors from the mining report; PhotoMatch refines later). Cap at
 		# 2.2: a handful of outlier fixtures carry huge raw values the game's
-		# auto-exposure absorbs — uncapped they out-shone the sun.
+		# auto-exposure absorbs â€” uncapped they out-shone the sun.
 		var unit := int(L.get("unit", 0))
 		lt.light_energy = clampf(float(L.get("intensity", 1000.0))
 				/ (20000.0 if unit == 0 else 4000.0) * cmax, 0.02, 2.2)
@@ -991,7 +995,7 @@ static func set_map_lights(root: Node, on: bool, map: String,
 
 # dock-timer culling: only lights near the editor camera render.
 #
-# This runs on the panel's half-second timer and is O(EVERY light in the map) —
+# This runs on the panel's half-second timer and is O(EVERY light in the map) â€”
 # 11,640 of them on Dumbo. It used to run on every tick regardless of whether
 # anything had changed, so standing perfectly still cost ~11,640 distance tests
 # twice a second, forever, to arrive at the same answer each time. That is the
@@ -999,7 +1003,7 @@ static func set_map_lights(root: Node, on: bool, map: String,
 #
 # The lights already carry GPU distance fade (see set_map_lights); this pass is
 # the coarser one that keeps them out of the clustered-element budget entirely,
-# so it is worth keeping — it just is not worth REPEATING for a camera that has
+# so it is worth keeping â€” it just is not worth REPEATING for a camera that has
 # not moved.
 static var _last_cull_pos := Vector3(1e20, 1e20, 1e20)   # forces the first pass
 static var _cull_dirty := true
