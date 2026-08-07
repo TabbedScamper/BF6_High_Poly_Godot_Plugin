@@ -2925,6 +2925,46 @@ func _mapctx_changed() -> void:
 		mapctx_on.set_pressed_no_signal(false)
 		mapctx_objects.set_pressed_no_signal(false)
 		return
+	# ---- THE GAME FIRST, the download only as a fallback --------------------
+	#
+	# Everything the map context needs is in the player's own install:
+	# placements, geometry, textures, the skyline and the terrain, each verified
+	# against the pipeline it replaces. Reading from there means nothing is
+	# downloaded and no extracted EA assets are redistributed, which is the
+	# entire point of the reader.
+	#
+	# Cold this costs ~85 s (mount, 223k partition guids, the level walk), warm
+	# 1.3 s, all cached under the mounted TOCs' signature so a game patch
+	# invalidates it. It runs on a worker with the dock still live — see
+	# HighpolyGameSource.open_async.
+	if mapctx.game_source == null and HighpolyGameSource.available():
+		lbl.text = "Reading %s from your Battlefield 6 install…" % map
+		var gs = HighpolyGameSource.new()
+		var ok_g: bool = await gs.open_async(dock, map, "",
+			func(stage: String, done: int, total: int):
+				lbl.text = ("%s — %s %d%%" % [map, stage,
+					int(100.0 * done / maxf(1.0, float(total)))]) if total > 0 \
+					else ("%s — %s…" % [map, stage]))
+		if gen != _mapctx_gen:
+			return
+		if ok_g:
+			mapctx.game_source = gs
+		else:
+			# NOT fatal and NOT silent. A machine without BF6, or a map the
+			# mount cannot resolve, still has the download — but saying nothing
+			# would make "why did it download anyway" unanswerable.
+			HighpolyLog.warn("map context: could not read %s from the install "
+				% map + "(%s) — falling back to the download" % gs.error)
+
+	# Reading from the install: go straight to the build. download_map is
+	# idempotent but it is still a NETWORK call that tops up missing pieces, and
+	# calling it here would download exactly the data the reader just made
+	# unnecessary.
+	if mapctx.game_source != null and mapctx.game_source.level == map.to_lower():
+		lbl.text = "Building %s…" % map
+		await _apply_mapctx(r, on, objs, tex, gen)
+		return
+
 	if mapctx.has_data(map):
 		# already cached — download_map self-heals (ETag check) + tops up any
 		# missing pieces (idempotent, offline-fast when complete), then apply

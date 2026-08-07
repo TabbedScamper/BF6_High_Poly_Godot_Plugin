@@ -118,6 +118,29 @@ var src: BF6Source = null
 var types = null                       # bf6_types.gd reader
 var rows: Array = []                   # [{mesh, xf, src, kind, var}]
 var stats := {}
+
+# ---------------------------------------------------------------------------
+# ENTITIES THE CALLER WANTS, collected on the same pass.
+#
+# Lights, and anything else that is placed rather than drawn, live at leaves of
+# exactly this traversal — a light inherits the composed world transform of
+# whichever prefab or layer holds it, so mining it means walking the level. The
+# Python does that by SUBCLASSING the walker (lights_mine, occluders_mine,
+# water_mine and decals_mine all do), which works there and would be a poor fit
+# here: four subclasses means four walks, and one walk of mp_dumbo is 50 s.
+#
+# So the walk collects instead. `want_types` maps a type guid to a tag, and
+# every matching instance is recorded with its world transform and the fields in
+# `want_fields`. Nothing is collected unless a caller asks, so a plain placement
+# walk behaves exactly as it did.
+#
+# TYPE GUIDS COME IN PAIRS in the SDK tables — two spellings of the same type,
+# one of them byte-swapped in the first three groups. Register both; which one a
+# given EBX uses is not something to guess at.
+var want_types := {}                   # dashed type guid -> tag
+var want_fields: Array = []            # field name hashes to keep
+var ents: Array = []                   # [{tag, type, xf, f: {hash: value}}]
+var _want_hex := {}                    # type guid hex -> tag, resolved lazily
 var by_name := {}                      # lowercased asset name -> "<name>.ebx"
 var gi := {}                           # partition guid -> "<name>.ebx"
 
@@ -396,6 +419,20 @@ func _type_matters(dz, i: int) -> bool:
 	var hit = _type_matters_cache.get(k)
 	if hit != null:
 		return hit
+	# A WANTED TYPE ALWAYS MATTERS, checked before the field test rather than
+	# after. A PbrSpotLightEntityData declares Transform, Color and Intensity and
+	# not one field the traversal itself reads, so the field test correctly says
+	# "this instance cannot affect the walk" — and skipping it would drop every
+	# light on the map while the placements stayed perfect, which is the kind of
+	# failure that looks like the collector is broken.
+	if not want_types.is_empty():
+		var tag = _want_hex.get(k)
+		if tag == null:
+			tag = want_types.get(BF6Types.guid_str(tb), "")
+			_want_hex[k] = tag
+		if str(tag) != "":
+			_type_matters_cache[k] = true
+			return true
 	# Resolved ONCE per type across the whole map, not once per instance: there
 	# are a few thousand types against 268,587 instances.
 	var lay: Dictionary = types.layout_full(tb)
@@ -477,6 +514,49 @@ func walk(ref, parent: Array, guard: Dictionary, depth := 0) -> void:
 	_scope = prev_scope
 
 
+# The transform fields a collected entity might carry, tried in order.
+#
+# A light is a SpatialEntityData and its own placement is `Transform`
+# (0xD6351EDE), NOT the `BlueprintTransform` (0x7B554EF5) a prefab reference
+# uses. The Python miner reads BlueprintTransform, which a light does not have,
+# so every light there lands at its holder's origin — near enough to look right
+# on a map and wrong by a room's width in a building. Both are tried, and which
+# one fired is counted, so the difference is a measurement rather than a claim.
+var want_xf_fields: Array = [0xD6351EDE, F_BP_TRANSFORM]
+
+
+func _collect(tag: String, inst: Dictionary, parent: Array) -> void:
+	var world := parent
+	var which := "parent"
+	for h in want_xf_fields:
+		var lt = inst.get(int(h))
+		if is_lt(lt):
+			world = matmul(parent, lt_to_mat(lt))
+			which = "0x%08X" % int(h)
+			break
+	_bump("ent_xf_%s" % which)
+	var f := {}
+	for h in want_fields:
+		var v = inst.get(int(h))
+		if v != null:
+			# Vec3-shaped values are flattened here rather than at the consumer:
+			# the walk's cache is a store_var of this array, and a nested
+			# Dictionary of hash keys survives the round trip but reads as noise
+			# on the far side.
+			f[int(h)] = vec_of(v) if _is_vec(v) else v
+	# The scope is carried for the same reason a placement carries it: anything
+	# whose appearance comes from a ShaderBlockDepot — an environment decal
+	# volume resolves its texture through a state key — needs the depot of the
+	# subworld that mounted it, and only the walk knows which that was.
+	ents.append({"tag": tag, "type": str(inst.get("__type", "")),
+		"xf": world, "f": f, "scope": _scope})
+
+
+static func _is_vec(v) -> bool:
+	return v is Dictionary and (v as Dictionary).has(K_VEC_X) \
+		and (v as Dictionary).has(K_VEC_Y)
+
+
 func visit(inst: Dictionary, parent: Array, ref: String, guard: Dictionary,
 		depth: int) -> void:
 	# Destruction state branch: stop. Everything below is an alternate or an
@@ -485,6 +565,18 @@ func visit(inst: Dictionary, parent: Array, ref: String, guard: Dictionary,
 	if DESTRUCTION_BRANCH.has(str(inst.get("__type", ""))):
 		_bump("destruction_branch")
 		return
+
+	# A COLLECTED ENTITY. Recorded, then processed normally — a light is a leaf
+	# in practice but nothing here depends on that, and a type that both carries
+	# a wanted payload and holds children would otherwise lose the children.
+	#
+	# Placed AFTER the destruction check on purpose: a light that only exists in
+	# a destroyed state is not lighting the intact map. The count is reported so
+	# that choice is visible rather than assumed.
+	if not want_types.is_empty():
+		var tag = want_types.get(str(inst.get("__type", "")))
+		if tag != null:
+			_collect(str(tag), inst, parent)
 
 	# A StaticModelGroup anywhere — including directly in the level root, which
 	# is where backdrop and vista instancing lives.
@@ -576,7 +668,10 @@ func visit(inst: Dictionary, parent: Array, ref: String, guard: Dictionary,
 # 2: rows carry `scope`, the depot scope inherited down the walk. A v1 cache has
 # no such field, and serving one would silently give every row an empty scope —
 # which fails open into "no textures" rather than into an error.
-const VERSION := 2
+# 3: the walk can carry collected entities (lights and anything else placed
+#    rather than drawn) beside the rows. A v2 cache has none, and serving one
+#    would give a map its props and no lights with nothing to say so.
+const VERSION := 3
 
 
 func cache_path(level_rel: String) -> String:
@@ -585,6 +680,22 @@ func cache_path(level_rel: String) -> String:
 		return ""
 	var leaf := level_rel.replace("\\", "/").rstrip("/").get_file()
 	return "user://bf6_walk_%s_v%d_%s.idx" % [leaf, VERSION, sig]
+
+
+# WHICH COLLECTORS THIS CACHE WAS BUILT WITH. Two callers can want the same
+# level and different entities — a bare placement walk asks for none — and a
+# cache written by the first would silently satisfy the second. Cheaper than a
+# cache file per collector set, and it fails towards re-walking rather than
+# towards missing data.
+func _want_sig() -> String:
+	if want_types.is_empty():
+		return ""
+	var tags := {}
+	for k in want_types:
+		tags[str(want_types[k])] = true
+	var lst: Array = tags.keys()
+	lst.sort()
+	return ",".join(PackedStringArray(lst))
 
 
 func load_cached(level_rel: String) -> bool:
@@ -601,7 +712,11 @@ func load_cached(level_rel: String) -> bool:
 	var r = (d as Dictionary)["rows"]
 	if not (r is Array) or (r as Array).is_empty():
 		return false            # an empty cache is indistinguishable from a failed walk
+	if str((d as Dictionary).get("want", "")) != _want_sig():
+		return false            # built for a different set of collectors
 	rows = r
+	var e = (d as Dictionary).get("ents", [])
+	ents = e if e is Array else []
 	stats = (d as Dictionary).get("stats", {})
 	stats["from_cache"] = true
 	return true
@@ -614,7 +729,8 @@ func save_cache(level_rel: String) -> void:
 	var f := FileAccess.open(p, FileAccess.WRITE)
 	if f == null:
 		return                  # a cache that cannot be written is not an error
-	f.store_var({"rows": rows, "stats": stats})
+	f.store_var({"rows": rows, "ents": ents, "stats": stats,
+		"want": _want_sig()})
 	f.close()
 
 
@@ -632,6 +748,7 @@ func run_cached(level_rel: String) -> bool:
 
 func run(level_rel: String) -> bool:
 	rows.clear()
+	ents.clear()
 	stats.clear()
 	var rel := level_rel.replace("\\", "/").rstrip("/")
 	var leaf := rel.get_file()
@@ -660,6 +777,7 @@ func run(level_rel: String) -> bool:
 	stats["root"] = start
 	walk(start, IDENT, {}, 0)
 	stats["rows"] = rows.size()
+	stats["ents"] = ents.size()
 	stats["ms_read"] = int(t_read / 1000)
 	stats["ms_parse"] = int(t_parse / 1000)
 	stats["ms_decode"] = int(t_decode / 1000)

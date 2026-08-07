@@ -134,6 +134,13 @@ func open_map(map: String, game_dir := "", progress := Callable()) -> bool:
 		return false
 
 	walk = BF6Walk.new(src, types)
+	# LIGHTS COME OUT OF THE SAME PASS as the placements. They are placed by
+	# exactly this traversal — a fixture inherits the composed transform of
+	# whichever prefab holds it — and walking a second time to fetch them would
+	# cost another 50 s to learn something the first walk went straight past.
+	for g in LIGHT_TYPES:
+		walk.want_types[str(g)] = "light"
+	walk.want_fields = LIGHT_FIELDS
 	walk.build_catalog(func(done, total, found):
 		if progress.is_valid():
 			progress.call("indexing partitions", done, total))
@@ -159,6 +166,36 @@ func open_map(map: String, game_dir := "", progress := Callable()) -> bool:
 	_say("game source: %s — %d placements%s" % [map, walk.rows.size(),
 		"  (cached)" if walk.stats.get("from_cache", false) else ""])
 	return true
+
+
+# OPENED ON A WORKER, because a cold open is ~85 s.
+#
+# Mounting the install, indexing 223k partition guids and walking the level are
+# all pure file and CPU work — no Node, no ImageTexture, no RenderingServer —
+# which is exactly the kind that is safe off the main thread. Running it inline
+# would freeze the editor for a minute and a half with a dead UI, and the first
+# thing anyone would do is kill it.
+#
+# The caller pumps frames while it runs, so the dock keeps drawing and its
+# status label keeps updating.
+var _open_result := false
+var _open_done := false
+
+
+func open_async(host: Node, map: String, game_dir := "",
+		progress := Callable()) -> bool:
+	_open_done = false
+	_open_result = false
+	var task := func():
+		_open_result = open_map(map, game_dir, progress)
+		_open_done = true
+	var tid := WorkerThreadPool.add_task(task, true, "bf6 game source open")
+	while not WorkerThreadPool.is_task_completed(tid):
+		if host == null or not is_instance_valid(host) or host.get_tree() == null:
+			break
+		await host.get_tree().process_frame
+	WorkerThreadPool.wait_for_task_completion(tid)
+	return _open_result and _open_done
 
 
 # ---------------------------------------------------------------------------
@@ -249,6 +286,20 @@ func map_data(cache_dir := "") -> Dictionary:
 		var hm := terrain(cache_dir)
 		if not hm.is_empty():
 			out["heightmap"] = hm
+		# ORDER MATTERS: the roads are draped on the heightfield terrain() just
+		# composited, so they cannot be built before it.
+		var rd := roads()
+		if rd != null:
+			out["roads"] = rd
+		# Written as the files the light and FX layers already read, rather than
+		# handed over in memory. Those two layers are toggled long after the build
+		# — from the dock, on demand — so the data has to outlive this call, and a
+		# file in the map's own cache is what the rest of the plugin means by that.
+		out["lights"] = lights(cache_dir)
+		out["fx"] = fx(cache_dir)
+	var w := water()
+	if not w.is_empty():
+		out["water"] = w
 	return out
 
 
@@ -307,6 +358,13 @@ func terrain(cache_dir: String) -> Dictionary:
 		return {}
 	f.store_buffer(g["data"])
 	f.close()
+	# KEPT IN MEMORY as well as written, because the roads need it. Decal
+	# vertices carry world X and Z and no Y at all — they are draped on the
+	# terrain — so building them means sampling this exact grid with this exact
+	# formula. Re-reading the file we just wrote would work and would also be
+	# the place the two copies quietly disagree.
+	_hm = {"data": g["data"], "res": int(g["size"]), "min": lo.x,
+		"max": hi.x, "base": 0.0, "scale": float(g["world_size_y"])}
 	_say("game source: terrain %dx%d from %d nodes, y %.0f..%.0f m"
 		% [g["size"], g["size"], g["nodes"], lo.y, hi.y])
 	return {
@@ -317,6 +375,521 @@ func terrain(cache_dir: String) -> Dictionary:
 		"base": 0.0,
 		"scale": float(g["world_size_y"]),
 	}
+
+
+# ---------------------------------------------------------------------------
+# ROADS AND STREET MARKINGS, out of the level's TerrainDecals resource.
+#
+# The spline control points are stripped from the runtime EBX, so this compiled
+# geometry is the only source for the street network — without it a rebuilt map
+# is bare ground where the roads should be. bf6_decals.gd reads the container;
+# this drapes it and dresses it.
+#
+# THE DRAPE. Decal vertices carry world X and Z and NO Y: the engine lays them on
+# the heightfield and draws them blended with depth-write off. We cannot turn
+# depth writes off on a normal mesh, so they are lifted instead. 0.15 m is
+# measured, not chosen for comfort: at 0.06 the median vertex sat 0.07 m proud
+# and 5% still dipped up to 0.12 m UNDER the ground, because the rendered terrain
+# is flat-shaded triangles between grid points while the drape samples
+# bilinearly — the two disagree mid-triangle, on slopes.
+const ROAD_Y_BIAS := 0.15
+
+# COVERAGE IS A SECOND TEXTURE, not an alpha channel, so this cannot be a
+# StandardMaterial3D. The markings — lane lines, crosswalks, arrows — live ONLY
+# in the `op` slot; without it they paint as solid blocks over the road surface.
+#
+# The alternative was compositing op into cv's alpha at load. That means
+# decompressing two BC7 images, resizing one and writing a million bytes per
+# material group in GDScript, for a result a sampler gives away free.
+const ROAD_SHADER := """
+shader_type spatial;
+render_mode blend_mix, depth_draw_never, cull_disabled, diffuse_burley;
+uniform sampler2D cv : source_color, filter_linear_mipmap, repeat_enable;
+uniform sampler2D op : filter_linear_mipmap, repeat_enable;
+uniform bool has_cv = false;
+uniform bool has_op = false;
+uniform vec4 flat_col : source_color = vec4(0.35, 0.35, 0.35, 1.0);
+void fragment() {
+	vec4 c = has_cv ? texture(cv, UV) : flat_col;
+	ALBEDO = c.rgb;
+	ALPHA = has_op ? texture(op, UV).r : c.a;
+	ROUGHNESS = 0.85;
+	SPECULAR = 0.2;
+}
+"""
+
+var _road_shader: Shader = null
+var _hm := {}                          # the composited heightfield, for the drape
+var road_stats := {}
+
+
+# One ArrayMesh, one surface per material group, or null.
+#
+# GROUPED BY (basecolor, coverage) rather than per record: 433 records on Dumbo
+# resolve to a few dozen distinct material pairs, and a surface per record would
+# be 433 draw calls for a road network.
+func roads() -> Mesh:
+	road_stats = {}
+	if src == null or _hm.is_empty():
+		return null
+	var name := BF6Decals.find_res(src, level)
+	if name == "":
+		return null
+	var raw := src.get_res(name)
+	if raw.is_empty():
+		return null
+	var td := BF6Decals.new()
+	if not td.parse(raw):
+		_say("game source: roads — %s" % td.error)
+		return null
+	road_stats = td.stats()
+
+	var groups := {}
+	for r in td.records:
+		var rec: Dictionary = r
+		var pr: Dictionary = rec["props"]
+		var cv := _prop_guid(pr, BF6Decals.SLOT_CV)
+		var op := _prop_guid(pr, BF6Decals.SLOT_OP)
+		var key := "%s|%s" % [cv, op]
+		if not groups.has(key):
+			groups[key] = []
+		(groups[key] as Array).append(rec)
+
+	var am := ArrayMesh.new()
+	var tris := 0
+	for key in groups:
+		var recs: Array = groups[key]
+		var verts := PackedVector3Array()
+		var uvs := PackedVector2Array()
+		for r in recs:
+			var rec: Dictionary = r
+			var vs := td.vertices(rec)
+			var n := vs.size() / 4
+			# A record whose vertex count disagrees with its triangle count means
+			# the VB is being read at the wrong place, and a wrong VB still
+			# produces plausible floats. Dropped rather than drawn as confetti.
+			if n != int(rec["tri_count"]) * 3:
+				continue
+			# STAMP decals (crosswalks, manholes, arrows) map the unit square as
+			# (v1, v0). Long tiled fills overflow half precision along the ribbon,
+			# so those are tiled from world position at Tiling0 m/tile instead —
+			# using their stored UVs draws a smear.
+			var stamp := true
+			for i in range(n):
+				if absf(vs[i * 4 + 2]) > 1.05 or absf(vs[i * 4 + 3]) > 1.05:
+					stamp = false
+					break
+			var t0 := float(rec["tiling0"])
+			if absf(t0) < 1e-3:
+				t0 = 8.0
+			for i in range(n):
+				var x := vs[i * 4]
+				var z := vs[i * 4 + 1]
+				verts.push_back(Vector3(x, _height_at(x, z) + ROAD_Y_BIAS, z))
+				if stamp:
+					uvs.push_back(Vector2(vs[i * 4 + 3], vs[i * 4 + 2]))
+				else:
+					uvs.push_back(Vector2(x / t0, z / t0))
+		if verts.is_empty():
+			continue
+		var idx := PackedInt32Array()
+		idx.resize(verts.size())
+		for i in range(verts.size()):
+			idx[i] = i
+		var arr := []
+		arr.resize(Mesh.ARRAY_MAX)
+		arr[Mesh.ARRAY_VERTEX] = verts
+		arr[Mesh.ARRAY_TEX_UV] = uvs
+		arr[Mesh.ARRAY_INDEX] = idx
+		am.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr)
+		am.surface_set_material(am.get_surface_count() - 1,
+			_road_material(str(key)))
+		tris += verts.size() / 3
+	road_stats["groups"] = am.get_surface_count()
+	road_stats["drawn_triangles"] = tris
+	if am.get_surface_count() == 0:
+		return null
+	_say("game source: roads — %d records in %d material group(s), %d triangles%s"
+		% [td.records.size(), am.get_surface_count(), tris,
+		   "" if int(td.truncated_at) < 0
+		   else "  (TRUNCATED at record %d — partial)" % td.truncated_at])
+	return am
+
+
+func _prop_guid(props: Dictionary, slot: int) -> String:
+	var p = props.get(slot)
+	if not (p is Array) or str((p as Array)[0]) != "tex":
+		return ""
+	return BF6Decals.guid_str((p as Array)[1])
+
+
+func _road_material(key: String) -> Material:
+	if _road_shader == null:
+		_road_shader = Shader.new()
+		_road_shader.code = ROAD_SHADER
+	var parts := key.split("|")
+	var mat := ShaderMaterial.new()
+	mat.shader = _road_shader
+	var cv = _texture_for(parts[0] if parts.size() > 0 else "")
+	var op = _texture_for(parts[1] if parts.size() > 1 else "")
+	if cv != null:
+		mat.set_shader_parameter("cv", cv)
+		mat.set_shader_parameter("has_cv", true)
+	if op != null:
+		mat.set_shader_parameter("op", op)
+		mat.set_shader_parameter("has_op", true)
+	# A record with no properties is POSITIONAL rather than broken: its AssetSlot
+	# is a terrain layer index and the surface is that layer's own material. It is
+	# real road either way, so it gets a neutral grey and is drawn.
+	return mat
+
+
+# Bilinear world height, the same formula the terrain build uses.
+func _height_at(x: float, z: float) -> float:
+	var res: int = int(_hm["res"])
+	var wmin: float = float(_hm["min"])
+	var span: float = float(_hm["max"]) - wmin
+	if span <= 0.0 or res < 2:
+		return 0.0
+	var d: PackedByteArray = _hm["data"]
+	var fx: float = clampf((x - wmin) / span * (res - 1), 0.0, res - 1.001)
+	var fz: float = clampf((z - wmin) / span * (res - 1), 0.0, res - 1.001)
+	var x0 := int(fx)
+	var z0 := int(fz)
+	var tx := fx - x0
+	var tz := fz - z0
+	var h00 := float(d.decode_u16((z0 * res + x0) * 2))
+	var h10 := float(d.decode_u16((z0 * res + x0 + 1) * 2))
+	var h01 := float(d.decode_u16(((z0 + 1) * res + x0) * 2))
+	var h11 := float(d.decode_u16(((z0 + 1) * res + x0 + 1) * 2))
+	var hv := h00 * (1.0 - tx) * (1.0 - tz) + h10 * tx * (1.0 - tz) \
+		+ h01 * (1.0 - tx) * tz + h11 * tx * tz
+	return float(_hm["base"]) + hv * float(_hm["scale"]) / 65535.0
+
+
+# ---------------------------------------------------------------------------
+# THE WATER SURFACE, from the level's default world part.
+#
+# A WaterSurfaceEntityData instance whose SpatialEntityData.Transform is a unit
+# quad scaled to the surface: right row at +0x20 carries scaleX, forward at
+# +0x40 scaleZ, translation at +0x50 is (tx, ty, tz) with ty the water height.
+# TERRAIN.md §11, verified across all 11 water surfaces in the game.
+#
+# READ FROM RAW OFFSETS, deliberately. The type has no fields in
+# SharedTypeDescriptors, so the deserializer returns nothing for it — this is
+# one of the few places where reaching into the instance bytes is correct
+# rather than lazy.
+#
+# TWO TRAPS, both of which produce plausible water in the wrong place:
+#   * TileOffset at +0x90 is (2048, 0.5, 2048) and looks like extents+height.
+#     Taking its Y puts the sea at y = 0.5 instead of Dumbo's 49.8.
+#   * both documented readings give a HALF extent, and PlaneMesh.size is a FULL
+#     width — so the scale value goes in as-is. Halving it draws the water at
+#     half its width and a quarter of its area, which is invisible from the
+#     middle of a map.
+const WATER_TYPE := "ae0b69fc-2207-d874-8230-fcd467a592cf"
+
+
+func water() -> Array:
+	if src == null or types == null:
+		return []
+	var out: Array = []
+	var name := ""
+	for cand in ["%s/default" % _level_dir(), "%s/default" % level]:
+		if src.ebx.has(cand):
+			name = cand
+			break
+	if name == "":
+		return []
+	var raw := src.get_ebx(name)
+	if raw.is_empty():
+		return []
+	var e := BF6Ebx.new(types, walk.gi if walk != null else {})
+	if not e.parse(raw):
+		return []
+	for i in range(e.instance_offsets.size()):
+		if e.instance_type(i) != WATER_TYPE:
+			continue
+		var base: int = e.payload + int(e.instance_offsets[i])
+		if base + 0x60 > e.data.size():
+			continue
+		var sx := e.data.decode_float(base + 0x20)
+		var sz := e.data.decode_float(base + 0x48)
+		var tx := e.data.decode_float(base + 0x50)
+		var ty := e.data.decode_float(base + 0x54)
+		var tz := e.data.decode_float(base + 0x58)
+		if absf(sx) < 1.0 or absf(sz) < 1.0:
+			continue
+		out.append({"height": ty, "center": [tx, tz],
+			"size": [absf(sx), absf(sz)]})
+	if not out.is_empty():
+		_say("game source: water — %d surface(s), first at y %.1f, %.0f x %.0f m"
+			% [out.size(), float(out[0]["height"]),
+			   float((out[0]["size"] as Array)[0]),
+			   float((out[0]["size"] as Array)[1])])
+	return out
+
+
+# ---------------------------------------------------------------------------
+# THE MAP'S LIGHTS.
+#
+# 11,641 fixtures on Dumbo, collected on the placement walk rather than by a
+# second pass: a light inherits the composed world transform of whichever prefab
+# holds it, so mining it IS the walk.
+#
+# The type guids and field hashes are baked in as constants because they have to
+# be. The exe's reflection tables carry name HASHES and no names, and the hash is
+# not one of the reversible ones — djb2 and fnv in both directions fail on every
+# known pair — so a name can only be looked up in a table, never computed. These
+# were resolved once from bf6-research's sdk_type_guids.tsv and
+# sdk_field_names.tsv, the same way every other constant in this reader was.
+#
+# GUIDS COME IN PAIRS: the SDK table lists two spellings of most types, one with
+# the first three groups byte-swapped. Both are registered because which one a
+# given partition uses is not something worth guessing at, and the cost of an
+# unused key in a dictionary is nothing.
+const LIGHT_TYPES := {
+	"02addd9b-6abc-a282-5950-a6f9bc3f87d9": "LocalLight",
+	"a2826abc-5059-f9a6-bc3f-87d98e7e8131": "LocalLight",
+	"173542d2-6bcc-b1b7-f7dc-9a9f9bc17467": "PbrAnalyticLight",
+	"b1b76bcc-dcf7-9f9a-9bc1-746783feaff0": "PbrAnalyticLight",
+	"f9310135-b610-00d8-6a82-067a0e8e36f2": "PbrRectangularLight",
+	"00d8b610-826a-7a06-0e8e-36f289697545": "PbrRectangularLight",
+	"d0528228-e56b-10ab-434c-834bb3d8a821": "PbrSphereLight",
+	"10abe56b-4c43-4b83-b3d8-a82181ba3193": "PbrSphereLight",
+	"00215d53-9aaa-8dc4-b3de-cdc707ebb39f": "PbrSpotLight",
+	"8dc49aaa-deb3-c7cd-07eb-b39fcbe829d8": "PbrSpotLight",
+	"3769daef-26a1-5435-a6a2-2041f97521c8": "PbrTubeLight",
+	"543526a1-a2a6-4120-f975-21c84b940f78": "PbrTubeLight",
+	"9785f711-e676-ea9a-9fd8-00146ed5e43c": "PointLight",
+	"f2841e1a-79ec-eae8-c5d8-46998d444f0d": "SpotLight",
+}
+
+const F_COLOR := 0x33ED1C78
+const F_INTENSITY := 0x13763A5B
+const F_ATTEN_RADIUS := 0xC21D1F46
+const F_OUTER_ANGLE := 0x56FC2180
+const F_LIGHT_UNIT := 0xC07607F5
+const F_RADIUS_A := 0x48DAD7C1
+const F_RADIUS_B := 0x5CDA5A37
+const F_VISIBLE := 0x2A7B2AF9
+# Enabled has SIX distinct hash spellings in the SDK table — the name is reused
+# across unrelated types and each carries its own hash. All are read and the
+# first present wins; picking one and hoping would drop or keep the wrong set.
+const F_ENABLED: Array = [0x1E84390E, 0x54C21171, 0x77933D85, 0x89872D33,
+	0xCEFB1F0D, 0xF97D7309]
+
+const LIGHT_FIELDS: Array = [F_COLOR, F_INTENSITY, F_ATTEN_RADIUS,
+	F_OUTER_ANGLE, F_LIGHT_UNIT, F_RADIUS_A, F_RADIUS_B, F_VISIBLE,
+	0x1E84390E, 0x54C21171, 0x77933D85, 0x89872D33, 0xCEFB1F0D, 0xF97D7309]
+
+
+# The schema highpoly_lighting.set_map_lights already reads, written into the
+# map cache. Deliberately the same FILE as the download path used: the light
+# builder is 150 lines of Godot-side work — culling, distance fade, the spot
+# cone convention — and a second entry point into it is how the two drift until
+# only one is right.
+func lights(cache_dir: String) -> int:
+	if walk == null or walk.ents.is_empty():
+		return 0
+	var out: Array = []
+	var spots := 0
+	for e in walk.ents:
+		var ent: Dictionary = e
+		if str(ent.get("tag", "")) != "light":
+			continue
+		var tname := str(LIGHT_TYPES.get(str(ent.get("type", "")), ""))
+		if tname == "":
+			continue
+		var f: Dictionary = ent.get("f", {})
+		# An explicitly disabled fixture is off in the game and stays off here.
+		# Absent means enabled: most lights declare none of the six spellings.
+		var off := false
+		for h in F_ENABLED:
+			if f.has(h) and f[h] == false:
+				off = true
+				break
+		if off or f.get(F_VISIBLE) == false:
+			continue
+		var xf: Array = ent["xf"]
+		var pos: Vector3 = xf[3]
+		var col: Vector3 = f.get(F_COLOR, Vector3.ONE) if f.get(F_COLOR) is Vector3 \
+			else Vector3.ONE
+		var rad = f.get(F_ATTEN_RADIUS)
+		if not (rad is float or rad is int):
+			rad = f.get(F_RADIUS_A, f.get(F_RADIUS_B, 10.0))
+		var spot := tname.contains("Spot")
+		var rec := {
+			"pos": [pos.x, pos.y, pos.z],
+			"spot": spot,
+			"radius": float(rad) if (rad is float or rad is int) else 10.0,
+			"color": [col.x, col.y, col.z],
+			"intensity": float(f.get(F_INTENSITY, 1000.0)),
+			"unit": int(f.get(F_LIGHT_UNIT, 0)),
+			"layer": "base",
+			"type": tname,
+		}
+		if spot:
+			spots += 1
+			rec["angle"] = float(f.get(F_OUTER_ANGLE, 60.0))
+			# Basis row 2 is FORWARD (right/up/forward/translation at 0..3).
+			var d: Vector3 = xf[2]
+			if d.length() > 1e-4:
+				rec["dir"] = [d.x, d.y, d.z]
+		out.append(rec)
+	if out.is_empty():
+		return 0
+	DirAccess.make_dir_recursive_absolute(cache_dir)
+	var f2 := FileAccess.open("%s/lights.json" % cache_dir, FileAccess.WRITE)
+	if f2 == null:
+		_say("game source: lights — cannot write to %s" % cache_dir)
+		return 0
+	f2.store_string(JSON.stringify({"lights": out}))
+	f2.close()
+	_say("game source: %d lights (%d spot, %d omni)"
+		% [out.size(), spots, out.size() - spots])
+	return out.size()
+
+
+# ---------------------------------------------------------------------------
+# THE MAP'S FX SPAWN POINTS.
+#
+# Already in the walk: every fx_* reference is visited and its world transform
+# composed, and the rows that resolve to no mesh are exactly these. So this
+# reads the rows rather than walking again.
+#
+# WHAT IS SHIPPED, AND WHY NOT ALL OF IT. On Dumbo 14,163 rows are fx, and
+# ~94% of them are destruction and impact effects — fx_propdest_glass_tiny on
+# every window, fx_gendest_metal on every railing. Those are EVENT-TRIGGERED:
+# they fire when the prop breaks, and the plugin draws a record as a
+# continuously emitting particle system. Shipping them buries the map under
+# permanent shattering glass and burns the whole emitter budget on effects that
+# are never seen in play. Ambient FX is what reads as the map.
+const FX_TRIGGERED: Array = ["dest", "debris", "breakpoint", "impact", "bullet",
+	"_hit", "explosion", "detach", "burst", "tracer", "muzzle", "casing"]
+
+# Class drives the plugin's fallback look and its draw distance, so it only has
+# to be right about the KIND. Order matters: "smokey_steam" is smoke before it
+# is anything else.
+const FX_CLASSES: Array = [
+	["electric", ["electric", "spark", "arc_", "lightning"]],
+	["fire", ["fire", "flame", "burn", "ember", "torch"]],
+	["smoke", ["smoke", "steam", "fume", "exhaust"]],
+	["dust", ["dust", "sand", "ash", "debris", "trash", "leaf", "leaves",
+		"paper", "pollen", "snow", "mist", "fog", "haze"]],
+]
+
+
+static func _fx_class(n: String) -> String:
+	for c in FX_CLASSES:
+		for tok in (c as Array)[1]:
+			if n.contains(str(tok)):
+				return str((c as Array)[0])
+	return "other"
+
+
+func fx(cache_dir: String, keep_triggered := false) -> int:
+	if walk == null:
+		return 0
+	var out: Array = []
+	var triggered := 0
+	var joined := 0
+	var graph_cache := {}
+	for r in walk.rows:
+		var row: Dictionary = r
+		var path := str(row["mesh"])
+		var leaf := path.get_file().to_lower()
+		if leaf.ends_with(".ebx"):
+			leaf = leaf.substr(0, leaf.length() - 4)
+		if not leaf.begins_with("fx_"):
+			continue
+		var trig := false
+		for tok in FX_TRIGGERED:
+			if leaf.contains(str(tok)):
+				trig = true
+				break
+		if trig:
+			triggered += 1
+			if not keep_triggered:
+				continue
+		var xf = row["xf"]
+		if not (xf is Array) or (xf as Array).size() < 4:
+			continue
+		var o: Vector3 = (xf as Array)[3]
+		var fwd: Vector3 = (xf as Array)[2]
+		var yaw := 0.0
+		if absf(fwd.x) > 1e-6 or absf(fwd.z) > 1e-6:
+			yaw = atan2(fwd.x, fwd.z)
+		# THE EMITTER GRAPH, mined rather than shipped. The plugin's fx_params
+		# table is keyed by eg_* graph, and an fx_ effect COMPOSES one or more of
+		# them — the pipeline kept that mapping in a 23 MB fx_effects.json. It
+		# does not need to: an fx partition's imports name the graphs directly,
+		# and there are a few hundred distinct effects on a map against tens of
+		# thousands of placements, so this is a few hundred header reads.
+		var graph = graph_cache.get(leaf)
+		if graph == null:
+			graph = _fx_graph(path)
+			graph_cache[leaf] = graph
+		if str(graph) != "":
+			joined += 1
+		out.append({
+			"pos": [o.x, o.y, o.z],
+			"yaw": yaw,
+			"class": _fx_class(leaf),
+			"effect": str(graph) if str(graph) != "" else leaf.to_upper(),
+			"source_class": "base",
+			"name": leaf,
+		})
+	if out.is_empty():
+		return 0
+	DirAccess.make_dir_recursive_absolute(cache_dir)
+	var f := FileAccess.open("%s/fx.json" % cache_dir, FileAccess.WRITE)
+	if f == null:
+		_say("game source: fx — cannot write to %s" % cache_dir)
+		return 0
+	f.store_string(JSON.stringify({"fx": out, "_map": level,
+		"_triggered_excluded": 0 if keep_triggered else triggered}))
+	f.close()
+	_say("game source: %d fx points (%d event-triggered excluded), "
+		% [out.size(), 0 if keep_triggered else triggered]
+		+ "%d joined an emitter graph" % joined)
+	return out.size()
+
+
+# The first eg_* partition an fx effect imports, or "".
+func _fx_graph(path: String) -> String:
+	var n := path.to_lower()
+	if n.ends_with(".ebx"):
+		n = n.substr(0, n.length() - 4)
+	var raw := src.get_ebx(n)
+	if raw.is_empty():
+		return ""
+	var e := BF6Ebx.new(types, walk.gi)
+	# The EFIX tables alone carry the imports, and parse() reads exactly those —
+	# no instance is decoded here, which is why a few hundred of these is cheap.
+	if not e.parse(raw):
+		return ""
+	for imp in e.imports:
+		var target = walk.gi.get(str((imp as Dictionary)["partition"]))
+		if target == null:
+			continue
+		var tl := str(target).get_file().to_lower()
+		if tl.ends_with(".ebx"):
+			tl = tl.substr(0, tl.length() - 4)
+		if tl.begins_with("eg_"):
+			return tl.to_upper()
+	return ""
+
+
+# The level's asset directory, e.g. game/glaciermp/levels/mp_dumbo, taken from
+# the walk's resolved root rather than reconstructed from a studio name.
+func _level_dir() -> String:
+	var root := str(walk.stats.get("root", "")) if walk != null else ""
+	if root == "":
+		return ""
+	if root.to_lower().ends_with(".ebx"):
+		root = root.substr(0, root.length() - 4)
+	return root.get_base_dir()
 
 
 # blueprint path -> res name, "" when the mount has no geometry for it.

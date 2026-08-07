@@ -1199,7 +1199,10 @@ func _load_data(map: String) -> bool:
 	# The game source carries its own placements, in this exact shape, so the
 	# whole build path below is unchanged — see highpoly_gamesource.map_data().
 	if game_source != null and game_source.level == map.to_lower():
-		_data = game_source.map_data()
+		# The cache directory is passed because the terrain builder takes a
+		# FILE: the heightfield is decoded from the install and written there.
+		# That is a file derived from the player's own game, not a download.
+		_data = game_source.map_data("%s/%s" % [CACHE, map])
 		_map = map
 		_world_min = float((_data["world"] as Dictionary).get("min", -2048))
 		_cell_size = float(cell_override) if cell_override > 0 else 512.0
@@ -3611,8 +3614,22 @@ func apply(root: Node, enabled: bool, show_objects: bool, tex = true,
 	# follow Extended Terrain rather than getting a switch of their own: without
 	# them the map is bare dirt where the street network should be.
 	if enabled:
+		# FROM THE INSTALL when the game source is live: same records, same
+		# drape, same Y bias, read out of the player's own TerrainDecals resource
+		# instead of arriving pre-baked in a GLB. Checked BEFORE the file so a
+		# stale roads.glb left behind in a cache by an older version cannot win
+		# over the live read.
+		var rmesh = _data.get("roads") if _data is Dictionary else null
+		if rmesh is Mesh:
+			var rmi := MeshInstance3D.new()
+			rmi.name = "Roads"
+			rmi.mesh = rmesh as Mesh
+			rmi.layers = EXT_TERRAIN_LAYER      # keep the maptile decal off them
+			mark_never_casts(rmi)
+			ctx.add_child(rmi)
+			rmi.owner = null
 		var rp := "%s/roads/roads.glb" % dir
-		if FileAccess.file_exists(rp):
+		if rmesh == null and FileAccess.file_exists(rp):
 			var rn := _load_external_glb(rp)   # live root, adopted into the tree
 			if rn != null:
 				rn.name = "Roads"
