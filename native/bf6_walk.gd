@@ -525,6 +525,72 @@ func visit(inst: Dictionary, parent: Array, ref: String, guard: Dictionary,
 # `level_rel` is the level's asset path, e.g. "game/<studio>/levels/mp_dumbo".
 # Resolution tries the full path then the bare leaf, the same two-step
 # resolve_name does, because a mount catalogues both.
+# ---------------------------------------------------------------------------
+# THE RESULT, CACHED. This is what makes the reader usable rather than merely
+# correct.
+#
+# Cold, from nothing but the install, a Dumbo map costs 88 s: 16 s mounting,
+# 19 s indexing partition guids, 53 s walking. The first two already cache; this
+# is the third and largest, and without it every scene open pays the walk again.
+#
+# Keyed on the TOC signature, so a game patch invalidates it in step with the
+# other two, AND on VERSION, because a change to the traversal changes the rows
+# it produces — a cache surviving that would serve yesterday's map with today's
+# code, which is the worst of both.
+const VERSION := 1
+
+
+func cache_path(level_rel: String) -> String:
+	var sig := src.signature() if src != null else ""
+	if sig == "":
+		return ""
+	var leaf := level_rel.replace("\\", "/").rstrip("/").get_file()
+	return "user://bf6_walk_%s_v%d_%s.idx" % [leaf, VERSION, sig]
+
+
+func load_cached(level_rel: String) -> bool:
+	var p := cache_path(level_rel)
+	if p == "" or not FileAccess.file_exists(p):
+		return false
+	var f := FileAccess.open(p, FileAccess.READ)
+	if f == null:
+		return false
+	var d = f.get_var()
+	f.close()
+	if typeof(d) != TYPE_DICTIONARY or not (d as Dictionary).has("rows"):
+		return false
+	var r = (d as Dictionary)["rows"]
+	if not (r is Array) or (r as Array).is_empty():
+		return false            # an empty cache is indistinguishable from a failed walk
+	rows = r
+	stats = (d as Dictionary).get("stats", {})
+	stats["from_cache"] = true
+	return true
+
+
+func save_cache(level_rel: String) -> void:
+	var p := cache_path(level_rel)
+	if p == "" or rows.is_empty():
+		return
+	var f := FileAccess.open(p, FileAccess.WRITE)
+	if f == null:
+		return                  # a cache that cannot be written is not an error
+	f.store_var({"rows": rows, "stats": stats})
+	f.close()
+
+
+# Cache, or walk and cache. The catalogue still has to be built either way —
+# resolve_name and the partition index are wanted by everything downstream, and
+# both are cheap once warm.
+func run_cached(level_rel: String) -> bool:
+	if load_cached(level_rel):
+		return true
+	if not run(level_rel):
+		return false
+	save_cache(level_rel)
+	return true
+
+
 func run(level_rel: String) -> bool:
 	rows.clear()
 	stats.clear()

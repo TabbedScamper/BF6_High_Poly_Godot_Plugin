@@ -64,17 +64,19 @@ var _inst_type := {}                 # instance index -> type guid bytes
 var _lay_cache := {}
 
 
-# `layout_cache` is accepted from the caller so it can OUTLIVE one partition.
+# `layout_cache` lets the caller share one layout cache across partitions.
 #
-# Type layouts are global — a type has the same fields wherever it appears — but
-# this cache used to be per-EBX, so a map that opens 11,748 partitions resolved
-# and re-copied the same layouts once per partition. layout_full() hands back a
-# deep copy on every call, so that is not just a lookup being repeated, it is a
-# fields array being duplicated tens of thousands of times.
+# MEASURED AND IT DOES NOT PAY, which is worth recording because the argument
+# for it is good: type layouts are global, this cache was per-EBX, and a map
+# that opens 11,748 partitions therefore re-resolved them per partition — and
+# layout_full() hands back a DEEP COPY every call, so it is a fields array being
+# duplicated, not just a lookup repeated.
 #
-# Passing one in rather than making it static keeps it tied to the types reader
-# that filled it: two readers over different executables have different layouts
-# for the same guid, and a static cache would silently serve one to the other.
+# The Dumbo walk went 52.4 s to 53.0 and 52.9 across two runs: neutral, or a
+# shade worse. Each partition only touches a handful of types, so the copies
+# were never the cost — decoding instances is (49 s of the 53), and this does
+# not touch that. Kept as an optional parameter because it costs nothing to
+# offer and the default is exactly the old behaviour; do not expect it to help.
 func _init(types_reader = null, guid_index := {}, layout_cache := {}) -> void:
 	_types = types_reader
 	_guid_index = guid_index

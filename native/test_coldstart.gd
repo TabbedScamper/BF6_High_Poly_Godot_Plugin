@@ -55,12 +55,29 @@ func _init() -> void:
 	print("%-26s %9.1fs %9.1fs" % ["TOTAL", total_c / 1000.0, total_w / 1000.0])
 	print("\n%d placements, %d distinct meshes" % [int(cold.get("rows", 0)),
 		int(cold.get("meshes", 0))])
-	if int(cold.get("rows", 0)) != int(warm.get("rows", 0)):
-		print("MISMATCH: cold produced %d rows, warm %d — the cache is not "
-			% [cold.get("rows", 0), warm.get("rows", 0)]
-			+ "reproducing the cold result")
+	var ct: Dictionary = cold.get("tally", {})
+	var wt: Dictionary = warm.get("tally", {})
+	var bad := 0
+	for k in ct:
+		if int(wt.get(k, 0)) != int(ct[k]):
+			if bad < 5:
+				print("   %s: cold %d, warm %d" % [k, int(ct[k]), int(wt.get(k, 0))])
+			bad += 1
+	for k in wt:
+		if not ct.has(k):
+			if bad < 5:
+				print("   %s: only warm" % k)
+			bad += 1
+	var dsum: float = absf(float(cold.get("checksum", 0.0))
+		- float(warm.get("checksum", 0.0)))
+	if int(cold.get("rows", 0)) != int(warm.get("rows", 0)) or bad > 0 or dsum > 1.0:
+		print("MISMATCH: rows %d vs %d, %d mesh tallies differ, "
+			% [cold.get("rows", 0), warm.get("rows", 0), bad]
+			+ "position checksum off by %.3f — the cache is NOT reproducing "
+			% dsum + "the cold result")
 		quit(1); return
-	print("cold and warm agree on the placement count")
+	print("cold and warm agree: same rows, same per-mesh counts, "
+		+ "position checksum within %.4f" % dsum)
 	quit(0)
 
 
@@ -76,7 +93,7 @@ func _purge_caches() -> int:
 	var f := d.get_next()
 	while f != "":
 		if not d.current_is_dir() and (f.begins_with("bf6_index_")
-				or f.begins_with("bf6_pidx_")):
+				or f.begins_with("bf6_pidx_") or f.begins_with("bf6_walk_")):
 			if d.remove(f) == OK:
 				print("   removed %s" % f)
 				n += 1
@@ -137,18 +154,33 @@ func _run(level: String, game: String, label: String) -> Dictionary:
 		% [w.by_name.size(), w.gi.size(), int(out["partition index"]) / 1000.0])
 
 	t = Time.get_ticks_msec()
-	if not w.run(level):
+	if not w.run_cached(level):
 		print("FAIL walk: %s" % w.stats.get("error", "no rows"))
 		quit(1)
 		return out
 	out["placement walk"] = Time.get_ticks_msec() - t
+	out["walk_cached"] = w.stats.get("from_cache", false)
+	# A per-mesh tally AND a positional checksum, not just a row count. A cache
+	# that dropped every instance of one mesh and gained the same number of
+	# another would match on count alone, and "the map is subtly not the map" is
+	# the failure mode a cache actually has.
 	var meshes := {}
+	var sum := 0.0
 	for r in w.rows:
-		meshes[str((r as Dictionary)["mesh"])] = true
+		var m := str((r as Dictionary)["mesh"])
+		meshes[m] = int(meshes.get(m, 0)) + 1
+		var xf = (r as Dictionary)["xf"]
+		if xf is Array and (xf as Array).size() >= 4:
+			var tr = (xf as Array)[3]
+			if tr is Vector3:
+				sum += (tr as Vector3).x + (tr as Vector3).y + (tr as Vector3).z
 	out["rows"] = w.rows.size()
 	out["meshes"] = meshes.size()
-	print("walk     %d rows, %d meshes  (%.1f s)"
-		% [w.rows.size(), meshes.size(), int(out["placement walk"]) / 1000.0])
+	out["tally"] = meshes
+	out["checksum"] = sum
+	print("walk     %d rows, %d meshes  (%.1f s%s)"
+		% [w.rows.size(), meshes.size(), int(out["placement walk"]) / 1000.0,
+		   ", from cache" if out.get("walk_cached", false) else ""])
 	print("         decoded %d of %d instances (%d skipped by type)"
 		% [w.n_instances - w.n_skipped, w.n_instances, w.n_skipped])
 	print("         read %d ms, parse %d ms, decode %d ms"

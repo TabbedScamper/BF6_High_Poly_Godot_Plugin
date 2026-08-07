@@ -438,6 +438,13 @@ func _efix_guid(raw: PackedByteArray) -> String:
 
 # Keyed on the same TOC signature as the segment index: this is derived from
 # those exact files, so it has to go stale when they do (a game patch).
+# The mounted TOCs' identity: name, size and mtime of every one, hashed. Anything
+# derived from this mount must key its own cache on this, so a game patch
+# invalidates the lot rather than leaving one stale layer behind the others.
+func signature() -> String:
+	return _sig
+
+
 func _pidx_cache_path() -> String:
 	if _sig == "":
 		return ""
