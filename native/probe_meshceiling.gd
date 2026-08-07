@@ -55,6 +55,31 @@ func _init() -> void:
 			continue
 		if doc.append_from_buffer(bytes, path.get_base_dir(), st) != OK:
 			continue
+		if mode == "importer":
+			# THE CANDIDATE FIX. Read the arrays off the ImporterMesh that
+			# GLTFState already holds, and never call generate_scene(). An
+			# ImporterMesh is CPU-side: it allocates no GPU buffers, so
+			# get_surface_arrays() is a plain memory read rather than
+			# buffer_get_data(). Nothing is ever uploaded, so nothing can be
+			# exhausted or read back.
+			for gm in st.get_meshes():
+				var im: ImporterMesh = gm.get_mesh()
+				if im == null:
+					continue
+				for s in range(im.get_surface_count()):
+					var a: Array = im.get_surface_arrays(s)
+					surfaces += 1
+					if a.size() > Mesh.ARRAY_INDEX and a[Mesh.ARRAY_INDEX] != null:
+						tris += (a[Mesh.ARRAY_INDEX] as PackedInt32Array).size() / 3
+				kept.append(im)
+			n += 1
+			if n % 250 == 0:
+				print("  %5d files  %6d surfaces  %9d tris  static %6.1f MB  video %6.1f MB"
+						% [n, surfaces, tris,
+						   OS.get_static_memory_usage() / 1048576.0,
+						   Performance.get_monitor(Performance.RENDER_VIDEO_MEM_USED) / 1048576.0])
+			continue
+
 		var node := doc.generate_scene(st)
 		if node == null:
 			continue
@@ -84,7 +109,15 @@ func _init() -> void:
 			if im.get_surface_count() > 0:
 				im.generate_lods(25.0, 60.0, [])
 				kept.append(im.get_mesh())
-		node.queue_free()
+		# queue_free is DEFERRED to the end of the frame. The plugin builds many
+		# props per frame under a time budget, so every source scene built in
+		# that frame — and every GPU buffer its meshes hold — stays live until
+		# the frame ends. free() releases immediately, and is safe here because
+		# the node was never added to the tree.
+		if mode == "freenow":
+			node.free()
+		else:
+			node.queue_free()
 		n += 1
 		if n % 250 == 0:
 			print("  %5d files  %6d surfaces  %9d tris  static %6.1f MB  video %6.1f MB"

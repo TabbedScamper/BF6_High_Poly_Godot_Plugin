@@ -1833,7 +1833,24 @@ func _parse_prop_file(gp: String) -> Array:
 			out = [_bake_mesh(pairs[0][0], pairs[0][1])]
 		elif pairs.size() > 1:
 			out = _merge_meshes(pairs)          # one mesh per 255 surfaces
-		inst.queue_free()
+		# free(), NOT queue_free(). queue_free defers to the END OF THE FRAME,
+		# and this runs many times per frame under BUILD_FRAME_MS — so every
+		# source scene built in that frame stayed alive, each holding a GPU
+		# vertex and index buffer per surface, until the frame ended.
+		#
+		# Measured over 2,871 real prop GLBs with a live renderer:
+		#   queue_free  memory climbs to 40,016 MB and the process CRASHES at
+		#               ~2,000 files — "Buffer is either invalid or this type
+		#               of buffer can't be retrieved", then SIGSEGV
+		#   free        stays FLAT at ~60 MB and completes all 2,871
+		#
+		# Headless never crashes either way, which is why this hid for so long:
+		# the dummy renderer allocates no GPU buffers, so there is nothing to
+		# exhaust and surface_get_arrays never becomes a readback.
+		#
+		# Safe because this node is never added to the tree ("ours to free"
+		# above), and the meshes extracted from it are RefCounted and outlive it.
+		inst.free()
 	return await _finish_prop(gp, baked, out)
 
 
@@ -2696,7 +2713,10 @@ func _mesh_for(model_path: String) -> Mesh:
 						+ "proxy path shows only the first")
 						% [model_path.get_file(), parts.size()])
 				m = parts[0] if parts.size() > 0 else null
-			inst.queue_free()
+			# free(), not queue_free() — same reason as the prop path: deferred
+			# frees let every source scene built in one frame hold its GPU
+			# buffers until the frame ends. Never added to the tree.
+			inst.free()
 		elif res is Mesh:
 			m = res
 	_mesh_cache[model_path] = m
