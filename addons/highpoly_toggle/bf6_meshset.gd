@@ -152,6 +152,18 @@ func _sections(d: PackedByteArray, off: int, count: int) -> Array:
 				decl = d2
 		out.append({
 			"index": i, "material": mat,
+			# THE SHADER STATE KEY: the only link from a piece of geometry to
+			# its textures. The ShaderBlockDepot holds no mesh guids and no
+			# LOD/section tree — one blob is one material state — and the
+			# binding lives here, inline on the section (the Frosty BF6 fork
+			# reads it as `m_unknownHash1`). depot key table[state_key] -> the
+			# record carrying this section's texture refs and constants.
+			#
+			# NOT the MVDB's SurfaceShaderGuid/Id: those name the shader ASSET
+			# (nine distinct values across 4,454 entries) and appear nowhere in
+			# the depot.
+			"state_key": int(d.decode_u64(p + 0x130)),
+			"material_id": int(d.decode_u16(p + 0x1C)),
 			"stride": d[p + 0x1E],
 			"prim_count": int(d.decode_u32(p + 0x20)),
 			"start_index": int(d.decode_u32(p + 0x24)),
@@ -312,9 +324,14 @@ func read_lod(d: PackedByteArray, lod := 0, chunk := PackedByteArray(),
 				int(s["start_index"]), pcount, vcount, voff)
 		if idx.is_empty():
 			continue
+		# state_key and material_id ride along: a caller that has decoded a
+		# section still needs to know which depot record dresses it, and
+		# re-parsing the file to find out would be absurd.
 		out.append({"material": s["material"], "verts": verts, "uvs": uvs,
 					"normals": normals, "indices": idx,
-					"uv_sets": uv_sets.size()})
+					"uv_sets": uv_sets.size(),
+					"state_key": s.get("state_key", 0),
+					"material_id": s.get("material_id", 0)})
 	return out
 
 
