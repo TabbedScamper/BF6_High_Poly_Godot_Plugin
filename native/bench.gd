@@ -191,9 +191,100 @@ func _init() -> void:
 					int(v["size"]), bool(v["allow_raw"]))
 			return {"bytes": d.size()})
 
+	_mm_build_bench()
 	await _render_bench()
 	_report()
 	quit(0)
+
+
+# HOW A MULTIMESH IS FILLED. The plugin calls set_instance_transform() in a
+# GDScript loop, 44,925 times per map. Every per-instance accessor makes the
+# multimesh "local": it allocates a full CPU float mirror and, if the GPU buffer
+# was already written, reads it BACK from the GPU. Assigning the buffer once
+# never allocates that mirror.
+#
+# Same 44,925 transforms, same layout, both ways.
+func _mm_build_bench() -> void:
+	if filter != "" and not filter.begins_with("mm_"):
+		return
+	var n := 44925
+	# the plugin's stored form: 12 floats, basis ROWS then origin
+	var src := PackedFloat32Array()
+	src.resize(n * 12)
+	for i in range(n):
+		var o := i * 12
+		src[o] = 1.0; src[o+4] = 1.0; src[o+8] = 1.0
+		src[o+9] = float(i % 300) * 3.0
+		src[o+10] = 0.0
+		src[o+11] = float(i / 300) * 3.0
+	var mesh := BoxMesh.new()
+
+	_bench("mm_set_transform", 1, func():
+		var mm := MultiMesh.new()
+		mm.transform_format = MultiMesh.TRANSFORM_3D
+		mm.mesh = mesh
+		mm.instance_count = n
+		for i in range(n):
+			var o := i * 12
+			var t := Transform3D()
+			t.basis.x = Vector3(src[o+0], src[o+3], src[o+6])
+			t.basis.y = Vector3(src[o+1], src[o+4], src[o+7])
+			t.basis.z = Vector3(src[o+2], src[o+5], src[o+8])
+			t.origin = Vector3(src[o+9], src[o+10], src[o+11])
+			mm.set_instance_transform(i, t)
+		return {"instances": n})
+
+	_bench("mm_buffer", 1, func():
+		var mm := MultiMesh.new()
+		mm.transform_format = MultiMesh.TRANSFORM_3D
+		mm.mesh = mesh
+		mm.instance_count = n
+		# row-major 3x4. Derived from the stored layout, not guessed:
+		# basis.x = (a0,a3,a6), .y = (a1,a4,a7), .z = (a2,a5,a8), so row 0 is
+		# (basis.x.x, basis.y.x, basis.z.x, origin.x) = (a0, a1, a2, a9).
+		var buf := PackedFloat32Array()
+		buf.resize(n * 12)
+		for i in range(n):
+			var o := i * 12
+			buf[o+0] = src[o+0]; buf[o+1] = src[o+1]; buf[o+2] = src[o+2]; buf[o+3] = src[o+9]
+			buf[o+4] = src[o+3]; buf[o+5] = src[o+4]; buf[o+6] = src[o+5]; buf[o+7] = src[o+10]
+			buf[o+8] = src[o+6]; buf[o+9] = src[o+7]; buf[o+10] = src[o+8]; buf[o+11] = src[o+11]
+		mm.buffer = buf
+		return {"instances": n})
+
+	# The two must agree, or the faster one is just wrong faster.
+	var a := MultiMesh.new()
+	a.transform_format = MultiMesh.TRANSFORM_3D
+	a.mesh = mesh
+	a.instance_count = 3
+	for i in range(3):
+		var o := i * 12
+		var t := Transform3D()
+		t.basis.x = Vector3(src[o+0], src[o+3], src[o+6])
+		t.basis.y = Vector3(src[o+1], src[o+4], src[o+7])
+		t.basis.z = Vector3(src[o+2], src[o+5], src[o+8])
+		t.origin = Vector3(src[o+9], src[o+10], src[o+11])
+		a.set_instance_transform(i, t)
+	var b := MultiMesh.new()
+	b.transform_format = MultiMesh.TRANSFORM_3D
+	b.mesh = mesh
+	b.instance_count = 3
+	var bb := PackedFloat32Array()
+	bb.resize(36)
+	for i in range(3):
+		var o := i * 12
+		bb[o+0] = src[o+0]; bb[o+1] = src[o+1]; bb[o+2] = src[o+2]; bb[o+3] = src[o+9]
+		bb[o+4] = src[o+3]; bb[o+5] = src[o+4]; bb[o+6] = src[o+5]; bb[o+7] = src[o+10]
+		bb[o+8] = src[o+6]; bb[o+9] = src[o+7]; bb[o+10] = src[o+8]; bb[o+11] = src[o+11]
+	b.buffer = bb
+	var same := true
+	for i in range(3):
+		if not a.get_instance_transform(i).is_equal_approx(b.get_instance_transform(i)):
+			same = false
+	print("  %-18s buffer layout matches set_instance_transform: %s"
+			% ["mm_equivalence", same])
+	if not same:
+		print("     the buffer packing is WRONG — every prop would be mis-oriented")
 
 
 # RENDERING STAGES. Everything left to decide — MultiMesh against direct
