@@ -2491,10 +2491,34 @@ func _lighting_guard() -> void:
 # Applied ONCE per project — a user who reverts a setting is respected.
 func _auto_perf_settings() -> void:
 	var es := EditorInterface.get_editor_settings()
-	if bool(es.get_project_metadata("highpoly_mapctx", "_perf_applied", false)):
+	# The key is VERSIONED. The old one gated the whole function, so anyone who
+	# had already run it would never receive a setting added later — the change
+	# would ship and apply to new users only, which is the kind of thing that
+	# gets diagnosed as "it works on my machine".
+	if bool(es.get_project_metadata("highpoly_mapctx", "_perf_applied2", false)):
 		return
-	es.set_project_metadata("highpoly_mapctx", "_perf_applied", true)
+	es.set_project_metadata("highpoly_mapctx", "_perf_applied2", true)
 	var changed := false
+
+	# MESH LOD. Godot selects a LOD when its geometric error would project to
+	# `threshold_pixels` on screen. The default is 1.0 — LODs only engage once
+	# their error is a single pixel, which is as conservative as the setting
+	# goes. Switch distance scales inversely, so 4.0 makes every LOD engage at
+	# a quarter of its current distance. Verified through the engine source:
+	# renderer_viewport.cpp:317, renderer_scene_render_rd.cpp:1368,
+	# mesh_storage.h:479.
+	#
+	# Set to 4.0 rather than the 8.0 the formula would also allow, because the
+	# mechanism is verified and the VISUAL cost is not: the bench harness times
+	# the reader, it does not yet measure frame rate or draw calls, so nobody
+	# has looked at the popping this introduces on real props. 4.0 is what I
+	# would defend without that measurement; raise it once there is one.
+	if float(ProjectSettings.get_setting(
+			"rendering/mesh_lod/lod_change/threshold_pixels", 1.0)) < 4.0:
+		ProjectSettings.set_setting(
+				"rendering/mesh_lod/lod_change/threshold_pixels", 4.0)
+		changed = true
+
 	if int(ProjectSettings.get_setting("rendering/driver/threads/thread_model", 1)) != 2:
 		ProjectSettings.set_setting("rendering/driver/threads/thread_model", 2)
 		changed = true
@@ -2505,7 +2529,7 @@ func _auto_perf_settings() -> void:
 		changed = true
 	if changed:
 		ProjectSettings.save()
-		banner.text = "Performance settings applied (multi-threaded rendering and shadow atlas). Restart the editor to activate them."
+		banner.text = "Performance settings applied (mesh LOD distance, multi-threaded rendering, shadow atlas). Restart the editor to activate them."
 		banner.visible = true
 
 # ---------- Configure Shaders dialog ----------
