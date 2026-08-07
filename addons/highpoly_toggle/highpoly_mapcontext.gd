@@ -176,9 +176,16 @@ var _ctx_tex_mode := -1             # last apply(): detail mode (set_context_sho
 # the same ground only ever meant double darkening and a decal that tinted
 # high-poly models which already carry their real textures.
 #
-# The maptile itself is still used, just not as a decal: it is the large-scale
-# colour term INSIDE the extended terrain's own shader (_terrain_shader_mat),
-# which is why _tile_params / _maptile_tex / ensure_maptile all stay.
+# The extended terrain does not paint it either. It used to blend the photo in
+# as a large-scale colour term, which meant the ground carried the picture
+# whether the user wanted it or not and read as a decal we had placed on their
+# level. The ground is now the game's own materials alone: per-layer albedo and
+# normal from the terrainmaterials palette, blended by the map's real splat
+# weights where they exist and by slope where they do not.
+#
+# The jpg is still fetched and still used — by the vegetation scatter, which
+# reads its greenness to decide where grass belongs — so _tile_params,
+# _maptile_tex and ensure_maptile all stay.
 #
 # distant flipbook cards (smoke columns / haze planes) follow the FX switch
 static var show_fx_cards := false
@@ -982,8 +989,6 @@ const TEXTURED_LAYER := HighpolyLib.TEXTURED_LAYER
 const TERRAIN_SHADER := """
 shader_type spatial;
 render_mode cull_disabled;
-uniform sampler2D maptile : source_color, filter_linear_mipmap;
-uniform vec4 map_bounds;                 // xmin, zmin, sizeX, sizeZ (world)
 uniform sampler2D ground_alb : source_color, filter_linear_mipmap;
 uniform sampler2D ground_nrm : filter_linear_mipmap;
 uniform sampler2D cliff_alb : source_color, filter_linear_mipmap;
@@ -993,7 +998,6 @@ uniform float detail_strength = 0.5;
 uniform float normal_strength = 0.7;
 uniform float slope_lo = 0.35;
 uniform float slope_hi = 0.70;
-uniform float edge_fade = 0.03;          // soft blend at the maptile border (uv fraction)
 // EXACT splat data (baked from the game's own terrain layer masks â€” see the
 // pipeline's splat_build.py). splat_slices = 0 (default) keeps the legacy
 // slope ground/cliff heuristic, so maps/packages without splat data render
@@ -1052,19 +1056,20 @@ void fragment() {
 	}
 	float dl = dot(det, vec3(0.3333));
 
-	// maptile weight: 1 inside the satellite footprint, faded to 0 at its edge
-	vec2 muv = vec2((wpos.x - map_bounds.x) / map_bounds.z, (wpos.z - map_bounds.y) / map_bounds.w);
-	float in01 = step(0.0, muv.x) * step(muv.x, 1.0) * step(0.0, muv.y) * step(muv.y, 1.0);
-	vec2 edge = min(muv, 1.0 - muv);
-	float w = in01 * smoothstep(0.0, edge_fade, min(edge.x, edge.y));
-
-	// inside: the real satellite colour as the large-scale tint, grained by the
-	// (now splat-exact) detail layers. outside (and over the maptile's black
-	// out-of-bounds borders): the tiling detail colour alone.
-	vec3 mt = texture(maptile, muv).rgb;
-	w *= smoothstep(0.03, 0.12, dot(mt, vec3(0.3333)));   // drop the black borders
-	vec3 inside = mt * mix(1.0, dl * 2.0, detail_strength) * mix(vec3(1.0), det / (dl + 1e-3), 0.3 * detail_strength);
-	ALBEDO = clamp(mix(det, inside, w), 0.0, 1.0);
+	// THE GROUND IS THE GAME'S OWN MATERIALS, and nothing else.
+	//
+	// This used to blend the aerial photo over the top as a large-scale colour
+	// tint. That photo is the SDK's feature: it ships a plugin whose Apply
+	// Texture button projects it as a decal, saved into the user's scene and
+	// under their control. Painting a second copy of it into our terrain meant
+	// the ground carried the picture whether they wanted it or not, and it read
+	// as a decal we were placing on their level.
+	//
+	// What is left is the real thing: per-layer albedo and normal from the
+	// game's terrainmaterials palette, blended by the map's own splat weights
+	// where they exist and by slope where they do not. dl is retained because
+	// the detail term is what it always was.
+	ALBEDO = clamp(det, 0.0, 1.0);
 	ROUGHNESS = 0.92;
 	vec2 nxy = (nrm.rg * 2.0 - 1.0) * normal_strength;
 	float nz = sqrt(clamp(1.0 - dot(nxy, nxy), 0.0, 1.0));
@@ -1192,23 +1197,22 @@ func _layer_tex(map: String, nm: String) -> Texture2D:
 	_layer_cache[key] = t
 	return t
 
-# Build the detail-terrain material for this map, or null if the maptile or the
-# ground-layer set isn't available (â†’ caller falls back to the flat decal).
+# Build the detail-terrain material for this map, or null when the ground-layer
+# set isn't available.
+#
+# IT NO LONGER NEEDS THE MAPTILE, and that is not just a dropped parameter: this
+# used to return null when no maptile jpg could be found, so a map with the full
+# ground-layer set and no photo got NO detail material at all and fell back to
+# flat colour. The photo is the SDK's business now; the ground layers are ours,
+# and they are the only thing this actually requires.
 func _terrain_shader_mat(map: String) -> ShaderMaterial:
-	var d := _tile_params(map)
-	if d.is_empty(): return null
-	var tile := _maptile_tex(map)
-	if tile == null: return null
 	var ga := _layer_tex(map, "ground_alb"); var gn := _layer_tex(map, "ground_nrm")
 	var ca := _layer_tex(map, "cliff_alb"); var cn := _layer_tex(map, "cliff_nrm")
 	if ga == null or gn == null or ca == null or cn == null: return null
 	if _tshader == null:
 		_tshader = Shader.new(); _tshader.code = TERRAIN_SHADER
-	var pos: Vector3 = d["pos"]; var sz: Vector3 = d["size"]
 	var m := ShaderMaterial.new()
 	m.shader = _tshader
-	m.set_shader_parameter("maptile", tile)
-	m.set_shader_parameter("map_bounds", Vector4(pos.x - sz.x * 0.5, pos.z - sz.z * 0.5, sz.x, sz.z))
 	m.set_shader_parameter("ground_alb", ga); m.set_shader_parameter("ground_nrm", gn)
 	m.set_shader_parameter("cliff_alb", ca); m.set_shader_parameter("cliff_nrm", cn)
 	# exact splat blend where the map package ships baked splat data; without it
