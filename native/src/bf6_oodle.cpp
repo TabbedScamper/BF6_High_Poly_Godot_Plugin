@@ -53,6 +53,7 @@ static GDExtensionInterfaceVariantGetPtrDestructor get_destructor = nullptr;
 static GDExtensionInterfaceGetVariantFromTypeConstructor get_variant_from = nullptr;
 static GDExtensionInterfaceGetVariantToTypeConstructor get_variant_to = nullptr;
 static GDExtensionInterfacePackedByteArrayOperatorIndex pba_index = nullptr;
+static GDExtensionInterfacePackedByteArrayOperatorIndexConst pba_index_const = nullptr;
 static GDExtensionPtrConstructor pba_ctor = nullptr;
 static GDExtensionPtrDestructor pba_dtor = nullptr;
 static GDExtensionPtrBuiltInMethod pba_resize = nullptr;
@@ -191,7 +192,10 @@ static void call_decompress(void *, GDExtensionClassInstancePtr,
 			const void *rargs[1] = { &resize_to };
 			pba_resize(&out, rargs, &rc, 1);
 
-			const uint8_t *sp = pba_index(&src, 0);
+			// src is read-only, so it takes the const index for the same reason
+			// find() does — the mutable one would copy the compressed block
+			// before every decompression.
+			const uint8_t *sp = pba_index_const(&src, 0);
 			uint8_t *dp = pba_index(&out, 0);
 			if (sp && dp) {
 				// Same arguments as fb_cas.py: fuzzSafe=1, checkCRC=0,
@@ -274,8 +278,14 @@ static void call_find(void *, GDExtensionClassInstancePtr,
 			from = 0;
 		}
 		if (nlen > 0 && to - from >= nlen) {
-			const uint8_t *hp = pba_index(&hay, 0);
-			const uint8_t *np = pba_index(&ndl, 0);
+			// CONST INDEX, and the distinction is not cosmetic. The mutable
+			// operator index calls ptrw(), which on a copy-on-write array with
+			// more than one reference DUPLICATES IT — so every search over the
+			// 169 MB exe was memcpy'ing 169 MB first. Measured 25 ms per search
+			// of a 5.3 MB section, which is memcpy speed for the whole file
+			// rather than memchr speed for the section.
+			const uint8_t *hp = pba_index_const(&hay, 0);
+			const uint8_t *np = pba_index_const(&ndl, 0);
 			if (hp && np) {
 				const uint8_t *p = hp + from;
 				const uint8_t *end = hp + to - nlen + 1;
@@ -411,6 +421,8 @@ extern "C" GDExtensionBool GDE_EXPORT bf6_oodle_init(
 			"get_variant_to_type_constructor");
 	pba_index = load<GDExtensionInterfacePackedByteArrayOperatorIndex>(
 			"packed_byte_array_operator_index");
+	pba_index_const = load<GDExtensionInterfacePackedByteArrayOperatorIndexConst>(
+			"packed_byte_array_operator_index_const");
 	construct_object = load<GDExtensionInterfaceClassdbConstructObject2>(
 			"classdb_construct_object2");
 	object_set_instance = load<GDExtensionInterfaceObjectSetInstance>(
