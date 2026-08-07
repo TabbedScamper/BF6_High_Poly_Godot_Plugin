@@ -57,6 +57,7 @@ const MapContextScript = preload("highpoly_mapcontext.gd")
 const SyncScript = preload("highpoly_sync.gd")
 const HighpolyCollision = preload("highpoly_collision.gd")
 const HighpolyDoors = preload("highpoly_doors.gd")
+const FlightPath = preload("highpoly_flightpath.gd")
 const HighpolyVariants = preload("highpoly_variants.gd")
 const LightingScript = preload("highpoly_lighting.gd")
 const PlacedCull = preload("highpoly_placedcull.gd")
@@ -1012,6 +1013,29 @@ func _enter_tree() -> void:
 		lbl.text = "Faster loading " + ("is on. Scenery is saved as it is built" if v
 				else "is off. What is already saved stays until you delete it"))
 	storage_chips.add_child(storage_cache_chk)
+
+	# --- Record flight path (developer tool) --------------------------------
+	# Records the editor camera at 20 Hz so a benchmark can fly the SAME route
+	# afterwards. Every rendering measurement before this used a static camera,
+	# which cannot answer "did that change make flying smoother" — the only
+	# question that actually matters. Recording the route you fly captures the
+	# places that are actually slow, rather than a synthetic orbit.
+	var flight_chk := Theme_.chip("Record flight path")
+	flight_chk.tooltip_text = "Developer tool. Records where you fly so the same route can be replayed and timed. Switch it on, fly the part of the map that feels slow, switch it off — it saves a file and tells you where it went."
+	flight_chk.toggled.connect(func(v: bool):
+		if v:
+			var mapn: String = str(mapctx._map) if mapctx != null else ""
+			if FlightPath.start(self, mapn if mapn != "" else "unknown"):
+				lbl.text = "Recording. Fly the parts that feel slow, then switch this off."
+			else:
+				flight_chk.set_pressed_no_signal(false)
+				lbl.text = "Could not start recording: no 3D viewport camera found."
+		else:
+			var n: int = FlightPath.sample_count()
+			var p: String = FlightPath.stop()
+			lbl.text = ("Flight path saved: %d samples at %s" % [n, p]) if p != "" \
+					else "Nothing recorded — the camera never moved.")
+	storage_chips.add_child(flight_chk)
 
 	var purge_row := HBoxContainer.new(); host.add_child(purge_row)
 	purge_maps = OptionButton.new()
