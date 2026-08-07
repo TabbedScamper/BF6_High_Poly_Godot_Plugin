@@ -225,9 +225,83 @@ static void call_last_error(void *, GDExtensionClassInstancePtr,
 	get_destructor(GDEXTENSION_VARIANT_TYPE_STRING)(&s);
 }
 
+// find(hay: PackedByteArray, needle: PackedByteArray, from: int, to: int) -> int
+//
+// A substring search over a PackedByteArray, which GDScript has no way to do
+// except by looping in script.
+//
+// This is here for ONE caller and it is not a convenience. Resolving a
+// Frostbite type means locating its 16-byte GUID inside the exe's `typeinfo`
+// section — 5.3 MB — and a level traversal resolves hundreds of types. In
+// GDScript that is a per-byte loop over five million bytes, hundreds of times;
+// in C++ it is memchr plus a memcmp on the rare hit.
+//
+// The alternative was shipping a pre-generated type database, which would have
+// put a downloaded file back in the middle of a plugin whose whole point is
+// reading the install. The type data is IN the game exe; this is what makes
+// reading it there affordable.
+//
+// -1 when absent. `to` clamps to the array end, so a caller can pass a section
+// bound without checking it first.
+static void call_find(void *, GDExtensionClassInstancePtr,
+		const GDExtensionConstVariantPtr *args, GDExtensionInt argc,
+		GDExtensionVariantPtr ret, GDExtensionCallError *) {
+	int64_t found = -1;
+	if (argc >= 2) {
+		static GDExtensionTypeFromVariantConstructorFunc to_pba =
+				get_variant_to(GDEXTENSION_VARIANT_TYPE_PACKED_BYTE_ARRAY);
+		static GDExtensionTypeFromVariantConstructorFunc to_int =
+				get_variant_to(GDEXTENSION_VARIANT_TYPE_INT);
+
+		alignas(8) uint8_t hay[16] = {}, ndl[16] = {};
+		to_pba(&hay, const_cast<GDExtensionVariantPtr>(args[0]));
+		to_pba(&ndl, const_cast<GDExtensionVariantPtr>(args[1]));
+		int64_t from = 0, to = -1;
+		if (argc >= 3) {
+			to_int(&from, const_cast<GDExtensionVariantPtr>(args[2]));
+		}
+		if (argc >= 4) {
+			to_int(&to, const_cast<GDExtensionVariantPtr>(args[3]));
+		}
+
+		int64_t hlen = 0, nlen = 0;
+		pba_size(&hay, nullptr, &hlen, 0);
+		pba_size(&ndl, nullptr, &nlen, 0);
+		if (to < 0 || to > hlen) {
+			to = hlen;
+		}
+		if (from < 0) {
+			from = 0;
+		}
+		if (nlen > 0 && to - from >= nlen) {
+			const uint8_t *hp = pba_index(&hay, 0);
+			const uint8_t *np = pba_index(&ndl, 0);
+			if (hp && np) {
+				const uint8_t *p = hp + from;
+				const uint8_t *end = hp + to - nlen + 1;
+				while (p < end) {
+					const uint8_t *hit = (const uint8_t *)memchr(
+							p, np[0], (size_t)(end - p));
+					if (!hit) {
+						break;
+					}
+					if (memcmp(hit, np, (size_t)nlen) == 0) {
+						found = (int64_t)(hit - hp);
+						break;
+					}
+					p = hit + 1;
+				}
+			}
+		}
+		get_destructor(GDEXTENSION_VARIANT_TYPE_PACKED_BYTE_ARRAY)(&hay);
+		get_destructor(GDEXTENSION_VARIANT_TYPE_PACKED_BYTE_ARRAY)(&ndl);
+	}
+	get_variant_from(GDEXTENSION_VARIANT_TYPE_INT)(ret, &found);
+}
+
 static void bind_method(const char *class_name, const char *method_name,
 		GDExtensionClassMethodCall call, GDExtensionVariantType ret_type,
-		int argc) {
+		int argc, const GDExtensionVariantType *arg_types) {
 	uint8_t cn[16] = {}, mn[16] = {};
 	sn_new(&cn, class_name, false);
 	sn_new(&mn, method_name, false);
@@ -242,15 +316,15 @@ static void bind_method(const char *class_name, const char *method_name,
 	ret_info.hint_string = &empty_s;
 	ret_info.usage = 6; // PROPERTY_USAGE_DEFAULT
 
-	GDExtensionPropertyInfo arg_info[2] = {};
-	GDExtensionClassMethodArgumentMetadata arg_meta[2] = {};
-	for (int i = 0; i < argc; ++i) {
+	// ARGUMENT TYPES COME FROM THE CALLER. They used to be inferred from the
+	// method name — first argument is a PackedByteArray if the method is called
+	// "decompress", otherwise a String — which worked only because there were
+	// two methods and no reason to add a third.
+	GDExtensionPropertyInfo arg_info[4] = {};
+	GDExtensionClassMethodArgumentMetadata arg_meta[4] = {};
+	for (int i = 0; i < argc && i < 4; ++i) {
 		arg_info[i] = ret_info;
-		arg_info[i].type = (i == 0)
-				? (strcmp(method_name, "decompress") == 0
-						? GDEXTENSION_VARIANT_TYPE_PACKED_BYTE_ARRAY
-						: GDEXTENSION_VARIANT_TYPE_STRING)
-				: GDEXTENSION_VARIANT_TYPE_INT;
+		arg_info[i].type = arg_types[i];
 		arg_meta[i] = GDEXTENSION_METHOD_ARGUMENT_METADATA_NONE;
 	}
 
@@ -288,11 +362,26 @@ static void initialize(void *, GDExtensionInitializationLevel level) {
 	ci.free_instance_func = bf6_free;
 
 	classdb_register(g_library, &cn, &parent, &ci);
-	bind_method("BF6Oodle", "open", call_open, GDEXTENSION_VARIANT_TYPE_BOOL, 1);
+
+	static const GDExtensionVariantType a_open[1] = {
+		GDEXTENSION_VARIANT_TYPE_STRING };
+	static const GDExtensionVariantType a_decomp[2] = {
+		GDEXTENSION_VARIANT_TYPE_PACKED_BYTE_ARRAY,
+		GDEXTENSION_VARIANT_TYPE_INT };
+	static const GDExtensionVariantType a_find[4] = {
+		GDEXTENSION_VARIANT_TYPE_PACKED_BYTE_ARRAY,
+		GDEXTENSION_VARIANT_TYPE_PACKED_BYTE_ARRAY,
+		GDEXTENSION_VARIANT_TYPE_INT,
+		GDEXTENSION_VARIANT_TYPE_INT };
+
+	bind_method("BF6Oodle", "open", call_open,
+			GDEXTENSION_VARIANT_TYPE_BOOL, 1, a_open);
 	bind_method("BF6Oodle", "decompress", call_decompress,
-			GDEXTENSION_VARIANT_TYPE_PACKED_BYTE_ARRAY, 2);
+			GDEXTENSION_VARIANT_TYPE_PACKED_BYTE_ARRAY, 2, a_decomp);
 	bind_method("BF6Oodle", "last_error", call_last_error,
-			GDEXTENSION_VARIANT_TYPE_STRING, 0);
+			GDEXTENSION_VARIANT_TYPE_STRING, 0, nullptr);
+	bind_method("BF6Oodle", "find", call_find,
+			GDEXTENSION_VARIANT_TYPE_INT, 4, a_find);
 }
 
 static void deinitialize(void *, GDExtensionInitializationLevel) {}
