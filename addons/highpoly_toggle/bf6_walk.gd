@@ -314,7 +314,7 @@ func emit_smg(inst: Dictionary, parent: Array, source_ref: String) -> void:
 			# no instance transforms: one row at the bare parent, if visible
 			if _visible_at(enabled, visible, 0):
 				rows.append({"mesh": path, "xf": parent, "src": source_ref,
-					"kind": "smg0", "var": _var_of(ovar, 0)})
+					"kind": "smg0", "var": _var_of(ovar, 0), "scope": _scope})
 			continue
 		var lst: Array = xf
 		for i in range(lst.size()):
@@ -326,7 +326,7 @@ func emit_smg(inst: Dictionary, parent: Array, source_ref: String) -> void:
 			rows.append({"mesh": path,
 				"xf": matmul(parent, lt_to_mat(lst[i])),
 				"src": source_ref, "kind": "smg",
-				"var": _var_of(ovar, i)})
+				"var": _var_of(ovar, i), "scope": _scope})
 
 
 static func _var_of(ovar, i: int):
@@ -375,6 +375,13 @@ const WALK_FIELDS: Array = [F_SMG_MEMBERS, F_BP_TRANSFORM, F_EXCLUDED,
 
 # Off makes the walk decode every instance, which is the reference behaviour.
 var skip_types := true
+
+# partition asset path (lower, no .ebx) -> an opaque scope id the caller cares
+# about. Left empty makes every row's `scope` "", i.e. the walk behaves exactly
+# as it did before. The caller fills it with the bundles that own a depot.
+var scope_index := {}
+var _scope := ""
+
 var _type_matters_cache := {}          # type guid hex -> bool
 var _layouts := {}                     # type guid hex -> layout, shared by every partition
 
@@ -415,6 +422,32 @@ func walk(ref, parent: Array, guard: Dictionary, depth := 0) -> void:
 	var sub_guard := guard.duplicate()
 	sub_guard[key] = true
 	_bump("partitions")
+
+	# THE SCOPE A PLACEMENT INHERITS, tracked down the recursion.
+	#
+	# A section's shader state key is looked up in a ShaderBlockDepot, and a key
+	# is only unique within a scope. The obvious reading — the depot beside the
+	# partition that holds the placement — is wrong, and measurably so: a prop's
+	# `src` is the PREFAB it sits in, somewhere under game/.../props, while its
+	# depot belongs to the SUBWORLD that mounted the prefab. Those have no path
+	# relationship at all.
+	#
+	# Measured on Dumbo: matching by directory ancestry resolved 54.7% of
+	# sections, and 213 of the 214 absent keys (99.5%) turned up in another
+	# subworld's depot of the same level — the one that actually placed them.
+	# The single remaining miss is a Shadow material, which no depot carries.
+	#
+	# So scope is inherited: entering a partition that owns a depot makes it the
+	# scope for everything below, and each row records the scope it was placed
+	# under. The walk is the only thing that knows this, because the walk is what
+	# did the mounting.
+	var scope := _scope
+	if not scope_index.is_empty():
+		var bare := key.trim_suffix(".ebx")
+		if scope_index.has(bare):
+			scope = str(scope_index[bare])
+	var prev_scope := _scope
+	_scope = scope
 	for i in range(dz.instance_offsets.size()):
 		n_instances += 1
 		# CAN THIS INSTANCE POSSIBLY MATTER? visit() reads exactly the fields in
@@ -439,6 +472,9 @@ func walk(ref, parent: Array, guard: Dictionary, depth := 0) -> void:
 			_bump("inst_fail")
 			continue
 		visit(inst, parent, str(ref), sub_guard, depth)
+	# Restored on the way out: a sibling branch must not inherit the scope a
+	# subworld set for its own subtree.
+	_scope = prev_scope
 
 
 func visit(inst: Dictionary, parent: Array, ref: String, guard: Dictionary,
@@ -504,11 +540,11 @@ func visit(inst: Dictionary, parent: Array, ref: String, guard: Dictionary,
 			walk(tgt, world, guard, depth + 1)
 			if rows.size() == before:
 				rows.append({"mesh": tgt, "xf": world, "src": ref,
-					"kind": "leaf", "var": null})
+					"kind": "leaf", "var": null, "scope": _scope})
 				_bump("leaf_emitted")
 		else:
 			rows.append({"mesh": tgt, "xf": world, "src": ref,
-				"kind": "ref", "var": null})
+				"kind": "ref", "var": null, "scope": _scope})
 		return
 
 	for f in [F_OBJECTS, F_DATAREFS, F_SUBWORLD_COMPONENTS]:
@@ -537,7 +573,10 @@ func visit(inst: Dictionary, parent: Array, ref: String, guard: Dictionary,
 # other two, AND on VERSION, because a change to the traversal changes the rows
 # it produces — a cache surviving that would serve yesterday's map with today's
 # code, which is the worst of both.
-const VERSION := 1
+# 2: rows carry `scope`, the depot scope inherited down the walk. A v1 cache has
+# no such field, and serving one would silently give every row an empty scope —
+# which fails open into "no textures" rather than into an error.
+const VERSION := 2
 
 
 func cache_path(level_rel: String) -> String:
