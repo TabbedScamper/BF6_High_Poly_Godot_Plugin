@@ -3637,7 +3637,14 @@ func _build_backdrop_async(bd_root: Node3D, entries: Array, dir: String,
 			if not is_inside_tree():
 				_end_build_draw(bd_root)
 				return
+			# Same unattributed cost as the props loop, and it matters more here:
+			# the skyline is 3,118 draw calls from 34 nodes, by far the largest
+			# single source in the overlay, so a yielded frame that draws it is
+			# the most expensive frame in the build.
+			var _ty := Time.get_ticks_msec()
 			await get_tree().process_frame
+			HighpolyProfiler.span("skyline: waiting for the yielded frame",
+				Time.get_ticks_msec() - _ty)
 			if gen != _build_gen:
 				_end_build_draw(bd_root)
 				return                  # superseded by a new apply()/_clear()
@@ -3847,7 +3854,21 @@ func _build_props_async(props_root: Node3D, entries: Array, dir: String,
 					build_finished.emit(_build_props)
 				return
 
+			# THE YIELD ITSELF IS A COST, and it was the largest thing the phase
+			# table never showed. The loop works for BUILD_FRAME_MS and then
+			# hands back a frame; whatever that frame costs is build time the
+			# user waits through, attributed to nothing. On the recorded Dumbo
+			# run it was 84 s of a 261 s build.
+			#
+			# Timed here so the duty cycle becomes readable: this figure against
+			# BUILD_FRAME_MS says what fraction of the build is actually
+			# building. It stays small only while the layer is hidden — see
+			# _begin_build_draw — so a regression there shows up as this number
+			# growing rather than as a vague "builds feel slower lately".
+			var _ty := Time.get_ticks_msec()
 			await get_tree().process_frame  # keep the editor smooth
+			HighpolyProfiler.span("props: waiting for the yielded frame",
+				Time.get_ticks_msec() - _ty)
 			if gen != _build_gen:
 				_end_build_draw(props_root)
 				return                      # superseded: _clear() already released
