@@ -171,7 +171,7 @@ func open_map(map: String, game_dir := "", progress := Callable()) -> bool:
 # `mesh` here is the resolved RES name rather than a file stem, and _prop_mesh
 # is what knows the difference. Nothing else in the build path needs to.
 # ---------------------------------------------------------------------------
-func map_data() -> Dictionary:
+func map_data(cache_dir := "") -> Dictionary:
 	var by_mesh := {}
 	var by_bd := {}
 	var dropped := 0
@@ -239,11 +239,83 @@ func map_data() -> Dictionary:
 	_say("game source: %d prop groups, %d skyline groups, %d placements, "
 		% [props.size(), backdrop.size(), walk.rows.size() - dropped]
 		+ "%d rows with no geometry (gameplay objects)" % dropped)
-	return {
+	var out := {
 		"props": props,
 		"backdrop": backdrop,
 		"world": {"min": wmin},
 		"from_game": true,
+	}
+	if cache_dir != "":
+		var hm := terrain(cache_dir)
+		if not hm.is_empty():
+			out["heightmap"] = hm
+	return out
+
+
+# ---------------------------------------------------------------------------
+# THE TERRAIN, out of the game's streaming tree.
+#
+# The map context builds its ground from a raw u16 grid plus {base, scale},
+# where world_y = base + raw * scale/65535 — and the game's own heights use
+# exactly that encoding with scale = WorldSizeY. So the raw samples go straight
+# in with base 0 and no renormalisation: on Dumbo, 6336 and 28302 map to 24.8 m
+# and 110.6 m, which is the AABB range the tree declares.
+#
+# Verified against the packaged height.r16 at r = 0.9964 over 453,660 samples —
+# the same ground. It is not byte-identical and was never going to be: that file
+# came from a different pipeline which normalised to the full u16 range
+# (0..65450 against our 6336..28302), so a mean difference of 10,407 says
+# nothing and the correlation says everything.
+#
+# Written to the map cache because the builder takes a FILE. That is a file
+# derived from the player's install, not a download.
+func terrain(cache_dir: String) -> Dictionary:
+	if src == null:
+		return {}
+	var pick := ""
+	for rn in src.res.keys():
+		var n := str(rn)
+		if n.contains("streamingtree") and n.to_lower().contains(level):
+			pick = n
+			break
+	if pick == "":
+		return {}
+	var res := src.get_res(pick)
+	if res.is_empty():
+		return {}
+	var t := BF6Terrain.new()
+	var blk := t.find_block(res, BF6Terrain.BLOCK_HEIGHTS)
+	if blk.is_empty() or not t.read_block_header(blk) or not t.walk_nodes(blk):
+		_say("game source: terrain — %s" % t.error)
+		return {}
+	var dir := t.read_chunk_directory(res)
+	if not dir.is_empty():
+		t.resolve_external(dir, func(form): return src.get_chunk(str(form)))
+	# 4097, not 4096: one sample per grid LINE, which is what the builder's own
+	# default res says and what the packaged file is.
+	var g := t.composite(4097)
+	if g.is_empty():
+		_say("game source: terrain — %s" % t.error)
+		return {}
+	var lo: Vector3 = g["min"]
+	var hi: Vector3 = g["max"]
+	DirAccess.make_dir_recursive_absolute(cache_dir)
+	var path := "%s/height_game.r16" % cache_dir
+	var f := FileAccess.open(path, FileAccess.WRITE)
+	if f == null:
+		_say("game source: terrain — cannot write %s" % path)
+		return {}
+	f.store_buffer(g["data"])
+	f.close()
+	_say("game source: terrain %dx%d from %d nodes, y %.0f..%.0f m"
+		% [g["size"], g["size"], g["nodes"], lo.y, hi.y])
+	return {
+		"file": "height_game.r16",
+		"res": g["size"],
+		"world_min": lo.x,
+		"world_max": hi.x,
+		"base": 0.0,
+		"scale": float(g["world_size_y"]),
 	}
 
 
