@@ -13,10 +13,15 @@ class_name HighpolyLib
 
 const HP_ROT := Vector3(-90, 0, 0)   # legacy OBJ assets are Z-up; GLB assets are Y-up
 const HP_NODE := "_HIPOLY_PREVIEW"
-# Render layer 19: "this geometry already has its real textures, keep projected
-# decals off it". Shared with the map-context props (highpoly_mapcontext.gd uses
-# the same constant) and excluded from the map-tile decal's cull_mask. Layer 20
-# (EXT_TERRAIN_LAYER) is the matching opt-out for our extended terrain + water.
+# Render layer 19: "this geometry already has its real textures". Shared with the
+# map-context props (highpoly_mapcontext.gd uses the same constant); layer 20
+# (EXT_TERRAIN_LAYER) is the same tag for our extended terrain, roads and water.
+#
+# It was an opt-out from OUR map-tile decal, which excluded these layers in its
+# cull_mask. That decal is gone (the SDK ships the feature and saves it into the
+# user's scene). The SDK's own decal sets its own cull_mask and projects onto
+# everything, so the layer does not opt out of theirs — the map context hides
+# theirs while Extended Terrain is on instead.
 # NOTE for render/PhotoMatch cameras: cull_mask must stay 0xFFFFF or anything on
 # these layers silently vanishes from renders only.
 const TEXTURED_LAYER := 1 << 18

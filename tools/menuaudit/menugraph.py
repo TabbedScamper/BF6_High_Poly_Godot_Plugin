@@ -47,8 +47,6 @@ for name, c in controls.items():
             t = re.search(r'=\s*"(.*)', LINES[j])
             if t:
                 c["tooltip"] = t.group(1)
-            elif "MAPTILE_TIP" in LINES[j]:
-                c["tooltip"] = "(MAPTILE_TIP)"
             break
 
 # --- what each handler does -------------------------------------------------

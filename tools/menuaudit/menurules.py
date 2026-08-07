@@ -51,7 +51,7 @@ PARENTS = {
     "mapctx_light": ["mapctx_gi", "mapctx_shadows", "mapctx_maplights",
                      "mapctx_fill"],
     "col_chk": ["iso_chk", "col_alpha"],
-    "mapctx_on": ["mapctx_maptile"],
+    "mapctx_on": [],
     "mapctx_objects": ["mapctx_variant"],
 }
 for p, kids in PARENTS.items():

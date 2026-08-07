@@ -30,14 +30,10 @@ var _last_queued := 0
 # relative preloads: the plugin works from ANY folder under addons/ (users
 # often drop the whole repo zip in, nesting the plugin one level deeper)
 # WRITTEN ONCE because it is applied from two places. The chip sets it when the
-# panel is built and _sync_maptile_control() sets it again on every scene
-# change, and the second copy had drifted into a different voice entirely
+# panel is built and# change, and the second copy had drifted into a different voice entirely
 # ("Project the map-tile colour over the SDK terrain + assets") — so the plain
 # wording was replaced by jargon the moment anyone opened a scene, which is to
 # say almost nobody ever saw it.
-const MAPTILE_TIP := "Lays the map's aerial photo over the ground so it looks \
-like the real place instead of flat colour. Turn it off if it makes buildings \
-look muddy."
 
 const LIGHTING_TIP := "Lights your map the way the real one is lit, with the \
 same sun angle, sun colour, sky and haze. Replaces the editor's plain preview \
@@ -93,7 +89,6 @@ var mapctx_water: Button     # show the level's rivers / harbour / sea
 var _detail_chips: Node      # Detail Mode's chip row (hosts "Original map objects")
 var mapctx_range: HSlider      # object render distance; 0 = objects off, 3500 = no culling
 var mapctx_range_val: Label    # live "%dm" / "No Culling" readout next to the slider
-var mapctx_maptile: Button   # project the maptile decal over SDK terrain+assets
 var mapctx_fx: Button        # live GPU particles at the map's mined FX spawns
 var mapctx_light: Button     # game lighting (sun/sky/fog from the real map VE)
 var mapctx_gi: Button        # sub-toggle: SDFGI + SSAO (visible while lighting is on)
@@ -744,25 +739,11 @@ func _enter_tree() -> void:
 	# Mode dropdown: Low-Poly = flat SDK orange, High-Poly no textures = grey
 	# clay, High-Poly textured = real textures. See _mapctx_tex_mode().)
 
-	mapctx_maptile = Theme_.chip("Ground photo")
-	mapctx_maptile.tooltip_text = MAPTILE_TIP
-	mapctx_maptile.toggled.connect(func(v: bool):
-		# instant ACTIVE add/remove (set_maptile) — no overlay rebuild, no
-		# generation bump: a running props build keeps going, and the decal
-		# can't outlive an uncheck via a superseded async re-apply
-		lbl.text = mapctx.set_maptile(EditorInterface.get_edited_scene_root(), v)
-		_save_mapctx_state())
-	# Not shown: the SDK ships its own map-texture plugin with an "Apply Texture"
-	# button in the same toolbar, and that one is saved into the scene where this
-	# one was only ever a preview. Two of them darken the ground twice, so this
-	# defers entirely. The control is kept unshown because the overlay code reads
-	# its state in several places.
-	# no_signal: this runs AFTER the toggled handler is connected, and that
-	# handler reaches for `mapctx`, which is not built until later in _enter_tree
-	mapctx_maptile.set_pressed_no_signal(false)
-	HighpolyMapContext.maptile_enabled = false
-	mapctx_maptile.visible = false
-	mc_chips.add_child(mapctx_maptile)
+	# NO GROUND-PHOTO CHIP. The SDK ships that feature (3D toolbar ->
+	# Download/Apply Texture) and saves it into the user's scene, so it is
+	# theirs. We stopped projecting a second one; while Extended Terrain is on
+	# we hide theirs instead, because our terrain already carries the same
+	# photo inside its shader. See highpoly_mapcontext._set_sdk_decal_shown.
 
 	mapctx_fx = Theme_.chip("FX")
 	mapctx_fx.tooltip_text = "Adds the fires, smoke columns and sparks the real level has, in the spots it has them. That includes the big distant smoke and haze cards near the skyline, which are effects rather than scenery. They are off by default, because they are hundreds of metres across and sit in front of the surroundings."
@@ -1487,6 +1468,10 @@ func _exit_tree() -> void:
 	var esel := EditorInterface.get_selection()
 	if esel.selection_changed.is_connected(_on_selection_changed):
 		esel.selection_changed.disconnect(_on_selection_changed)
+	# Their ground decal is a saved node we only ever HID; a plugin that is being
+	# switched off must not leave a piece of the user's scene invisible.
+	if mapctx != null:
+		mapctx.restore_sdk_decals()
 	# disabling the plugin returns the scene to stock: overlays freed, proxies
 	# shown — as if the plugin was never on
 	var r := EditorInterface.get_edited_scene_root()
@@ -2474,7 +2459,6 @@ func _check_scene_change() -> void:
 	ShapeViz.release(alive)
 	PlacedCull.release(alive)  # a saved property: don't leave it on a closed scene
 	SdkHide.restore_all(alive)
-	_sync_maptile_control()   # the new scene may carry the SDK's own decal
 	# The one thing that SHOULD carry across a swap: the pieces you placed in the
 	# newly-active scene start culled to wherever the Range slider currently sits.
 	# The cull was released from the outgoing scene but never applied to the
@@ -2789,17 +2773,6 @@ func _save_mapctx_state() -> void:
 # isn't darkened twice — say so on the control instead of leaving a checkbox that
 # looks broken. Also warn about the one real difference: theirs projects onto
 # everything, high-poly models included.
-func _sync_maptile_control() -> void:
-	if mapctx_maptile == null or mapctx == null: return
-	var theirs: Decal = mapctx.sdk_decal(EditorInterface.get_edited_scene_root())
-	mapctx_maptile.disabled = theirs != null
-	if theirs != null:
-		mapctx_maptile.text = "Ground photo (the SDK's is on)"
-		mapctx_maptile.tooltip_text = "This level already has the SDK's own map texture, applied from the 3D toolbar and saved in the scene, so the preview decal stays off. Two of them would darken the ground twice.\n\nNote that the SDK's decal projects onto everything beneath it, including high-poly models that already have their real textures. Delete the '%s' node under Static to go back to the preview decal, which leaves them alone." % String(theirs.name)
-	else:
-		mapctx_maptile.text = "Ground photo"
-		mapctx_maptile.tooltip_text = MAPTILE_TIP
-
 func _restore_mapctx_state() -> void:
 	var r := EditorInterface.get_edited_scene_root()
 	if r != null:
@@ -2826,11 +2799,6 @@ func _restore_mapctx_state() -> void:
 		mapctx_range.set_value_no_signal(clampf(float(d.get("range", 800.0)), 0.0, 3500.0))
 		if mapctx_range_val: mapctx_range_val.text = _range_label(mapctx_range.value)
 		mapctx.set_radius(1.0e9 if int(mapctx_range.value) >= 3500 else float(mapctx_range.value))
-	if mapctx_maptile != null:
-		# ignore whatever an older version saved: the SDK plugin owns this now
-		mapctx_maptile.set_pressed_no_signal(false)
-		HighpolyMapContext.maptile_enabled = false
-	_sync_maptile_control()
 	mapctx_on.set_pressed_no_signal(bool(d.get("on", false)))
 	mapctx_objects.set_pressed_no_signal(bool(d.get("objects", false)))
 	# set_pressed_no_signal skips the toggled handler, so the SDK _Assets node

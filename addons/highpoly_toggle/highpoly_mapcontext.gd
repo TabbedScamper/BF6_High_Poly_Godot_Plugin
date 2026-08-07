@@ -169,16 +169,19 @@ var _props_textured := false        # last props build: textured flag
 var _props_mat: Material = null     # last props build: flat study material
 var _props_tex_mode := -1           # last props build: detail mode (0/1/2)
 var _ctx_tex_mode := -1             # last apply(): detail mode (set_context_shown key)
-# manual override for the maptile DECAL on the SDK terrain + assets (textured
-# mode, non-splat path): it tints buildings/props, which fights the re-baked
-# real textures. Default true = exactly the old behaviour. STATIC on purpose:
-# the dock checkbox (via set_maptile) and PhotoMatch's transient render
-# instance share ONE preference â€” as a per-instance var, the render hook's
-# fresh instance re-added the decal from its own default on every render.
-static var maptile_enabled := true
+# WE NO LONGER PROJECT A GROUND PHOTO. The SDK ships its own map-texture
+# plugin (addons/bf_portal/terrain_decal) with a toolbar button, and that one is
+# the user's: it saves into their scene and they control it. Ours was an
+# editor-only twin from before that existed, and keeping a second projector on
+# the same ground only ever meant double darkening and a decal that tinted
+# high-poly models which already carry their real textures.
+#
+# The maptile itself is still used, just not as a decal: it is the large-scale
+# colour term INSIDE the extended terrain's own shader (_terrain_shader_mat),
+# which is why _tile_params / _maptile_tex / ensure_maptile all stay.
+#
 # distant flipbook cards (smoke columns / haze planes) follow the FX switch
 static var show_fx_cards := false
-static var _maptile_ok := false     # last apply(): textured + non-splat (a decal would show)
 
 func reset_props_verification() -> void:
 	# called when the sync manager adopts a NEW manifest (models changed)
@@ -882,56 +885,74 @@ func ensure_maptile(host: Node, map: String, status: Callable = Callable()) -> b
 	return true
 
 # ---------- SDK maptile (top-down satellite) ----------
-# Inject a Decal (owner=null) that projects the maptile jpg straight down onto
-# whatever terrain is beneath it â€” the SDK's own terrain AND our extended
-# terrain â€” using the community pack's hand-tuned per-map placement.
-# Reversible, never saved. Works with or without extended map data downloaded.
-func _apply_maptile(root: Node, map: String) -> int:
-	# the SDK's own decal is already projecting this picture â€” don't stack ours
-	if sdk_decal(root) != null: return 0
-	var d := _tile_params(map)
-	if d.is_empty(): return 0
-	var tex := _maptile_tex(map)
-	if tex == null: return 0
-	var dec := Decal.new()
-	dec.name = DECAL_NODE
-	dec.texture_albedo = tex
-	dec.size = d["size"]
-	dec.normal_fade = float(d.get("nf", 0.0))
-	# hit everything EXCEPT our extended terrain (which carries its own detail
-	# shader) â€” so the decal only textures the SDK terrain + assets/buildings and
-	# doesn't re-flatten our detailed map-context terrain where they overlap.
-	dec.cull_mask = 0xFFFFF & ~EXT_TERRAIN_LAYER & ~TEXTURED_LAYER
-	dec.position = d["pos"]
-	root.add_child(dec); dec.owner = null
-	return 1
+# ---------- the SDK's own ground decal ----------
+# We used to inject our own Decal here, projecting the maptile straight down
+# onto whatever was beneath it. It is gone: the SDK ships that feature now
+# (addons/bf_portal/terrain_decal, "Apply Texture" on the 3D toolbar), it saves
+# into the user's scene, and it is theirs to control. Two projectors on one
+# piece of ground darken it twice, and ours also tinted high-poly models that
+# already carry their real textures.
+#
+# What is left is the other half of getting out of their way: while Extended
+# Terrain is on, THEIR decal is redundant. Our terrain underlies the whole
+# footprint, the SDK bowl included, and already carries the map photo as the
+# large-scale colour term inside its own shader — so their decal projects a
+# second copy of the same picture onto ground that has it, and onto every
+# building and prop standing on it.
+#
+# NON-DESTRUCTIVE, and that matters more here than anywhere else in this file:
+# their decal is a SAVED node the user owns. It is hidden, never deleted, never
+# reparented, and the value it had is remembered and put back — when Extended
+# Terrain goes off, when the overlay is cleared, and when the scene changes.
+#
+# Keyed by instance id rather than held as a node reference so a freed scene
+# cannot strand a dangling pointer, and STATIC so a plugin reload — which builds
+# a fresh map context — still knows what it hid.
+static var _sdk_decal_was := {}      # decal instance id -> the visible it had
 
-# Remove EVERY maptile decal under the root â€” matched by name prefix, not just
-# the exact name, so a stray auto-renamed duplicate (add_child name collision)
-# can't survive an exact-name lookup and linger forever.
+
+# Hide or restore the SDK's decal. `shown` false hides it, remembering what it
+# was; true puts that value back and forgets.
+func _set_sdk_decal_shown(root: Node, shown: bool) -> void:
+	var dec := sdk_decal(root)
+	if dec == null:
+		return
+	var id := dec.get_instance_id()
+	if shown:
+		if _sdk_decal_was.has(id):
+			dec.visible = bool(_sdk_decal_was[id])
+			_sdk_decal_was.erase(id)
+		return
+	if not _sdk_decal_was.has(id):
+		# Remembered BEFORE the write, and only once: hiding twice in a row must
+		# not record `false` as the value to restore, which would leave the
+		# user's decal off for good with nothing to say why.
+		_sdk_decal_was[id] = dec.visible
+	dec.visible = false
+
+
+# Put back every SDK decal we hid, wherever it is. Called on teardown paths that
+# do not know which scene they are unwinding.
+func restore_sdk_decals() -> void:
+	for id in _sdk_decal_was.keys():
+		var o = instance_from_id(int(id))
+		if o is Decal and is_instance_valid(o):
+			(o as Decal).visible = bool(_sdk_decal_was[id])
+	_sdk_decal_was.clear()
+
+
+# Sweep any decal an OLDER version of this plugin injected. Ours was owner=null
+# so it can never have been saved into a scene, but it does survive a plugin
+# reload inside one session, and after an upgrade there is nothing left that
+# would otherwise remove it.
 func _remove_maptile(root: Node) -> void:
+	if root == null:
+		return
 	for c in root.get_children():
 		if c is Decal and String(c.name).contains(DECAL_NODE):
 			root.remove_child(c)
 			c.queue_free()
 
-# Instant "Maptile decal" toggle (dock checkbox). ACTIVE add/remove â€” no
-# overlay rebuild, no _clear(), no generation bump, so a running props build
-# keeps going. Off: the decal is pulled from the scene right now (before any
-# await could supersede a re-apply). On: re-added immediately when the last
-# apply() ran textured without splat coverage (_maptile_ok); otherwise the
-# static preference simply takes effect on the next textured apply.
-func set_maptile(root: Node, on: bool) -> String:
-	maptile_enabled = on
-	if root == null or map_of(root) == "":
-		return "Maptile decal %s (takes effect on MP_â€¦ scenes)" % ("on" if on else "off")
-	_remove_maptile(root)
-	if not on:
-		return "Maptile decal off"
-	if _maptile_ok:
-		return "Maptile decal on" if _apply_maptile(root, map_of(root)) > 0 \
-			else "No maptile for %s" % map_of(root)
-	return "Maptile decal on (shows in textured, non-splat mode)"
 
 # ---------- near-exact detail terrain (real game ground-layer textures) ----------
 # The maptile gives the real large-scale colour; the game's own tiling ground
@@ -944,6 +965,16 @@ static func _layer_dir() -> String:
 	return (HighpolyMapContext as Script).resource_path.get_base_dir() + "/terrain_layers/"
 # dedicated render layer for our extended terrain, so the SDK maptile decal can
 # be told to skip it (the decal only textures the SDK's own terrain + assets)
+# Layer 20: "this geometry carries its own ground look". It is a TAG, and no
+# longer a protection — that distinction is worth stating because the comments
+# here used to claim otherwise.
+#
+# A Decal only affects the layers in its cull_mask, so this opted our terrain,
+# roads and water out of OUR decal, which set cull_mask = ~EXT_TERRAIN_LAYER
+# explicitly. Ours is gone. The SDK's decal sets its own mask and projects onto
+# everything, so being on this layer buys nothing against it — which is exactly
+# why their ground photo showed up on our extended terrain. Standing theirs down
+# while Extended Terrain is on is the fix; see _set_sdk_decal_shown.
 const EXT_TERRAIN_LAYER := 1 << 19
 # layer 19 â€” geometry that already carries real textures (high-poly overlay +
 # textured map-context props); the map-tile decal must not project onto it
@@ -3536,29 +3567,26 @@ func apply(root: Node, enabled: bool, show_objects: bool, tex = true,
 	#     tiles beyond the SDK bowl) gets the near-exact DETAIL shader: real game
 	#     ground-layer albedo/normal, slope-selected, so it's no longer pixelated.
 	var tmat: ShaderMaterial = null
-	var sdk_overlaid := 0
-	_maptile_ok = false                # set true below when a decal would show
 	if textured:
 		tmat = _terrain_shader_mat(map)               # detail material for our extended terrain
-		# With REAL splat data the extended terrain (which underlies the whole
-		# footprint, SDK bowl included) carries the exact ground look and the
-		# maptile lives INSIDE its shader as the large-scale colour term â€” so the
-		# old maptile decal is skipped entirely: it used to tint props/buildings
-		# and re-flatten the ground. Maps/packages without splat data keep the
-		# decal exactly as before.
-		var splat_covers: bool = _splat_active and tmat != null and enabled \
-			and have_data and (_data.get("heightmap", {}) as Dictionary).has("file")
-		# manual "Maptile decal" override: skip the decal entirely when off (it
-		# tints buildings/props â€” fights the re-baked real prop textures).
-		# _maptile_ok remembers the mode so set_maptile can re-add instantly.
-		_maptile_ok = not splat_covers
-		if not splat_covers and maptile_enabled:
-			sdk_overlaid = _apply_maptile(root, map)  # decal on SDK terrain + assets
+
+	# STAND DOWN, AND STAND THEIRS DOWN TOO.
+	#
+	# We no longer project a ground photo at all - that is the SDK's feature now.
+	# But while Extended Terrain is on, THEIR decal is projecting the same picture
+	# onto ground that already carries it (the maptile is the large-scale colour
+	# term inside our terrain shader) and onto every building and prop standing on
+	# it. So it is hidden for the duration, and put back the moment Extended
+	# Terrain goes off.
+	#
+	# Also sweep any decal an older version of this plugin injected, which can
+	# still be sitting in a live scene after an in-session upgrade.
+	_remove_maptile(root)
+	_set_sdk_decal_shown(root, not enabled)
 
 	if not enabled and not show_objects and not backdrop and not water:
 		if not textured: return "Map Context off"
-		if sdk_overlaid > 0: return "SDK terrain textured (decal)"
-		return "Maptile decal off" if not maptile_enabled else "No maptile for %s" % map
+		return "Map Context off (the SDK's ground texture is yours to control)"
 	if not have_data:
 		return "%s not downloaded (hit Reload map data)" % map
 
@@ -3620,7 +3648,7 @@ func apply(root: Node, enabled: bool, show_objects: bool, tex = true,
 					if tc is MeshInstance3D:
 						var tcm := tc as MeshInstance3D
 						tcm.material_override = tmat if (textured and tmat != null) else green_tiled
-						tcm.layers = EXT_TERRAIN_LAYER           # keep the SDK maptile decal off it
+						tcm.layers = EXT_TERRAIN_LAYER           # tag: already carries its ground look
 						_bd_list.append(tcm)                     # terrain tiles follow the Range slider
 				ctx.add_child(tmi); tmi.owner = null
 			# vegetation scatter: grass/shrub kits placed procedurally around the
@@ -3647,7 +3675,7 @@ func apply(root: Node, enabled: bool, show_objects: bool, tex = true,
 			var rmi := MeshInstance3D.new()
 			rmi.name = "Roads"
 			rmi.mesh = rmesh as Mesh
-			rmi.layers = EXT_TERRAIN_LAYER      # keep the maptile decal off them
+			rmi.layers = EXT_TERRAIN_LAYER      # tag: already carries its ground look
 			mark_never_casts(rmi)
 			ctx.add_child(rmi)
 			rmi.owner = null
@@ -3721,9 +3749,9 @@ func apply(root: Node, enabled: bool, show_objects: bool, tex = true,
 		if tmat != null and _splat_active:
 			mt = ", SPLAT terrain (%d layer slices, no decal)" % _splat_n
 		elif tmat != null:
-			mt = ", decal + detail terrain" if maptile_enabled else ", detail terrain (decal off)"
+			mt = ", detail terrain"
 		else:
-			mt = ", maptile decal (no layer set)" if maptile_enabled else ", decal off (no layer set)"
+			mt = " (no ground layer set)"
 	var tex_lbl := "textured" if textured else ("clay" if tex_mode == 1 else "flat colour")
 	# the skyline builds in the background now, so this line is written before a
 	# single piece exists â€” report what was QUEUED, not a completed count that
@@ -4851,7 +4879,7 @@ func _add_water_plane(ctx: Node3D, textured: bool) -> void:
 		wp.material_override = wmat
 		wp.position = Vector3(float(wc[0]), float(wcfg["height"]), float(wc[1]))
 		wp.rotation.y = float(wcfg.get("yaw", 0.0))   # rotated river/lake quads keep their bearing
-		wp.layers = EXT_TERRAIN_LAYER    # keep the SDK maptile decal off the water
+		wp.layers = EXT_TERRAIN_LAYER    # tag: already carries its ground look
 		ctx.add_child(wp); wp.owner = null
 
 # ---------- full-accuracy terrain from the raw 16-bit heightmap ----------
