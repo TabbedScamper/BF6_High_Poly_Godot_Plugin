@@ -44,8 +44,23 @@ func _init() -> void:
 	var total := 0
 	var tris := 0
 	var t0 := Time.get_ticks_msec()
+	# A TRIANGLE BUDGET, not just a group cap.
+	#
+	# The full-scale run died at roughly 2,000 meshes: surface_get_arrays()
+	# itself returned "Buffer is either invalid or this type of buffer can't be
+	# retrieved", and the next line segfaulted. GDScript cannot guard that — the
+	# CALL is what fails — so the only defence is not to reach the ceiling.
+	#
+	# Worth noticing rather than just working around: the plugin loads every
+	# prop and generates LOD chains exactly like this, so the same ceiling is
+	# somewhere in its path too.
+	var budget := 12_000_000
 	for e in data["props"]:
 		if groups.size() >= cap:
+			break
+		if tris >= budget:
+			print("  stopping at the %d-triangle budget after %d group(s)"
+					% [budget, groups.size()])
 			break
 		if not (e is Dictionary) or not e.has("glb") or not e.has("xf"):
 			continue
@@ -254,12 +269,30 @@ func _load_mesh(path: String) -> Mesh:
 		# merge every surface into one ImporterMesh and generate LODs, which is
 		# what the plugin ships
 		var im := ImporterMesh.new()
+		var added := 0
 		for m in found:
 			for s in range(m.get_surface_count()):
-				im.add_surface(Mesh.PRIMITIVE_TRIANGLES, m.surface_get_arrays(s),
-						[], {}, m.surface_get_material(s))
-		im.generate_lods(25.0, 60.0, [])
-		out = im.get_mesh()
+				var arr: Array = m.surface_get_arrays(s)
+				# GUARD. A full-scale run crashed inside add_surface at ~2,000
+				# meshes. GDScript cannot catch that, so the preconditions are
+				# checked instead: a surface with no vertices or no indices is
+				# nothing to simplify and is what add_surface chokes on.
+				if arr.size() <= Mesh.ARRAY_INDEX:
+					continue
+				var vtx = arr[Mesh.ARRAY_VERTEX]
+				var idx = arr[Mesh.ARRAY_INDEX]
+				if vtx == null or idx == null:
+					continue
+				if (vtx as PackedVector3Array).is_empty():
+					continue
+				if (idx as PackedInt32Array).size() < 3:
+					continue
+				im.add_surface(Mesh.PRIMITIVE_TRIANGLES, arr, [], {},
+						m.surface_get_material(s))
+				added += 1
+		if added > 0:
+			im.generate_lods(25.0, 60.0, [])
+			out = im.get_mesh()
 	node.queue_free()
 	_mesh_cache[path] = out
 	return out
