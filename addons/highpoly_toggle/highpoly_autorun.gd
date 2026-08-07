@@ -65,7 +65,7 @@ static func config() -> Dictionary:
 		"water": true, "flight": "", "out": "", "settle_frames": 30,
 		"build_timeout_s": 900, "radius": 1.0e9,
 		"lighting": true, "gi": true, "shadows": true, "map_lights": true,
-		"vram_mode": -1,
+		"vram_mode": -1, "cell": 0,
 	}
 	if v != "" and v != "1" and FileAccess.file_exists(v):
 		var j = JSON.parse_string(FileAccess.get_file_as_string(v))
@@ -248,6 +248,14 @@ static func run(host: Node, dock: Node, mapctx: Node) -> void:
 	# PCIe and every frame that touches an evicted texture stalls - a far better
 	# explanation of 130 ms frames than 49,277 draw calls, which a 4080 does not
 	# struggle with.
+	# THE MULTIMESH CELL IS THE BATCHING GRAIN and the plugin says outright that
+	# it is "a setting to measure rather than a constant to guess" - 64 m builds
+	# 13,407 MultiMeshes for 44,925 instances, 48% of them holding ONE instance.
+	# Coarsening it trades draw calls against showing more geometry, and nothing
+	# had ever measured which way that trade falls.
+	if int(cfg.get("cell", 0)) > 0:
+		mapctx.cell_override = int(cfg["cell"])
+	rep["cell"] = mapctx.cell_override
 	if int(cfg.get("vram_mode", -1)) >= 0:
 		mapctx.vram_mode = int(cfg["vram_mode"])
 	rep["vram_mode"] = mapctx.vram_mode

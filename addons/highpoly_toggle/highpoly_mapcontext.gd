@@ -1,4 +1,4 @@
-﻿@tool
+@tool
 extends Node
 class_name HighpolyMapContext
 # Editor-only "Map Context": injects the real map terrain + the game's original
@@ -1194,7 +1194,22 @@ func _load_data(map: String) -> bool:
 	# instances). Instances inside a MultiMesh are nearly free while draw calls
 	# are not, so the trade should be favourable -- "should" being why this is a
 	# setting to measure rather than a constant to guess.
-	_cell_size = float(cell_override) if cell_override > 0 else float(w.get("cell", 64))
+	# MEASURED, at last. The note above ends "this is a setting to measure rather
+	# than a constant to guess", and nothing ever had. On the Dumbo flight,
+	# everything on, no cull, after the skyline merge:
+	#
+	#     64 m   12,611 draws   25.2 ms median
+	#    256 m    5,777 draws   16.2 ms
+	#    512 m    4,472 draws   11.0 ms   <- the knee
+	#   1024 m    5,299 draws   14.7 ms
+	#
+	# It turns back upward at 1024 exactly as the note predicted: a coarser cell
+	# batches better but reaches further, so past some size the extra geometry it
+	# drags into view costs more than the draw calls it saved.
+	#
+	# 512 is the default rather than the per-map value, because every map already
+	# cached ships "cell": 64 and would otherwise keep the old behaviour forever.
+	_cell_size = float(cell_override) if cell_override > 0 else 512.0
 	_load_prop_layers(map)
 	return true
 
@@ -2177,6 +2192,143 @@ static func _parallax_materials(m: Mesh) -> void:
 # was vertex-bound even on a 4080. Rebuild each merged mesh through
 # ImporterMesh.generate_lods(); the result (mesh + LOD chain) is what the
 # fast-startup sidecar caches, so the generation cost is paid once.
+# Only meshes with this many surfaces are considered. The signature reads every
+# bound image and hashes it, and a prop with three surfaces has nothing to gain;
+# the skyline composites carry 200-650 each, which is where every duplicate is.
+const MERGE_MIN_SURFACES := 16
+
+
+# Collapse surfaces whose materials are IDENTICAL IN CONTENT into one surface.
+#
+# The renderer issues a draw call per surface per visible instance, so a mesh's
+# surface count IS its draw cost. Measured on the Dumbo skyline, which is where
+# this matters most: the Backdrop layer is 49,966 surfaces across 289 instances
+# and accounts for 61% of frame time and 56% of every draw call â€” switching it
+# off takes the recorded flight from 129.4 ms a frame to 50.7.
+#
+# Those surfaces arrive one per original material section, and glTF hands back a
+# separate Material OBJECT for each, so they look all-distinct by identity and
+# by name. By CONTENT â€” the images actually bound, the albedo colour, the flags
+# that change shader state â€” 28,359 of the 49,966 are unique. The rest are
+# duplicates the renderer would bind identically, and merging them is invisible:
+# same geometry, same pixels, 43% fewer draw calls.
+#
+# Only merges what is provably safe. A ShaderMaterial, a surface that is not
+# PRIMITIVE_TRIANGLES, blend shapes, or any mismatch in which vertex channels
+# the surfaces carry, and the mesh is returned exactly as it arrived.
+static func _merge_equal_surfaces(m: Mesh) -> Mesh:
+	if not (m is ArrayMesh):
+		return m
+	var am := m as ArrayMesh
+	var n := am.get_surface_count()
+	if n < MERGE_MIN_SURFACES or am.get_blend_shape_count() > 0:
+		return m
+
+	var groups: Array = []          # [signature, material, [surface indices]]
+	var by_sig := {}
+	for s in range(n):
+		if am.surface_get_primitive_type(s) != Mesh.PRIMITIVE_TRIANGLES:
+			return m
+		var sig := _material_signature(am.surface_get_material(s))
+		if sig == "":
+			return m                # a material kind not to second-guess
+		if not by_sig.has(sig):
+			by_sig[sig] = groups.size()
+			groups.append([sig, am.surface_get_material(s), []])
+		(groups[int(by_sig[sig])][2] as Array).append(s)
+	if groups.size() >= n:
+		return m                    # nothing shares: no work to do
+
+	var out := ArrayMesh.new()
+	out.resource_name = am.resource_name
+	for g in groups:
+		var idxs: Array = g[2]
+		var arrays: Array = am.surface_get_arrays(int(idxs[0])) \
+				if idxs.size() == 1 else _concat_surfaces(am, idxs)
+		if arrays.is_empty():
+			return m                # channels differed: keep the original
+		out.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+		out.surface_set_material(out.get_surface_count() - 1, g[1])
+	return out
+
+
+# Append several surfaces into one array set. [] when they cannot be joined.
+#
+# Every surface must carry the SAME channels: merging a set that has normals
+# with one that does not produces a mesh whose vertex format is a lie, and that
+# renders as garbage rather than failing.
+static func _concat_surfaces(am: ArrayMesh, idxs: Array) -> Array:
+	var first: Array = am.surface_get_arrays(int(idxs[0]))
+	var want: Array = []
+	for c in range(Mesh.ARRAY_MAX):
+		want.append(first[c] != null)
+	if not bool(want[Mesh.ARRAY_VERTEX]) or not bool(want[Mesh.ARRAY_INDEX]):
+		return []
+
+	var out: Array = []
+	out.resize(Mesh.ARRAY_MAX)
+	var base := 0
+	for i in idxs:
+		var a: Array = am.surface_get_arrays(int(i))
+		for c in range(Mesh.ARRAY_MAX):
+			if bool(want[c]) != (a[c] != null):
+				return []
+		var vcount: int = (a[Mesh.ARRAY_VERTEX] as PackedVector3Array).size()
+		for c in range(Mesh.ARRAY_MAX):
+			if not bool(want[c]):
+				continue
+			if c == Mesh.ARRAY_INDEX:
+				var dst: PackedInt32Array = out[c] if out[c] != null \
+						else PackedInt32Array()
+				for v in (a[c] as PackedInt32Array):
+					dst.append(v + base)    # rebased onto the joined vertex list
+				out[c] = dst
+			elif out[c] == null:
+				out[c] = a[c]
+			else:
+				out[c] = out[c] + a[c]
+		base += vcount
+	return out
+
+
+# What the renderer would BIND for this material, as a comparable string.
+# "" when the material is of a kind this must not second-guess.
+static func _material_signature(mat: Material) -> String:
+	if mat == null:
+		return "null"
+	if not (mat is BaseMaterial3D):
+		return ""                   # ShaderMaterial and friends: hands off
+	var b := mat as BaseMaterial3D
+	var parts := PackedStringArray()
+	for slot in [BaseMaterial3D.TEXTURE_ALBEDO, BaseMaterial3D.TEXTURE_NORMAL,
+				 BaseMaterial3D.TEXTURE_ROUGHNESS,
+				 BaseMaterial3D.TEXTURE_METALLIC,
+				 BaseMaterial3D.TEXTURE_EMISSION,
+				 BaseMaterial3D.TEXTURE_AMBIENT_OCCLUSION]:
+		var t := b.get_texture(slot)
+		if t == null:
+			parts.append("-")
+			continue
+		# BY THE IMAGE, not the RID. Two Texture2D objects wrapping one image
+		# are different objects with different RIDs, and keying on identity
+		# reports every surface as unique when most of them are not â€” which is
+		# the difference between "merging is impossible" and "merging is 43%".
+		var img := t.get_image()
+		if img == null:
+			parts.append("rid:%s" % t.get_rid())
+		else:
+			parts.append("%dx%d:%d:%s" % [img.get_width(), img.get_height(),
+					img.get_format(),
+					img.get_data().slice(0, 4096).hex_encode().md5_text()])
+	parts.append("%.4f,%.4f,%.4f,%.4f" % [b.albedo_color.r, b.albedo_color.g,
+			b.albedo_color.b, b.albedo_color.a])
+	parts.append("%d,%d,%d,%d" % [b.transparency, b.cull_mode, b.shading_mode,
+			b.blend_mode])
+	parts.append("%.3f,%.3f" % [b.roughness, b.metallic])
+	parts.append("%.3f,%.3f" % [b.uv1_scale.x, b.uv1_scale.y])
+	return "|".join(parts)
+
+
 static func _with_lods(m: Mesh) -> Mesh:
 	if not (m is ArrayMesh): return m
 	var am := m as ArrayMesh
@@ -2805,7 +2957,25 @@ func _merge_meshes_inner(pairs: Array) -> Array:
 			var V = arr[Mesh.ARRAY_VERTEX]
 			if V == null or V.size() == 0: continue
 			var mat := mesh.surface_get_material(s)
-			var key := mat.get_rid() if mat != null else RID()
+			# BY CONTENT, NOT BY RID.
+			#
+			# This grouped on mat.get_rid(), and glTF hands back a SEPARATE
+			# Material object per surface - so every key was unique and the
+			# merge never merged anything. The skyline arrived as 49,966
+			# surfaces and left as 49,966, one draw call and one material bind
+			# each.
+			#
+			# It is invisible from here because the code is correct in shape:
+			# group by material, concatenate the geometry. Only counting the
+			# groups afterwards shows the grouping is a no-op.
+			#
+			# Measured on Dumbo's backdrop: 28,359 of the 49,966 materials are
+			# distinct BY CONTENT, so keying on what the renderer would actually
+			# bind collapses 43% of them. That matters more than the draw count
+			# suggests - a skyline draw costs ~3 us against a prop's 0.38 us,
+			# the difference being that props share one material across a
+			# MultiMesh while the skyline rebinds for every surface.
+			var key: Variant = _material_signature(mat) if mat != null else "null"
 			if not groups.has(key):
 				groups[key] = {"mat": mat, "v": [], "n": [], "uv": [], "i": [],
 					"t": [], "has_uv": false, "has_tan": 0}
