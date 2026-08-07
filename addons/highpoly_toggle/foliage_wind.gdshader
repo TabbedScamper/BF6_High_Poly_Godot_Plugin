@@ -22,8 +22,29 @@ uniform sampler2D albedo_tex : source_color, filter_linear_mipmap;
 uniform vec4 albedo_mul : source_color = vec4(1.0);
 uniform float alpha_cut : hint_range(0.0, 1.0) = 0.5;
 
+// OPACITY AS A SEPARATE TEXTURE, for materials read straight from the game.
+//
+// A packaged GLB carries opacity in the albedo's own A channel, which is what
+// `c.a` below assumes and what the download path still provides. The game does
+// not work that way: a vegetation material binds the *_cu colour sheet and a
+// SEPARATE *_a mask, single-channel — format RGTC_R (BC4), the mask in R, its
+// own A a constant 255.
+//
+// The albedo's A cannot stand in for it. Measured across vegetation sheets it
+// is 128..128 on one, 254..255 on another and 0..1 on an agave — and that last
+// one, under a scissor, renders the plant as nothing at all.
+//
+// Off by default, so a material built the old way is untouched.
+uniform sampler2D mask_tex : hint_default_white, filter_linear_mipmap;
+uniform bool use_mask = false;
+
 uniform float wind_strength = 0.0;   // metres of sway at canopy height; 0 = off
 uniform float wind_speed = 1.2;
+// Per-material gate on the GLOBAL wind_strength Configure Shaders sets. 1.0 on
+// vegetation, 0.0 on everything else that happens to be alpha-tested — chain
+// link, tarps, hesco barriers and vehicle decals are most of the map's masked
+// sections and none of them should sway.
+uniform float wind_scale : hint_range(0.0, 1.0) = 1.0;
 
 uniform sampler2D normal_tex : hint_normal, filter_linear_mipmap;
 uniform bool use_normal = false;
@@ -56,22 +77,24 @@ float pick(vec4 v, int ch) {
 }
 
 void vertex() {
-	if (wind_strength > 0.0) {
+	if (wind_strength * wind_scale > 0.0) {
 		vec3 wp = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 		// per-instance phase from world position; two detuned sines so the
 		// whole map never sways in lockstep (minecraft-shader feel, subtler)
 		float ph = dot(wp.xz, vec2(0.31, 0.17)) + TIME * wind_speed;
 		float sway = sin(ph) * 0.6 + sin(ph * 2.33 + 1.3) * 0.4;
 		float mask = clamp(VERTEX.y * 0.25, 0.0, 1.0);   // higher foliage sways more
-		VERTEX.x += sway * wind_strength * mask;
-		VERTEX.z += cos(ph * 0.77) * 0.6 * wind_strength * mask;
+		float amp = wind_strength * wind_scale;
+		VERTEX.x += sway * amp * mask;
+		VERTEX.z += cos(ph * 0.77) * 0.6 * amp * mask;
 	}
 }
 
 void fragment() {
 	vec4 c = texture(albedo_tex, UV) * albedo_mul;
 	ALBEDO = c.rgb;
-	ALPHA = c.a;
+	// The mask is single-channel: R is the coverage, its own A is a constant.
+	ALPHA = use_mask ? texture(mask_tex, UV).r : c.a;
 	ALPHA_SCISSOR_THRESHOLD = alpha_cut;
 
 	float r = roughness_mul;

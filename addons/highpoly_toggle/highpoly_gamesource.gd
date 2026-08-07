@@ -1433,6 +1433,25 @@ func material_for(state_key: int, scope: String):
 		_mat_cache[ck] = shared
 		return shared
 
+	# ---- masked? -------------------------------------------------------
+	# 52.8% of this map's sections bind the alpha slot and 81% of those bind
+	# `t_debug_r`: 64x64, constant 255, a default rather than a mask. Trusting
+	# "an alpha slot is bound" would put a scissor and a shader on 1,543 fully
+	# opaque sections for nothing.
+	#
+	# So the test is the CONTENT — a mask has to actually vary — and it is done
+	# once per distinct texture. Not the name: `t_debug_r` is recognisable today
+	# and a name test is a guess about every other map.
+	var mask = _mask_for(slots.get("alpha"))
+	if mask != null:
+		var fm = _foliage_material(slots, mask, _cut_for(slots.get("alpha")))
+		if fm != null:
+			_mat_cache[ck] = fm
+			_mat_by_look[look] = fm
+			tex_stats["masked"] = int(tex_stats.get("masked", 0)) + 1
+			tex_stats["materials"] = int(tex_stats["materials"]) + 1
+			return fm
+
 	var mat := StandardMaterial3D.new()
 	var any := false
 	# basecolor_veg is the vegetation sheet and takes precedence where both are
@@ -1470,13 +1489,34 @@ func material_for(state_key: int, scope: String):
 # sheet we never sample produce the same StandardMaterial3D, and treating them
 # as different would keep the meshes apart for a difference that cannot be seen.
 func _look_key(slots: Dictionary) -> String:
-	return "%s|%s|%s" % [
+	# The mask is part of the look. Two states that share a colour sheet and
+	# differ only in their opacity mask are different materials, and folding them
+	# together would hand one of them the other's cutout.
+	return "%s|%s|%s|%s" % [
 		str(slots.get("basecolor_veg", slots.get("basecolor", ""))),
 		str(slots.get("normal", slots.get("normal_vt", ""))),
-		str(slots.get("emissive", ""))]
+		str(slots.get("emissive", "")),
+		str(slots.get("alpha", ""))]
 
 
-func _texture_for(file_guid, is_normal := false):
+# ---------------------------------------------------------------------------
+# THE OPACITY MASK, or null when the slot holds a placeholder.
+#
+# Returns the ImageTexture only if the texture genuinely varies. A constant
+# channel is a default that was bound because the shader has the slot, not
+# because anything is cut out.
+#
+# Measured on a decompressed 32x32 copy: the source is BC4, which cannot be
+# sampled directly, and the question ("does this vary at all") survives the
+# downscale — a mask with any cutout at all has both light and dark pixels at
+# any resolution. Cached per texture, so 90 distinct masks on this map cost 90
+# decompressions rather than one per section.
+var _mask_cache := {}                  # texture asset name -> bool
+var _mask_cut := {}                    # texture asset name -> scissor threshold
+var _foliage_shader: Shader = null
+
+
+func _mask_for(file_guid):
 	if file_guid == null or str(file_guid) == "":
 		return null
 	var asset = walk.gi.get(str(file_guid))
@@ -1485,16 +1525,200 @@ func _texture_for(file_guid, is_normal := false):
 	var an := str(asset).to_lower()
 	if an.ends_with(".ebx"):
 		an = an.substr(0, an.length() - 4)
+	var known = _mask_cache.get(an)
+	if known != null and not bool(known):
+		return null
+	var tex = _texture_for(file_guid, false, MASK_MAX_DIM)
+	if tex == null:
+		_mask_cache[an] = false
+		return null
+	if known != null:
+		return tex
+	var img: Image = (tex as ImageTexture).get_image()
+	if img == null:
+		_mask_cache[an] = false
+		return null
+	var shape := mask_shape(img)
+	tex_stats["masks_checked"] = int(tex_stats.get("masks_checked", 0)) + 1
+	if shape.is_empty():
+		# Undecodable: assume it IS a cutout rather than silently drawing a tree
+		# as a solid block. A wrong scissor is visible and reportable; a missing
+		# one looks exactly like the bug this fixes.
+		_mask_cache[an] = true
+		return tex
+	var clear: float = shape["clear"]
+	var is_cut := clear >= CUTOUT_MIN_CLEAR and clear <= CUTOUT_MAX_CLEAR
+	_mask_cache[an] = is_cut
+	if not is_cut:
+		tex_stats["masks_placeholder"] = int(tex_stats.get("masks_placeholder", 0)) + 1
+		return null
+	# THE CUT ADAPTS TO THE MASK, because they do not share a range. Every leaf
+	# atlas measured has 0.0% of its texels above 0.9 — not a sampling artefact,
+	# it survives full-resolution sampling — and t_com_decorations_01_a spans
+	# 0..178 of 255, i.e. it tops out at 0.70. Meanwhile t_com_treedestroyed_02_a
+	# is 53% above 0.9. A fixed 0.5 works for both of those and would erase any
+	# mask that happened to top out below it, which is the failure that looks
+	# like the object was never built.
+	_mask_cut[an] = clampf(shape["max"] * 0.45, 0.12, 0.5)
+	return tex
+
+
+# IS THIS A CUTOUT, OR SOMETHING ELSE LIVING IN THE ALPHA SLOT?
+#
+# dfanz0r's rule, and the reason for it: "alpha is only honored when it looks
+# like a cutout — wear/blend masks stored in alpha channels otherwise punch
+# holes in solid surfaces." The slot is not a vegetation slot; it holds
+# placeholders, wear masks and real coverage alike.
+#
+# Measured over this map's 90 distinct alpha textures, the fraction of fully
+# clear texels separates them cleanly and both ends are placeholders:
+#
+#   t_debug_r                            0.0% clear   1,543 bindings
+#   t_com_semitruck_unique_01_a          1.3%
+#   t_naf_carpet_01_a                    3.6%
+#   ...real cutouts, leaves and fences, 20-82%...
+#   t_com_fabricsplinter_01_a           82.1%
+#   t_debug_black                      100.0% clear       5 bindings
+#
+# A FULLY CLEAR mask is as much a placeholder as a fully opaque one, and it is
+# the more dangerous of the two: honouring it does not draw a solid block, it
+# draws nothing at all. Both ends are rejected.
+#
+# SAMPLED AT FULL RESOLUTION, no resize. Downscaling a leaf atlas to 48x48
+# bilinear averaged every antialiased edge into mid-grey and reported an ivy
+# sheet as 0.0% opaque — which is not a property of the ivy, it is a property
+# of the resize. A stride over the real texels has no such artefact.
+const CUTOUT_MIN_CLEAR := 0.01
+const CUTOUT_MAX_CLEAR := 0.98
+const CUTOUT_SAMPLES := 128
+# NULL RESULT: mask resolution does not matter here, so a mask takes the same
+# cap as every other texture (-1 = use texture_max_dim).
+#
+# The first rendered foliage looked lacy and moth-eaten, and the obvious
+# explanation was the _a masks being 2048 while everything is capped at 1024 —
+# a hard scissor against an under-resolved mask punches exactly that kind of
+# hole. Uncapping them changed nothing. Capping them at 512 also changed
+# nothing: all three renders are indistinguishable.
+#
+# The lacy look was the FRAMING. Six plants in one shot puts each at about 40
+# pixels, and at that size any leafy silhouette reads as speckle whether the
+# cutout is right or wrong. One plant filling the frame shows clean leaf edges
+# and a correct compound-leaf shape. The instrument was the bug.
+const MASK_MAX_DIM := -1
+
+
+static func mask_shape(img: Image) -> Dictionary:
+	var c := img.duplicate() as Image
+	if c.is_compressed() and c.decompress() != OK:
+		return {}
+	var w := c.get_width()
+	var h := c.get_height()
+	if w < 2 or h < 2:
+		return {}
+	var sx: int = maxi(1, int(w / CUTOUT_SAMPLES))
+	var sy: int = maxi(1, int(h / CUTOUT_SAMPLES))
+	var clear := 0
+	var opaque := 0
+	var n := 0
+	var hi := 0.0
+	for y in range(0, h, sy):
+		for x in range(0, w, sx):
+			var v := c.get_pixel(x, y).r
+			n += 1
+			hi = maxf(hi, v)
+			if v < 0.1:
+				clear += 1
+			elif v > 0.9:
+				opaque += 1
+	if n == 0:
+		return {}
+	return {"clear": float(clear) / float(n), "opaque": float(opaque) / float(n),
+		"max": hi, "samples": n}
+
+
+# A masked material: albedo plus the mask, through the same foliage_wind shader
+# the Configure Shaders wind pref already knows how to drive.
+#
+# Deliberately THAT shader rather than a new one. apply_shader_prefs finds a
+# wind material by `shader.resource_path.ends_with("/foliage_wind.gdshader")`,
+# so building game-path foliage with it means the existing pref plumbing drives
+# it with no new code — and a second near-identical shader is how the two drift.
+func _cut_for(file_guid) -> float:
+	if file_guid == null:
+		return 0.5
+	var asset = walk.gi.get(str(file_guid))
+	if asset == null:
+		return 0.5
+	var an := str(asset).to_lower()
+	if an.ends_with(".ebx"):
+		an = an.substr(0, an.length() - 4)
+	return float(_mask_cut.get(an, 0.5))
+
+
+func _foliage_material(slots: Dictionary, mask, cut: float):
+	if _foliage_shader == null:
+		var dir := (get_script() as Script).resource_path.get_base_dir()
+		var s = load("%s/foliage_wind.gdshader" % dir)
+		if not (s is Shader):
+			return null
+		_foliage_shader = s
+	var albedo = _texture_for(slots.get("basecolor_veg", slots.get("basecolor")))
+	if albedo == null:
+		return null
+	var m := ShaderMaterial.new()
+	m.shader = _foliage_shader
+	m.set_shader_parameter("albedo_tex", albedo)
+	m.set_shader_parameter("mask_tex", mask)
+	m.set_shader_parameter("use_mask", true)
+	m.set_shader_parameter("alpha_cut", cut)
+	# WIND ONLY ON VEGETATION, gated per material. basecolor_veg is the game's
+	# own vegetation classification — 76 of this map's 352 masked sections. The
+	# other 276 are chain link, tarps, hesco barriers and vehicle decals, and a
+	# swaying chain-link fence is worse than a still one.
+	m.set_shader_parameter("wind_scale", 1.0 if slots.has("basecolor_veg") else 0.0)
+	var nrm = _texture_for(slots.get("normal", slots.get("normal_vt")), true)
+	if nrm != null:
+		m.set_shader_parameter("use_normal", true)
+		m.set_shader_parameter("normal_tex", nrm)
+	m.set_shader_parameter("roughness_mul", 0.9)
+	m.set_shader_parameter("specular_amount", 0.35)
+	return m
+
+
+# `cap` overrides texture_max_dim for this one texture. 0 means "whatever the
+# game ships", and the OPACITY MASKS ask for that.
+#
+# A mask's resolution is the silhouette. Capped at 1024 alongside everything
+# else, a 2048 leaf atlas loses exactly the thin structures the cutout is made
+# of, and a hard scissor turns each half-covered texel into a hole: rendered,
+# the plants came out lacy and moth-eaten rather than leafy. And it is the
+# cheapest possible thing to uncap — these are single-channel BC4, half a byte
+# per texel, 512 KB for a 2048 sheet against 5.3 MB for the BC7 colour sheet
+# beside it, over 26 distinct masks on this map.
+func _texture_for(file_guid, is_normal := false, cap := -1):
+	if file_guid == null or str(file_guid) == "":
+		return null
+	var asset = walk.gi.get(str(file_guid))
+	if asset == null:
+		return null
+	var an := str(asset).to_lower()
+	if an.ends_with(".ebx"):
+		an = an.substr(0, an.length() - 4)
+	# The cap is part of the identity: the same asset fetched once capped and
+	# once not is two different images, and sharing them would hand whichever
+	# arrived second the other's resolution.
+	if cap >= 0:
+		an = "%s@%d" % [an, cap]
 	if _tex_cache.has(an):
 		tex_stats["reused"] = int(tex_stats["reused"]) + 1
 		return _tex_cache[an]
-	var raw := src.get_res(an)
+	var raw := src.get_res(an.get_slice("@", 0) if cap >= 0 else an)
 	if raw.is_empty():
 		_tex_cache[an] = null
 		tex_stats["failed"] = int(tex_stats["failed"]) + 1
 		return null
 	var got := _tex.decode(raw, func(form): return src.get_chunk(str(form)),
-		texture_max_dim)
+		texture_max_dim if cap < 0 else cap)
 	if got.is_empty() or not (got.get("image") is Image):
 		_tex_cache[an] = null
 		tex_stats["failed"] = int(tex_stats["failed"]) + 1
