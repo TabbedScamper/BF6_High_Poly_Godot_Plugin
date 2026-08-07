@@ -82,6 +82,14 @@ static func config() -> Dictionary:
 # The whole session. `dock` is the plugin's dock (highpoly_toggle.gd) and
 # `mapctx` its map-context node; both are driven exactly as the UI drives them.
 static func run(host: Node, dock: Node, mapctx: Node) -> void:
+	# THE TREE, CAPTURED ONCE. The EditorPlugin gets freed part-way through a
+	# session — the editor reloads the addon after its import scan finishes — and
+	# every later `host.get_tree()` then dies with "Cannot call method on a
+	# previously freed instance", losing a run that was otherwise fine. SceneTree
+	# outlives the plugin, so hold that instead of reaching through the node.
+	var _tree := host.get_tree()
+	if _tree == null:
+		return
 	var cfg := config()
 	var rep := {
 		"map": str(cfg["map"]),
@@ -102,10 +110,57 @@ static func run(host: Node, dock: Node, mapctx: Node) -> void:
 	var scene := _scene_for(str(cfg["map"]))
 	if scene == "":
 		rep["error"] = "no scene found for %s" % str(cfg["map"])
-		_finish(host, cfg, rep)
+		_finish(_tree, cfg, rep)
 		return
+	# WAIT FOR THE IMPORT SCAN BEFORE TOUCHING A SCENE.
+	#
+	# The level's assets are not on disk as .glb at all — raw/models/ holds only
+	# .import files, and the real data is Godot's cached .scn. Those resolve only
+	# once EditorFileSystem has registered them, so a scene opened mid-scan comes
+	# up as a shell: MP_Dumbo in 607 ms with 37 nodes and a stderr full of
+	# "res://raw/models/MP_Dumbo_Assets.glb - the file doesn't seem to exist".
+	#
+	# That reads as a corrupted project and is nothing of the kind. The runs that
+	# worked took ~30 s to open because the scan had finished by then; the run
+	# that "opened instantly" had simply beaten it.
+	var efs := EditorInterface.get_resource_filesystem()
+	var st0 := Time.get_ticks_msec()
+	if efs != null:
+		# A scan can start slightly after boot, so this waits for one to appear
+		# and then for it to end, rather than sampling once and finding a false.
+		while Time.get_ticks_msec() - st0 < 300000:
+			await _tree.process_frame
+			if not efs.is_scanning() and Time.get_ticks_msec() - st0 > 2000:
+				break
+	rep["import_scan_ms"] = Time.get_ticks_msec() - st0
+	_say("autorun: filesystem scan settled after %.1f s"
+			% (rep["import_scan_ms"] / 1000.0))
+
 	var t0 := Time.get_ticks_msec()
-	EditorInterface.open_scene_from_path(scene)
+	# ALREADY OPEN IS THE COMMON CASE. The editor restores the last scene, which
+	# on this machine is usually the map being measured, and re-opening it throws
+	# away a load that has already happened.
+	# GIVE THE EDITOR TIME TO RESTORE ITS OWN SCENE FIRST.
+	#
+	# It reopens whatever was last edited, which here is the map being measured,
+	# but that restore lands AFTER the import scan settles. Checking once and
+	# finding nothing meant opening a second copy — two Dumbo tabs, two loads,
+	# and the measurements taken against whichever one happened to be current.
+	var pre: Node = null
+	var wait0 := Time.get_ticks_msec()
+	while Time.get_ticks_msec() - wait0 < 30000:
+		pre = EditorInterface.get_edited_scene_root()
+		if pre != null and str(pre.name) != "":
+			break
+		await _tree.process_frame
+	if pre != null and str(pre.name) == str(cfg["map"]):
+		_say("autorun: %s was already open (restored by the editor); reusing it"
+				% str(cfg["map"]))
+		rep["reused_open_scene"] = true
+	else:
+		_say("autorun: opening %s (editor restored %s)"
+				% [str(cfg["map"]), str(pre.name) if pre != null else "nothing"])
+		EditorInterface.open_scene_from_path(scene)
 	# WAIT FOR THE ROOT, do not count frames. open_scene_from_path is deferred
 	# and a big level takes far longer than a fixed handful of frames — ten was
 	# enough to report "scene did not open" about a scene that opens perfectly
@@ -114,7 +169,7 @@ static func run(host: Node, dock: Node, mapctx: Node) -> void:
 	var dismissed := 0
 	var tick := 0
 	while Time.get_ticks_msec() - t0 < 120000:
-		await host.get_tree().process_frame
+		await _tree.process_frame
 		# Checked WHILE waiting, not after: a modal dialog holds a grab, and a
 		# scene that cannot finish opening behind one looks exactly like a scene
 		# that takes two minutes to open.
@@ -125,11 +180,24 @@ static func run(host: Node, dock: Node, mapctx: Node) -> void:
 		if root != null and str(root.name) != "":
 			break
 	rep["dialogs_dismissed"] = dismissed
+
+	# A FEW DOZEN NODES IS NORMAL HERE, and treating it as failure was wrong.
+	#
+	# res://raw/models/ holds .import files whose .glb sources are not on disk,
+	# so the SDK's own level content does not load in this project at all — the
+	# level scene IS a ~50-node shell, and the plugin's overlay is what fills it.
+	# The 14,089 nodes an earlier run reported were 13,439 props plus 290
+	# backdrop plus 257 terrain, all of them ours, sitting on top of that shell.
+	#
+	# Recorded rather than judged: a sudden change in this number is worth
+	# seeing, but a small one is the resting state and not a broken project.
+	if root != null:
+		rep["scene_nodes_at_open"] = _count_nodes(root)
 	rep["open_ms"] = Time.get_ticks_msec() - t0
 	rep["scene"] = scene
 	if root == null:
 		rep["error"] = "scene did not open: %s" % scene
-		_finish(host, cfg, rep)
+		_finish(_tree, cfg, rep)
 		return
 	_say("autorun: opened %s in %d ms" % [scene.get_file(), rep["open_ms"]])
 
@@ -185,9 +253,70 @@ static func run(host: Node, dock: Node, mapctx: Node) -> void:
 	rep["vram_mode"] = mapctx.vram_mode
 
 
+	# DRIVE THE DOCK, DO NOT REIMPLEMENT IT.
+	#
+	# This used to call mapctx.apply() directly with the flags it wanted, which
+	# is a different thing from what the panel does and produced a map that
+	# built and then did not appear: 40,581 prop surfaces in the tree and 44
+	# draw calls on screen. Opening the editor by hand and switching the same
+	# layers on works perfectly, which is the whole tell — the dock also sets
+	# the detail tier, the range slider, the placed-object cull and the per-map
+	# state, and apply() alone does none of that.
+	#
+	# Setting `button_pressed` fires the same `toggled` handler a click does, so
+	# this is the panel being operated rather than imitated.
 	t0 = Time.get_ticks_msec()
-	var status: String = mapctx.apply(root, true, bool(cfg["objects"]),
-			int(cfg["mode"]), bool(cfg["backdrop"]), bool(cfg["water"]))
+	var status := "driven through the dock"
+	# LET THE DOCK NOTICE THE SCENE FIRST.
+	#
+	# _check_scene_change() runs on the dock's own half-second timer, and when it
+	# sees a new root it deliberately RESETS the panel — mode back to SDK, tier
+	# back to Low — so that switching scene tabs stays cheap. Setting the
+	# controls before that fires means the timer undoes every one of them a
+	# moment later, which is precisely "it doesn't keep the settings": the build
+	# never starts, and 900 s later the run times out having placed no props.
+	#
+	# So wait until the dock's cached root IS this scene, then drive it.
+	var sync0 := Time.get_ticks_msec()
+	while Time.get_ticks_msec() - sync0 < 30000:
+		# THE PLUGIN CAN BE FREED UNDER US. The editor re-instantiates the addon
+		# after its import scan settles — which is exactly when this runs — and
+		# any reach through the old instance then dies with "Cannot call method
+		# on a previously freed instance", ending the run with no indication of
+		# WHICH object went. Named, rather than crashed on.
+		if not is_instance_valid(host):
+			rep["error"] = ("the EditorPlugin was freed mid-session: the editor "
+					+ "reloaded the addon, so the dock could not be driven")
+			_say("autorun: %s" % rep["error"])
+			_finish(_tree, cfg, rep)
+			return
+		if not is_instance_valid(root):
+			rep["error"] = "the edited scene root was freed mid-session"
+			_say("autorun: %s" % rep["error"])
+			_finish(_tree, cfg, rep)
+			return
+		if host.get("_edited_root") == root:
+			break
+		await _tree.process_frame
+	rep["dock_sync_ms"] = Time.get_ticks_msec() - sync0
+	# One more tick past it, so the reset it performs on noticing has finished
+	# before anything is set.
+	await _tree.create_timer(1.0).timeout
+
+	# `host`, NOT `dock`. mode_btn / mapctx_on / mapctx_range and the rest are
+	# members of the EditorPlugin; `dock` is only the VBoxContainer they were
+	# added to. Looking them up on the container found nothing and fell straight
+	# back to apply() — the path that builds a map and never shows it.
+	var drove := _drive_dock(host, cfg)
+	rep["dock_controls"] = drove
+	if drove.is_empty():
+		# No controls found: fall back to the direct call rather than measure
+		# nothing, and say so, because the two are not equivalent.
+		status = mapctx.apply(root, true, bool(cfg["objects"]),
+				int(cfg["mode"]), bool(cfg["backdrop"]), bool(cfg["water"]))
+		rep["dock_fallback"] = true
+		_say("autorun: could not find the dock's controls — fell back to "
+				+ "apply(), which is NOT what the panel does")
 	# apply() launches the props build fire-and-forget, so the wait is on the
 	# signal rather than on apply() returning.
 	var limit: int = int(cfg["build_timeout_s"]) * 1000
@@ -200,7 +329,7 @@ static func run(host: Node, dock: Node, mapctx: Node) -> void:
 
 	var btick := 0
 	while not done[0]:
-		await host.get_tree().process_frame
+		await _tree.process_frame
 		btick += 1
 		if btick % 60 == 0:
 			rep["dialogs_dismissed"] = int(rep.get("dialogs_dismissed", 0)) \
@@ -279,31 +408,91 @@ static func run(host: Node, dock: Node, mapctx: Node) -> void:
 	var radius := float(cfg.get("radius", 1.0e9))
 	if mapctx.has_method("set_radius"):
 		mapctx.set_radius(radius)
-		await host.get_tree().process_frame
+		await _tree.process_frame
 	rep["radius"] = radius
 
 	# WAIT FOR THE SKYLINE TOO. The props build signalling "finished" says
 	# nothing about the backdrop, which runs alongside it and finishes later on
 	# this map: 155 pieces, and the heaviest geometry in the scene.
+	# WAIT ON THE SCENE, NOT ON A SIGNAL.
+	#
+	# Two attempts at this were wrong in ways that both reported success. The
+	# first waited only for the props build, so flights began while the skyline
+	# was still going. The second watched backdrop_progress but timed its
+	# quiet-check from when it CONNECTED — after a 40 s props build that clock
+	# was already expired, so it bailed on the first iteration and announced
+	# "skyline 155/155 after 0.0 s" about a layer that was not in the tree at all.
+	#
+	# The census is ground truth: it counts what is actually under _MAP_CONTEXT.
+	# A layer that was asked for and has no surfaces is not finished, whatever
+	# any signal says.
 	if bool(cfg["backdrop"]):
 		var bt0 := Time.get_ticks_msec()
-		var bquiet := 0
+		var settled := 0
+		var last_surf := -1
 		while Time.get_ticks_msec() - bt0 < limit:
-			await host.get_tree().process_frame
-			if int(bd["total"]) > 0 and int(bd["done"]) >= int(bd["total"]):
-				break
-			# It emits nothing at all if the layer had no work to do, so a
-			# stretch of silence with no progress ends the wait rather than
-			# burning the whole build budget on a layer that already finished.
-			if Time.get_ticks_msec() - int(bd["at"]) > 20000:
-				bquiet = 1
-				break
+			await _tree.process_frame
+			# Same guard as the dock sync: a freed root here would take the run
+			# down between the build finishing and the flight starting, which is
+			# the most expensive place to lose one.
+			if not is_instance_valid(root):
+				rep["error"] = "the scene root was freed while waiting for the skyline"
+				_say("autorun: %s" % rep["error"])
+				_finish(_tree, cfg, rep)
+				return
+			var c := _surface_census(root)
+			var s := 0
+			if c.has("Backdrop"):
+				s = int((c["Backdrop"] as Dictionary)["surfaces"])
+			if s > 0 and s == last_surf:
+				# Unchanged across checks: it has stopped growing, so it is done
+				# rather than merely partway.
+				settled += 1
+				if settled >= 3:
+					break
+			else:
+				settled = 0
+			last_surf = s
+			await _tree.create_timer(0.5).timeout
 		rep["backdrop_ms"] = Time.get_ticks_msec() - bt0
+		rep["backdrop_surfaces"] = last_surf
 		rep["backdrop_done"] = int(bd["done"])
 		rep["backdrop_total"] = int(bd["total"])
-		rep["backdrop_quiet"] = bquiet
-		_say("autorun: skyline %d/%d after a further %.1f s"
-				% [bd["done"], bd["total"], rep["backdrop_ms"] / 1000.0])
+		_say("autorun: skyline settled at %d surfaces (%d/%d) after a further "
+				% [last_surf, bd["done"], bd["total"]]
+				+ "%.1f s" % (rep["backdrop_ms"] / 1000.0))
+
+	# IS THE MAP ACTUALLY ON SCREEN? Everything above can succeed and still leave
+	# a view with nothing in it — the layers build into the tree while hidden,
+	# and if anything leaves them that way the flight measures an empty frame and
+	# reports it as a fast one. A run has already done exactly that: 40,581 prop
+	# surfaces present in the scene, 44 draw calls during the flight, 4.1 ms a
+	# frame, and it looked like a spectacular improvement.
+	#
+	# So the frame numbers are only published if the camera can see the map.
+	var probe_vp := EditorInterface.get_editor_viewport_3d(0)
+	var probe_draws := 0
+	if probe_vp != null:
+		for i in range(5):
+			await _tree.process_frame
+		probe_draws = probe_vp.get_render_info(
+				Viewport.RENDER_INFO_TYPE_VISIBLE,
+				Viewport.RENDER_INFO_DRAW_CALLS_IN_FRAME)
+	rep["probe_draws"] = probe_draws
+	var have_surfaces := 0
+	for k in _surface_census(root).values():
+		have_surfaces += int((k as Dictionary)["surfaces"])
+	rep["census_surfaces"] = have_surfaces
+	if have_surfaces > 1000 and probe_draws < 500:
+		rep["flight_error"] = ("the scene holds %d surfaces but the viewport is "
+				+ "drawing %d calls — the map is built and NOT VISIBLE, so no "
+				+ "frame times are reported") % [have_surfaces, probe_draws]
+		_say("autorun: %s" % rep["flight_error"])
+		rep["scene_nodes"] = _count_nodes(root)
+		rep["engine"] = _engine()
+		rep["census"] = _surface_census(root)
+		_finish(_tree, cfg, rep)
+		return
 
 	var samples := _load_path(str(cfg["flight"]))
 	rep["flight_samples"] = samples.size()
@@ -314,8 +503,8 @@ static func run(host: Node, dock: Node, mapctx: Node) -> void:
 		# Settle first: the frames straight after a build are not typical, and
 		# averaging them in makes every run look worse than it is.
 		for i in range(int(cfg["settle_frames"])):
-			await host.get_tree().process_frame
-		rep.merge(await _fly(host, samples))
+			await _tree.process_frame
+		rep.merge(await _fly(_tree, samples))
 	rep["scene_nodes"] = _count_nodes(root)
 	rep["engine"] = _engine()
 	rep["census"] = _surface_census(root)
@@ -324,7 +513,7 @@ static func run(host: Node, dock: Node, mapctx: Node) -> void:
 	# editor dies mid-run there is no report at all, and this is what the next
 	# session reads to find out where it died.
 	rep["last_crumb"] = HighpolyProfiler.last_session_end()
-	_finish(host, cfg, rep)
+	_finish(_tree, cfg, rep)
 
 
 # Props per second, from the second half of the samples.
@@ -387,6 +576,64 @@ static func _engine() -> Dictionary:
 #
 # -> how many were dismissed, which is worth recording: a run that had to close
 # four dialogs is not the same run as one that closed none.
+# Operate the panel's own controls, in the order a person would.
+#
+# -> which controls were actually found and set, so a run that quietly missed
+# one is visible in the report rather than showing up as a mysteriously empty
+# map twenty minutes later.
+static func _drive_dock(plug: Node, cfg: Dictionary) -> Dictionary:
+	var out := {}
+	if plug == null:
+		return out
+
+	# Detail mode first: everything else is gated on it, and the layer switches
+	# read it when they build.
+	if plug.get("mode_btn") != null:
+		var mb: OptionButton = plug.mode_btn
+		var want := int(cfg["mode"])
+		for i in range(mb.item_count):
+			if mb.get_item_id(i) == want:
+				mb.select(i)
+				mb.item_selected.emit(i)
+				out["mode"] = want
+				break
+
+	# The range slider BEFORE the layers, so nothing is built already culled.
+	# Its own "no culling" position is the top of its range.
+	if plug.get("mapctx_range") != null:
+		var sl: HSlider = plug.mapctx_range
+		sl.value = sl.max_value
+		sl.value_changed.emit(sl.value)
+		out["range"] = sl.value
+
+	# Then the layers themselves. button_pressed fires `toggled`, which is the
+	# same path a click takes.
+	# mapctx_objects IS "Original map objects" and it has its OWN switch, living
+	# on the Detail Mode chip row rather than beside the other map-context
+	# toggles. Leaving it out of this list is why every driven run came up with
+	# the whole overlay present EXCEPT the level's own objects.
+	for pair in [["mapctx_on", true],
+				 ["mapctx_objects", bool(cfg.get("objects", true))],
+				 ["mapctx_backdrop", bool(cfg["backdrop"])],
+				 ["mapctx_water", bool(cfg["water"])],
+				 ["mapctx_light", bool(cfg.get("lighting", true))],
+				 ["mapctx_gi", bool(cfg.get("gi", true))],
+				 ["mapctx_shadows", bool(cfg.get("shadows", true))],
+				 ["mapctx_maplights", bool(cfg.get("map_lights", true))]]:
+		var name := str(pair[0])
+		var want_on := bool(pair[1])
+		var b = plug.get(name)
+		if b == null or not (b is Button):
+			continue
+		var btn: Button = b
+		if btn.button_pressed != want_on:
+			btn.button_pressed = want_on          # emits toggled
+		else:
+			btn.toggled.emit(want_on)             # already there: still run it
+		out[name] = want_on
+	return out
+
+
 static func _dismiss_dialogs() -> int:
 	var base := EditorInterface.get_base_control()
 	if base == null:
@@ -450,8 +697,19 @@ static func _surface_census(root: Node) -> Dictionary:
 	for layer in ctx.get_children():
 		var acc := {"nodes": 0, "instances": 0, "surfaces": 0}
 		_census_walk(layer, acc)
+		# VISIBILITY IS PART OF THE CENSUS. A layer builds while hidden and is
+		# restored at the end, so "40,581 surfaces present, 44 draw calls" is
+		# the signature of a layer left invisible — and without this it looks
+		# like the renderer ignoring geometry that is right there.
+		if layer is Node3D:
+			acc["visible"] = (layer as Node3D).visible
+			acc["visible_in_tree"] = (layer as Node3D).is_visible_in_tree()
 		if int(acc["surfaces"]) > 0:
 			out[str(layer.name)] = acc
+	if ctx is Node3D:
+		out["_MAP_CONTEXT"] = {"visible": (ctx as Node3D).visible,
+				"visible_in_tree": (ctx as Node3D).is_visible_in_tree(),
+				"nodes": 0, "instances": 0, "surfaces": 0}
 	return out
 
 
@@ -474,7 +732,7 @@ static func _census_walk(n: Node, acc: Dictionary) -> void:
 		_census_walk(c, acc)
 
 
-static func _fly(host: Node, samples: Array) -> Dictionary:
+static func _fly(_tree: SceneTree, samples: Array) -> Dictionary:
 	# OUR OWN VIEWPORT ONTO THE EDITOR'S WORLD, rather than driving the editor
 	# camera.
 	#
@@ -547,7 +805,7 @@ static func _fly(host: Node, samples: Array) -> Dictionary:
 	for s in samples:
 		cam.global_transform = s
 		var t0 := Time.get_ticks_usec()
-		await host.get_tree().process_frame
+		await _tree.process_frame
 		times.append((Time.get_ticks_usec() - t0) / 1000.0)
 		# BOTH PASSES. RENDER_INFO_TYPE_VISIBLE counts only the camera pass;
 		# shadow rendering is counted separately under _TYPE_SHADOW. Reading
@@ -692,7 +950,7 @@ static func _count_nodes(n: Node) -> int:
 	return c
 
 
-static func _finish(host: Node, cfg: Dictionary, rep: Dictionary) -> void:
+static func _finish(_tree: SceneTree, cfg: Dictionary, rep: Dictionary) -> void:
 	rep["total_ms"] = Time.get_ticks_msec()
 	var out := str(cfg["out"])
 	var f := FileAccess.open(out, FileAccess.WRITE)
@@ -704,9 +962,9 @@ static func _finish(host: Node, cfg: Dictionary, rep: Dictionary) -> void:
 		_say("autorun: COULD NOT WRITE %s" % out)
 	# Flush before quitting: a report that exists only in a buffer is a run
 	# that has to be repeated.
-	await host.get_tree().process_frame
+	await _tree.process_frame
 	_say("autorun: done in %.1f s" % (rep["total_ms"] / 1000.0))
-	host.get_tree().quit(0)
+	_tree.quit(0)
 
 
 static func _say(s: String) -> void:
