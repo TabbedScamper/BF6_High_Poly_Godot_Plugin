@@ -1,29 +1,36 @@
 {
  "apply_status": "driven through the dock",
- "backdrop_done": 155,
- "backdrop_ms": 1666,
- "backdrop_surfaces": 550,
- "backdrop_total": 155,
- "boot_ms": 19415,
- "build_done": 2761,
- "build_ms": 37465,
+ "backdrop_done": 157,
+ "backdrop_ms": 1582,
+ "backdrop_surfaces": 406,
+ "backdrop_total": 157,
+ "boot_ms": 19444,
+ "build_done": 5498,
+ "build_ms": 26304,
  "build_sampled": false,
  "build_stalled": false,
  "build_timed_out": false,
- "build_total": 2761,
+ "build_total": 5498,
  "cell": 0,
  "census": {
   "Backdrop": {
-   "instances": 155,
-   "nodes": 156,
-   "surfaces": 550,
+   "instances": 185,
+   "nodes": 158,
+   "surfaces": 406,
    "visible": true,
    "visible_in_tree": true
   },
   "Props": {
-   "instances": 44925,
-   "nodes": 4245,
-   "surfaces": 14801,
+   "instances": 44920,
+   "nodes": 6643,
+   "surfaces": 12399,
+   "visible": true,
+   "visible_in_tree": true
+  },
+  "Roads": {
+   "instances": 1,
+   "nodes": 1,
+   "surfaces": 47,
    "visible": true,
    "visible_in_tree": true
   },
@@ -49,7 +56,7 @@
    "visible_in_tree": true
   }
  },
- "census_surfaces": 15608,
+ "census_surfaces": 13109,
  "dialogs_dismissed": 0,
  "dialogs_seen": {},
  "dock_controls": {
@@ -64,57 +71,130 @@
   "mode": 2,
   "range": 3500.0
  },
- "dock_sync_ms": 383,
- "draws_mean": 6114,
- "draws_peak": 16051,
+ "dock_sync_ms": 415,
+ "draws_mean": 3498,
+ "draws_peak": 12856,
  "editor_cam_stuck": 455,
  "editor_cam_tried": 455,
  "engine": {
-  "buffer_mb": 819.1,
-  "mem_static_mb": 3331.1,
-  "nodes": 25955,
-  "objects": 258362,
+  "buffer_mb": 718.7,
+  "mem_static_mb": 6751.8,
+  "nodes": 36181,
+  "objects": 249882,
   "orphans": 294,
-  "prims": 3809537,
-  "resources": 11683,
-  "texture_mb": 14511.3,
-  "vram_mb": 15511.1
+  "prims": 3946773,
+  "resources": 422,
+  "texture_mb": 5312.1,
+  "vram_mb": 6179.3
  },
  "flight_samples": 455,
- "frames": 932,
+ "frames": 2084,
  "godot": "4.6.3-stable (official)",
  "headless": false,
- "hitches": 1,
- "import_scan_ms": 26510,
+ "hitches33": 55,
+ "hitches50": 8,
+ "import_scan_ms": 24843,
  "last_crumb": "",
  "lighting": "MP_Dumbo game lighting: sun az 125\u00c2\u00b0 el 29\u00c2\u00b0, 120000 lux",
- "low1_ms": 65.88,
+ "low1_ms": 50.14,
  "map": "MP_Dumbo",
- "map_lights": "No light data for MP_Dumbo",
- "mean_ms": 32.09,
- "median_ms": 23.42,
- "open_ms": 4939,
- "p95_ms": 53.32,
- "p99_ms": 56.51,
- "probe_draws": 15442,
- "props_built": 2761,
- "props_per_s": 86.5,
+ "map_lights": "Map lights: 7878 loaded (nearest 300 m lit)",
+ "mean_ms": 12.55,
+ "median_ms": 6.82,
+ "open_ms": 4993,
+ "p95_ms": 31.3,
+ "p99_ms": 35.87,
+ "phases": {
+  "game source: mount": {
+   "each_ms": 623.0,
+   "n": 1,
+   "s": 0.623
+  },
+  "game source: partition index": {
+   "each_ms": 591.0,
+   "n": 1,
+   "s": 0.591
+  },
+  "game source: placement walk": {
+   "each_ms": 192.0,
+   "n": 1,
+   "s": 0.192
+  },
+  "game source: typeinfo": {
+   "each_ms": 33.0,
+   "n": 1,
+   "s": 0.033
+  },
+  "map lights: build fixtures": {
+   "each_ms": 120.0,
+   "n": 3,
+   "s": 0.36
+  },
+  "map lights: waiting for a frame": {
+   "each_ms": 347.5,
+   "n": 2,
+   "s": 0.695
+  },
+  "panel tick: map-light culling": {
+   "each_ms": 0.54,
+   "n": 13,
+   "s": 0.007
+  },
+  "panel tick: prop cell culling": {
+   "each_ms": 0.08,
+   "n": 13,
+   "s": 0.001
+  },
+  "panel tick: total": {
+   "each_ms": 0.69,
+   "n": 13,
+   "s": 0.009
+  },
+  "props: apply_radius on every yield": {
+   "each_ms": 0.38,
+   "n": 24,
+   "s": 0.009
+  },
+  "props: create multimesh cells": {
+   "each_ms": 0.09,
+   "n": 5498,
+   "s": 0.5
+  },
+  "props: load mesh (GLB parse + cache)": {
+   "each_ms": 2.05,
+   "n": 5498,
+   "s": 11.25
+  },
+  "props: waiting for the yielded frame": {
+   "each_ms": 161.17,
+   "n": 24,
+   "s": 3.868
+  },
+  "skyline: place multimesh": {
+   "each_ms": 0.03,
+   "n": 157,
+   "s": 0.005
+  }
+ },
+ "probe_draws": 12311,
+ "props_built": 5498,
+ "props_per_s": 658.1,
  "radius": 1000000000.0,
  "reused_open_scene": true,
  "scene": "res://Levels/MP_Dumbo.tscn",
- "scene_nodes": 4761,
+ "scene_nodes": 14992,
  "scene_nodes_at_open": 48,
- "shadow_draws_mean": 157,
- "shadow_draws_peak": 577,
- "started_unix": 1786122148.132,
- "total_ms": 122702,
+ "shadow_draws_mean": 133,
+ "shadow_draws_peak": 630,
+ "started_unix": 1786141601.896,
+ "total_ms": 105912,
  "vram_mode": 1,
- "worst_ms": 101.23,
- "wall_s": 126.4,
- "vram_mb": 15511.1,
- "texture_mb": 14511.3,
- "mem_static_mb": 3331.1,
+ "worst_ms": 108.7,
+ "wall_s": 109.5,
+ "vram_mb": 6179.3,
+ "texture_mb": 5312.1,
+ "mem_static_mb": 6751.8,
  "force_killed": false,
- "when": "2026-08-07 12:04:15",
- "note": "FINAL: merged skyline + 512m default cell"
+ "when": "2026-08-07 17:28:11",
+ "note": "baseline"
 }

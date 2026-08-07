@@ -4692,8 +4692,39 @@ func purge_map(map: String, info: Dictionary) -> void:
 #
 # Returns the number of bytes freed. The CALLER is responsible for tearing the
 # overlay down first, exactly as _do_purge does, so nothing holds these files.
+# Everything the READER caches, as opposed to everything the download caches.
+#
+# These are all derived from the player's own install and none of them is
+# downloaded, but they are still hundreds of megabytes that appeared without
+# being asked for — Dumbo's geometry alone is 339 MB — and a Reset that leaves
+# them behind is a Reset that does not reset. Listed here rather than inline so
+# the usage report and the purge cannot disagree about what exists.
+const READER_CACHE_DIR := "user://bf6_geom"
+
+
+static func reader_cache_files() -> Array:
+	var out: Array = ["user://bf6_geom"]
+	var da := DirAccess.open("user://")
+	if da != null:
+		for f in da.get_files():
+			# bf6_walk_*.idx, bf6_pidx_*.idx, bf6_index_*.idx — the mount, the
+			# partition index and the placement walk, each keyed on the TOC
+			# signature so a game patch orphans rather than staleness.
+			if str(f).begins_with("bf6_") and str(f).ends_with(".idx"):
+				out.append("user://%s" % f)
+	return out
+
+
 func purge_everything() -> int:
 	var freed := 0
+	for p in reader_cache_files():
+		if p.ends_with(".idx"):
+			freed += _file_size(p)
+			DirAccess.remove_absolute(p)
+		else:
+			var ru: Array = await dir_usage_async(p)
+			freed += int(ru[1])
+			_rm_dir_recursive(p)
 	for d in [CACHE, HighpolyStore.MODELS_DIR, HighpolyStore.THUMBS_DIR]:
 		var u: Array = await dir_usage_async(d)
 		freed += int(u[1])
