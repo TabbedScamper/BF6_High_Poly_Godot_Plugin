@@ -1520,6 +1520,17 @@ func _exit_tree() -> void:
 
 # ---------- startup: migration -> scope -> sync ----------
 func _startup() -> void:
+	# UNATTENDED SESSION, when the environment asks for one. Runs the real dock
+	# path over the real scene and quits with a report, which is the only way to
+	# measure what a user actually experiences — a bench that loads the same
+	# meshes into a bare tree measures a different world.
+	#
+	# Checked FIRST and returns: none of the interactive startup below (the
+	# migration wizard, the scope prompt) makes sense with nobody at the
+	# keyboard, and a modal dialog would hang the run until it timed out.
+	if HighpolyAutorun.requested():
+		HighpolyAutorun.run(self, dock, mapctx)
+		return
 	if HighpolyMigrate.needed():
 		_show_migration_wizard()
 		return
