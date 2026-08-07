@@ -2,6 +2,7 @@ bin/
 _testproj/
 vectors/
 casvectors/
+srcvectors/
 extension_api.json
 *.obj
 *.lib
