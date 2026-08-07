@@ -1,0 +1,8 @@
+bin/
+_testproj/
+vectors/
+extension_api.json
+*.obj
+*.lib
+*.exp
+*.pdb

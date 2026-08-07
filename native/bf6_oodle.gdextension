@@ -1,0 +1,9 @@
+[configuration]
+
+entry_symbol = "bf6_oodle_init"
+compatibility_minimum = 4.4
+
+[libraries]
+
+windows.debug.x86_64 = "res://addons/highpoly_toggle/bin/bf6_oodle.windows.x86_64.dll"
+windows.release.x86_64 = "res://addons/highpoly_toggle/bin/bf6_oodle.windows.x86_64.dll"
