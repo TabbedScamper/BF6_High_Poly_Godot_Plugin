@@ -315,6 +315,25 @@ static func run(host: Node, dock: Node, mapctx: Node) -> void:
 	# members of the EditorPlugin; `dock` is only the VBoxContainer they were
 	# added to. Looking them up on the container found nothing and fell straight
 	# back to apply() — the path that builds a map and never shows it.
+	# ATTRIBUTE THE BUILD, not just time it.
+	#
+	# The build has been reported as one number — "42.0 s, 2761 props" — for
+	# every run so far, which says that it is slow and nothing about WHY. The
+	# profiler already carries a phase table (HighpolyProfiler.span) with a call
+	# count and a per-call cost, and _build_props_async is instrumented
+	# throughout; the table was simply never captured, because span() is a no-op
+	# unless a recording is running and the autorun never started one.
+	#
+	# The scene-walking attribution pass is stopped for the duration. It runs
+	# every 2 s and walks the whole tree — during a build, a tree growing by
+	# thousands of nodes — so leaving it on would add its own cost to the very
+	# thing being measured.
+	var prof: Node = host.get("profiler")
+	if prof != null:
+		prof.start()
+		if prof.get("_scan") != null:
+			prof._scan.stop()
+
 	var drove := _drive_dock(host, cfg)
 	rep["dock_controls"] = drove
 	if drove.is_empty():
@@ -469,6 +488,28 @@ static func run(host: Node, dock: Node, mapctx: Node) -> void:
 		_say("autorun: skyline settled at %d surfaces (%d/%d) after a further "
 				% [last_surf, bd["done"], bd["total"]]
 				+ "%.1f s" % (rep["backdrop_ms"] / 1000.0))
+
+	# THE PHASE TABLE, taken here rather than at the end of the run: everything
+	# above is the startup being measured, and the flight that follows would mix
+	# its own spans into the same totals.
+	#
+	# Read straight off the static dictionary rather than through the profiler's
+	# text summary, so the report carries numbers a script can sort rather than a
+	# rendered table a human has to re-parse.
+	if prof != null:
+		var spans := {}
+		for k in HighpolyProfiler._spans:
+			var e: Dictionary = HighpolyProfiler._spans[k]
+			spans[k] = {"s": round(float(e["ms"])) / 1000.0, "n": int(e["n"]),
+					"each_ms": round(float(e["ms"]) / maxf(1.0, float(e["n"])) * 100.0) / 100.0}
+		rep["phases"] = spans
+		prof.stop()
+		var ranked: Array = spans.keys()
+		ranked.sort_custom(func(a, b): return float(spans[a]["s"]) > float(spans[b]["s"]))
+		for k in ranked.slice(0, 8):
+			_say("autorun: phase  %-36s %6.1fs  %6d calls  %7.2f ms each"
+					% [str(k).left(36), spans[k]["s"], spans[k]["n"],
+					   spans[k]["each_ms"]])
 
 	# IS THE MAP ACTUALLY ON SCREEN? Everything above can succeed and still leave
 	# a view with nothing in it — the layers build into the tree while hidden,

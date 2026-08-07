@@ -718,6 +718,16 @@ func _clear(root: Node, keep_backdrop := false, keep_props := false) -> void:
 	_build_gen += 1
 	_building = false
 	_pf_release()         # prefetched scenes the cancelled build will never claim
+	# The whole overlay is going, so the pooled GPU textures have no materials
+	# left pointing at them. Keeping them would hold the map's texture memory
+	# across a map switch, which is precisely the leak the pool is meant to cure.
+	#
+	# Only when nothing survives, though. Dropping the pool while props or the
+	# skyline are being kept would leave live materials holding textures the pool
+	# no longer knows about, and the layer rebuilt next would upload its own
+	# second copy of each — re-introducing the duplication, on the GPU, silently.
+	if not keep_backdrop and not keep_props:
+		BcTex.release_all()
 	# a cancelled build's sidecars describe meshes nobody is going to use; the
 	# next build re-parses those props and queues them again
 	_side_writes.clear()
@@ -1501,6 +1511,12 @@ func _load_geom_tier(gp: String) -> Array:
 	if not BcTex.exists(gp) and not _glb_has_no_images(gp):
 		return []
 
+	# TIMED SEPARATELY from the texture work below it. "props: load mesh" is
+	# 17.0 s over 2,761 props and covers this whole function; without splitting
+	# it there is no way to tell reading 74 KB of geometry off disk from the
+	# material and texture work that follows, and they want completely different
+	# fixes.
+	var _tg := Time.get_ticks_msec()
 	var meshes: Array = []
 	if FileAccess.file_exists(gp + _geom_part_suffix(0)):
 		# A split prop ships numbered parts, exactly as the local cache does.
@@ -1533,9 +1549,13 @@ func _load_geom_tier(gp: String) -> Array:
 	# bake exists to skip.
 	var own: Array = meshes
 
+	HighpolyProfiler.span("props: ResourceLoader.load(.geom.res)",
+		Time.get_ticks_msec() - _tg)
+
 	# The textures. A worker has usually decoded them already; _bind_side does
 	# the same job for the glb path and says so in a recording when it has to
 	# fall back to decoding inline.
+	var _tx := Time.get_ticks_msec()
 	var d: Variant = _bc.get(gp)
 	if d is Dictionary:
 		_bc.erase(gp)
@@ -1549,6 +1569,8 @@ func _load_geom_tier(gp: String) -> Array:
 		BcTex.bind_meshes(own, d as Dictionary)
 		HighpolyProfiler.span("textures: bind to materials",
 			Time.get_ticks_msec() - _tb)
+	HighpolyProfiler.span("props: textures, all of it (of which)",
+		Time.get_ticks_msec() - _tx)
 	return own
 
 const _TEX_SLOTS := [
@@ -1908,6 +1930,11 @@ func _finish_prop(gp: String, baked: String, out: Array,
 	if bake_geometry_only:
 		return out
 
+	# The other half of "props: load mesh". These passes walk every material on
+	# every prop, and one of them (_compress_textures) is a fallback that should
+	# now find nothing left to do — the sidecar decode compresses before pooling.
+	# If this shows up large, it is doing work twice.
+	var _tf := Time.get_ticks_msec()
 	var done: Array = []
 	for m in out:
 		if m == null:
@@ -1958,6 +1985,8 @@ func _finish_prop(gp: String, baked: String, out: Array,
 		# trusting a cached mesh, deletes it and re-bakes from the GLB. That is
 		# the same guarantee without a second texture upload at the worst
 		# possible moment.
+	HighpolyProfiler.span("props: material passes (of which)",
+		Time.get_ticks_msec() - _tf)
 	return done
 
 
@@ -3851,6 +3880,7 @@ func _build_backdrop_async(bd_root: Node3D, entries: Array, dir: String,
 	_end_build_draw(bd_root)        # the finished skyline appears, here
 	await flush_sidecars()          # cache written after the skyline is up
 	HighpolyProfiler.crumb("skyline", "build finished, %d of %d" % [_bd_ok, _bd_total])
+	_release_texture_images()       # no-op if the props lane is still running
 	backdrop_progress.emit(_bd_total, _bd_total)
 	Log.debug("map context: skyline built, %d of %d piece(s)" % [_bd_ok, _bd_total])
 
@@ -3893,6 +3923,18 @@ func _end_build_draw(node: Node3D) -> void:
 	# user can turn a layer off while its build is still running, and forcing it
 	# visible at the end would undo that.
 	node.visible = _restore_visible_for(node)
+
+
+# Drop the CPU-side texture pool, but only once BOTH lanes have stopped.
+#
+# The props and the skyline build concurrently and share the pool, so releasing
+# at the end of whichever finished first would make the other one re-decode
+# every texture it had left — turning the saving into extra work on exactly the
+# layer that is slowest. _hidden_builds is already the record of which builds are
+# live, so it answers this without a second flag to keep in step.
+func _release_texture_images() -> void:
+	if _hidden_builds.is_empty():
+		BcTex.release_images()
 
 
 func _release_build_draw() -> void:
@@ -3943,6 +3985,22 @@ func _build_props_async(props_root: Node3D, entries: Array, dir: String,
 		var e = entries[ei]
 		vram_check()      # reports once if memory is getting high; never stops
 		if ei >= next_pf:
+			# COLLECT THE BATCH IN FLIGHT FIRST. Its results have to be in _pf and
+			# _bc before `want` is built below, or every path it just parsed looks
+			# uncached and gets queued a second time.
+			#
+			# This is where the overlap is spent: the batch started on the previous
+			# visit has had PREFETCH_BATCH/2 props' worth of placement to run in,
+			# so by now it is usually finished and this returns immediately.
+			var _tj := Time.get_ticks_msec()
+			await _prefetch_join()
+			if Time.get_ticks_msec() - _tj > 0:
+				HighpolyProfiler.span("props: prefetch parse (worker threads)",
+					Time.get_ticks_msec() - _tj)
+			if gen != _build_gen:
+				_pf_release()
+				_end_build_draw(props_root)
+				return
 			var want: Array = []
 			for j in range(ei, mini(ei + PREFETCH_BATCH, entries.size())):
 				var pp := _prop_path(entries[j], dir)
@@ -3958,7 +4016,6 @@ func _build_props_async(props_root: Node3D, entries: Array, dir: String,
 					want.append(pp)
 			next_pf = ei + int(PREFETCH_BATCH * 0.5)  # top up before it runs dry
 			if not want.is_empty():
-				var _tp := Time.get_ticks_msec()
 				# CRUMBED EITHER SIDE. This dispatches glTF parsing AND texture
 				# compression onto worker threads, the newest and least proven
 				# work in the build. If the editor dies here the trail ends on
@@ -3966,14 +4023,27 @@ func _build_props_async(props_root: Node3D, entries: Array, dir: String,
 				# worker-thread crash from a main-thread one.
 				HighpolyProfiler.crumb("prefetch", "dispatch %d file(s) at entry %d/%d"
 					% [want.size(), ei, entries.size()])
-				await _prefetch(want)
-				HighpolyProfiler.crumb("prefetch", "returned, %d cached" % _pf.size())
-				HighpolyProfiler.span("props: prefetch parse (worker threads)",
-					Time.get_ticks_msec() - _tp)
-				if gen != _build_gen:
-					_pf_release()   # this batch has no consumer any more
-					_end_build_draw(props_root)
-					return
+				# STARTED, NOT AWAITED. The join at the top of the next visit
+				# collects it; between here and there the main thread places the
+				# props this batch's predecessor already parsed. That is the
+				# overlap the call site has claimed since it was written.
+				_prefetch_start(want)
+				# UNLESS THIS BATCH HOLDS THE PROP WE ARE ABOUT TO PLACE — which
+				# is true of the FIRST one, where there is no predecessor to
+				# overlap with, and of any later batch that has fallen behind.
+				# Placing without joining is not incorrect (a miss re-parses
+				# inline) but it is the slow path AND it parses the same file
+				# twice, so the one case worth testing for is tested for.
+				var need_now := _prop_path(e, dir)
+				if need_now != "" and want.has(need_now):
+					var _tw := Time.get_ticks_msec()
+					await _prefetch_join()
+					HighpolyProfiler.span("props: prefetch parse (worker threads)",
+						Time.get_ticks_msec() - _tw)
+					if gen != _build_gen:
+						_pf_release()   # this batch has no consumer any more
+						_end_build_draw(props_root)
+						return
 		var gp := _prop_path(e, dir)
 		var _t0 := Time.get_ticks_msec()
 		_merge_who = "props"
@@ -4082,8 +4152,16 @@ func _build_props_async(props_root: Node3D, entries: Array, dir: String,
 	# and only NOW write the fast-load cache, with the map already on screen
 	await flush_sidecars()
 	_report_progress(true)
+	# The CPU-side texture pool has done its job — it exists to stop the same
+	# pixels being decoded once per prop, and nothing decodes after this. The GPU
+	# textures it fed stay pooled, because they are what is on screen.
+	var _ps := BcTex.pool_stats()
+	_release_texture_images()
 	HighpolyProfiler.mark("phase", "props: build finished, %d built in %.1f s"
 		% [_build_props, (Time.get_ticks_msec() - _t_build) / 1000.0])
+	HighpolyProfiler.mark("phase", "textures: %d distinct of %d wanted (%d reused), %d GPU"
+		% [int(_ps["misses"]), int(_ps["hits"]) + int(_ps["misses"]),
+		   int(_ps["hits"]), int(_ps["textures"])])
 	build_finished.emit(_build_props)
 
 # Progress: emit the signal (the toggle dock drives a ProgressBar off it) and
@@ -4859,21 +4937,49 @@ func _prefetch_job(i: int) -> void:
 
 # Parse `paths` across all cores. Yields while they run so the editor stays
 # alive, which is the whole point of doing it here rather than inline.
-func _prefetch(paths: Array) -> void:
+# SPLIT IN TWO so the workers and the main thread can run at the SAME TIME.
+#
+# The comment on the call site has always said "parse a batch ahead on the worker
+# pool while the main thread places the previous one", and that is not what the
+# code did: this function dispatched a group and then awaited it, so the main
+# thread spent the whole batch pumping empty frames. The two phases were strictly
+# serial — a measured build spent 8.5 s waiting here and a further 17.0 s placing,
+# one after the other, when the pool was idle for the second half and the main
+# thread was idle for the first.
+#
+# _prefetch() keeps its old blocking shape for the callers that want it (the
+# skyline's texture prefetch, which has no second lane to overlap with).
+var _pf_gid := -1
+
+
+func _prefetch_start(paths: Array) -> void:
 	if _pf_mode != vram_mode:
 		_pf_release()          # anything held was baked under another mode
 		_pf_mode = vram_mode
+	# The buffers below are written by the workers, so a second batch must never
+	# be started over a live one. Every caller joins first; this is the backstop.
+	if _pf_gid != -1:
+		WorkerThreadPool.wait_for_group_task_completion(_pf_gid)
+		_pf_gid = -1
 	_pf_paths = paths
 	_pf_scenes = []
 	_pf_scenes.resize(paths.size())
 	_bc_out = []
 	_bc_out.resize(paths.size())
-	var gid := WorkerThreadPool.add_group_task(_prefetch_job, paths.size(),
+	_pf_gid = WorkerThreadPool.add_group_task(_prefetch_job, paths.size(),
 		-1, false, "highpoly glb prefetch")
+
+
+func _prefetch_join() -> void:
+	if _pf_gid == -1:
+		return
+	var gid := _pf_gid
 	if is_inside_tree():
 		while not WorkerThreadPool.is_group_task_completed(gid):
 			await get_tree().process_frame
 	WorkerThreadPool.wait_for_group_task_completion(gid)
+	_pf_gid = -1
+	var paths: Array = _pf_paths
 	for i in range(paths.size()):
 		var sc: Variant = _pf_scenes[i]
 		# a Dictionary now, not a Node: is_instance_valid on a Dictionary is
@@ -4894,6 +5000,12 @@ func _prefetch(paths: Array) -> void:
 	_bc_out = []
 
 
+# The old blocking shape, for callers with nothing to overlap with.
+func _prefetch(paths: Array) -> void:
+	_prefetch_start(paths)
+	await _prefetch_join()
+
+
 # Free whatever the placement loop never claimed. A cancelled or finished build
 # leaves live nodes in _pf, and clear() alone would leak every one of them â€”
 # these are Nodes now, not refcounted resources.
@@ -4904,12 +5016,13 @@ func _prefetch(paths: Array) -> void:
 func _decode_side(glb_path: String) -> Dictionary:
 	if not BcTex.exists(glb_path):
 		return {}
-	var d := BcTex.decode(BcTex.path_for(glb_path))
+	# The block compression — "the expensive half, and the whole reason this runs
+	# out here" — happens INSIDE decode() now, per image, before the image enters
+	# the shared pool. It has to: a pooled image is handed to many props at once,
+	# so it must arrive finished rather than be mutated in place afterwards.
+	var d := BcTex.decode(BcTex.path_for(glb_path), vram_mode != VRAM_FULL)
 	if d.is_empty():
 		return {}
-	# the expensive half, and the whole reason this runs out here
-	if vram_mode != VRAM_FULL:
-		BcTex.compress_decoded(d)
 	return d
 
 
@@ -4953,6 +5066,17 @@ func _bc_release() -> void:
 
 
 func _pf_release() -> void:
+	# A CANCELLED BUILD CAN LEAVE WORKERS RUNNING. Since the prefetch stopped
+	# blocking, a batch may still be writing into _pf_scenes / _bc_out when the
+	# build is torn down — and clearing those arrays underneath live threads is
+	# the kind of crash that reproduces once a fortnight. Wait for them; this is
+	# the cancellation path, so a short block costs nothing anybody sees.
+	if _pf_gid != -1:
+		WorkerThreadPool.wait_for_group_task_completion(_pf_gid)
+		_pf_gid = -1
+		_pf_paths = []
+		_pf_scenes = []
+		_bc_out = []
 	for k in _pf.keys():
 		_free_pf_entry(_pf[k])                  # MAIN thread, deliberately
 	_pf.clear()
