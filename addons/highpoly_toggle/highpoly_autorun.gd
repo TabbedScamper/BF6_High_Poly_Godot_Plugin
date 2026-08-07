@@ -522,8 +522,13 @@ static func run(host: Node, dock: Node, mapctx: Node) -> void:
 			for i in range(0, samples.size(), stride):
 				short.append(samples[i])
 			var sweep := {}
+			# mapctx_gi is SDFGI + SSAO. Those are screen-space and volumetric
+			# passes whose cost does NOT scale with our draw calls, so they can
+			# hide inside a fixed per-frame figure and never show up in a
+			# geometry sweep.
 			for layer in ["mapctx_backdrop", "mapctx_objects", "mapctx_water",
-						  "mapctx_light", "mapctx_maplights", "mapctx_fx"]:
+						  "mapctx_light", "mapctx_gi", "mapctx_shadows",
+						  "mapctx_maplights", "mapctx_fx"]:
 				var b = host.get(layer)
 				if b == null or not (b is Button) or not (b as Button).button_pressed:
 					continue
@@ -544,6 +549,72 @@ static func run(host: Node, dock: Node, mapctx: Node) -> void:
 				_say("autorun: without %-18s median %6.1f ms, %6d draws"
 						% [layer.replace("mapctx_", ""),
 						   off.get("median_ms", 0.0), off.get("draws_mean", 0)])
+			# BOTH HEAVY LAYERS OFF AT ONCE: the floor. Single-toggle rows each
+			# leave the other layer on, so they say what a layer costs but not
+			# what is left when neither is there — and that is the ceiling on
+			# anything this optimisation can reach.
+			var heavy: Array = []
+			for layer in ["mapctx_backdrop", "mapctx_objects"]:
+				var hb = host.get(layer)
+				if hb != null and hb is Button and (hb as Button).button_pressed:
+					(hb as Button).button_pressed = false
+					heavy.append(hb)
+			if not heavy.is_empty():
+				for i in range(30):
+					await _tree.process_frame
+				var floor_r := await _fly(_tree, short)
+				sweep["_floor_no_backdrop_no_objects"] = {
+					"median_ms": floor_r.get("median_ms", 0.0),
+					"draws_mean": floor_r.get("draws_mean", 0),
+					"frames": floor_r.get("frames", 0)}
+				_say("autorun: neither backdrop nor objects  median %6.1f ms, %6d draws"
+						% [floor_r.get("median_ms", 0.0),
+						   floor_r.get("draws_mean", 0)])
+				for hb2 in heavy:
+					(hb2 as Button).button_pressed = true
+				for i in range(30):
+					await _tree.process_frame
+
+			# THE ENGINE FLOOR: the whole scene hidden, nothing of ours or the
+			# SDK's in the world at all.
+			#
+			# The "neither layer" row still draws the level's own terrain and
+			# combined asset mesh, so it is not the true floor — and the ~11.5 ms
+			# it leaves behind is the single biggest term in the 60 fps budget.
+			# Whatever remains HERE is the editor drawing itself: viewport
+			# gizmos, the grid, the dock, SDFGI and SSAO if they are on. That is
+			# either a fixed tax to design around or something to switch off, and
+			# the two need telling apart.
+			var was_vis: bool = (root as Node3D).visible if root is Node3D else true
+			if root is Node3D:
+				(root as Node3D).visible = false
+				for i in range(30):
+					await _tree.process_frame
+				var eng_before := _engine()
+				var bare := await _fly(_tree, short)
+				sweep["_engine_floor_scene_hidden"] = {
+					"median_ms": bare.get("median_ms", 0.0),
+					"draws_mean": bare.get("draws_mean", 0),
+					"frames": bare.get("frames", 0),
+					"process_ms": snappedf(Performance.get_monitor(
+							Performance.TIME_PROCESS) * 1000.0, 0.01),
+					"physics_ms": snappedf(Performance.get_monitor(
+							Performance.TIME_PHYSICS_PROCESS) * 1000.0, 0.01),
+					"objects_in_frame": int(Performance.get_monitor(
+							Performance.RENDER_TOTAL_OBJECTS_IN_FRAME)),
+					"prims_in_frame": int(Performance.get_monitor(
+							Performance.RENDER_TOTAL_PRIMITIVES_IN_FRAME)),
+					"engine": eng_before,
+				}
+				_say("autorun: SCENE HIDDEN (engine floor)   median %6.1f ms, "
+						% bare.get("median_ms", 0.0)
+						+ "%6d draws, process %.2f ms"
+						% [bare.get("draws_mean", 0),
+						   Performance.get_monitor(Performance.TIME_PROCESS) * 1000.0])
+				(root as Node3D).visible = was_vis
+				for i in range(30):
+					await _tree.process_frame
+
 			# The same short path with EVERYTHING on, so the comparisons are
 			# against a like-for-like reference rather than the full-length run.
 			var ref := await _fly(_tree, short)

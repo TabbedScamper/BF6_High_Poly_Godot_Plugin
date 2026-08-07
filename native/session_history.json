@@ -1930,6 +1930,348 @@
    "force_killed": false,
    "when": "2026-08-07 10:30:56",
    "note": "layer sweep"
+  },
+  {
+   "apply_status": "driven through the dock",
+   "backdrop_done": 155,
+   "backdrop_ms": 2148,
+   "backdrop_surfaces": 49966,
+   "backdrop_total": 155,
+   "boot_ms": 18813,
+   "build_done": 2761,
+   "build_ms": 66747,
+   "build_sampled": false,
+   "build_stalled": false,
+   "build_timed_out": false,
+   "build_total": 2761,
+   "census": {
+    "Backdrop": {
+     "instances": 289,
+     "nodes": 290,
+     "surfaces": 49966,
+     "visible": true,
+     "visible_in_tree": true
+    },
+    "Props": {
+     "instances": 44925,
+     "nodes": 13439,
+     "surfaces": 40581,
+     "visible": true,
+     "visible_in_tree": true
+    },
+    "Terrain": {
+     "instances": 256,
+     "nodes": 257,
+     "surfaces": 256,
+     "visible": true,
+     "visible_in_tree": true
+    },
+    "Water": {
+     "instances": 1,
+     "nodes": 2,
+     "surfaces": 1,
+     "visible": true,
+     "visible_in_tree": true
+    },
+    "_MAP_CONTEXT": {
+     "instances": 0,
+     "nodes": 0,
+     "surfaces": 0,
+     "visible": true,
+     "visible_in_tree": true
+    }
+   },
+   "census_surfaces": 90804,
+   "dialogs_dismissed": 0,
+   "dialogs_seen": {},
+   "dock_controls": {
+    "mapctx_backdrop": true,
+    "mapctx_gi": true,
+    "mapctx_light": true,
+    "mapctx_maplights": true,
+    "mapctx_objects": true,
+    "mapctx_on": true,
+    "mapctx_shadows": true,
+    "mapctx_water": true,
+    "mode": 2,
+    "range": 3500.0
+   },
+   "dock_sync_ms": 85,
+   "draws_mean": 49281,
+   "draws_peak": 77071,
+   "editor_cam_stuck": 455,
+   "editor_cam_tried": 455,
+   "engine": {
+    "buffer_mb": 843.7,
+    "mem_static_mb": 4542.8,
+    "nodes": 35278,
+    "objects": 425401,
+    "orphans": 294,
+    "prims": 3835208,
+    "resources": 160065,
+    "texture_mb": 17343.1,
+    "vram_mb": 18366.0
+   },
+   "flight_samples": 455,
+   "frames": 455,
+   "godot": "4.6.3-stable (official)",
+   "headless": false,
+   "hitches": 0,
+   "import_scan_ms": 25683,
+   "last_crumb": "",
+   "lighting": "MP_Dumbo game lighting: sun az 125\u00c2\u00b0 el 29\u00c2\u00b0, 120000 lux",
+   "low1_ms": 198.48,
+   "map": "MP_Dumbo",
+   "map_lights": "No light data for MP_Dumbo",
+   "mean_ms": 123.43,
+   "median_ms": 132.84,
+   "open_ms": 4961,
+   "p95_ms": 172.97,
+   "p99_ms": 185.04,
+   "probe_draws": 69946,
+   "props_built": 2761,
+   "props_per_s": 50.1,
+   "radius": 1000000000.0,
+   "reused_open_scene": true,
+   "scene": "res://Levels/MP_Dumbo.tscn",
+   "scene_nodes": 14089,
+   "scene_nodes_at_open": 48,
+   "shadow_draws_mean": 263,
+   "shadow_draws_peak": 1051,
+   "started_unix": 1786116753.456,
+   "sweep": {
+    "_all_on": {
+     "draws_mean": 49393,
+     "frames": 114,
+     "median_ms": 136.33
+    },
+    "_floor_no_backdrop_no_objects": {
+     "draws_mean": 161,
+     "frames": 114,
+     "median_ms": 11.45
+    },
+    "mapctx_backdrop": {
+     "draws_mean": 21634,
+     "frames": 114,
+     "median_ms": 67.29
+    },
+    "mapctx_light": {
+     "draws_mean": 49393,
+     "frames": 114,
+     "median_ms": 134.9
+    },
+    "mapctx_maplights": {
+     "draws_mean": 49393,
+     "frames": 114,
+     "median_ms": 138.11
+    },
+    "mapctx_objects": {
+     "draws_mean": 27920,
+     "frames": 114,
+     "median_ms": 85.7
+    },
+    "mapctx_water": {
+     "draws_mean": 49392,
+     "frames": 114,
+     "median_ms": 133.92
+    }
+   },
+   "total_ms": 277237,
+   "vram_mode": 1,
+   "worst_ms": 221.6,
+   "wall_s": 282.1,
+   "vram_mb": 18366.0,
+   "texture_mb": 17343.1,
+   "mem_static_mb": 4542.8,
+   "force_killed": false,
+   "when": "2026-08-07 10:36:56",
+   "note": "sweep + floor"
+  },
+  {
+   "apply_status": "driven through the dock",
+   "backdrop_done": 155,
+   "backdrop_ms": 2138,
+   "backdrop_surfaces": 49966,
+   "backdrop_total": 155,
+   "boot_ms": 18876,
+   "build_done": 2761,
+   "build_ms": 66181,
+   "build_sampled": false,
+   "build_stalled": false,
+   "build_timed_out": false,
+   "build_total": 2761,
+   "census": {
+    "Backdrop": {
+     "instances": 289,
+     "nodes": 290,
+     "surfaces": 49966,
+     "visible": true,
+     "visible_in_tree": true
+    },
+    "Props": {
+     "instances": 44925,
+     "nodes": 13439,
+     "surfaces": 40581,
+     "visible": true,
+     "visible_in_tree": true
+    },
+    "Terrain": {
+     "instances": 256,
+     "nodes": 257,
+     "surfaces": 256,
+     "visible": true,
+     "visible_in_tree": true
+    },
+    "Water": {
+     "instances": 1,
+     "nodes": 2,
+     "surfaces": 1,
+     "visible": true,
+     "visible_in_tree": true
+    },
+    "_MAP_CONTEXT": {
+     "instances": 0,
+     "nodes": 0,
+     "surfaces": 0,
+     "visible": true,
+     "visible_in_tree": true
+    }
+   },
+   "census_surfaces": 90804,
+   "dialogs_dismissed": 0,
+   "dialogs_seen": {},
+   "dock_controls": {
+    "mapctx_backdrop": true,
+    "mapctx_gi": true,
+    "mapctx_light": true,
+    "mapctx_maplights": true,
+    "mapctx_objects": true,
+    "mapctx_on": true,
+    "mapctx_shadows": true,
+    "mapctx_water": true,
+    "mode": 2,
+    "range": 3500.0
+   },
+   "dock_sync_ms": 81,
+   "draws_mean": 49281,
+   "draws_peak": 77071,
+   "editor_cam_stuck": 455,
+   "editor_cam_tried": 455,
+   "engine": {
+    "buffer_mb": 843.7,
+    "mem_static_mb": 4542.9,
+    "nodes": 35278,
+    "objects": 425407,
+    "orphans": 294,
+    "prims": 3835208,
+    "resources": 160065,
+    "texture_mb": 17343.2,
+    "vram_mb": 18366.0
+   },
+   "flight_samples": 455,
+   "frames": 455,
+   "godot": "4.6.3-stable (official)",
+   "headless": false,
+   "hitches": 0,
+   "import_scan_ms": 25572,
+   "last_crumb": "",
+   "lighting": "MP_Dumbo game lighting: sun az 125\u00c2\u00b0 el 29\u00c2\u00b0, 120000 lux",
+   "low1_ms": 189.39,
+   "map": "MP_Dumbo",
+   "map_lights": "No light data for MP_Dumbo",
+   "mean_ms": 122.04,
+   "median_ms": 130.57,
+   "open_ms": 5017,
+   "p95_ms": 170.49,
+   "p99_ms": 182.23,
+   "probe_draws": 69946,
+   "props_built": 2761,
+   "props_per_s": 49.9,
+   "radius": 1000000000.0,
+   "reused_open_scene": true,
+   "scene": "res://Levels/MP_Dumbo.tscn",
+   "scene_nodes": 14089,
+   "scene_nodes_at_open": 48,
+   "shadow_draws_mean": 263,
+   "shadow_draws_peak": 1051,
+   "started_unix": 1786118012.733,
+   "sweep": {
+    "_all_on": {
+     "draws_mean": 49393,
+     "frames": 114,
+     "median_ms": 133.98
+    },
+    "_engine_floor_scene_hidden": {
+     "draws_mean": 11,
+     "engine": {
+      "buffer_mb": 843.6,
+      "mem_static_mb": 4542.5,
+      "nodes": 35278,
+      "objects": 425342,
+      "orphans": 294,
+      "prims": 15122,
+      "resources": 160065,
+      "texture_mb": 17343.2,
+      "vram_mb": 18365.9
+     },
+     "frames": 114,
+     "median_ms": 10.36,
+     "objects_in_frame": 3206,
+     "physics_ms": 0.04,
+     "prims_in_frame": 15140,
+     "process_ms": 136.78
+    },
+    "_floor_no_backdrop_no_objects": {
+     "draws_mean": 161,
+     "frames": 114,
+     "median_ms": 9.22
+    },
+    "mapctx_backdrop": {
+     "draws_mean": 21634,
+     "frames": 114,
+     "median_ms": 60.9
+    },
+    "mapctx_gi": {
+     "draws_mean": 49393,
+     "frames": 114,
+     "median_ms": 136.69
+    },
+    "mapctx_light": {
+     "draws_mean": 49393,
+     "frames": 114,
+     "median_ms": 131.54
+    },
+    "mapctx_maplights": {
+     "draws_mean": 49393,
+     "frames": 114,
+     "median_ms": 132.08
+    },
+    "mapctx_objects": {
+     "draws_mean": 27920,
+     "frames": 114,
+     "median_ms": 83.87
+    },
+    "mapctx_shadows": {
+     "draws_mean": 49393,
+     "frames": 114,
+     "median_ms": 132.41
+    },
+    "mapctx_water": {
+     "draws_mean": 49392,
+     "frames": 114,
+     "median_ms": 134.09
+    }
+   },
+   "total_ms": 315480,
+   "vram_mode": 1,
+   "worst_ms": 191.16,
+   "wall_s": 320.2,
+   "vram_mb": 18366.0,
+   "texture_mb": 17343.2,
+   "mem_static_mb": 4542.9,
+   "force_killed": false,
+   "when": "2026-08-07 10:58:34",
+   "note": "full sweep + engine floor"
   }
  ]
 }
