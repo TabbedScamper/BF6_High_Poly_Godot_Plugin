@@ -2923,37 +2923,32 @@ func mesh_for(group_key: String, lod := 0) -> Mesh:
 	# 102 is this element meaning something else on that mesh family. Measured on
 	# mp_dumbo: no section whose record carries a colour table ever selects
 	# outside 0..7.
-	var key_sel := {}               # state key -> {entry: true}
-	var key_bad := {}
+	var key_sel := {}               # state key -> bitmask of entries selected
 	for s in secs:
 		var sec: Dictionary = s
 		var key := int(sec.get("state_key", 0))
 		var verts0 = sec.get("verts")
 		var sv: PackedByteArray = sec.get("pal", PackedByteArray())
+		var m := int(sec.get("pal_mask", 0))
 		if not (verts0 is PackedVector3Array) or sv.is_empty() \
 				or sv.size() != (verts0 as PackedVector3Array).size():
-			key_bad[key] = true
-			continue
-		var set: Dictionary = key_sel.get(key, {})
-		for v in sv:
-			if int(v) > 7:
-				key_bad[key] = true
-				break
-			set[int(v)] = true
-		key_sel[key] = set
-	for k in key_bad.keys():
-		key_sel.erase(k)
+			m = 0x100               # this section has no answer, so the key has none
+		key_sel[key] = int(key_sel.get(key, 0)) | m
+	for k in key_sel.keys():
+		if int(key_sel[k]) & 0x100:
+			key_sel[k] = 0
 	# ...and of those, the ones whose entries are genuinely different colours in
 	# THIS scope's depot. Everything else merges exactly as it always did.
 	var key_canon := {}             # state key -> entry -> canonical entry
 	for key in key_sel.keys():
-		if (key_sel[key] as Dictionary).size() < 2:
+		var entries := _bits(int(key_sel[key]))
+		if entries.size() < 2:
 			continue
 		var canon = _pal_canon(key, scope, var_hash)
 		if canon == null:
 			continue
 		var gs := {}
-		for e in (key_sel[key] as Dictionary).keys():
+		for e in entries:
 			gs[int((canon as PackedByteArray)[int(e)])] = true
 		if gs.size() > 1:
 			key_canon[key] = canon
@@ -3878,25 +3873,35 @@ static func _mkey(v) -> int:
 func _surface_name(bid: String, key_sel: Dictionary, key_canon: Dictionary) -> String:
 	var at := bid.find("@")
 	var key := int(bid.substr(0, at)) if at >= 0 else int(bid)
-	var sel = key_sel.get(key)
-	if not (sel is Dictionary) or (sel as Dictionary).is_empty():
+	var sel := _bits(int(key_sel.get(key, 0)))
+	if sel.is_empty():
 		return str(key)
-	var want: Array = []
-	if at < 0:
-		want = (sel as Dictionary).keys()
-	else:
+	var want: Array = sel
+	if at >= 0:
 		var piece := int(bid.substr(at + 1))
 		var canon: PackedByteArray = key_canon[key]
-		for e in (sel as Dictionary).keys():
+		want = []
+		for e in sel:
 			if int(canon[int(e)]) == piece:
 				want.append(int(e))
 	if want.is_empty():
 		return str(key)
-	want.sort()
 	var parts := PackedStringArray()
 	for e in want:
 		parts.append(str(int(e)))
 	return "%d@%s" % [key, ",".join(parts)]
+
+
+# The entries a selector bitmask names, ascending. Empty when the mask is unset
+# or carries the out-of-range bit.
+static func _bits(mask: int) -> Array:
+	var out: Array = []
+	if mask <= 0 or (mask & 0x100) != 0:
+		return out
+	for k in range(8):
+		if mask & (1 << k):
+			out.append(k)
+	return out
 
 
 static func _mpal(v) -> PackedInt32Array:

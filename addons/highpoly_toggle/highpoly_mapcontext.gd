@@ -1628,7 +1628,7 @@ static func vram_check() -> void:
 	_vram_warned = true
 	Log.warn(("video memory is at %.0f MB. Cards run out somewhere above this, "
 		+ "and Godot CRASHES rather than reporting it. If the editor closes "
-		+ "itself while a map loads, set Video memory to \"Low\" in the panel. "
+		+ "itself while a map loads, pull the Range slider down. "
 		+ "Carrying on for now.") % mb)
 
 

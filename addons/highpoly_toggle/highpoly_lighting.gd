@@ -18,6 +18,14 @@ class_name HighpolyLighting
 #
 const SUN_SKY := preload("res://addons/highpoly_toggle/sky_sun.gdshader")
 
+# The level's own PanoramicRotation, in turns, set by apply() when the sky is read
+# from the install and consumed by _apply_mined(), which is where the Environment
+# is configured. Negative means the level did not give us one and the mined value
+# stands. A member rather than a parameter because those two are far apart and
+# every caller of _apply_mined would otherwise have to carry a value it has no
+# opinion about.
+static var _pano_rot := -1.0
+
 # Sun-angle convention: SunRotationX is a COMPASS BEARING (0 = +Z, turning
 # toward +X) and SunRotationY is elevation above the horizon. See sun_dir() for
 # the derivation and the evidence.
@@ -341,6 +349,7 @@ static func apply(root: Node, map: String, gi := true, shadows := true) -> Strin
 		if not gsky.is_empty():
 			pano_tex = gsky["texture"]
 			pano_scale = float(gsky["luminance_scale"])
+			_pano_rot = float(gsky.get("rotation", 0.0))
 	var sp := "%s/%s/sky.exr" % [CACHE, map]
 	if pano_tex != null:
 		sp = ""
@@ -553,7 +562,19 @@ static func _apply_mined(env: Environment, sun: DirectionalLight3D, m: Dictionar
 	# --- sky orientation -----------------------------------------------------
 	# PanoramicRotation is a fraction of a turn (0.869 on dumbo, 0.159 on
 	# aftermath), so the painted sun lines up with the one casting shadows.
-	if m.has("sky_rotation"):
+	# THE LEVEL'S OWN PanoramicRotation, when we read the sky from the install.
+	#
+	# We were reading this field and then never applying it, so every panorama sat
+	# at whatever rotation it happens to be authored at. Measured on two maps, the
+	# brightest texel of the panorama (which IS the sun: its elevation matches the
+	# authored SunRotationY to 0.1 degrees on aftermath) sits at u = 0.49 on both,
+	# i.e. the centre of the texture, which is what a sky authored sun-forward and
+	# rotated at runtime looks like.
+	#
+	# Read as TURNS, matching how the mined value below has always been read.
+	if _pano_rot >= 0.0:
+		env.sky_rotation = Vector3(0.0, _pano_rot * TAU, 0.0)
+	elif m.has("sky_rotation"):
 		env.sky_rotation = Vector3(0.0, float(m["sky_rotation"]) * TAU, 0.0)
 
 	# --- sun disc ------------------------------------------------------------

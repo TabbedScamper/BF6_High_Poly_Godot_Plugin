@@ -2910,7 +2910,19 @@ func _apply_mapctx(r: Node, on: bool, objs: bool, tex: int, gen: int) -> void:
 	# purpose was to show something while a download ran. There is no download:
 	# the scenery is read from the install, so the single apply below is the
 	# whole of it.
-	lbl.text = mapctx.apply(r, on, objs, tex, bd, wt)
+	# SAY WHAT WAS ASKED FOR AND WHAT CAME BACK.
+	#
+	# "Extended Terrain sometimes does nothing" produced a log in which the SDK
+	# terrain is hidden, twice, and nothing else is recorded at all: no build, no
+	# stage, no failure. The toggle plainly fires, and everything after it is
+	# silent, so the log cannot distinguish "the build was never reached" from
+	# "the build ran and produced nothing". One line here settles that the next
+	# time it happens instead of needing a reproduction.
+	Log.info("Map context apply: terrain=%s objects=%s backdrop=%s water=%s tex=%d map=%s"
+		% [str(on), str(objs), str(bd), str(wt), tex, map if map != "" else "<none>"])
+	var _res: String = mapctx.apply(r, on, objs, tex, bd, wt)
+	Log.info("Map context apply returned: %s" % (_res if _res != "" else "<empty>"))
+	lbl.text = _res
 
 # Contact shading, Shadows, Map lights and Interior light: the four options that
 # only mean anything while Lighting is on.
@@ -3403,6 +3415,10 @@ func _mapctx_changed() -> void:
 	# A later arrival waits for the one in flight rather than starting its own.
 	await _ensure_game_source(map, gen)
 	if gen != _mapctx_gen:
+		# A newer toggle superseded this one while the install was being read.
+		# Correct, and utterly invisible: the click appears to do nothing.
+		Log.info("Map context: this change was superseded by a newer one before it "
+			+ "could build. The newer one is what applies.")
 		return
 
 	# THE INSTALL IS THE ONLY SOURCE. There used to be a fallback here: a cached
