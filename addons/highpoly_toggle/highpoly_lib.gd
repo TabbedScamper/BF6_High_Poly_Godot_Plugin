@@ -539,6 +539,96 @@ static func in_overlay(node: Node) -> bool:
 		n = n.get_parent()
 	return false
 
+# ---------- select-through ----------
+#
+# CLICKING A HIGH-POLY MODEL HAS TO SELECT THE PROXY UNDER IT.
+#
+# The overlay is owner = null, which is what keeps it out of the saved scene and
+# out of the export. The cost of that is invisible until you try to work: Godot's
+# viewport picking only ever selects nodes OWNED by the edited scene, so it skips
+# the overlay entirely - and High-Poly hides the proxy's own meshes, so there is
+# nothing behind it to hit either. The click lands on nothing and the object
+# cannot be grabbed, moved or rotated at all. Only the Scene tree still worked.
+#
+# So the click is answered here instead: find which proxy's overlay is under the
+# cursor and select THAT PROXY. The user then has the ordinary gizmo on the
+# ordinary node, the overlay follows because it is a child, and nothing about the
+# ownership rule changes.
+#
+# Done in GLOBAL space on purpose. Everything here has a world transform already
+# and mixing local-space slab tests with parent scales is how the fitter's
+# mirroring bugs happened.
+static func _global_aabb(root: Node) -> AABB:
+	var out := AABB()
+	var first := true
+	var stack: Array = [root]
+	while not stack.is_empty():
+		var n: Node = stack.pop_back()
+		if n is GeometryInstance3D and (n as GeometryInstance3D).visible:
+			var g := n as GeometryInstance3D
+			var ab: AABB = g.global_transform * g.get_aabb()
+			if first:
+				out = ab; first = false
+			else:
+				out = out.merge(ab)
+		for c in n.get_children():
+			stack.append(c)
+	return out
+
+
+static func _ray_aabb(ab: AABB, o: Vector3, d: Vector3) -> float:
+	if ab.size.length() < 0.001:
+		return -1.0
+	var tmin := -1e20
+	var tmax := 1e20
+	for i in range(3):
+		if absf(d[i]) < 1e-8:
+			if o[i] < ab.position[i] or o[i] > ab.end[i]:
+				return -1.0
+			continue
+		var t1 := (ab.position[i] - o[i]) / d[i]
+		var t2 := (ab.end[i] - o[i]) / d[i]
+		tmin = maxf(tmin, minf(t1, t2))
+		tmax = minf(tmax, maxf(t1, t2))
+	if tmax < maxf(tmin, 0.0):
+		return -1.0
+	return maxf(tmin, 0.0)
+
+
+# The nearest proxy whose OVERLAY is under the cursor, or null.
+#
+# Tested against the overlay rather than the proxy because the overlay is what
+# the user can see and is aiming at: a high-poly model and its low-poly box are
+# not the same shape, and picking a lamp post by the box around it would select
+# things the user is not pointing at.
+static func proxy_under(camera: Camera3D, pos: Vector2, root: Node) -> Node3D:
+	if camera == null or root == null:
+		return null
+	var o := camera.project_ray_origin(pos)
+	var d := camera.project_ray_normal(pos)
+	var best: Node3D = null
+	var best_t := 1e20
+	var stack: Array = [root]
+	while not stack.is_empty():
+		var n: Node = stack.pop_back()
+		if n is Node3D:
+			var hp := n.get_node_or_null(HP_NODE)
+			if hp != null and (hp as Node3D).visible:
+				var t := _ray_aabb(_global_aabb(hp), o, d)
+				if t >= 0.0 and t < best_t:
+					best_t = t
+					best = n as Node3D
+		for c in n.get_children():
+			# A proxy's overlay never contains another proxy, so not descending
+			# into it keeps this off the thousands of nodes a high-poly model
+			# has. _MAP_CONTEXT matters far more: it is the whole rebuilt map and
+			# runs to six figures of nodes, none of them a placed proxy, so
+			# walking it would put a visible hitch on every single click.
+			if c.name != HP_NODE and c.name != COL_NODE and c.name != "_MAP_CONTEXT":
+				stack.append(c)
+	return best
+
+
 # ---------- conservative auto-fit (identity-first) ----------
 
 static func _merged_aabb(root: Node, skip_name: String) -> AABB:

@@ -3662,6 +3662,11 @@ func _reoverride_selection() -> void:
 # destroyed shells, …) cycles base -> variants -> base instead — doors always
 # win when a prop is both. Only consumed when something was actually hit, so
 # normal click/drag selection and camera behavior stay untouched.
+# Where the current left press started, so a release can tell a click from the
+# end of a drag. See the select-through block below.
+var _press_at := Vector2(-1e9, -1e9)
+
+
 func _forward_3d_gui_input(camera: Camera3D, event: InputEvent) -> int:
 	if diag_pick != null and diag_pick.button_pressed:
 		var v := _pick_input(camera, event)
@@ -3677,6 +3682,33 @@ func _forward_3d_gui_input(camera: Camera3D, event: InputEvent) -> int:
 			if not hit.is_empty():
 				lbl.text = str(hit.get("msg", ""))
 				return EditorPlugin.AFTER_GUI_INPUT_STOP
+		# SELECT-THROUGH, so a high-poly model can be grabbed like anything else.
+		#
+		# ON RELEASE, AND ONLY WHEN THE MOUSE DID NOT TRAVEL.
+		# _forward_3d_gui_input runs BEFORE the editor's own handling, so
+		# answering the PRESS would take the press away from whatever it was
+		# really for: dragging a gizmo handle that happens to be drawn over a
+		# model, or starting a box select. A release within a few pixels of its
+		# own press is a click and nothing else.
+		#
+		# Letting the press through first means the editor does its own pick,
+		# finds nothing (the overlay is unowned, the proxy's meshes are hidden)
+		# and clears the selection; this then sets it. That order looks redundant
+		# and is not - it is what keeps every other press behaving as it did.
+		if mb.button_index == MOUSE_BUTTON_LEFT and not mb.double_click:
+			if mb.pressed:
+				_press_at = mb.position
+			elif _press_at.distance_to(mb.position) <= 3.0:
+				var pn = LibScript.proxy_under(camera, mb.position,
+					EditorInterface.get_edited_scene_root())
+				if pn != null:
+					var sel := EditorInterface.get_selection()
+					# Additive with Shift, exactly as the editor's own picking
+					# is, or select-through would break multi-select.
+					if not mb.shift_pressed:
+						sel.clear()
+					sel.add_node(pn)
+					return EditorPlugin.AFTER_GUI_INPUT_STOP
 	return EditorPlugin.AFTER_GUI_INPUT_PASS
 
 # ---------- pick mode ----------
