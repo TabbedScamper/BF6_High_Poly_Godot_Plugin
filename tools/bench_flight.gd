@@ -30,9 +30,13 @@ const PATH_FMT := "user://bf6_flightpath_%s.json"
 # the harness for playing the wrong route.
 const KNOWN_BASES := ["MP_Aftermath", "MP_Dumbo", "MP_Granite", "MP_Contaminated"]
 
-# Tag the run so a baseline and a plugin run cannot be confused for each other
-# in the same folder. Set this before running.
-@export var tag := "run"
+# THE TAG IS DERIVED, NOT TYPED. Running an EditorScript gives no inspector, so
+# an @export here would have been unsettable and both passes would have written
+# to one filename - the second silently overwriting the baseline, which is the
+# one run you cannot cheaply repeat. The plugin's own enabled state names the
+# run instead, so the two cannot be confused and neither can be mislabelled.
+var tag: String:
+	get: return "plugin" if _plugin_on() else "baseline"
 
 
 func _run() -> void:
