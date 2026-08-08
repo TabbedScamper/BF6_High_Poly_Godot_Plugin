@@ -1064,10 +1064,24 @@ static func set_map_lights(root: Node, on: bool, map: String,
 	var d: Variant = JSON.parse_string(FileAccess.get_file_as_string(p))
 	if not (d is Dictionary):
 		return "lights.json unreadable"
+	# BUILT OFF-TREE AND ATTACHED ONCE, which is where the time was going.
+	#
+	# The holder used to be added to the scene BEFORE the loop, so all 11,641
+	# fixtures were added into the LIVE edited tree one at a time. Every one of
+	# those pays the editor's per-node cost - notifications, and a 3D gizmo built
+	# for each Node3D in the edited scene - and the user's own profile put it at
+	# 23.4 s of "build fixtures" over 194 slices, about 2 ms per light. Two
+	# milliseconds is far too long to construct a node and about right for adding
+	# one to an open scene.
+	#
+	# Detached, add_child is a parent pointer and nothing else. The tree only
+	# learns about any of it at the attach below.
+	#
+	# The waiting half was already dealt with: LIGHT_SLICE_MS went 30 -> 120 and
+	# took "waiting for a frame" from 44.9 s to 12.0 s in the same profiles. This
+	# is the other half.
 	var holder := Node3D.new()
 	holder.name = LIGHTS_NODE
-	root.add_child(holder)
-	holder.owner = null
 	# YIELDS. A map carries thousands of fixtures â€” Dumbo added 11,641 nodes in
 	# one go â€” and building them between two frames was the last freeze in a
 	# recorded cold load: 23.1 seconds with nothing drawn and no input taken.
@@ -1095,12 +1109,18 @@ static func set_map_lights(root: Node, on: bool, map: String,
 				progress.call(seen, all.size())
 			if root.is_inside_tree():
 				await root.get_tree().process_frame
-			# the scene can be closed or the layer switched off mid-build; the
-			# holder going away is the signal to stop rather than to crash
-			if not is_instance_valid(holder) or not holder.is_inside_tree():
+			# The scene can be closed or the layer switched off mid-build. The
+			# holder is DETACHED now, so its being out of the tree is the normal
+			# state and no longer the signal - the ROOT going away is. Left as
+			# holder.is_inside_tree() this returned "cancelled" on the very first
+			# yield of every build.
+			if not is_instance_valid(root) or not root.is_inside_tree() \
+					or not is_instance_valid(holder):
 				if progress.is_valid():
 					progress.call(all.size(), all.size())   # never strand the bar
 				HighpolyProfiler.crumb("lights", "cancelled at %d of %d" % [seen, all.size()])
+				if is_instance_valid(holder) and not holder.is_inside_tree():
+					holder.free()   # detached, so nothing else will collect it
 				return "Map lights cancelled"
 			HighpolyProfiler.span("map lights: waiting for a frame",
 				Time.get_ticks_msec() - _tw)
@@ -1113,6 +1133,15 @@ static func set_map_lights(root: Node, on: bool, map: String,
 		holder.add_child(lt)
 		lt.owner = null
 		n += 1
+	# THE ONE ATTACH. Every fixture above went into a DETACHED holder, so the
+	# editor learns about all of them here, once, instead of 11,641 times.
+	# Timed on its own so the next profile says plainly whether the cost moved
+	# here rather than went away. If it moved, this is one hitch instead of
+	# 23 s of them, and the next thing to try is not building the far ones.
+	var _ta := Time.get_ticks_msec()
+	root.add_child(holder)
+	holder.owner = null
+	HighpolyProfiler.span("map lights: attach holder", Time.get_ticks_msec() - _ta)
 	invalidate_light_cull()      # everything starts hidden: the next tick must run
 	if progress.is_valid():
 		progress.call(all.size(), all.size())
