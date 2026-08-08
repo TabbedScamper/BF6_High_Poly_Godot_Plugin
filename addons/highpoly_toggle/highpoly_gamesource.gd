@@ -1394,15 +1394,70 @@ func _height_at(x: float, z: float) -> float:
 const WATER_TYPE := "ae0b69fc-2207-d874-8230-fcd467a592cf"
 
 
+# WHICH PARTITION DECLARES THE WATER, found rather than assumed.
+#
+# This used to read one file: <level>/default. That is where mp_dumbo keeps its
+# water surface, and it is not where every level keeps it. mp_aftermath declares
+# it in <level>/_layers_content/water, so the read returned nothing, and nothing
+# is indistinguishable from "this level has no water" - the level came up dry
+# with no error anywhere.
+#
+# Measured: scanning all 3,521 of aftermath's partitions finds the water type in
+# exactly one, and the same scan over dumbo's 1,891 finds it in exactly one. So
+# the entity is always somewhere; only its partition varies.
+#
+# Named candidates first because they cost three parses and cover what we have
+# seen, then a full scan because a candidate list is a guess and a scan is an
+# answer. Partitions whose name mentions water are tried first within the scan,
+# which is a hint about ORDER only: the scan still reaches everything.
+var _water_part := "￿"          # "" is a legitimate answer (no water)
+
+func _water_partition() -> String:
+	if _water_part != "￿":
+		return _water_part
+	_water_part = ""
+	var lvl := _level_dir()
+	for cand in ["%s/default" % lvl, "%s/_layers_content/water" % lvl,
+			"%s/default" % level]:
+		if src.ebx.has(cand) and _counts_water(str(cand)):
+			_water_part = str(cand)
+			return _water_part
+	var rest: Array = []
+	for k in src.ebx.keys():
+		var n := str(k)
+		if lvl != "" and not n.begins_with(lvl):
+			continue
+		if n.to_lower().contains("water"):
+			if _counts_water(n):
+				_water_part = n
+				return n
+		else:
+			rest.append(n)
+	for n in rest:
+		if _counts_water(str(n)):
+			_water_part = str(n)
+			return _water_part
+	return ""
+
+
+func _counts_water(name: String) -> bool:
+	var raw: PackedByteArray = src.get_ebx(name)
+	if raw.is_empty():
+		return false
+	var e := BF6Ebx.new(types, walk.gi if walk != null else {})
+	if not e.parse(raw):
+		return false
+	for i in range(e.instance_offsets.size()):
+		if e.instance_type(i) == WATER_TYPE:
+			return true
+	return false
+
+
 func water() -> Array:
 	if src == null or types == null:
 		return []
 	var out: Array = []
-	var name := ""
-	for cand in ["%s/default" % _level_dir(), "%s/default" % level]:
-		if src.ebx.has(cand):
-			name = cand
-			break
+	var name := _water_partition()
 	if name == "":
 		return []
 	var raw := src.get_ebx(name)

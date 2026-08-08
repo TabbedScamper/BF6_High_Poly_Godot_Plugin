@@ -127,13 +127,17 @@ func _find_tocs(level: String, all_levels := false) -> Array:
 	# share names freely: the shader-state depots, the terrain resources, the
 	# section keys. Sorted purely by path, mp_dumbo lands wherever the alphabet
 	# puts it, and everything after it wins. The level you are reading then
-	# resolves its own materials against another level's data, which does not
-	# fail - it returns a depot with no record for the key, and the surface is
-	# drawn untextured. Roads came back grey and placed props came back white.
+	# resolves against another level's data.
 	#
-	# So the other levels are mounted first, purely to make their objects
-	# reachable, and the level being read is mounted last so nothing can displace
-	# it.
+	# FIRST MOUNT WINS, which is the part I had backwards. The sweep keeps the
+	# first entry it sees for a name and skips the rest, so "the level goes last"
+	# means the level may not displace the globals mounted before it. Among
+	# LEVELS the same rule says the opposite of what it looks like: the level
+	# being read has to come FIRST, or every other level outranks it for any name
+	# they share.
+	#
+	# So: shared archives, then this level, then everything else purely to make
+	# its objects reachable.
 	if all_levels and level != "":
 		var want_lc := "/levels/%s/" % level.to_lower()
 		var others: Array = []
@@ -143,7 +147,7 @@ func _find_tocs(level: String, all_levels := false) -> Array:
 				mine.append(p2)
 			else:
 				others.append(p2)
-		lvl = others + mine
+		lvl = mine + others
 	return shared + lvl
 
 
