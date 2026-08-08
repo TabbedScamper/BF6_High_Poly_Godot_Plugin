@@ -80,6 +80,9 @@ var perf_btn: Button       # its start/stop button
 var mapctx: Node
 var sync: Node
 var diag_pick: Button        # Pick mode: click-select our own overlay geometry
+# The note box. A member rather than a local because two different paths label
+# their reports with it: dropping a marker, and picking an object.
+var mark_note: LineEdit
 var _pick_last := Vector2(-1e9, -1e9)   # where the last pick click landed
 var col_chk: Button          # Show collisions overlay
 var shape_chk: Button        # Godot's own collision outlines (off by default)
@@ -96,14 +99,11 @@ var mapctx_range_val: Label    # live "%dm" / "No Culling" readout next to the s
 var mapctx_fx: Button        # live GPU particles at the map's mined FX spawns
 var mapctx_light: Button     # game lighting (sun/sky/fog from the real map VE)
 var mapctx_gi: Button        # sub-toggle: SDFGI + SSAO (visible while lighting is on)
-var mapctx_vram_row: HBoxContainer   # video-memory selector (with the lighting subs)
-var mapctx_vram: OptionButton
 var mapctx_shadows: Button   # sub-toggle: sun shadows + overlay casting
 var mapctx_maplights: Button # sub-toggle: the map's mined light entities
 var mapctx_fill_row: HBoxContainer   # "Interior light" slider row (with the shadow controls)
 var mapctx_fill: HSlider             # ambient held back from sky visibility, 0-60%
 var mapctx_fill_val: Label
-var mapctx_batch: OptionButton  # scenery batching grain (cell size)
 var mapctx_optimize: Button  # distance-cull the user's PLACED objects (their custom map content)
 var mapctx_variant_row: HBoxContainer  # "Variant" gamemode dropdown (visible with objects)
 var mapctx_variant: OptionButton
@@ -159,14 +159,12 @@ var log_count: Label
 var pause_btn: Button
 var check_btn: Button          # manual "Check for updates" (forces a registry re-check)
 var scope_btn: OptionButton    # sync scope: current scene only / all models
-var quality_btn: OptionButton  # texture tier for the library: web / full in-game
 var _edited_root: Node = null  # tracks the active scene to detect tab switches
 var _ready_names: Dictionary = {}   # models that landed since the last swap-in pass
 var _swap_timer: Timer
 # ---- storage section (dock) ----
 var storage_lbl: Label         # disk usage summary (computed async)
 var purge_maps: OptionButton   # downloaded maps eligible for purge
-var storage_cache_chk: Button  # "Fast startup cache" (baked mesh sidecars)
 var purge_btn: Button
 var _storage_gen := 0          # supersedes an in-flight usage scan
 
@@ -631,18 +629,6 @@ func _enter_tree() -> void:
 	scope_btn.item_selected.connect(func(_i): _scope_changed())
 	dock.add_child(scope_btn)
 
-	# Texture quality sits with the other DOWNLOAD decision rather than in
-	# Detail Mode: that dropdown selects geometry (proxy / mesh / textured
-	# mesh), and folding a second axis into it turns three entries into a
-	# six-entry matrix. The map you have open is always fetched at full
-	# quality regardless of this — it governs the REST of the library.
-	quality_btn = OptionButton.new()
-	quality_btn.add_item("Textures: web quality (smaller)", 0)
-	quality_btn.add_item("Textures: full in-game quality", 1)
-	quality_btn.tooltip_text = "The map you're editing always uses full in-game textures. This sets quality for the rest of the library: web keeps it small; full matches the game everywhere (a much larger download)."
-	quality_btn.item_selected.connect(func(_i): _quality_changed())
-	dock.add_child(quality_btn)
-
 	# The master control. It switches the borrowed scenery on and off and sets
 	# the draw distance for the scenery, the effects, the map lights and your
 	# own placed pieces — so it belongs at the top, not inside one section.
@@ -1008,35 +994,6 @@ All of it is read from your own Battlefield 6 installation."
 		_save_mapctx_state())
 	mc_sub.add_child(mapctx_fill_row)
 
-	# Video memory. Textures arriving through GLTF at runtime never pass Godot's
-	# importer, so until now every scenery texture sat in video memory
-	# UNCOMPRESSED: Dumbo peaked at 8.5 GB, and a user's 12 GB card ran out
-	# during a build — which Godot answers by crashing outright rather than
-	# reporting. Compressed is the default because it is 4x smaller for no
-	# visible difference on scenery; Low halves resolution as well, 16x.
-	mapctx_vram_row = HBoxContainer.new()
-	var vram_lbl := Label.new()
-	vram_lbl.text = "Video memory"
-	mapctx_vram_row.add_child(vram_lbl)
-	mapctx_vram = OptionButton.new()
-	mapctx_vram.add_item("Compressed (recommended)", MapContextScript.VRAM_COMPRESSED)
-	mapctx_vram.add_item("Low (for 4 GB cards)", MapContextScript.VRAM_LOW)
-	mapctx_vram.add_item("Uncompressed (needs 12 GB+)", MapContextScript.VRAM_FULL)
-	mapctx_vram.tooltip_text = "How much video memory the scenery is allowed to use. Compressed looks the same as Uncompressed on scenery and uses a quarter of the memory. Choose Low if the editor runs out of memory or closes itself while a map loads. Changing this rebuilds the scenery cache once."
-	mapctx_vram.item_selected.connect(func(i: int):
-		MapContextScript.vram_mode = mapctx_vram.get_item_id(i)
-		_save_mapctx_state()
-		# REBUILD, the way Scenery batching two rows down already does. These are
-		# adjacent dropdowns, both say in their tooltip that changing them
-		# rebuilds the scenery, and only one of them did it. This one told the
-		# user to "rebuild the map context" instead, which is not the name of
-		# anything in the panel, so the setting looked applied and was not.
-		lbl.text = "Video memory: %s. Rebuilding so it takes effect." \
-			% mapctx_vram.get_item_text(i)
-		_mapctx_changed())
-	mapctx_vram_row.add_child(mapctx_vram)
-	mc_sub.add_child(mapctx_vram_row)
-
 	# (A pair of sun-position sliders lived here while the azimuth convention was
 	# being worked out against the running game. They did their job — SunRotationX
 	# turned out to be a compass bearing, see sun_dir() — and came straight back
@@ -1059,33 +1016,6 @@ All of it is read from your own Battlefield 6 installation."
 	# map content — not the backdrop) so a densely-built map stays fast. Near props
 	# stay full-quality and fully selectable/editable; distant ones stop drawing.
 	# Follows the Range slider. Editor-only — nothing hidden, export untouched.
-	# Scenery batching. The map package groups props into one MultiMesh per mesh
-	# per cell, and at the packaged 64 m that is 13,407 MultiMeshes holding 3.4
-	# instances each on Dumbo, half of them holding exactly one. Draw calls then
-	# track object count 1:1 and the measured flyover hit 156,177 of them.
-	#
-	# Bigger cells mean far fewer draw calls but a coarser distance cull, so this
-	# is exposed to be MEASURED with Record performance rather than guessed.
-	var batch_row := HBoxContainer.new(); host.add_child(batch_row)
-	var batch_lbl := Label.new(); batch_lbl.text = "Scenery batching"
-	batch_row.add_child(batch_lbl)
-	mapctx_batch = OptionButton.new()
-	mapctx_batch.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	mapctx_batch.tooltip_text = "How coarsely the level's scenery is grouped for drawing. Larger groups mean far fewer draw calls, which is usually what limits the frame rate, at the cost of a less precise distance cull. Auto uses whatever the map was packaged with. Changing this rebuilds the scenery."
-	mapctx_batch.add_item("Auto", 0)
-	for m in [64, 128, 256, 512]:
-		mapctx_batch.add_item("%d m" % m, m)
-	mapctx_batch.select(0)
-	mapctx_batch.item_selected.connect(func(i: int):
-		if _locked(mapctx_batch): return
-		HighpolyMapContext.cell_override = mapctx_batch.get_item_id(i)
-		EditorInterface.get_editor_settings().set_project_metadata(
-			"highpoly_mapctx", "_cell_override", HighpolyMapContext.cell_override)
-		lbl.text = "Scenery batching %s. Rebuilding so it takes effect." \
-			% mapctx_batch.get_item_text(i)
-		_mapctx_changed())
-	batch_row.add_child(mapctx_batch)
-
 	# Not shown: this is just what the Range slider means for the pieces you
 	# placed yourself, so it is always on and rides the slider like everything
 	# else. Kept unshown because the overlay code reads its state.
@@ -1117,24 +1047,6 @@ All of it is read from your own Battlefield 6 installation."
 	_gate(mapctx_fx, "The level's effects")
 	_gate(mapctx_light, "The game lighting")
 	_gate(mapctx_variant, "The game mode layouts")
-	_gate(mapctx_batch, "Rebuilding the scenery")
-
-	var td_row := HBoxContainer.new(); host.add_child(td_row)
-	var td_lbl := Label.new(); td_lbl.text = "Terrain"
-	td_row.add_child(td_lbl)
-	var td := OptionButton.new()
-	td.add_item("Full (1m)", 1)
-	td.add_item("High (2m)", 2)
-	td.add_item("Medium (4m)", 4)
-	td.select(1)   # High is the default (near-native, performant)
-	td.tooltip_text = "How finely the ground is built. Full is the sharpest and the slowest. It is built once for each map and remembered afterwards, so you only wait the first time."
-	td.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	td_row.add_child(td)
-	td.item_selected.connect(func(_i):
-		if _locked(td): return
-		mapctx.terrain_step = td.get_item_id(td.selected)
-		_mapctx_rebuild())
-	_gate(td, "The ground", 1)          # snaps back to "High (2m)", its default
 
 	var shader_btn := Button.new()
 	shader_btn.text = "Configure Shaders…"
@@ -1142,8 +1054,16 @@ All of it is read from your own Battlefield 6 installation."
 	shader_btn.pressed.connect(_open_shader_dialog)
 	host.add_child(_centred(shader_btn))
 
+	# STORAGE, described as what it actually is.
+	#
+	# This section used to talk about downloads, because that is what it used to
+	# be. Nothing here arrives from anywhere now: every byte is WORK ALREADY DONE
+	# on your own Battlefield 6 install, kept so the next open does not repeat it.
+	# The wording matters beyond tidiness — the reason the plugin reads the game
+	# directly is so that it never ships anyone else's assets, and a panel that
+	# says "downloaded" describes a plugin we deliberately stopped being.
 	host = _section("Storage",
-		"What has been downloaded to your PC, and how to get the space back. Nothing here belongs to your map, so removing any of it is always safe.")
+		"Work the plugin has already done on your Battlefield 6 install, kept so the next time you open a map takes seconds instead of minutes. None of it is your map, and none of it came from anywhere but your own game, so clearing any of it is always safe: it is simply worked out again.")
 
 	storage_lbl = Label.new()
 	storage_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -1151,23 +1071,21 @@ All of it is read from your own Battlefield 6 installation."
 	storage_lbl.text = "Measuring disk usage…"
 	host.add_child(storage_lbl)
 
-	# Where it lives, and the reassurance that belongs with it. The downloads sit
-	# in Godot's own app-data folder, which nobody would find on their own, and
-	# not knowing where several gigabytes went is exactly what makes it alarming.
 	var where := Label.new()
 	where.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	where.add_theme_font_size_override("font_size", Theme_.fs(11))
 	where.add_theme_color_override("font_color", Color(1, 1, 1, 0.55))
-	where.text = "Kept outside your project, so none of it is part of your map or " \
-		+ "your export. Deleting any of it only means it downloads again the next " \
-		+ "time you need it."
+	where.text = "Kept in Godot's own app-data folder, outside your project, so " \
+		+ "none of it is part of your map or your export. It holds where every " \
+		+ "object in a level stands, the ground and its surface, and the meshes " \
+		+ "and textures already worked out. Clearing it costs you the wait to " \
+		+ "work them out again, nothing else."
 	host.add_child(where)
 
 	var files_btn := Button.new()
 	files_btn.text = "Show me these files"
-	files_btn.tooltip_text = "Opens the folder where the downloads are kept in your " \
-		+ "file browser, so you can see exactly what is there. Nothing in it is part " \
-		+ "of your map."
+	files_btn.tooltip_text = "Opens the folder in your file browser, so you can " \
+		+ "see exactly what is there. Nothing in it is part of your map."
 	files_btn.pressed.connect(func():
 		var dir := ProjectSettings.globalize_path("user://")
 		DirAccess.make_dir_recursive_absolute(dir)   # first run: may not exist yet
@@ -1175,35 +1093,21 @@ All of it is read from your own Battlefield 6 installation."
 		lbl.text = "Opened %s" % dir)
 	host.add_child(_centred(files_btn))
 
-	var storage_chips := _chip_row(host)
-	storage_cache_chk = Theme_.chip("Faster loading")
-	storage_cache_chk.tooltip_text = "Saves the work of building the scenery so it comes back in seconds next time instead of minutes. On by default. Switch it off only if you are short on disk: it stops new scenery being saved, but does not free what is already there. Deleting a map's files clears its saved work too."
+	# Settings that used to live in this row and no longer need to be decisions:
+	#
+	#   "Faster loading" only ever chose whether to KEEP the work, and switching
+	#   it off freed nothing (it stopped future caching), so it was a cost with
+	#   no benefit attached to a switch. Always on now.
+	#   The shader preferences it happened to load on the way past are still
+	#   loaded, below, because those are real settings behind their own dialog.
+	HighpolyMapContext.mesh_cache_enabled = true
 	var _es := EditorInterface.get_editor_settings()
-	# Defaults ON. Without it every scenery build re-parses the whole prop set
-	# from scratch (1,977 meshes / 3.65 GiB on Dumbo at in-game quality), which
-	# is minutes of work repeated every session. Switching it off does not free
-	# any disk either — it only stops FUTURE caching — so leaving it off was a
-	# cost with no benefit. It stays available for anyone genuinely short on
-	# space, which is the only reason to pick it.
-	# batching grain is remembered per project: it is a performance choice, and
-	# having it silently reset to Auto would make before/after runs disagree
-	HighpolyMapContext.cell_override = int(_es.get_project_metadata(
-		"highpoly_mapctx", "_cell_override", 0))
-	var _mc_on := bool(_es.get_project_metadata("highpoly_mapctx", "_mesh_cache", true))
-	storage_cache_chk.set_pressed_no_signal(_mc_on)
-	HighpolyMapContext.mesh_cache_enabled = _mc_on
-	# Configure Shaders prefs persist project-wide (water/flipbook/wind)
 	var _sp: Variant = _es.get_project_metadata("highpoly_mapctx", "_shaders", {})
 	if _sp is Dictionary:
 		for k in (_sp as Dictionary):
 			HighpolyMapContext.shader_prefs[k] = _sp[k]
-	storage_cache_chk.toggled.connect(func(v: bool):
-		HighpolyMapContext.mesh_cache_enabled = v
-		EditorInterface.get_editor_settings().set_project_metadata(
-				"highpoly_mapctx", "_mesh_cache", v)
-		lbl.text = "Faster loading " + ("is on. Scenery is saved as it is built" if v
-				else "is off. What is already saved stays until you delete it"))
-	storage_chips.add_child(storage_cache_chk)
+
+	var storage_chips := _chip_row(host)
 
 	# --- Record flight path (developer tool) --------------------------------
 	# Records the editor camera at 20 Hz so a benchmark can fly the SAME route
@@ -1277,7 +1181,7 @@ All of it is read from your own Battlefield 6 installation."
 	mark_lbl.text = "Mark a problem"
 	mark_lbl.add_theme_font_size_override("font_size", Theme_.fs(11))
 	host.add_child(mark_lbl)
-	var mark_note := LineEdit.new()
+	mark_note = LineEdit.new()
 	mark_note.placeholder_text = "What is wrong here? e.g. wall missing"
 	mark_note.tooltip_text = "Describe the problem, then press Drop marker. The marker lands in front of the viewport camera and you can drag it onto the exact spot."
 	host.add_child(mark_note)
@@ -1305,20 +1209,6 @@ All of it is read from your own Battlefield 6 installation."
 		EditorInterface.get_selection().add_node(m)
 		lbl.text = "Marker placed: %s. Drag it onto the spot, then Save log file." % note)
 	mark_row.add_child(mark_add)
-	var mark_import := Button.new()
-	mark_import.text = "Import spheres"
-	mark_import.tooltip_text = "Adopts markers you already placed by hand: every child of a node named Missing-Coordinates becomes a marker, using its node name as the note."
-	mark_import.pressed.connect(func():
-		var r := EditorInterface.get_edited_scene_root()
-		if r == null:
-			lbl.text = "Open a level scene first."
-			return
-		var n: int = HighpolyMarkers.import_from(r, "Missing-Coordinates")
-		lbl.text = ("Imported %d marker(s). Your original node is untouched; "
-			+ "delete it when you are happy.") % n if n > 0 \
-			else "No node named Missing-Coordinates with children was found."
-		)
-	mark_row.add_child(mark_import)
 	var mark_clear := Button.new()
 	mark_clear.text = "Clear markers"
 	mark_clear.tooltip_text = "Removes every marker this panel created. Nothing else in the scene is touched."
@@ -1366,27 +1256,13 @@ All of it is read from your own Battlefield 6 installation."
 	#
 	# The note box above is reused: what you type there is what labels the
 	# report, so tagging a prop and dropping a marker read the same way.
+	#
+	# There used to be a separate "Diagnose Selection" button beside this. It
+	# asked for a second press to answer a question the first press had already
+	# settled: by the time you have clicked an object in pick mode, the plugin is
+	# holding the exact surface you asked about. Picking reports.
 	var diag_row := HBoxContainer.new()
 	host.add_child(diag_row)
-	var diag := Button.new()
-	diag.text = "Diagnose Selection"
-	diag.tooltip_text = "Tints the selected placed prop bright red (or, if nothing of ours is selected, whatever map geometry is in front of the camera), and writes its full resolution chain into the log: which depot answered, whether the shader state had a record, what textures it bound, and whether its cutout mask was honoured or rejected. Save log file afterwards and send it."
-	diag.pressed.connect(func():
-		var r := EditorInterface.get_edited_scene_root()
-		if r == null:
-			lbl.text = "Open a level scene first."
-			return
-		var gs = mapctx.game_source if mapctx != null else null
-		var note: String = mark_note.text.strip_edges()
-		var text: String = HighpolyDiagnose.run(r, gs, mapctx, note)
-		if text.begins_with("Open a level"):
-			lbl.text = text
-			return
-		var n := text.count("
-") + 1
-		lbl.text = "Diagnosed and tinted. %d line(s) in the log. Press Save log file." % n)
-	diag_row.add_child(diag)
-
 	# ---- pick mode: click the original map objects ----
 	#
 	# The editor cannot select them. Everything we inject is owner-less so it
@@ -1404,7 +1280,7 @@ All of it is read from your own Battlefield 6 installation."
 	# liveries and cutouts actually go wrong.
 	diag_pick = CheckButton.new()
 	diag_pick.text = "Pick mode"
-	diag_pick.tooltip_text = "Click any object in the viewport, including original map geometry, which the editor itself cannot select. Tab drills in (whole batch, one instance, one part); Shift+Tab steps back out; clicking the same spot again also drills in. Alt+click steps out. Press Diagnose Selection to report exactly what is focused."
+	diag_pick.tooltip_text = "Click any object in the viewport, including the original map geometry the editor itself cannot select. Every click writes what that object is made of into the log: which depot answered, whether the shader state had a record, what textures it bound, and whether its cutout was honoured. Tab drills in (whole batch, one instance, one part), Shift+Tab steps back out, and clicking the same spot again also drills in. Alt+click steps out. Anything typed in the note box above labels the report."
 	diag_pick.toggled.connect(func(on: bool):
 		_pick_last = Vector2(-1e9, -1e9)
 		if not on:
@@ -1860,7 +1736,6 @@ func _show_scope_prompt(redownload: Array = []) -> void:
 func _start_sync(extra: Array = []) -> void:
 	lbl.text = "%d models local" % HighpolyStore.count()
 	_sync_scope_control()
-	_sync_quality_control()
 	Log.info("startup: %d models local · scope=%s · quality=%s · mode=%s"
 		% [HighpolyStore.count(), HighpolyStore.scope(),
 			HighpolyStore.quality(),
@@ -2887,20 +2762,13 @@ func _do_reset() -> void:
 	var open_map: String = mapctx.map_of(r) if is_instance_valid(r) else ""
 	if open_map != "":
 		es.set_project_metadata("highpoly_mapctx", open_map, {})
-	# library settings back to shipped defaults too — "reset" should not leave
-	# the next download silently running at in-game quality across the whole
-	# library because of a choice made before the reset
 	HighpolyStore.set_scope("")          # "" = not chosen yet
-	HighpolyStore.set_quality("web")
 	_sync_scope_control()
-	_sync_quality_control()
-	if storage_cache_chk:
-		storage_cache_chk.set_pressed_no_signal(true)      # the shipped default
-		HighpolyMapContext.mesh_cache_enabled = true
-		es.set_project_metadata("highpoly_mapctx", "_mesh_cache", true)
+	HighpolyMapContext.mesh_cache_enabled = true
+	es.set_project_metadata("highpoly_mapctx", "_mesh_cache", true)
 	if sync:
 		sync.paused = false
-	lbl.text = "Reset. %s freed, and everything downloads again on demand." % _human_size(freed)
+	lbl.text = "Reset. %s freed. It is all worked out again the next time you open a map." % _human_size(freed)
 	_refresh_storage()
 
 
@@ -3838,6 +3706,7 @@ func _pick_input(camera: Camera3D, event: InputEvent) -> int:
 			lbl.text = HighpolyDiagnose.focus_label(gs) if moved else \
 				("Already at the outermost level." if k.shift_pressed
 					else "That is the last part of this object.")
+			if moved: _report_focus(root, gs)
 			return EditorPlugin.AFTER_GUI_INPUT_STOP
 		if k.keycode == KEY_ESCAPE and HighpolyDiagnose.has_focus():
 			HighpolyDiagnose.clear()
@@ -3855,6 +3724,7 @@ func _pick_input(camera: Camera3D, event: InputEvent) -> int:
 	if mb.alt_pressed:
 		if HighpolyDiagnose.has_focus() and HighpolyDiagnose.step(-1, root):
 			lbl.text = HighpolyDiagnose.focus_label(gs)
+			_report_focus(root, gs)
 		else:
 			lbl.text = "Already at the outermost level."
 		return EditorPlugin.AFTER_GUI_INPUT_STOP
@@ -3863,6 +3733,7 @@ func _pick_input(camera: Camera3D, event: InputEvent) -> int:
 	if HighpolyDiagnose.has_focus() and mb.position.distance_to(_pick_last) <= 6.0:
 		if HighpolyDiagnose.step(1, root):
 			lbl.text = HighpolyDiagnose.focus_label(gs)
+			_report_focus(root, gs)
 		else:
 			lbl.text = "That is the last part of this object. Alt+click to step out."
 		return EditorPlugin.AFTER_GUI_INPUT_STOP
@@ -3885,7 +3756,22 @@ func _pick_input(camera: Camera3D, event: InputEvent) -> int:
 		EditorInterface.edit_node(fn)
 	lbl.text = HighpolyDiagnose.focus_label(gs)
 	Log.debug("pick: %s in %d ms" % [lbl.text, Time.get_ticks_msec() - t0])
+	_report_focus(root, gs)
 	return EditorPlugin.AFTER_GUI_INPUT_STOP
+
+
+# The full resolution chain for whatever is focused, written into the log.
+#
+# Emitted on every pick AND on every drill step, because both change WHICH
+# object the answer is about, and a report describing the thing you were looking
+# at a moment ago is worse than no report at all. It is a few dictionary lookups
+# and a string join per surface, so there is nothing here worth the second button
+# press it used to cost.
+func _report_focus(root: Node, gs) -> void:
+	if root == null or not HighpolyDiagnose.has_focus():
+		return
+	var note: String = mark_note.text.strip_edges() if mark_note != null else ""
+	HighpolyDiagnose.run(root, gs, mapctx, note)
 
 # Double-clicked a prop whose variants are published but not downloaded: fetch
 # them, then perform the swap the click asked for, so one double-click is still
@@ -3950,82 +3836,6 @@ func _on_selection_changed() -> void:
 func _sync_scope_control() -> void:
 	if scope_btn == null: return
 	scope_btn.select(scope_btn.get_item_index(1 if HighpolyStore.scope() == "full" else 0))
-
-func _sync_quality_control() -> void:
-	if quality_btn == null: return
-	quality_btn.select(quality_btn.get_item_index(
-		1 if HighpolyStore.quality() == "full" else 0))
-
-# How many models switching to full quality actually touches, and the extra
-# bytes, measured from the manifest's own per-model sizes rather than a figure
-# baked into the message. Under "only what this map needs" that is the models
-# already on disk; under "everything" it is the whole library.
-# Uses has_entry (index lookup) not has_model (disk stat) — this runs over
-# every manifest row.
-func _quality_estimate() -> Dictionary:
-	var scope_full := HighpolyStore.scope() == "full"
-	var n := 0
-	var extra := 0
-	for nm in HighpolyStore.remote.keys():
-		if not scope_full and not HighpolyStore.has_entry(nm):
-			continue
-		var e: Dictionary = HighpolyStore.remote[nm]
-		var hq := int(e.get("hqkb", 0))
-		if hq == 0: continue          # no hq rendition published for this one yet
-		n += 1
-		extra += maxi(hq - int(e.get("gkb", e.get("kb", 0))), 0)
-	return {"count": n, "extra_kb": extra}
-
-# Only the expensive direction gets a dialog, and it quotes a real figure —
-# a vague "this is large" just trains people to click through.
-func _quality_changed() -> void:
-	var to_full: bool = quality_btn.get_selected_id() == 1
-	if not to_full:
-		# Dropping to web costs nothing and changes nothing already on disk:
-		# hq copies are kept (HighpolySync._needs treats hq as satisfying any
-		# tier), so this only affects what is fetched from here on.
-		HighpolyStore.set_quality("web")
-		lbl.text = "New downloads will use web-quality textures."
-		return
-	var est := _quality_estimate()
-	var n: int = est["count"]
-	var gb: float = float(est["extra_kb"]) / 1048576.0
-	if n == 0:
-		# No hq rendition published yet (or none of the models you hold has one).
-		# Setting it is harmless — _rendition() falls back to the web fields —
-		# but promising a download that cannot happen would be a lie.
-		HighpolyStore.set_quality("full")
-		lbl.text = "Full-quality textures aren't published yet. This takes effect when they are."
-		return
-	var dlg := ConfirmationDialog.new()
-	# Scope and quality are independent: scope decides WHICH models you keep,
-	# quality decides how good they are. Saying "the whole library" while the
-	# user is on "only what this map needs" was simply wrong.
-	if HighpolyStore.scope() == "full":
-		dlg.dialog_text = ("Use full in-game textures for the whole library?\n\n" +
-				"You keep every model, so all %d would re-download at full " +
-				"quality: roughly %.1f GB more than web quality. It runs in " +
-				"the background and you can pause it any time.\n\n" +
-				"The map you're editing already uses full quality, so you only " +
-				"need this if you want every other model to match.") % [n, gb]
-	else:
-		dlg.dialog_text = ("Use full in-game textures?\n\n" +
-				"You're keeping only what your maps need, so this re-downloads " +
-				"the %d model(s) you already have: roughly %.1f GB more than " +
-				"web quality. Other models upgrade as you open the maps that " +
-				"use them.\n\n" +
-				"The map you're editing already uses full quality, so this is " +
-				"for everything else you've collected.") % [n, gb]
-	dlg.ok_button_text = "Use full quality"
-	dlg.cancel_button_text = "Cancel"
-	dlg.confirmed.connect(func():
-		HighpolyStore.set_quality("full")
-		lbl.text = "Upgrading the library to full-quality textures…"
-		await sync.check_now())
-	dlg.canceled.connect(func():
-		_sync_quality_control()        # snap back, nothing changed
-		dlg.queue_free())
-	EditorInterface.popup_dialog_centered(dlg)
 
 func _scope_changed() -> void:
 	var to_full: bool = scope_btn.get_selected_id() == 1

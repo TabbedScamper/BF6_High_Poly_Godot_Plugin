@@ -367,6 +367,33 @@ static func _reverse_guid(g: String) -> String:
 # -> {"data": PackedByteArray (u16 LE), "size": int, "min": Vector3,
 #     "max": Vector3} or {} on failure.
 # ---------------------------------------------------------------------------
+
+# THE RESOLUTION THE GAME ACTUALLY HAS, rather than one we picked.
+#
+# composite() paints every node carrying heights into one grid, deepest last,
+# and its size was hardcoded at 4097. That is a number with no authority behind
+# it: too small throws away the detail the deepest nodes carry, too large invents
+# samples that are the same value repeated. Either way the ground is not what the
+# game says it is, and "the ground is not sharp enough" cannot be answered by a
+# setting when the data feeding it was fixed by a constant.
+#
+# The tree answers it directly. The deepest level divides the map into 2^depth
+# nodes per side, each carrying (xs - 1 - 2*border) samples of its own ground, so
+# the finest grid the data supports is that many per side, plus one for the
+# closing grid line.
+#
+# -> samples per side, or 0 if no node carries heights.
+func native_size() -> int:
+	var d := -1
+	for n in nodes:
+		var nd: Dictionary = n
+		if not (nd["values"] as PackedByteArray).is_empty():
+			d = maxi(d, int(nd["depth"]))
+	if d < 0:
+		return 0
+	return (1 << d) * maxi(1, xs - 1 - border * 2) + 1
+
+
 func composite(size := 4096) -> Dictionary:
 	var with_vals: Array = []
 	var lo := Vector3(INF, INF, INF)

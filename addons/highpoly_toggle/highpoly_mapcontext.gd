@@ -67,7 +67,29 @@ static var cell_override := 0
 const SHADOW_MIN_EXTENT := 30.0
 var _world_min := -2048.0
 var _mesh_cache: Dictionary = {}   # model path -> Mesh
-var terrain_step: int = 2          # metres per terrain vertex (1=full, 2=high, 4=medium)
+# How many source samples to skip between terrain vertices. DERIVED, not set:
+# see _step_for. The old Terrain quality dropdown wrote it directly and labelled
+# its options in metres, which was wrong twice over - the value is a sample
+# stride, and how many metres a sample spans depends on the level.
+var terrain_step: int = 2
+
+# THE VERTEX BUDGET, held constant instead of the stride.
+#
+# The reader now composites the heightfield at whatever resolution the game
+# actually holds rather than a fixed 4097 (see BF6Terrain.native_size). A fixed
+# stride against a variable source is a mesh whose weight changes per level: the
+# same "2" would be a 4 million vertex map on one level and 16 million on the
+# next, and 16 million is where the editor stops being usable. Fixing the budget
+# and deriving the stride keeps every level costing the same, and on a level with
+# finer data the vertices land on real samples instead of repeats.
+const TERRAIN_VERTS_PER_SIDE := 2048
+
+
+# The stride that spends the budget on this level.  meta is the terrain metadata
+# (it carries the source resolution).
+static func _step_for(meta: Dictionary) -> int:
+	var res := int(meta.get("res", 4097))
+	return maxi(1, int(round(float(res - 1) / float(TERRAIN_VERTS_PER_SIDE))))
 # vegetation scatter (grass/shrub kits from the game's MeshScatteringDatabase);
 # a strict no-op for maps whose package carries no scatter.json
 const ScatterScript = preload("highpoly_scatter.gd")
@@ -997,8 +1019,14 @@ func _load_data(map: String) -> bool:
 		# That is a file derived from the player's own game, not a download.
 		# The drape must sample the same lattice this context meshes the
 		# terrain on, or the roads sit on a surface nobody draws.
-		game_source.drape_step = terrain_step
 		_data = game_source.map_data("%s/%s" % [CACHE, map])
+		# AFTER map_data, not before: the stride is derived from the terrain
+		# metadata, and map_data is what produces it. Setting drape_step from a
+		# stale stride put the roads on a lattice the terrain was not meshed on.
+		var _tm: Variant = (_data as Dictionary).get("heightmap", {})
+		if _tm is Dictionary and not (_tm as Dictionary).is_empty():
+			terrain_step = _step_for(_tm as Dictionary)
+		game_source.drape_step = terrain_step
 		_map = map
 		_world_min = float((_data["world"] as Dictionary).get("min", -2048))
 		_cell_size = float(cell_override) if cell_override > 0 else 512.0
@@ -3864,11 +3892,11 @@ func _add_water_plane(ctx: Node3D, textured: bool) -> void:
 const TERRAIN_CHUNKS := 16   # tiles per side (512 m tiles on an 8 km map)
 
 func _build_terrain_from_heightmap(dir: String, meta: Dictionary) -> Node3D:
-	var step: int = max(1, terrain_step)
+	var step: int = maxi(1, _step_for(meta))
 	# v2 = corrected triangle winding. The cached mesh is the geometry itself, so
 	# anyone with a v1 cache would keep their inside-out terrain forever â€” the
 	# version goes in the filename and the old file is deleted below.
-	var cache := "%s/terrain_ck%d_s%d_v2.res" % [dir, TERRAIN_CHUNKS, step]
+	var cache := "%s/terrain_ck%d_s%d_v3.res" % [dir, TERRAIN_CHUNKS, step]
 	if ResourceLoader.exists(cache):
 		var cached: Variant = ResourceLoader.load(cache)
 		if cached is PackedScene:
@@ -3883,7 +3911,31 @@ func _build_terrain_from_heightmap(dir: String, meta: Dictionary) -> Node3D:
 	var troot := Node3D.new(); troot.name = "Terrain"
 	for cz in range(TERRAIN_CHUNKS):
 		for cx in range(TERRAIN_CHUNKS):
-			var m := _heightmap_mesh(raw, res, step, meta, cx * cpx, cz * cpx, cpx)
+			# DETAIL THAT FOLLOWS THE CAMERA, which is what the Terrain quality
+			# dropdown used to stand in for. That dropdown asked for one detail
+			# level for the whole map and then made you live with it: sharp
+			# underfoot was unaffordable across 8 km, affordable was visibly
+			# stepped underfoot. Neither answer is right, because how much detail
+			# the ground needs depends on how far away it is, not on a setting.
+			#
+			# The same LOD ladder the props already use. Godot picks a level by
+			# screen-space error, so the tile under the camera draws every
+			# triangle and one on the horizon draws a fraction of them.
+			#
+			# WHY THIS IS SAFE FOR TERRAIN specifically, which props never had to
+			# care about: tiles share edges, and a simplifier that moves a shared
+			# edge differently on two neighbours opens a crack you can see the sky
+			# through. Measured on a test grid, the smallest level of a 129x129
+			# tile is exactly 512 triangles and of a 257x257 tile exactly 1024 -
+			# in both cases precisely the tile border edge count. The border is
+			# locked and cannot be simplified away, so neighbours keep matching
+			# edges at every level and no crack can open.
+			#
+			# ~23 ms per tile, so about 6 s for a map, paid once into the same
+			# PackedScene cache as the tiles (hence v3 in its name). Memory does
+			# not move: LODs are extra index buffers over the same vertices.
+			var m := _with_lods(_heightmap_mesh(raw, res, step, meta,
+				cx * cpx, cz * cpx, cpx))
 			if m == null: continue
 			var mi := MeshInstance3D.new()
 			mi.name = "T%d_%d" % [cx, cz]

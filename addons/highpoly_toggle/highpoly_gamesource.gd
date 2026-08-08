@@ -576,9 +576,18 @@ func terrain(cache_dir: String) -> Dictionary:
 	var dir := t.read_chunk_directory(res)
 	if not dir.is_empty():
 		t.resolve_external(dir, func(form): return src.get_chunk(str(form)))
-	# 4097, not 4096: one sample per grid LINE, which is what the builder's own
-	# default res says and what the packaged file is.
-	var g := t.composite(4097)
+	# SIZED FROM THE TREE, not from a constant. This was 4097, which happened to
+	# be what the old download pipeline packaged and was never checked against
+	# what the game holds. If a level's deepest height nodes are finer than that,
+	# compositing into 4097 threw the difference away and the ground could not be
+	# made sharper by any setting, because the loss happened here. Capped at
+	# 16385, which is 512 MB of u16 and far past anything observed: a level that
+	# asked for more would be a decoding mistake rather than a very detailed map.
+	var want := t.native_size()
+	if want <= 0:
+		want = 4097
+	want = clampi(want, 1025, 16385)
+	var g := t.composite(want)
 	if g.is_empty():
 		_say("game source: terrain — %s" % t.error)
 		return {}
@@ -599,8 +608,13 @@ func terrain(cache_dir: String) -> Dictionary:
 	# the place the two copies quietly disagree.
 	_hm = {"data": g["data"], "res": int(g["size"]), "min": lo.x,
 		"max": hi.x, "base": 0.0, "scale": float(g["world_size_y"])}
-	_say("game source: terrain %dx%d from %d nodes, y %.0f..%.0f m"
-		% [g["size"], g["size"], g["nodes"], lo.y, hi.y])
+	# Says the spacing in METRES, which is the number anyone actually wants and
+	# the one nothing used to print. "4097x4097" cannot be compared against
+	# "the ground looks blocky"; "1.95 m between samples" can.
+	_say("game source: terrain %dx%d from %d nodes, %.2f m per sample (tree "
+		% [g["size"], g["size"], g["nodes"], (hi.x - lo.x) / maxf(1.0, float(int(g["size"]) - 1))]
+		+ "offers %d, node grid %d, border %d), y %.0f..%.0f m"
+		% [want, t.xs, t.border, lo.y, hi.y])
 	return {
 		"file": "height_game.r16",
 		"res": g["size"],
