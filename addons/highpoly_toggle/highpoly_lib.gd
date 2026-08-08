@@ -364,10 +364,15 @@ static func _instance_for(key: String, id: String) -> Node3D:
 		# Capped inside attach_prop_lights: Forward+ stops at 512 clustered
 		# lights in view, and a lined street would pass that without the builder
 		# doing anything unreasonable.
+		# NOT ATTACHED HERE ANY MORE. The fixtures hang off a scene-level holder
+		# so they stay out of the prop's selection box, which means the call needs
+		# the PROXY node - and this function only has the assembled geometry. The
+		# records ride along on the node and apply_one, which does know the proxy,
+		# places them.
 		if gnode != null and game_source.has_method("object_lights"):
 			var recs: Array = game_source.object_lights(gkey)
 			if not recs.is_empty():
-				LightScript.attach_prop_lights(gnode, recs)
+				gnode.set_meta("hp_light_recs", recs)
 		return gnode
 	var res = load(id)
 	if res is PackedScene:
@@ -450,6 +455,10 @@ static func apply_one(node: Node3D, key: String, tier: Tier, textured: bool) -> 
 			child.rotation_degrees = HP_ROT
 		node.add_child(child)
 		child.owner = null                   # editor-only: not saved, not exported
+		# The fixtures this prop carries, placed OUTSIDE it so its selection box
+		# stays the size of its geometry. See HighpolyLighting.attach_prop_lights.
+		if child.has_meta("hp_light_recs"):
+			LightScript.attach_prop_lights(node, child.get_meta("hp_light_recs"))
 		# variants skip the fitter: they are published pre-aligned to the base
 		# model's frame, and destroyed/partial variants LEGITIMATELY disagree
 		# with the proxy AABB (the fitter would wrongly veto them)

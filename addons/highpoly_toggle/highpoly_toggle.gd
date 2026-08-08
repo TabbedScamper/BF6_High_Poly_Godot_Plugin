@@ -1537,6 +1537,11 @@ All of it is read from your own Battlefield 6 installation."
 			LightingScript.tick_lights(_r3, _cam3.global_position)
 			HighpolyProfiler.span("panel tick: map-light culling",
 				Time.get_ticks_msec() - _t_lt)
+			# A placed fixture's lights hang off a scene-level holder so they do
+			# not inflate the prop's selection box, so something has to carry
+			# them when the builder moves the prop. A few matrix multiplies per
+			# tracked fixture, capped at 8 per prop, and dead rows drop out.
+			LightingScript.refresh_prop_lights()
 			# Local lighting zones follow the camera the way the game follows the
 			# player: entering an interior blends its exposure in, leaving blends
 			# it out. Costs an AABB test per zone (59 across the whole fleet, and

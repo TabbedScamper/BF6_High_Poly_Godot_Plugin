@@ -1067,9 +1067,75 @@ static func set_prop_lights_shown(root: Node, on: bool) -> int:
 	return n
 
 
-static func attach_prop_lights(overlay: Node3D, recs: Array) -> int:
-	if overlay == null or recs.is_empty():
+# A FIXTURE'S LIGHTS DO NOT LIVE INSIDE THE PROP.
+#
+# They used to be children of the overlay, and a Light3D's bounds are its RANGE:
+# the ceiling lamp's are 6 m and 15 m. The editor's selection box merges every
+# VisualInstance3D under the selected node, so selecting a lamp gave a box tens
+# of metres across and the gizmo was unusable.
+#
+# So they hang off a scene-level holder instead and are kept in step with the
+# prop by refresh_prop_lights, exactly as the collision overlay already does for
+# the same reason. The prop's own subtree contains only geometry, so its box is
+# its geometry.
+#
+# The alternative - shrinking the lights - would have changed the lighting to fix
+# a selection problem, which is the wrong trade.
+const PROP_LIGHT_HOLDER := "_HP_PROP_LIGHTS"
+# [prop, light, light's transform in the prop's space]
+static var _prop_tracked: Array = []
+
+
+static func _prop_holder(root: Node) -> Node3D:
+	var h := root.get_node_or_null(PROP_LIGHT_HOLDER)
+	if h == null:
+		h = Node3D.new()
+		h.name = PROP_LIGHT_HOLDER
+		root.add_child(h)
+		h.owner = null                  # editor-only, never saved into the scene
+	return h as Node3D
+
+
+static func remove_prop_lights(prop: Node3D) -> void:
+	var alive: Array = []
+	for e in _prop_tracked:
+		var row: Array = e
+		var dead: bool = not is_instance_valid(row[0]) or row[0] == prop
+		if dead:
+			if is_instance_valid(row[1]):
+				(row[1] as Node).queue_free()
+			continue
+		alive.append(row)
+	_prop_tracked = alive
+
+
+# Cheap periodic pass, the same shape as HighpolyCollision.refresh_transforms:
+# a handful of matrix multiplies per tracked fixture, and dead rows dropped.
+static func refresh_prop_lights() -> void:
+	var alive: Array = []
+	for e in _prop_tracked:
+		var row: Array = e
+		if not is_instance_valid(row[0]) or not is_instance_valid(row[1]):
+			if is_instance_valid(row[1]):
+				(row[1] as Node).queue_free()
+			continue
+		var prop := row[0] as Node3D
+		var lt := row[1] as Node3D
+		if not prop.is_inside_tree() or not lt.is_inside_tree():
+			continue
+		lt.global_transform = prop.global_transform * (row[2] as Transform3D)
+		alive.append(row)
+	_prop_tracked = alive
+
+
+static func attach_prop_lights(prop: Node3D, recs: Array) -> int:
+	if prop == null or recs.is_empty():
 		return 0
+	var root := EditorInterface.get_edited_scene_root()
+	if root == null or not prop.is_inside_tree():
+		return 0
+	remove_prop_lights(prop)            # rebuilt overlays must not stack fixtures
+	var holder := _prop_holder(root)
 	var n := 0
 	for r in recs:
 		if n >= PROP_LIGHT_CAP:
@@ -1077,10 +1143,15 @@ static func attach_prop_lights(overlay: Node3D, recs: Array) -> int:
 		if not (r is Dictionary):
 			continue
 		var lt := make_light(r as Dictionary)
+		# make_light places the fixture in the PROP's space; that is what has to
+		# be preserved once the node is parented somewhere else entirely.
+		var local := lt.transform
 		lt.name = PROP_LIGHT_NAME + str(n)
 		lt.visible = prop_lighting
-		overlay.add_child(lt)
+		holder.add_child(lt)
 		lt.owner = null                 # editor-only, never saved into the scene
+		lt.global_transform = prop.global_transform * local
+		_prop_tracked.append([prop, lt, local])
 		n += 1
 	return n
 
