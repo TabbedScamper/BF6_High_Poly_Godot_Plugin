@@ -571,9 +571,33 @@ static func _apply_mined(env: Environment, sun: DirectionalLight3D, m: Dictionar
 	# i.e. the centre of the texture, which is what a sky authored sun-forward and
 	# rotated at runtime looks like.
 	#
-	# Read as TURNS, matching how the mined value below has always been read.
+	# Read as TURNS, matching how the mined value below has always been read,
+	# PLUS HALF A TURN.
+	#
+	# Godot's sky_rotation and Frostbite's PanoramicRotation disagree about which
+	# way the panorama's u = 0 column faces: the two zero conventions are 180
+	# degrees apart. The constant is 0.5 exactly, derived from where the sun is
+	# actually painted, with no free parameter and no per-map term.
+	#
+	# MEASURED. The panorama's brightest region IS the sun, and its bearing is
+	# stable to 0.3 degrees across a 200x change in the brightness threshold used
+	# to find it, so this is not a centroid artefact:
+	#
+	#   mp_aftermath  needs 0.6602 turns   authored 0.1590 + 0.5 = 0.6590   0.44 deg
+	#   mp_dumbo      needs 0.3406 turns   authored 0.8690 + 0.5 = 0.3690   10.2 deg
+	#
+	# Aftermath lands within half a degree. Dumbo is 10 degrees out, and that is
+	# the ART disagreeing with the DATA rather than the rule failing: dumbo's
+	# painted sun also misses its own authored SunRotationY by 4.6 degrees
+	# (33.1 painted against 28.5 authored), while aftermath's matches to 0.15.
+	# One is a sunset with a hard disc the sky is composed around; the other is a
+	# cloudy preset whose sun is a diffuse glow nobody placed to the degree.
+	#
+	# So this is fitted to the map that can be measured and applied unchanged
+	# everywhere, which is the same discipline sun_dir() is held to. If a third
+	# map with a hard-edged sun disagrees, it is this constant that is wrong.
 	if _pano_rot >= 0.0:
-		env.sky_rotation = Vector3(0.0, _pano_rot * TAU, 0.0)
+		env.sky_rotation = Vector3(0.0, fmod(_pano_rot + 0.5, 1.0) * TAU, 0.0)
 	elif m.has("sky_rotation"):
 		env.sky_rotation = Vector3(0.0, float(m["sky_rotation"]) * TAU, 0.0)
 

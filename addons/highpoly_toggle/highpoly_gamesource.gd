@@ -452,6 +452,8 @@ func drop_map_data() -> void:
 func refresh_water() -> void:
 	_water_part = "￿"
 	_water_look_cache.clear()
+	_water_sim_done = false
+	_water_sim.clear()
 	if _map_data.is_empty():
 		return
 	var w := water()
@@ -1539,6 +1541,13 @@ func water() -> Array:
 			var look := _water_look(int((inst as Dictionary).get(WATER_STATE_KEY, 0)))
 			if not look.is_empty():
 				row["look"] = look
+		# THE MOTION, from the level's ocean simulation entity. Per LEVEL, not
+		# per surface — a level declares one wind, and copying it onto each
+		# surface is what lets the whole thing survive placements.json without a
+		# second top-level key that a cached load could miss.
+		var sim := water_sim()
+		if not sim.is_empty():
+			row["sim"] = sim
 		out.append(row)
 	if not out.is_empty():
 		var l0: Dictionary = (out[0] as Dictionary).get("look", {})
@@ -1706,6 +1715,206 @@ func _water_params(dep: BF6Depot, d: PackedByteArray, key: int) -> Dictionary:
 # tagged as such, because DXT-compressing a normal map bands every ripple.
 func water_texture(file_guid, is_normal := false):
 	return _texture_for(file_guid, is_normal, 0)
+
+
+# ---------------------------------------------------------------------------
+# WHAT DRIVES THE WAVES: WaterOceanSimulationEntityData.
+#
+# The depot record above says what the water is MADE of. It says nothing about
+# how it MOVES, because the wave field is a runtime GPU simulation and nothing
+# on disk holds the result. What IS on disk is the simulation's inputs, on a
+# WaterOceanSimulationEntityData in one of the level's *_schematic partitions,
+# and those are enough to give the preview the map's own wind direction, its own
+# roughness and its own crest sharpness instead of one fixed sine field.
+#
+# MEASURED ACROSS THE WHOLE GAME (40 instances in 21 partitions, reachable from
+# a single mount because the mount carries every level's bundles):
+#
+#   WindAngle    -0.08 .. 3.00      radians. NOT turns: 1.34 and 3.00 are out of
+#                                   a 0..1 range, and the spread sits inside
+#                                   -pi..pi. Which world axis 0 points down, and
+#                                   the sign, are NOT resolved - see below.
+#   WindSpeed     0.01 .. 0.75      NOT metres per second. Every calm MP water
+#                                   is 0.01, the windy ones 0.07, and the D-Day
+#                                   singleplayer sea 0.30-0.75. Used as a
+#                                   normalised roughness with 0.07 as neutral.
+#   Choppiness    0.005 .. 3.00     crest sharpness. mp_aftermath 0.02 (glassy),
+#                                   mp_tungsten 0.60, sp_invasion 3.00.
+#   FoamThreshold 0 .. 290          units unknown; used as a relative cutoff.
+#   TileDimension 0.01 .. 128       reported, NOT wired: 0.5 on mp_dumbo against
+#                                   128 on a singleplayer sea is not a metre
+#                                   count that a wavelength can be read out of.
+#
+# TWO OR MORE INSTANCES PER LEVEL, one flagged 0x6E8C0B93 and the others clear,
+# and what selects between them at runtime is not known. mp_tungsten's single
+# instance is CLEAR, so "take the flagged one" alone would leave the one true
+# ocean map with no wave data at all. The rule here is: prefer a flagged
+# instance, otherwise take the first - stated rather than hidden, because on
+# mp_isolated (four instances, two flagged, very different values) it is a
+# guess.
+const SIM_TYPE := "3ad51130-494f-ee8a-45cd-01103be713ee"
+const SIM_ENABLE := 0x6E8C0B93           # named from OceanComponentData.PropertyOverrides
+const SIM_WIND_ANGLE := 0x2BD08352
+const SIM_WIND_SPEED := 0x8613EBCA
+const SIM_CHOPPINESS := 0xD488F0CB
+const SIM_WIND_DIST := 0xA1E59641
+const SIM_FOAM_ENABLE := 0xF0340815
+const SIM_FOAM_THRESHOLD := 0xFFA1D0E2
+const SIM_FOAM_MAX := 0xF2C13BDD
+const SIM_TILE_DIM := 0x54A5216B
+const SIM_MIN_WAVELENGTH := 0x787474E1
+const SIM_LARGE_WAVE_RED := 0xC44A1FAF
+const SIM_WAVE_THICKNESS := 0xAA2BBED7
+
+# WindDistribution is a SplineCurve (type name hash 0x3A39B4F4), NOT a spectrum
+# of float4s. Its members are XValues0..2 (12 slots), YValues0..3 (16 slots),
+# GValues0..5 (tangents) and SplineType, which is an ENUM whose values are
+# literally 5, 9 and 13 CONTROL POINTS (exe_enum_values.tsv).
+#
+# The packing, derived and then checked against every instance in the game:
+# n control points use the first n-1 X slots with the LAST X implicit at 1.0
+# (12 X slots = 13-1), and the first n Y slots. mp_tungsten reads
+# X = 0, .092, .182, .362, .489, .662, .784, .900 (+1.0) with n = 9, which is
+# ascending and ends exactly where the implicit point would - that is the check.
+#
+# WHAT THE X AXIS MEANS IS INFERRED, not proved, and the inference is this:
+#   * X 0 and X 1 both carry Y ~ 0 on essentially every authored curve, which is
+#     the continuity condition of a function on a CIRCLE, not of a spectrum.
+#   * the common authored idiom is a single narrow lobe centred at X = 0.5
+#     (dsub_sp_nightraid is exactly 0, 0, 1, 0 over 0, .001, .575, .999) -
+#     a spreading function peaked on the wind direction.
+#   * the two presets of a level are MIRRORS of each other: mp_dumbo's flagged
+#     instance is Y = (0, 1.0, 0, 0.4, 0) and its clear one (0, 0.4, 0, 1.0, 0).
+#     Mirroring is a direction operation. A wavelength spectrum does not mirror.
+# So it is read as ENERGY BY DIRECTION, X mapping the full circle around
+# WindAngle. Read the other way (amplitude by wavelength) the same numbers would
+# still drive four wave components, just with the roles of the two axes swapped.
+#
+# GValues are non-zero on 15 of the 40 instances, so the curve is not always
+# piecewise linear. It does not matter here: only the control points are used,
+# and a control point is where the author put a lobe.
+const SIM_CURVE_TYPE := 0xEC989148
+const SIM_CURVE_X := [0xA3F9DFEE, 0xAB145027, 0x4FBB37BF]
+const SIM_CURVE_Y := [0x57C358C3, 0xE9D446E7, 0xE4DA513E, 0xF324662A]
+const SIM_VEC4 := [0x3901DB14, 0x42FC0F5E, 0x32A99B9C, 0x7C8062F2]   # x,y,z,w BY OFFSET
+
+var _water_sim_done := false
+var _water_sim := {}
+
+
+# The open level's ocean simulation inputs, or {} when it declares none.
+#
+# Small on purpose: every value here rides in placements.json next to the water
+# planes, so a cached load with no game mount still gets the map's own wind and
+# choppiness. Textures need a mount; numbers do not.
+func water_sim() -> Dictionary:
+	if _water_sim_done:
+		return _water_sim
+	_water_sim_done = true
+	_water_sim = {}
+	if src == null or types == null:
+		return _water_sim
+	var lvl := _level_dir()
+	# Same ORDER-not-scope idiom as _water_partition: the shapes we have seen
+	# first (the _layers_content/water_shared ones and mp_granite's water_global
+	# both carry "water" in the name, mp_dumbo keeps it in default_schematic),
+	# then every other schematic under the level. A candidate list is a guess;
+	# the sweep behind it is the answer.
+	var named: Array = []
+	var rest: Array = []
+	for k in src.ebx.keys():
+		var n := str(k)
+		if lvl != "" and not n.begins_with(lvl):
+			continue
+		if not n.contains("schematic"):
+			continue
+		if n.contains("water"):
+			named.append(n)
+		else:
+			rest.append(n)
+	named.sort()
+	rest.sort()
+	rest.push_front("%s/default_schematic" % lvl)
+	for n in named + rest:
+		var got := _sim_in(str(n))
+		if not got.is_empty():
+			_water_sim = got
+			_say("game source: ocean sim — %s, wind %.2f rad, speed %.3f, chop %.3f, %d wind lobe(s)"
+				% [str(n).get_file(), float(got.get("angle", 0.0)),
+				   float(got.get("speed", 0.0)), float(got.get("chop", 0.0)),
+				   (got.get("dist", []) as Array).size()])
+			break
+	return _water_sim
+
+
+func _sim_in(name: String) -> Dictionary:
+	var raw: PackedByteArray = src.get_ebx(name)
+	if raw.is_empty():
+		return {}
+	var e := BF6Ebx.new(types, walk.gi if walk != null else {})
+	if not e.parse(raw):
+		return {}
+	var first := {}
+	for i in range(e.instance_offsets.size()):
+		if e.instance_type(i) != SIM_TYPE:
+			continue
+		var d = e.read_instance(i)
+		if not (d is Dictionary):
+			continue
+		var row := _sim_row(d as Dictionary, name, i)
+		if bool((d as Dictionary).get(SIM_ENABLE, false)):
+			return row                     # the flagged one wins outright
+		if first.is_empty():
+			first = row
+	return first
+
+
+func _sim_row(d: Dictionary, part: String, idx: int) -> Dictionary:
+	return {
+		"part": part, "index": idx,
+		"enabled": bool(d.get(SIM_ENABLE, false)),
+		"angle": float(d.get(SIM_WIND_ANGLE, 0.0)),
+		"speed": float(d.get(SIM_WIND_SPEED, 0.0)),
+		"chop": float(d.get(SIM_CHOPPINESS, 0.0)),
+		"foam": bool(d.get(SIM_FOAM_ENABLE, true)),
+		"foam_threshold": float(d.get(SIM_FOAM_THRESHOLD, 0.0)),
+		"foam_max": float(d.get(SIM_FOAM_MAX, 0.0)),
+		"tile": float(d.get(SIM_TILE_DIM, 0.0)),
+		"min_wavelength": float(d.get(SIM_MIN_WAVELENGTH, 0.0)),
+		"large_wave_reduction": float(d.get(SIM_LARGE_WAVE_RED, 0.0)),
+		"wave_thickness": float(d.get(SIM_WAVE_THICKNESS, 1.0)),
+		"dist": _sim_curve(d.get(SIM_WIND_DIST, null)),
+	}
+
+
+# WindDistribution's control points as [[x, y], ...], x ascending over 0..1.
+func _sim_curve(v) -> Array:
+	if not (v is Dictionary):
+		return []
+	var c: Dictionary = v
+	var n := int(c.get(SIM_CURVE_TYPE, 0))
+	if n < 2:
+		return []
+	var xs: Array = _sim_flat(c, SIM_CURVE_X)
+	var ys: Array = _sim_flat(c, SIM_CURVE_Y)
+	var out: Array = []
+	for i in range(n):
+		# the last control point's X is implicit at 1.0: 12 X slots hold 13-1
+		var x := 1.0
+		if i < n - 1 and i < xs.size():
+			x = float(xs[i])
+		var y: float = float(ys[i]) if i < ys.size() else 0.0
+		out.append([snappedf(x, 0.0001), snappedf(y, 0.0001)])
+	return out
+
+
+func _sim_flat(c: Dictionary, members: Array) -> Array:
+	var out: Array = []
+	for m in members:
+		var v = c.get(m, null)
+		for comp in SIM_VEC4:
+			out.append(float((v as Dictionary).get(comp, 0.0)) if v is Dictionary else 0.0)
+	return out
 
 
 # ---------------------------------------------------------------------------
@@ -3288,7 +3497,9 @@ func invalidate_materials(only: Array = []) -> Dictionary:
 	_mask_cut.clear()
 	_tex_cache.clear()
 	_hidden_cache.clear()
+	_tint_mask_cache.clear()
 	_foliage_shader = null
+	_prop_tint_shader = null
 	_road_shader = null
 	_road_pal = null
 	_road_pal_tried = false
@@ -3493,6 +3704,20 @@ func material_for(state_key: int, scope: String, var_hash := 0,
 			tex_stats["masked"] = int(tex_stats.get("masked", 0)) + 1
 			tex_stats["materials"] = int(tex_stats["materials"]) + 1
 			return fm
+
+	# ---- is the paint only on PART of this prop? -----------------------
+	# The tint is masked per texel by the `_nmt` alpha (DESTRUCTION.md 9.5), and
+	# a StandardMaterial3D can only multiply the whole surface. Taken only where
+	# that alpha genuinely varies; prop_tint.gdshader carries the polarity
+	# measurement and _tint_mask_for decides what "varies" means.
+	if tint is Color:
+		var tm = _tint_masked_material(slots, tint as Color)
+		if tm != null:
+			_mat_cache[ck] = tm
+			_mat_by_look[look] = tm
+			tex_stats["tint_masked"] = int(tex_stats.get("tint_masked", 0)) + 1
+			tex_stats["materials"] = int(tex_stats["materials"]) + 1
+			return tm
 
 	var mat := StandardMaterial3D.new()
 	var any := false
@@ -3980,6 +4205,7 @@ func _look_key(slots: Dictionary, tint = null) -> String:
 var _mask_cache := {}                  # texture asset name -> bool
 var _mask_cut := {}                    # texture asset name -> scissor threshold
 var _foliage_shader: Shader = null
+var _prop_tint_shader: Shader = null
 
 
 func _mask_for(file_guid):
@@ -4199,6 +4425,127 @@ func _foliage_material(slots: Dictionary, mask, cut: float, tint = null):
 		m.set_shader_parameter("normal_tex", nrm)
 	m.set_shader_parameter("roughness_mul", 0.9)
 	m.set_shader_parameter("specular_amount", 0.35)
+	return m
+
+
+# ---------------------------------------------------------------------------
+# THE PAINT MASK: the `_nmt` sheet when its alpha channel says something.
+#
+# DESTRUCTION.md 9.5 says the albedo tint is masked per texel by this alpha. On
+# mp_dumbo's 1,278 distinct tinted records, behind 360 distinct sheets, that
+# alpha is one of three things:
+#
+#   429 records (131 sheets)  constant 1.0 — paint the whole surface, which is
+#                             exactly what the uniform tint already does
+#    66 records ( 10 sheets)  constant 0.0 — a whole sheet with nothing to say
+#   693 records (219 sheets)  a varying mask, 451 of them crossing 0.5
+#
+# ONLY THE THIRD GROUP GETS THE SHADER. A constant sheet carries no per-texel
+# information, so honouring it would mean deciding on no evidence whether a flat
+# 0.0 means "never paint this" or "this sheet does not participate" — and one of
+# those answers puts 66 records back in primer grey. The uniform tint they have
+# today is right for the 429 and unchanged for the 66.
+#
+# THE SLOT IS `_nmt` AND ONLY `_nmt`. The other normal slot, `_nmo`
+# (0xEC35A74C), has a documented and DIFFERENT alpha — occlusion (SHADERS.md
+# 5.4) — and multiplying a tint by an occlusion map would darken every crevice
+# in the prop's own colour. No tinted record on this map binds it, so the guard
+# costs nothing and states the rule.
+var _tint_mask_cache := {}             # texture asset -> bool, does it vary
+
+
+func _tint_mask_for(file_guid):
+	if file_guid == null or str(file_guid) == "":
+		return null
+	var asset = walk.gi.get(str(file_guid))
+	if asset == null:
+		return null
+	var an := str(asset).to_lower()
+	if an.ends_with(".ebx"):
+		an = an.substr(0, an.length() - 4)
+	var known = _tint_mask_cache.get(an)
+	if known != null and not bool(known):
+		return null
+	# The FULL-SIZE texture is what the material binds — it is the normal map as
+	# well, and handing the shader a 128 px copy of that would flatten the prop.
+	# The 128 px copy is only the instrument the verdict is read off, and
+	# "constant or not" is a question that survives any downscale: a resize
+	# cannot invent variation in a flat sheet, and it cannot flatten a mask that
+	# has both 0 and 1 in it.
+	var tex = _texture_for(file_guid, true)
+	if tex == null:
+		_tint_mask_cache[an] = false
+		return null
+	if known != null:
+		return tex
+	var small = _texture_for(file_guid, true, TINT_MASK_PROBE_DIM)
+	var img: Image = (small as ImageTexture).get_image() if small != null else null
+	if img == null:
+		_tint_mask_cache[an] = false
+		return null
+	var c := img.duplicate() as Image
+	if c.is_compressed() and c.decompress() != OK:
+		_tint_mask_cache[an] = false
+		return null
+	var w := c.get_width()
+	var h := c.get_height()
+	if w < 4 or h < 4:
+		_tint_mask_cache[an] = false
+		return null
+	var lo := 2.0
+	var hi := -1.0
+	for y in range(0, h, maxi(1, int(h / 48))):
+		for x in range(0, w, maxi(1, int(w / 48))):
+			var a := c.get_pixel(x, y).a
+			lo = minf(lo, a)
+			hi = maxf(hi, a)
+	var varies := (hi - lo) > TINT_MASK_MIN_RANGE
+	_tint_mask_cache[an] = varies
+	tex_stats["tint_masks_checked"] = int(tex_stats.get("tint_masks_checked", 0)) + 1
+	if not varies:
+		return null
+	return tex
+
+
+# 2% of the range, the same tolerance the constant/varying split was measured
+# with. Below it a sheet is flat to within BC7's own quantisation.
+const TINT_MASK_MIN_RANGE := 0.02
+const TINT_MASK_PROBE_DIM := 128
+
+
+# The masked-tint material, or null when this record wants the plain one.
+func _tint_masked_material(slots: Dictionary, tint: Color):
+	var nrm_guid = slots.get("normal_vt")
+	if nrm_guid == null:
+		return null
+	var albedo = _texture_for(slots.get("basecolor_veg", slots.get("basecolor")))
+	if albedo == null:
+		# A record with no colour sheet is procedural and draws nothing here
+		# either way; the plain path is where that decision lives.
+		return null
+	var mask = _tint_mask_for(nrm_guid)
+	if mask == null:
+		return null
+	if _prop_tint_shader == null:
+		var dir := (get_script() as Script).resource_path.get_base_dir()
+		var s = load("%s/prop_tint.gdshader" % dir)
+		if not (s is Shader):
+			return null
+		_prop_tint_shader = s
+	var m := ShaderMaterial.new()
+	m.shader = _prop_tint_shader
+	m.set_shader_parameter("albedo_tex", albedo)
+	m.set_shader_parameter("normal_tex", mask)
+	m.set_shader_parameter("use_normal", true)
+	# LINEAR, straight through. The shader's uniform is a plain vec3 for exactly
+	# this reason (see the note there): the depot's number is a multiplier that
+	# reaches 1.92, and a source_color Color would both clamp it and linearise it
+	# a second time.
+	m.set_shader_parameter("tint", Vector3(tint.r, tint.g, tint.b))
+	var emis = _texture_for(slots.get("emissive"))
+	if emis != null:
+		m.set_shader_parameter("emission_tex", emis)
+		m.set_shader_parameter("use_emission", true)
 	return m
 
 

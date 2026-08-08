@@ -72,8 +72,122 @@ static func material(cfg: Dictionary, gs = null) -> ShaderMaterial:
 		m.set_shader_parameter("shallow_color", Color(float(c[0]), float(c[1]), float(c[2])))
 		m.set_shader_parameter("deep_color", Color(float(c[0]) * 0.25, float(c[1]) * 0.25, float(c[2]) * 0.35))
 	_apply_game_look(m, cfg.get("look", null), gs)
+	_apply_wave_sim(m, cfg.get("sim", null))
 	m.render_priority = 1   # draw after other transparents sitting at the same depth
 	return m
+
+
+# ---------------------------------------------------------------------------
+# THE WAVE MOTION, from the level's WaterOceanSimulationEntityData.
+#
+# This is the half of the water the depot record does not describe. The game
+# runs an FFT ocean at runtime and nothing on disk holds the wave field, but the
+# simulation's INPUTS are on disk, and four sharpened sines pointed the way the
+# map says the wind blows read far more like that map than one fixed direction
+# does. See highpoly_gamesource.water_sim for what each value was measured to be
+# and water.gdshader for the line between the game's numbers and ours.
+#
+# THE GAME'S:  WindAngle, WindDistribution, WindSpeed, Choppiness,
+#              FoamThreshold, EnableFoam.
+# OURS:        the four wavelength ratios, the count of four, the axis
+#              convention for WindAngle, and every normalisation constant below
+#              (the game's scalars are not in physical units).
+
+# Relative wavelengths, strongest lobe first. Not from the game: the FFT band
+# lengths are a property of a simulation that is not written down.
+const WAVE_LENGTH_RATIO := [1.0, 0.63, 0.41, 0.27]
+# WindSpeed is 0.01 on every calm multiplayer water and 0.07 on the windy ones,
+# so 0.07 is taken as neutral and the D-Day sea (0.30-0.75) comes out rough.
+const WIND_SPEED_NEUTRAL := 0.07
+# FoamThreshold spans 0..290 game-wide with no anchor; the multiplayer maps sit
+# in 0..75, so that is the range normalised over.
+const FOAM_THRESHOLD_SPAN := 80.0
+# With no simulation to read: a neutral four-way spread, roughly what the shader
+# did before any of this was mined.
+const DEFAULT_WAVE_DIR_DEG := [0.0, 40.0, -65.0, 110.0]
+const DEFAULT_WAVE_AMP := [1.0, 0.62, 0.42, 0.28]
+
+
+static func _apply_wave_sim(m: ShaderMaterial, sim_v: Variant) -> void:
+	if not (sim_v is Dictionary) or (sim_v as Dictionary).is_empty():
+		m.set_shader_parameter("waves", _default_waves())
+		return
+	var sim: Dictionary = sim_v
+	m.set_shader_parameter("waves", _waves_from(sim))
+	# WindSpeed -> amplitude. sqrt because the visible difference between 0.01
+	# and 0.07 should not be a factor of seven in wave height.
+	var speed := maxf(float(sim.get("speed", 0.0)), 0.0)
+	m.set_shader_parameter("wave_gain",
+		clampf(sqrt(speed / WIND_SPEED_NEUTRAL), 0.40, 2.20))
+	# Choppiness -> crest sharpening. Clamped below 1 because the phase warp
+	# folds back on itself past that and the crests start to self-intersect.
+	m.set_shader_parameter("wave_chop",
+		clampf(float(sim.get("chop", 0.0)), 0.0, 1.2) * 0.7)
+	# FoamThreshold -> where a crest goes white. Low threshold, foam on any
+	# crest; high, only on the sharpest.
+	var thr := clampf(float(sim.get("foam_threshold", 0.0)) / FOAM_THRESHOLD_SPAN, 0.0, 1.0)
+	m.set_shader_parameter("foam_cut", lerpf(0.25, 0.92, thr))
+	m.set_shader_parameter("foam_crest", bool(sim.get("foam", true)))
+
+
+# WindAngle + WindDistribution -> up to four (direction, amplitude, wavelength).
+#
+# The curve's control points ARE the lobes: an author put them there. They are
+# taken strongest first, dropping any that lands on top of one already taken
+# (circularly - x = 0 and x = 1 are the same bearing), and the strongest is
+# normalised to 1.
+static func _waves_from(sim: Dictionary) -> Array:
+	var angle := float(sim.get("angle", 0.0))
+	var pts: Variant = sim.get("dist", [])
+	var lobes: Array = []
+	if pts is Array:
+		for p in pts:
+			if not (p is Array) or (p as Array).size() < 2:
+				continue
+			if float(p[1]) <= 0.001:
+				continue
+			lobes.append([float(p[0]), float(p[1])])
+	lobes.sort_custom(func(a, b): return float(a[1]) > float(b[1]))
+	var picked: Array = []
+	for l in lobes:
+		var clash := false
+		for q in picked:
+			var d: float = absf(float(q[0]) - float(l[0]))
+			if minf(d, 1.0 - d) < 0.06:
+				clash = true
+				break
+		if not clash:
+			picked.append(l)
+		if picked.size() >= 4:
+			break
+	if picked.is_empty():
+		return _default_waves()
+	var top := float(picked[0][1])
+	var out: Array = []
+	for i in range(picked.size()):
+		var a: float = angle + (float(picked[i][0]) - 0.5) * TAU
+		out.append(Vector4(cos(a), sin(a), float(picked[i][1]) / top,
+			float(WAVE_LENGTH_RATIO[i])))
+	# PADDING, ours. A curve with one narrow lobe (mp_granite is a single spike)
+	# would otherwise be one pure sine, which reads as corrugated iron rather
+	# than water. The extra components fan off the dominant bearing and fall
+	# away in amplitude - the sea's own small-scale spread, not the map's.
+	var n := out.size()
+	for i in range(n, 4):
+		var a: float = angle + (float(picked[0][0]) - 0.5) * TAU \
+			+ deg_to_rad(14.0 + 17.0 * float(i)) * (1.0 if i % 2 == 0 else -1.0)
+		out.append(Vector4(cos(a), sin(a), pow(0.55, float(i - n + 1)),
+			float(WAVE_LENGTH_RATIO[i])))
+	return out
+
+
+static func _default_waves() -> Array:
+	var out: Array = []
+	for i in range(4):
+		var a := deg_to_rad(float(DEFAULT_WAVE_DIR_DEG[i]))
+		out.append(Vector4(cos(a), sin(a), float(DEFAULT_WAVE_AMP[i]),
+			float(WAVE_LENGTH_RATIO[i])))
+	return out
 
 
 # What the map's own WaterSurfaceEntityData -> ShaderBlockDepot record says.
