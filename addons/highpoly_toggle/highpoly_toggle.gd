@@ -3708,12 +3708,22 @@ func _set_prop_lighting(on: bool) -> void:
 	# assignment lands on the wrong one, which is a bug this plugin has already
 	# paid for once.
 	LightingScript.prop_lighting = on
-	GameSourceScript.prop_emission = PROP_EMISSION_ON if on else 1.0
+	# OFF MEANS OFF, not "as authored". The first version set this to 1.0 when
+	# switched off, which draws the lit sheet at the strength the artist gave it -
+	# and a lamp's lit sheet is a lit sheet, so every bulb still glowed. A switch
+	# labelled Prop Lighting that leaves the bulbs on is just wrong.
+	GameSourceScript.prop_emission = PROP_EMISSION_ON if on else 0.0
 	var r := EditorInterface.get_edited_scene_root()
 	var n: int = LightingScript.set_prop_lights_shown(r, on)
 	var gs = mapctx.game_source if mapctx != null else null
 	if gs != null and gs.has_method("invalidate_materials"):
 		var st: Dictionary = gs.invalidate_materials()
+		# AND THE OBJECTS THE USER PLACED. invalidate_materials re-dresses the
+		# meshes the MAP CONTEXT recorded; a placed prop's overlay is not one of
+		# them, and a lamp the builder placed is exactly what this switch is for.
+		# Same mechanism the materials reload uses.
+		LibScript.build_epoch += 1
+		_swap_placed_after_build()
 		Log.info("Prop lighting %s: %d fixture(s), %d mesh(es) re-dressed"
 			% ["on" if on else "off", n, st["meshes"]])
 	lbl.text = "Prop lighting " + ("on" if on else "off")
