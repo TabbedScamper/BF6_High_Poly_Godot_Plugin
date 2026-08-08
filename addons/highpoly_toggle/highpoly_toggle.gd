@@ -1443,7 +1443,11 @@ All of it is read from your own Battlefield 6 installation."
 		# sidecar-cached meshes load with the shader params they were SAVED
 		# with — push the current Configure Shaders prefs over the fresh build
 		var _sr := EditorInterface.get_edited_scene_root()
-		if _sr != null: mapctx.apply_shader_prefs(_sr))
+		if _sr != null: mapctx.apply_shader_prefs(_sr)
+		# The icons are rendered from the same prop meshes the build just wrote,
+		# so this is the moment they can stop being the SDK blockout.
+		if previews: previews.rescan_context()
+		_swap_placed_after_build())
 	# the map build gets its own bar
 	mapctx.job_queue = jobs        # map-context downloads take their turn
 	mapctx_timer = Timer.new(); mapctx_timer.wait_time = 0.5
@@ -1711,6 +1715,34 @@ func _unstock_after_save() -> void:
 		return
 	_sdk_assets_hidden(mapctx_objects != null and mapctx_objects.button_pressed)
 	_sdk_terrain_hidden(mapctx_on != null and mapctx_on.button_pressed)
+	await _apply_scene()
+	_reapply_placed_cull()
+
+
+# THE BUILD AND THE PLACED PROPS ARE THE SAME WORK, done once.
+#
+# Building the level's scenery parses the game's meshes for everything the level
+# contains. The objects the USER placed are drawn from the same prefabs through
+# the same mesh_for(), which caches, so once the build has been past a mesh the
+# placed prop that wants it costs a dictionary lookup rather than a second parse.
+#
+# What was missing was the MOMENT. A placed prop resolves when something asks it
+# to: a mode switch, a drop, a selection. None of those happen while a build
+# runs, so a prop whose model only became reachable because of the build sat as
+# an SDK proxy until the user happened to touch it, standing next to a level full
+# of the very same object drawn properly.
+#
+# So the build's completion asks. It is the paced swap, which for a prop that is
+# already overlaid is a validity check and two visibility flags, and for one that
+# is not is the mesh the build has just cached.
+func _swap_placed_after_build() -> void:
+	if _mode() == HighpolyLib.Tier.LOW:
+		# Low-Poly draws the SDK's own proxies on purpose. Its one exception is
+		# the per-selection preview, and that path opens and applies by itself.
+		return
+	var r := EditorInterface.get_edited_scene_root()
+	if r == null or HighpolyLib.game_source == null:
+		return
 	await _apply_scene()
 	_reapply_placed_cull()
 
@@ -3170,8 +3202,13 @@ func _mapctx_changed() -> void:
 # The models a rung needs come from the install, so make sure it is open before
 # applying one that draws our geometry. Without this, switching to High-Poly in a
 # session that never touched Map Context applied a rung with nothing to apply.
-func _ensure_source_for_mode() -> void:
-	if _mode() == HighpolyLib.Tier.LOW:
+#  is for the case the scene mode cannot speak for: previewing a single
+# selected object in High-Poly WHILE the scene is on Low-Poly. That is the whole
+# point of the override, and gating on the scene mode meant it opened nothing,
+# resolved nothing and drew nothing - the one mode where the preview is the only
+# way to see a real model was the one mode where it could not work.
+func _ensure_source_for_mode(force := false) -> void:
+	if not force and _mode() == HighpolyLib.Tier.LOW:
 		return                       # the SDK's own proxies need nothing from us
 	if HighpolyLib.game_source != null:
 		return
@@ -3344,6 +3381,13 @@ func _reoverride_selection() -> void:
 	var sel := EditorInterface.get_selection().get_selected_nodes()
 	var low_scene := _mode() == HighpolyLib.Tier.LOW
 	var tier := HighpolyLib.Tier.HIGH if low_scene else HighpolyLib.Tier.LOW
+	# On a Low-Poly scene this pass is the ONLY thing asking for a real model, so
+	# it has to be the thing that opens the install. Forced, because the scene
+	# mode says Low-Poly and would otherwise refuse.
+	if tier != HighpolyLib.Tier.LOW and HighpolyLib.game_source == null:
+		await _ensure_source_for_mode(true)
+		if not is_instance_valid(self):
+			return
 	var tex := true if low_scene else _textured()
 	for node in _override.duplicate():
 		if not is_instance_valid(node):
