@@ -2522,6 +2522,34 @@ func object_node(portal_name: String) -> Node3D:
 
 
 # [{group, xf}] for one Portal object, cached per name.
+# SOME PREFABS CARRY AN ART-CATEGORY PREFIX THE SDK NAME DROPS.
+#
+# OrdinanceCrate_01 draws nothing because the game calls it
+# pf_portal_com_ordinancecrate_01. The categories are the same ones the texture
+# names use: com_ (common), mil_ (military), fed_, naf_, ind_ and so on.
+#
+# Surveyed over the same 4,620 objects the _a rule was measured on: this
+# resolves a further 16 - com_ 9, fed_ 6, ind_ 1 - and NOT ONE of them is
+# ambiguous. That matters more than the count. Returning a match only when
+# exactly one category has it keeps this from becoming the fuzzy name matching
+# that put a wrong model on a renamed node earlier: if two categories both
+# carried the name there would be no way to know which, and the honest answer
+# would be the proxy.
+const NAME_PREFIXES := ["com_", "mil_", "fed_", "naf_", "cas_", "ind_",
+	"psd_", "ter_", "veg_", "ob_"]
+
+
+func _resolve_prefixed(key: String):
+	var found: Array = []
+	for pre in NAME_PREFIXES:
+		for cand in [PORTAL_PREFIX + pre + key, PORTAL_PREFIX + pre + key + "_a"]:
+			var r = walk.resolve_name(cand)
+			if r != null:
+				found.append(r)
+				break
+	return found[0] if found.size() == 1 else null
+
+
 func object_rows(portal_name: String) -> Array:
 	if walk == null or src == null:
 		return []
@@ -2551,6 +2579,8 @@ func object_rows(portal_name: String) -> Array:
 		ref = walk.resolve_name(cand)
 		if ref != null:
 			break
+	if ref == null:
+		ref = _resolve_prefixed(key)
 	if ref == null:
 		_obj_cache[key] = []
 		_obj_lights[key] = []
