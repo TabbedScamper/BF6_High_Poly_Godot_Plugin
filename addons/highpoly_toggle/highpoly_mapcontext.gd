@@ -343,254 +343,14 @@ static func map_of(root: Node) -> String:
 	var n := String(root.name)
 	return n if n.begins_with("MP_") else ""
 
-func base_url() -> String:
-	return HighpolyUpdater.manifest_url().get_base_dir() + "/"
-
 func has_data(map: String) -> bool:
 	# An open game source IS data for its map, and needs no download at all.
 	if game_source != null and game_source.level == map.to_lower():
 		return true
 	return FileAccess.file_exists("%s/%s/placements.json" % [CACHE, map])
 
-func _fetch_once(host: Node, url: String, to_file := "") -> PackedByteArray:
-	var http := HTTPRequest.new(); host.add_child(http)
-	http.timeout = FETCH_TIMEOUT     # 0 (the default) means await-forever
-	if to_file != "": http.download_file = to_file
-	var err := http.request(url)
-	if err != OK: http.queue_free(); return PackedByteArray()
-	var res: Array = await http.request_completed
-	http.queue_free()
-	# 200 = ok. r2.dev rate-limits (403/429/5xx) under rapid sequential pulls.
-	if res[0] != HTTPRequest.RESULT_SUCCESS or res[1] != 200:
-		return PackedByteArray()
-	if to_file != "" and not FileAccess.file_exists(to_file):
-		return PackedByteArray()
-	return res[3] if to_file == "" else PackedByteArray([1])
-
-# retry with backoff â€” the public r2.dev host throttles bursts
-func _fetch(host: Node, url: String, to_file := "") -> PackedByteArray:
-	for attempt in range(4):
-		var r := await _fetch_once(host, url, to_file)
-		if not r.is_empty(): return r
-		# brief backoff before retrying (0.4s, 0.8s, 1.6s)
-		var t := host.get_tree().create_timer(0.4 * pow(2, attempt))
-		await t.timeout
-	return PackedByteArray()
-
-# Large-file download straight to disk with a live "N MB" progress callback
-# (total_mb = 0 hides the total). Returns true on HTTP 200 + file present.
-# Also drives the dock's progress bar via download_progress: every download the
-# plugin performs has to be visible there, not just as a line of status text.
-func _download_with_progress(host: Node, url: String, to_file: String, status: Callable,
-		label: String, total_mb := 0) -> bool:
-	var total_bytes := total_mb * 1048576
-	# take a turn: one transfer at a time, so the bar describes one thing and the
-	# connection is not split between two
-	var token := 0
-	if job_queue != null:
-		token = await job_queue.acquire(label)
-	# show the bar immediately â€” the first poll is half a second away, and a
-	# stalled connection must still look like "started", not like nothing happened
-	download_progress.emit(label, 0, total_bytes)
-	var ok := false
-	var why := ""
-	var _tdl := Time.get_ticks_msec()   # for the transfer accounting on the way out
-	for attempt in range(3):
-		if attempt > 0:
-			if status.is_valid():
-				status.call("%s connection stalled, retrying (%d/3)â€¦" % [label, attempt + 1])
-			await host.get_tree().create_timer(2.0 * attempt).timeout
-		var http := HTTPRequest.new(); host.add_child(http)
-		# Transfer on its OWN thread. HTTPRequest.use_threads defaults to false,
-		# which pumps the socket from _process on the main thread â€” so the
-		# download only advances as fast as the editor renders frames. This
-		# download runs while the map context is building tens of thousands of
-		# nodes, which is exactly when the editor's frame rate collapses, so the
-		# largest transfer the plugin makes was being throttled by the unrelated
-		# work happening beside it. Raw HTTP to this host measures ~49 MB/s
-		# single-stream; that is the ceiling this was nowhere near.
-		http.use_threads = true
-		http.download_file = to_file
-		# Deliberately NOT http.timeout: that caps the whole transfer, and a big
-		# package over a slow line is legitimately long. What we actually care
-		# about is a transfer that stops MOVING, so watch the byte counter.
-		var state := {"done": false, "ok": false}
-		http.request_completed.connect(func(res: int, code: int, _h, _b):
-			state["done"] = true
-			state["ok"] = res == HTTPRequest.RESULT_SUCCESS and code == 200,
-			CONNECT_ONE_SHOT)
-		var rq := http.request(url)
-		if rq != OK:
-			why = "could not start the request (%s)" % error_string(rq)
-			Log.warn("%s: %s: %s" % [label, why, url])
-			http.queue_free()
-			continue
-		var last := 0
-		var idle := 0.0
-		while not state["done"]:
-			await host.get_tree().create_timer(POLL_SECS).timeout
-			var d := http.get_downloaded_bytes()
-			# get_body_size() is the real Content-Length once headers land; prefer
-			# it over the manifest's estimate so the bar can't exceed 100%
-			var t := http.get_body_size()
-			if t > 0: total_bytes = t
-			if d > last:
-				last = d
-				idle = 0.0
-			else:
-				idle += POLL_SECS
-			download_progress.emit(label, d, total_bytes)
-			if job_queue != null: job_queue.report(d, total_bytes)
-			if d > 0 and status.is_valid():
-				status.call("%s %d%s MBâ€¦" % [label, d / 1048576, (" / %d" % total_mb) if total_mb > 0 else ""])
-			if idle >= stall_secs and not state["done"]:
-				# cancel_request() does NOT emit request_completed, so break out
-				# ourselves â€” awaiting that signal here would hang forever, which
-				# is the very bug this loop exists to end
-				http.cancel_request()
-				why = "stopped receiving data for %ds" % int(stall_secs)
-				Log.warn("%s: %s (got %s)" % [label, why, String.humanize_size(d)])
-				break
-		ok = state["ok"] and FileAccess.file_exists(to_file)
-		if not ok and why == "":
-			why = "server refused or sent nothing" if not state["ok"] 				else "nothing was written to disk"
-			Log.warn("%s: %s: %s" % [label, why, url])
-		http.queue_free()
-		if ok: break
-	# the poll never lands exactly on the last byte â€” finish the bar before
-	# removing it, so a completed download doesn't vanish at 88%
-	if ok and total_bytes > 0:
-		download_progress.emit(label, total_bytes, total_bytes)
-	download_ended.emit(label)
-	if ok:
-		var got := total_bytes
-		if got <= 0 and FileAccess.file_exists(to_file):
-			var fh := FileAccess.open(to_file, FileAccess.READ)
-			if fh != null:
-				got = fh.get_length()
-				fh.close()
-		HighpolyProfiler.mapctx_transfer(got, Time.get_ticks_msec() - _tdl, label)
-	if job_queue != null:
-		job_queue.release(token, ok, why if not ok else String.humanize_size(total_bytes))
-	elif not ok:
-		Log.error("FAILED: %s: %s" % [label, why])
-	return ok
-
 # ---------- package freshness (ETags) ----------
-func _etags_path(map: String) -> String:
-	return "%s/%s/etags.json" % [CACHE, map]
-
-func _etags(map: String) -> Dictionary:
-	if FileAccess.file_exists(_etags_path(map)):
-		var j: Variant = JSON.parse_string(FileAccess.get_file_as_string(_etags_path(map)))
-		if j is Dictionary: return j
-	return {}
-
-func _save_etag(map: String, key: String, val: String) -> void:
-	if val == "": return
-	var d := _etags(map)
-	d[key] = val
-	HighpolyStore.ensure_dir("%s/%s" % [CACHE, map])
-	var f := FileAccess.open(_etags_path(map), FileAccess.WRITE)
-	if f: f.store_string(JSON.stringify(d)); f.close()
-
-# Remote ETags seen this session, "<map>/<key>" -> tag. Feeds _ver_url().
 var _remote_tag: Dictionary = {}
-
-# Map packages are published to the same URL every time and served with
-# `Cache-Control: public, max-age=3600`, so for an hour after a republish the
-# CDN edge will happily hand out the PREVIOUS body to anyone who already pulled
-# it. HEAD requests and range requests are cached separately and do show the new
-# object, which makes this look fine from every angle except the one that
-# matters: the full GET the plugin actually makes.
-#
-# That is not theoretical. A rebuilt Dumbo was published, the freshness check
-# correctly saw a new ETag, the plugin downloaded 1.7 GB, overwrote all 2,871
-# props with the STALE body it was served, and then stamped the new ETag over
-# the top â€” leaving a cache that was wrong AND believed itself current, so no
-# later check could ever repair it.
-#
-# Appending the content's own ETag as a query parameter gives each version its
-# own cache key, so a republish can never be masked by a warm edge. The origin
-# ignores the parameter.
-func _ver_url(host: Node, map: String, key: String, url: String) -> String:
-	var k := "%s/%s" % [map, key]
-	var tag: String = str(_remote_tag.get(k, ""))
-	if tag == "":
-		# first pull of a map never ran the freshness check (there was nothing
-		# local to compare), and that is exactly when a warm edge hurts most
-		var http := HTTPRequest.new(); host.add_child(http)
-		tag = await HighpolyUpdater.remote_etag(http, url)
-		http.queue_free()
-		if tag != "":
-			_remote_tag[k] = tag
-	if tag == "":
-		return url                      # offline / no ETag: plain URL still works
-	return "%s?v=%s" % [url, tag.md5_text().substr(0, 16)]
-
-# Record the CURRENT remote ETag for a package we just downloaded in full.
-func _stamp_etag(host: Node, map: String, key: String, url: String) -> void:
-	# Prefer the tag the download was actually keyed to. Re-asking the server
-	# here would record whatever is published NOW, which is not necessarily what
-	# we just wrote to disk if a republish landed mid-download â€” and a cache that
-	# claims a version it does not hold can never be repaired by a later check.
-	var tag: String = str(_remote_tag.get("%s/%s" % [map, key], ""))
-	if tag == "":
-		var http := HTTPRequest.new(); host.add_child(http)
-		tag = await HighpolyUpdater.remote_etag(http, url)
-		http.queue_free()
-	_save_etag(map, key, tag)
-
-# Once per session per map: are the published packages newer than our cache?
-# Returns {"mapdata": bool, "props": bool}; network failure = not stale (the
-# cached data keeps working offline, and we re-check next session).
-# Map scenery follows the library quality setting. The default stays the small
-# web rendition â€” map context draws thousands of distance-streamed instances and
-# full textures there cost VRAM for geometry nobody is inspecting â€” but asking
-# for in-game quality now applies HERE too instead of being pinned to web.
-# The etag is remembered per tier, so switching quality makes the cached package
-# stale by construction and it re-downloads rather than silently keeping the
-# rendition you just chose to leave.
-func props_file() -> String:
-	return "props_hq.zip" if HighpolyStore.quality() == "full" else "props.zip"
-
-
-func _props_etag_key() -> String:
-	return "props_hq" if HighpolyStore.quality() == "full" else "props"
-
-
-# Drop the once-per-session "already checked this map" flag so the next
-# download_map() re-compares package ETags. The guard exists so that building
-# the map context repeatedly inside one session does not re-check the server
-# every time; it is NOT meant to survive someone explicitly asking for a
-# refresh. Without this, pressing Check for Updates after a map was republished
-# did nothing at all: download_map skipped the freshness compare and then
-# returned early on "map data ready", so a rebuilt map could not be picked up
-# without restarting the editor.
-func forget_session_check(map: String) -> void:
-	if map == "":
-		_session_checked.clear()
-	else:
-		_session_checked.erase(map)
-
-
-func _check_freshness(host: Node, map: String) -> Dictionary:
-	var out := {"mapdata": false, "props": false}
-	var have := _etags(map)
-	var b := base_url() + "maps/%s/" % map
-	var http := HTTPRequest.new(); host.add_child(http)
-	for key in ["mapdata", "props"]:
-		var file: String = "mapdata.zip" if key == "mapdata" else props_file()
-		var store_key: String = key if key == "mapdata" else _props_etag_key()
-		var tag: String = await HighpolyUpdater.remote_etag(http, b + file)
-		if tag != "":
-			# remember it for _ver_url(): the download that follows must be
-			# keyed to the version this check actually saw
-			_remote_tag["%s/%s" % [map, store_key]] = tag
-		if tag != "" and tag != str(have.get(store_key, "")):
-			out[key] = true
-	http.queue_free()
-	return out
 
 func _purge_terrain_cache(map: String) -> void:
 	var dir := "%s/%s" % [CACHE, map]
@@ -599,116 +359,6 @@ func _purge_terrain_cache(map: String) -> void:
 	for f in da.get_files():
 		if f.begins_with("terrain_") and f.ends_with(".res"):
 			DirAccess.remove_absolute("%s/%s" % [dir, f])
-
-# Download a map's data as ONE zip (terrain + placements + backdrop glbs) and
-# extract it. A single request avoids the r2.dev burst-throttling that 38
-# separate downloads trip. Idempotent: if placements.json is already cached and
-# all backdrop files present, does nothing. status is Callable(String).
-func download_map(host: Node, map: String, status: Callable, force := false) -> bool:
-	# NOTHING TO DOWNLOAD when the map came out of the install.
-	#
-	# The toggle already returns before calling this on the game path, and that
-	# was not enough: half a dozen other places reach for the download — a layer
-	# switch, a variant change, the props verifier — and each of them found the
-	# network. A recorded session built Dumbo from the game in 203 s and then sat
-	# in "Loading the level's scenery (1/3)" failing against a server it did
-	# not need, which on a machine with no connection is a long wait for an error
-	# about data that is already on screen.
-	#
-	# Guarding the function rather than the callers is the point: a new caller
-	# added later is covered without anyone remembering to.
-	if game_source != null and game_source.level == map.to_lower():
-		return true
-	var b := base_url() + "maps/%s/" % map
-	var dir := "%s/%s" % [CACHE, map]
-	HighpolyStore.ensure_dir(dir)
-	# the maptile is no longer shipped with the SDK â€” make sure we have one
-	# before anything textured is built (quiet no-op when it's already there)
-	await ensure_maptile(host, map, status)
-	# self-heal: on first touch this session, compare package ETags; a
-	# republished mapdata.zip forces a fresh pull (incl. rebuilding the cached
-	# terrain meshes), a republished props.zip flags an overwrite-all extract
-	if has_data(map) and not _session_checked.get(map, false):
-		_session_checked[map] = true
-		var fresh: Dictionary = await _check_freshness(host, map)
-		if fresh.get("props", false):
-			_props_refresh[map] = true
-		if fresh.get("mapdata", false):
-			status.call("%s map data was updated, refreshingâ€¦" % map)
-			force = true
-	if force:
-		# force a fresh pull (e.g. the map data format changed): drop the manifest
-		# AND the terrain meshes built from the old heightmap
-		DirAccess.remove_absolute("%s/placements.json" % dir)
-		_purge_terrain_cache(map)
-	if _map_cache_complete(map):
-		status.call("%s map data ready" % map); return true
-	# size (optional, for the status line)
-	var total_mb := 0
-	var meta_raw := await _fetch(host, b + "mapdata.json")
-	if not meta_raw.is_empty():
-		var meta: Variant = JSON.parse_string(meta_raw.get_string_from_utf8())
-		# The packager writes mapdata_bytes / props_bytes / props_hq_bytes; there
-		# has never been a plain "bytes" key, so this read always returned 0 and
-		# the download reported no size at all â€” both in the status line and as
-		# the progress bar's total. This is the mapdata.zip download, so it is
-		# mapdata_bytes that belongs here ("bytes" kept for older packages).
-		if meta is Dictionary:
-			var mb: int = int(meta.get("mapdata_bytes", meta.get("bytes", 0)))
-			total_mb = int(mb / 1048576.0)
-	status.call("Downloading %s map data%sâ€¦" % [map, (" (~%d MB)" % total_mb) if total_mb else ""])
-	var tmp := "%s/mapdata.zip" % dir
-	var got_ok := await _download_with_progress(host,
-		await _ver_url(host, map, "mapdata", b + "mapdata.zip"), tmp, status,
-		"Loading %s map data:" % map, total_mb)
-	if not got_ok:
-		status.call("Map data download failed. The server is busy, try Reload again.")
-		return false
-	status.call("Loading %sâ€¦" % map)
-	var zr := ZIPReader.new()
-	var zerr := zr.open(ProjectSettings.globalize_path(tmp))
-	if zerr != OK:
-		Log.err_code("%s map data downloaded but the archive would not open" % map, zerr)
-		status.call("Map archive unreadable"); return false
-	var n := 0
-	var skipped := 0
-	for f in zr.get_files():
-		if f.ends_with("/"): continue
-		var dest := "%s/%s" % [dir, f]
-		HighpolyStore.ensure_dir(dest.get_base_dir())
-		var out := FileAccess.open(dest, FileAccess.WRITE)
-		if out:
-			out.store_buffer(zr.read_file(f)); out.close(); n += 1
-		else:
-			# a file that cannot be written is the difference between a map that
-			# works and one that half-works; silence here reads as success
-			skipped += 1
-			if skipped == 1:
-				Log.err_code("Could not write %s while unpacking %s map data"
-					% [dest, map], FileAccess.get_open_error())
-	if skipped > 0:
-		Log.error("%s map data: %d of %d files could not be written to %s"
-			% [map, skipped, n + skipped, ProjectSettings.globalize_path(dir)])
-	zr.close()
-	DirAccess.remove_absolute(tmp)
-	await _stamp_etag(host, map, "mapdata", b + "mapdata.zip")
-	status.call("%s map data ready (%d files)" % [map, n])
-	return _map_cache_complete(map)
-
-# True when the cached manifest AND every file it references (heightmap blob +
-# backdrop glbs) are on disk â€” i.e. nothing left to download for this map.
-func _map_cache_complete(map: String) -> bool:
-	var dir := "%s/%s" % [CACHE, map]
-	var pjp := "%s/placements.json" % dir
-	if not FileAccess.file_exists(pjp): return false
-	var d: Variant = JSON.parse_string(FileAccess.get_file_as_string(pjp))
-	if not (d is Dictionary): return false
-	var hm: Dictionary = d.get("heightmap", {})
-	if hm.has("file") and not FileAccess.file_exists("%s/%s" % [dir, hm["file"]]): return false
-	for e in d.get("backdrop", []):
-		if e is Dictionary and e.has("glb") and not FileAccess.file_exists("%s/%s" % [dir, e["glb"]]):
-			return false
-	return true
 
 # ---------- apply / build ----------
 # keep_backdrop: apply() has lifted the finished skyline out of the old context
@@ -744,7 +394,6 @@ func _clear(root: Node, keep_backdrop := false, keep_props := false) -> void:
 	# are freed with _MAP_CONTEXT below)
 	_build_gen += 1
 	_building = false
-	_pf_release()         # prefetched scenes the cancelled build will never claim
 	# The whole overlay is going, so the pooled GPU textures have no materials
 	# left pointing at them. Keeping them would hold the map's texture memory
 	# across a map switch, which is precisely the leak the pool is meant to cure.
@@ -860,36 +509,6 @@ func _maptile_tex(map: String) -> Texture2D:
 			t = ImageTexture.create_from_image(img)
 	_tile_cache[nm] = t
 	return t
-
-# Make sure this map's tile exists locally, pulling it from the same official
-# CDN the SDK's own "Download Texture" button uses (1.4.1.0 stopped shipping
-# them). No-op once a tile is on disk. Failure is quiet â€” the overlay just
-# falls back to the flat study colours.
-func ensure_maptile(host: Node, map: String, status: Callable = Callable()) -> bool:
-	if _maptile_path(map) != "": return true
-	var nm := _tile_name(map)
-	var root := TILE_URL_FALLBACK
-	if FileAccess.file_exists(SDK_CONFIG):
-		var cfg: Variant = JSON.parse_string(FileAccess.get_file_as_string(SDK_CONFIG))
-		if cfg is Dictionary and str((cfg as Dictionary).get("downloadUrl", "")) != "":
-			root = str((cfg as Dictionary)["downloadUrl"])
-	HighpolyStore.ensure_dir(TILE_CACHE)
-	var dest := "%s/%s.jpg" % [TILE_CACHE, nm]
-	var ok := await _download_with_progress(host, "%smaptiles/%s.jpg" % [root, nm], dest,
-		status if status.is_valid() else func(_s: String): pass,
-		"Loading %s map texture:" % nm)
-	# the CDN answers 200 with a short text body for a request it doesn't like,
-	# so only a real JPEG counts â€” never leave a poisoned file in the cache
-	if ok:
-		var f := FileAccess.open(dest, FileAccess.READ)
-		var magic := f.get_buffer(3) if f != null else PackedByteArray()
-		if f != null: f.close()
-		ok = magic.size() == 3 and magic[0] == 0xFF and magic[1] == 0xD8 and magic[2] == 0xFF
-	if not ok:
-		if FileAccess.file_exists(dest): DirAccess.remove_absolute(dest)
-		return false
-	_tile_cache.erase(nm)
-	return true
 
 # ---------- SDK maptile (top-down satellite) ----------
 # ---------- the SDK's own ground decal ----------
@@ -2487,54 +2106,6 @@ static func _want_companions(glb: String, present: Dictionary,
 		i += 1
 
 
-func _props_missing() -> Array:
-	HighpolyStore.ensure_dir(PROPS_CACHE)
-	var miss: Array = []
-	var seen: Dictionary = {}
-	for e in _data.get("props", []):
-		if e is Dictionary and e.has("mesh"):
-			var nm: String = e["mesh"]
-			if seen.has(nm): continue
-			seen[nm] = true
-			if _prop_incomplete(nm):
-				miss.append(nm)
-	# vegetation scatter kit meshes (scatter.json) live in the same shared cache
-	for nm in _scatter_mesh_names():
-		if seen.has(nm): continue
-		seen[nm] = true
-		if _prop_incomplete(nm):
-			miss.append(nm)
-	return miss
-
-
-# A PROP WITH NO PIXELS COUNTS AS MISSING. Having the glb used to be the whole
-# test, and against a stripped archive that is exactly wrong: the file is there,
-# nothing re-downloads, and the prop draws flat white forever. Nobody would read
-# that as a download problem â€” the model is plainly present.
-#
-# A stripped glb carries no images, so one with no .bctex beside it is half a
-# prop. Props that ship their images inside the file, the way they always used
-# to, have images and pass here without needing a sidecar at all.
-func _prop_incomplete(nm: String) -> bool:
-	var gp := "%s/%s.glb" % [PROPS_CACHE, nm]
-	if not FileAccess.file_exists(gp):
-		return true
-	if FileAccess.file_exists("%s/%s%s" % [PROPS_CACHE, nm, BcTex.EXT]):
-		return false
-	# NOT EVERY PROP HAS TEXTURES. 68 of Dumbo's 2,761 carry no images at all,
-	# so bc_strip copies them through and they get no sidecar â€” correctly. The
-	# presence of a bake is what says this prop came from a pre-baked archive,
-	# which makes "no sidecar" a fact about the prop rather than a gap in the
-	# download. Without this they would every one of them look incomplete and
-	# re-fetch on every single load, forever.
-	if FileAccess.file_exists(gp + GEOM_SUFFIX) \
-			or FileAccess.file_exists(gp + _geom_part_suffix(0)):
-		return false
-	return _glb_has_no_images(gp)
-
-
-# Read the glTF header only. A prop is a few MB and there are thousands of them,
-# so this stops at the JSON chunk and never touches the mesh data.
 static func _glb_has_no_images(gp: String) -> bool:
 	var f := FileAccess.open(gp, FileAccess.READ)
 	if f == null:
@@ -2564,438 +2135,11 @@ func _scatter_mesh_names() -> Array:
 		if e is Dictionary and e.has("mesh"): out.append(str(e["mesh"]))
 	return out
 
-# download the map's prop meshes into the SHARED cache. Normally extracts only
-# meshes not already present (a rock shared with a previously-loaded map isn't
-# re-written), but when the freshness check saw a republished props.zip it
-# overwrites EVERY mesh the zip carries â€” this is what heals a stale/wrong
-# cached prop (the old rule "file exists = current" pinned it forever).
-# Returns true if everything the map needs is now cached.
-# Is every prop this map needs already in the shared cache?
-#
-# Lets the caller choose between ONE build (nothing to fetch â€” the common case
-# once a map has been opened before) and a progressive two-phase build (draw the
-# already-local terrain and backdrop first, add objects when the package lands).
-# Cheap: the same in-memory check ensure_props() opens with, no I/O beyond the
-# placements it has already loaded.
-func props_ready(map: String) -> bool:
-	if map == "" or not _load_data(map):
-		return false
-	if bool(_props_refresh.get(map, false)):
-		return false                       # republished package: a refresh is due
-	return _props_missing().is_empty()
-
-
 const RANGED_JOB := "Loading the level's scenery (1/2)"
 const ARCHIVE_JOB := "Loading the level's scenery (1/3)"
 
 
-# Fetch ONLY the missing props out of the published archive, using Range
-# requests, and write each one straight to the cache. Returns false for any
-# reason at all, in which case the caller downloads the whole archive as before
-# â€” this is a shortcut over a working path, never a replacement for it.
-#
-# Worth it because the archive is all-or-nothing today: 41% of everything a user
-# downloads across the 24 maps is props already sitting in the shared cache. And
-# it is FASTER even when nothing is skippable â€” 118 MB/s against 36 MB/s for the
-# single stream, measured on cold maps â€” while deleting the separate unpack
-# stage and the multi-GB temp file, because the bytes arriving are the files.
-func _ensure_props_ranged(host: Node, map: String, url: String, miss: Array,
-		refresh: bool, status: Callable) -> bool:
-	if url == "" or host == null:
-		return false
-	var zf := ZipFetch.new(host, url)
-	status.call("Checking what %s scenery is already hereâ€¦" % map)
-	HighpolyProfiler.crumb("fetch", "reading %s archive index" % map)
-	var entries: Array = await zf.read_index()
-	HighpolyProfiler.crumb("fetch", "index: %d entries" % entries.size())
-	if entries.is_empty():
-		Log.info("%s props: archive index unavailable, downloading it whole" % map)
-		return false
-
-	# A REFRESH rewrites every prop, not only the absent ones. It has to be
-	# handled here rather than declined: a purged or first-time cache always
-	# arrives with the refresh flag set, so declining it meant the whole ranged
-	# path never ran on the one case it exists for. A recorded Dumbo load did
-	# exactly that â€” "refresh=true" and a 56 s archive download, with none of
-	# this code touched.
-	# EVERY NAME IN THE ARCHIVE, so a prop's companions can be asked for. This
-	# path picks entries out individually â€” it is not an unpack â€” so anything it
-	# does not name is simply never downloaded.
-	var present: Dictionary = {}
-	for e in entries:
-		present[str(e["name"])] = true
-
-	var want: Dictionary = {}
-	if refresh:
-		for e in entries:
-			var nm0 := str(e["name"])
-			if nm0.ends_with(".glb") and not nm0.contains("/"):
-				want[nm0] = true
-	else:
-		for nm in miss:
-			want["%s.glb" % nm] = true
-
-	# A PROP IS THREE FILES NOW, and asking only for the glb fetches a model
-	# with no pixels in it. The images ship in a .bctex beside it and the baked
-	# geometry in a .geom.res, and this is the only thing that requests them.
-	#
-	# Nothing here reports a problem when it is wrong: the download succeeds,
-	# the count looks plausible, the map builds. It shows up as a level rendered
-	# entirely in flat white â€” which is exactly what a client asking for "2761
-	# of 8215 entries" produced against the first pre-baked archive.
-	for glb in want.keys():
-		_want_companions(str(glb), present, want)
-
-	if want.is_empty():
-		return true                       # nothing to do; not a failure
-
-	var runs: Array = ZipFetch.plan(entries, want)
-	if runs.is_empty():
-		return false
-	var bytes := 0
-	var have := 0
-	for e in entries:
-		if want.has(str(e["name"])):
-			bytes += int(e["csize"])
-		else:
-			have += int(e["csize"])
-	Log.info(("%s props: %d of %d entries needed (%.0f MB of %.0f MB); "
-		+ "fetching them in %d ranged read(s), skipping %.0f MB already here")
-		% [map, want.size(), entries.size(), bytes / 1048576.0,
-			(bytes + have) / 1048576.0, runs.size(), have / 1048576.0])
-
-	HighpolyStore.ensure_dir(PROPS_CACHE)
-	build_job = BUILD_JOB_OF2   # no unpack stage here: two steps, not three
-	var token := 0
-	if job_queue != null:
-		token = await job_queue.acquire(RANGED_JOB)
-	download_progress.emit(RANGED_JOB, 0, bytes)
-	var t0 := Time.get_ticks_msec()
-	HighpolyProfiler.crumb("fetch", "%d ranged read(s), %.0f MB" % [runs.size(), bytes / 1048576.0])
-	var written: int = await zf.fetch(runs, ProjectSettings.globalize_path(PROPS_CACHE),
-		func(done: int, files: int):
-			# job_queue.report IS WHAT MOVES THE BAR. While a job holds the
-			# queue slot the bar reads its ratio from there and ignores the
-			# keyed activity lanes entirely, so emitting download_progress alone
-			# left the first bar of the map-objects pipeline sitting at 0% for
-			# the whole 14.6 s transfer â€” present, labelled, and never moving.
-			if job_queue != null:
-				job_queue.report(done, bytes)
-			download_progress.emit(RANGED_JOB, done, bytes)
-			if status.is_valid():
-				status.call("Loading %s scenery: %d of %d pieces (%.0f of %.0f MB)"
-					% [map, files, want.size(), done / 1048576.0, bytes / 1048576.0]))
-	var ms: int = maxi(1, Time.get_ticks_msec() - t0)
-	HighpolyProfiler.mapctx_transfer(bytes, ms, "scenery")
-	download_progress.emit(RANGED_JOB, bytes, bytes)
-	download_ended.emit(RANGED_JOB)
-	if job_queue != null and token != 0:
-		job_queue.release(token, written >= want.size())
-
-	if written < want.size():
-		# a partial run leaves real files on disk; they are all complete
-		# individually (each is written whole or not at all), so the fallback
-		# simply picks up the rest
-		Log.warn("%s props: ranged fetch delivered %d of %d, falling back to the archive"
-			% [map, written, want.size()])
-		return false
-	Log.info("%s props: %d files in %.1f s (%.0f MB/s) - no archive, no unpack stage"
-		% [map, written, ms / 1000.0, bytes / 1048576.0 / (ms / 1000.0)])
-	# Exactly what the archive path does on its way out, through the same helper
-	# so the two cannot drift. Without the ETag stamp the next freshness check
-	# cannot tell this fetch happened and keeps flagging a refresh; without the
-	# registry pass, props the library has since republished never heal; and
-	# without the package-accept the library's healing silently reverts what was
-	# just written.
-	# WHATEVER WAS ACTUALLY FETCHED, refresh or not. This used to run only on a
-	# refresh, so a partial fetch left the props it had just written unaccepted
-	# â€” and _verify_props_registry then hashed every one of them, found they did
-	# not match the library's copy, and downloaded the library's version over the
-	# top, one at a time. That is the "Updating prop meshes to match the site"
-	# pass, and against a pre-baked archive it reverts the whole thing: the
-	# stripped glb it overwrites is the one the .bctex and .geom.res belong to.
-	_accept_package_props(map, want.keys())
-	var b := base_url() + "maps/%s/" % map
-	await _stamp_etag(host, map, _props_etag_key(), b + props_file())
-	await _verify_props_registry(host, map, status)
-	status.call("%d prop meshes ready" % written)
-	return true
-
-
-func ensure_props(host: Node, map: String, status: Callable) -> bool:
-	# Same guard as download_map, and for the same reason: a game-sourced map's
-	# prop meshes come out of the MeshSets, so there is no per-prop GLB to be
-	# missing and nothing to fetch. _props_missing() works off the packaged
-	# registry and would report every one of the 5,498 groups absent.
-	if game_source != null and game_source.level == map.to_lower():
-		return true
-	if not _load_data(map): return false
-	var refresh: bool = _props_refresh.get(map, false)
-	var miss := _props_missing()
-	if miss.is_empty() and not refresh:
-		await _verify_props_registry(host, map, status)
-		return true
-	if refresh:
-		status.call("Prop meshes were updated, refreshingâ€¦")
-	else:
-		status.call("Loading %d prop meshesâ€¦" % miss.size())
-	var b := base_url() + "maps/%s/" % map
-	var tmp := "%s/%s/_props.zip" % [CACHE, map]
-	HighpolyStore.ensure_dir("%s/%s" % [CACHE, map])
-	# Tell the progress bar how big this actually is. This is the largest single
-	# download the plugin makes â€” Dumbo's in-game tier is measured in GB, not the
-	# hundreds of MB it used to be â€” and it was started with no total at all, so
-	# it could only ever show bytes ticking up with no end in sight. The size is
-	# per TIER, so the number shown matches the quality actually being fetched.
-	var props_mb := 0
-	var pmeta_raw := await _fetch(host, b + "mapdata.json")
-	if not pmeta_raw.is_empty():
-		var pmeta: Variant = JSON.parse_string(pmeta_raw.get_string_from_utf8())
-		if pmeta is Dictionary:
-			var key: String = "props_hq_bytes" if HighpolyStore.quality() == "full" else "props_bytes"
-			props_mb = int(int(pmeta.get(key, 0)) / 1048576.0)
-	if props_mb > 0:
-		status.call("Loading %s prop meshes (~%d MB, %s quality)â€¦"
-			% [map, props_mb, "in-game" if HighpolyStore.quality() == "full" else "web"])
-	# Try to take only what is missing, straight out of the published archive,
-	# before falling back to downloading the whole thing. See highpoly_zipfetch.
-	var props_url := await _ver_url(host, map, _props_etag_key(), b + props_file())
-	if await _ensure_props_ranged(host, map, props_url, miss, refresh, status):
-		return true
-	build_job = BUILD_JOB_OF3   # archive + unpack + build
-	var ok := await _download_with_progress(host,
-		props_url, tmp, status,
-		ARCHIVE_JOB, props_mb)
-	if not ok:
-		status.call("Prop mesh download failed (try again)"); return false
-	var zr := ZIPReader.new()
-	var zerr2 := zr.open(ProjectSettings.globalize_path(tmp))
-	if zerr2 != OK:
-		Log.err_code("%s scenery downloaded but the archive would not open" % map, zerr2)
-		status.call("Prop archive unreadable"); return false
-	var want: Dictionary = {}
-	for nm in miss: want["%s.glb" % nm] = true
-	var n := 0
-	var skipped2 := 0
-	# Say what we actually received and what we intend to do with it. Dumbo's
-	# props have now been "successfully" re-downloaded three times and come out
-	# byte-identical to the stale copy every time, and none of the four things
-	# that could explain it -- wrong URL, CDN serving an old body, refresh flag
-	# lost, extraction skipping existing files -- can be told apart from the
-	# outside, because the log records only that 1.71 GiB arrived. One line here
-	# separates all four.
-	var zfiles: PackedStringArray = zr.get_files()
-	var probe := ""
-	for f0 in zfiles:
-		if f0.ends_with(".glb"):
-			probe = "%s (%d B in zip)" % [f0, zr.read_file(f0).size()]
-			break
-	var zbytes := 0
-	var zf := FileAccess.open(tmp, FileAccess.READ)      # length only: NEVER read
-	if zf:                                               # the archive into RAM,
-		zbytes = zf.get_length()                         # it is gigabytes
-		zf.close()
-	Log.info("%s props: archive %d B holds %d entries, refresh=%s, %d missing Â· first=%s"
-		% [map, zbytes, zfiles.size(), str(refresh), miss.size(), probe])
-	# Rewriting a prop that did not change is not free, it is the single most
-	# expensive thing this function can do. _parse_prop_file() treats a sidecar
-	# older than its .glb as stale, so touching every file invalidates the whole
-	# fast-load cache and forces all ~2,871 props to re-parse from glTF and
-	# re-bake on the next build -- minutes of work to deliver, on Dumbo, 235
-	# actually-changed props. Comparing bytes first costs one sequential read of
-	# files we just wrote to the page cache anyway, and lets everything unchanged
-	# keep its timestamp and its sidecar.
-	# THIS LOOP USED TO RUN TO COMPLETION WITHOUT YIELDING ONCE. Unpacking Dumbo
-	# means 2,761 entries and a 1.7 GB archive, and the whole thing happened
-	# between two frames: 41 seconds during which the editor drew nothing,
-	# accepted no input, and could not move the progress bar that was supposedly
-	# reporting it. It is the largest single freeze in a recorded cold load.
-	#
-	# Nothing here needs to be atomic â€” each entry is an independent file â€” so
-	# it now gives the editor a frame back roughly every 40 ms. The unpack takes
-	# marginally longer in wall-clock and the editor stays alive throughout,
-	# which is the trade worth making every time.
-	var same := 0
-	var slice_start := Time.get_ticks_msec()
-	var seen := 0
-	for f in zfiles:
-		# counted FIRST: the identical-file path below continues past the end of
-		# the loop body, so counting there left every unchanged entry out of the
-		# tally and the progress read "1200 of 2761" on a run that unpacked all
-		# 2761 of them
-		seen += 1
-		if want.has(f) or (refresh and f.ends_with(".glb") and not f.contains("/")):
-			var data := zr.read_file(f)
-			var dst := "%s/%s" % [PROPS_CACHE, f]
-			var identical := false
-			if FileAccess.file_exists(dst):
-				var cur := FileAccess.open(dst, FileAccess.READ)
-				if cur:
-					identical = cur.get_length() == data.size() \
-						and cur.get_buffer(data.size()) == data
-					cur.close()
-			if identical:
-				same += 1
-			else:
-				var out := FileAccess.open(dst, FileAccess.WRITE)
-				if out:
-					out.store_buffer(data); out.close(); n += 1
-				else:
-					skipped2 += 1
-					if skipped2 == 1:
-						Log.err_code("Could not write %s while unpacking %s scenery"
-							% [f, map], FileAccess.get_open_error())
-		# NO `continue` above, deliberately. The unchanged-file path used to skip
-		# straight past this yield, so a re-download where most entries matched
-		# ran the whole loop between two frames â€” the exact freeze the yielding
-		# was added to remove, still there on the one run most likely to hit it.
-		if Time.get_ticks_msec() - slice_start >= 40:
-			if status.is_valid():
-				status.call("Unpacking %s scenery: %d of %d" % [map, seen, zfiles.size()])
-			stage_progress.emit(UNPACK_JOB, seen, zfiles.size())
-			if host != null and host.is_inside_tree():
-				await host.get_tree().process_frame
-			slice_start = Time.get_ticks_msec()
-	stage_progress.emit(UNPACK_JOB, zfiles.size(), zfiles.size())   # clears the lane
-	HighpolyProfiler.crumb("unpack", "finished %d entries" % zfiles.size())
-	if skipped2 > 0:
-		Log.error("%s scenery: %d of %d pieces could not be written to %s"
-			% [map, skipped2, n + skipped2, ProjectSettings.globalize_path(PROPS_CACHE)])
-	zr.close()
-	DirAccess.remove_absolute(tmp)
-	Log.info(("%s props: wrote %d of %d entries, %d already identical "
-		+ "(kept their fast-load cache)") % [map, n, zfiles.size(), same])
-	# Not only on a refresh â€” see the note in the ranged path. Anything written
-	# from the map package has to be accepted, or the registry pass reverts it.
-	_accept_package_props(map, zfiles)
-	await _stamp_etag(host, map, _props_etag_key(), b + props_file())
-	await _verify_props_registry(host, map, status)
-	status.call("%d prop meshes ready" % n)
-	return true
-
-
-# What a refresh has to do BESIDES writing the files, shared by the archive path
-# and the ranged one so the two cannot drift. `names` is every entry in the
-# package (the ranged path has this from the zip index without downloading it).
-func _accept_package_props(map: String, names) -> void:
-		_props_refresh.erase(map)
-		_mesh_cache.clear()          # re-parse refreshed meshes on the next build
-		# ACCEPT the package copies instead of wiping the index.
-		#
-		# Wiping it made _verify_props_registry() re-hash every prop, find that
-		# the freshly extracted copy does not match the model LIBRARY's hash, and
-		# download the library's copy over the top â€” silently undoing the map
-		# package four seconds after unpacking it. That is how three consecutive
-		# "successful" Dumbo re-downloads all ended with byte-identical stale
-		# props: the archive was right every time and got reverted every time.
-		#
-		# The two are separate pipelines. maps/<MAP>/props.zip is built for this
-		# map and carries optimisations the library does not (merged same-material
-		# surfaces, ~2.9x fewer draw calls), so at the moment it is extracted it
-		# is the better source and must win.
-		#
-		# Recording the registry's CURRENT hash as accepted keeps the healing
-		# path alive rather than disabling it: when the library publishes a new
-		# hash later, this entry no longer matches and the prop is re-verified
-		# exactly as before. Only "the library differs from the package we just
-		# unpacked" stops being treated as damage to repair.
-		# MERGE, do not replace. Starting from an empty index is only correct
-		# when `names` is the whole archive. A PARTIAL fetch â€” the healing pass
-		# that re-pulls some props â€” would throw away every previously accepted
-		# entry, and the next start would re-hash and re-download the lot.
-		var reg2: Dictionary = HighpolyStore.mesh_remote
-		var idx2: Dictionary = _props_index()
-		for zf2 in names:
-			var nm3 := str(zf2)
-			if not nm3.ends_with(".glb") or nm3.contains("/"):
-				continue
-			var nm2 := nm3.get_basename()
-			if reg2.has(nm2):
-				idx2[nm2] = str((reg2[nm2] as Dictionary).get("hash", ""))
-		_save_props_index(idx2)
-
 # ---------- registry-following prop meshes ----------
-func _props_index() -> Dictionary:
-	var p := "%s/index.json" % PROPS_CACHE
-	if FileAccess.file_exists(p):
-		var j: Variant = JSON.parse_string(FileAccess.get_file_as_string(p))
-		if j is Dictionary: return j
-	return {}
-
-# The index is what stops every scenery piece being re-hashed on the next
-# start. Losing it is slow rather than broken â€” and silently slow is the kind of
-# problem nobody ever reports, they just think the plugin is like that.
-func _save_props_index(d: Dictionary) -> void:
-	HighpolyStore.ensure_dir(PROPS_CACHE)
-	var f := FileAccess.open("%s/index.json" % PROPS_CACHE, FileAccess.WRITE)
-	if f:
-		f.store_string(JSON.stringify(d)); f.close()
-	else:
-		Log.err_code("Could not save the scenery index to %s: every piece will be "
-			% ProjectSettings.globalize_path(PROPS_CACHE) + "re-checked on the next start",
-			FileAccess.get_open_error())
-
-# Bring this map's registry-published prop meshes in line with the site.
-# Change-only: verified hashes short-circuit via index.json; a file whose hash
-# is unknown is content-hashed once (recorded if it already matches); only
-# genuine mismatches download, individually, from godot/<mesh>.glb.
-func _verify_props_registry(host: Node, map: String, status: Callable) -> void:
-	last_verify_updates = 0
-	if _props_verified.get(map, false): return
-	var reg: Dictionary = HighpolyStore.mesh_remote
-	if reg.is_empty(): return          # manifest not adopted yet; next pass covers
-	_props_verified[map] = true
-	var idx := _props_index()
-	var jobs: Array = []               # [mesh, remote_glb, target_hash]
-	var seen: Dictionary = {}
-	var hashed := 0
-	for e in _data.get("props", []):
-		if not (e is Dictionary) or not e.has("mesh"): continue
-		var nm: String = e["mesh"]
-		if seen.has(nm): continue
-		seen[nm] = true
-		if not reg.has(nm): continue   # not registry-published: props.zip copy + ETag healing apply
-		var target := str((reg[nm] as Dictionary).get("hash", ""))
-		if target == "" or str(idx.get(nm, "")) == target: continue
-		var p := "%s/%s.glb" % [PROPS_CACHE, nm]
-		if not FileAccess.file_exists(p): continue   # missing files are ensure_props' job
-		var lh := HighpolyStore.file_hash(p)
-		hashed += 1
-		if hashed % 10 == 0:
-			await host.get_tree().process_frame      # keep the editor smooth
-		if lh == target:
-			idx[nm] = target           # already the site's model â€” record, done forever
-			continue
-		jobs.append([nm, str((reg[nm] as Dictionary).get("glb", "")), target])
-	if jobs.is_empty():
-		_save_props_index(idx)
-		return
-	var http := HTTPRequest.new(); host.add_child(http)
-	var done := 0
-	for j in jobs:
-		status.call("Updating prop meshes to match the siteâ€¦ (%d/%d)" % [done + 1, jobs.size()])
-		var data := await HighpolyUpdater._fetch(http, base_url() + j[1])
-		if not data.is_empty():
-			var out := FileAccess.open("%s/%s.glb" % [PROPS_CACHE, j[0]], FileAccess.WRITE)
-			if out:
-				out.store_buffer(data); out.close()
-				idx[j[0]] = j[2]
-				_mesh_cache.erase("%s/%s.glb" % [PROPS_CACHE, j[0]])
-				last_verify_updates += 1
-			else:
-				# it downloaded and then went nowhere â€” without this the piece
-				# just silently stays out of date, forever
-				Log.err_code("Updated scenery piece '%s' could not be saved" % j[0],
-					FileAccess.get_open_error())
-		else:
-			Log.warn("Scenery piece '%s' would not download: it stays on the old version"
-				% j[0])
-		done += 1
-	http.queue_free()
-	_save_props_index(idx)
-	if last_verify_updates > 0:
-		status.call("%d prop mesh(es) updated to match the site" % last_verify_updates)
-
 func _mesh_for(model_path: String) -> Mesh:
 	if _mesh_cache.has(model_path): return _mesh_cache[model_path]
 	var m: Mesh = null
@@ -3898,31 +3042,8 @@ func _build_backdrop_async(bd_root: Node3D, entries: Array, dir: String,
 	var bd_id := bd_root.get_instance_id()
 	HighpolyProfiler.crumb("skyline", "build started, %d piece(s)" % entries.size())
 	_begin_build_draw(bd_root)
-	# ITS TEXTURES CAN BE PREFETCHED EVEN THOUGH ITS GEOMETRY CANNOT. The note
-	# above is about generate_scene, which segfaults out there. Decoding the
-	# texture sidecars is pure Image work, it is safe, and it is where 63% of a
-	# backdrop's parse went â€” so the half that CAN move, moves.
-	const BD_TEX_BATCH := 24
-	var tex_next := 0
-	var bd_paths: Array = []
-	for e in entries:
-		bd_paths.append("%s/%s" % [dir, e["glb"]] if e.has("glb") else "")
 	for ei in range(entries.size()):
 		var e = entries[ei]
-		if ei >= tex_next:
-			var want: Array = []
-			for j in range(ei, mini(ei + BD_TEX_BATCH, bd_paths.size())):
-				if str(bd_paths[j]) != "":
-					want.append(str(bd_paths[j]))
-			tex_next = ei + int(BD_TEX_BATCH * 0.5)   # top up before it runs dry
-			if not want.is_empty():
-				var _tt := Time.get_ticks_msec()
-				await _bctex_prefetch(want)
-				HighpolyProfiler.span("skyline: texture prefetch (worker threads)",
-					Time.get_ticks_msec() - _tt)
-				if gen != _build_gen:
-					_end_build_draw(bd_root)
-					return
 		var meshes: Array = []
 		# FROM THE INSTALL, the same as the props. map_data() splits the walk's
 		# StaticModelGroup rows emitted straight from the level root into a
@@ -4126,8 +3247,6 @@ func _build_props_async(props_root: Node3D, entries: Array, dir: String,
 	# previous one. PREFETCH_BATCH is a compromise: bigger batches parallelise
 	# better but hold more parsed scenes in memory at once, and video memory is
 	# already the thing that kills low-end cards.
-	const PREFETCH_BATCH := 48
-	var next_pf := 0
 	# NOTHING TO PREFETCH FROM THE INSTALL. The prefetch parses GLB files on
 	# worker threads, and a game-sourced entry has no GLB — but _prop_path still
 	# hands back a plausible-looking path for one, so every batch queued 48 files
@@ -4138,66 +3257,6 @@ func _build_props_async(props_root: Node3D, entries: Array, dir: String,
 	for ei in range(entries.size()):
 		var e = entries[ei]
 		vram_check()      # reports once if memory is getting high; never stops
-		if ei >= next_pf and not from_game:
-			# COLLECT THE BATCH IN FLIGHT FIRST. Its results have to be in _pf and
-			# _bc before `want` is built below, or every path it just parsed looks
-			# uncached and gets queued a second time.
-			#
-			# This is where the overlap is spent: the batch started on the previous
-			# visit has had PREFETCH_BATCH/2 props' worth of placement to run in,
-			# so by now it is usually finished and this returns immediately.
-			var _tj := Time.get_ticks_msec()
-			await _prefetch_join()
-			if Time.get_ticks_msec() - _tj > 0:
-				HighpolyProfiler.span("props: prefetch parse (worker threads)",
-					Time.get_ticks_msec() - _tj)
-			if gen != _build_gen:
-				_pf_release()
-				_end_build_draw(props_root)
-				return
-			var want: Array = []
-			for j in range(ei, mini(ei + PREFETCH_BATCH, entries.size())):
-				var pp := _prop_path(entries[j], dir)
-				# skip anything a sidecar already covers â€” re-parsing it would
-				# cost more than the load it is meant to save
-				# `_bc` counts as prefetched too. A prop with a shipped bake
-				# comes back with its textures and NO scene â€” nothing lands in
-				# `_pf` â€” so testing `_pf` alone would ask for it again in every
-				# overlapping batch and re-decode the same textures each time.
-				if pp != "" and not _pf.has(pp) and not _bc.has(pp) \
-						and not _mesh_cache.has(pp) \
-						and not FileAccess.file_exists(pp + _baked_suffix()):
-					want.append(pp)
-			next_pf = ei + int(PREFETCH_BATCH * 0.5)  # top up before it runs dry
-			if not want.is_empty():
-				# CRUMBED EITHER SIDE. This dispatches glTF parsing AND texture
-				# compression onto worker threads, the newest and least proven
-				# work in the build. If the editor dies here the trail ends on
-				# "dispatch" instead of "returned", and that alone separates a
-				# worker-thread crash from a main-thread one.
-				HighpolyProfiler.crumb("prefetch", "dispatch %d file(s) at entry %d/%d"
-					% [want.size(), ei, entries.size()])
-				# STARTED, NOT AWAITED. The join at the top of the next visit
-				# collects it; between here and there the main thread places the
-				# props this batch's predecessor already parsed. That is the
-				# overlap the call site has claimed since it was written.
-				_prefetch_start(want)
-				# UNLESS THIS BATCH HOLDS THE PROP WE ARE ABOUT TO PLACE — which
-				# is true of the FIRST one, where there is no predecessor to
-				# overlap with, and of any later batch that has fallen behind.
-				# Placing without joining is not incorrect (a miss re-parses
-				# inline) but it is the slow path AND it parses the same file
-				# twice, so the one case worth testing for is tested for.
-				var need_now := _prop_path(e, dir)
-				if need_now != "" and want.has(need_now):
-					var _tw := Time.get_ticks_msec()
-					await _prefetch_join()
-					HighpolyProfiler.span("props: prefetch parse (worker threads)",
-						Time.get_ticks_msec() - _tw)
-					if gen != _build_gen:
-						_pf_release()   # this batch has no consumer any more
-						_end_build_draw(props_root)
-						return
 		var gp := _prop_path(e, dir)
 		var _t0 := Time.get_ticks_msec()
 		_merge_who = "props"
@@ -4268,7 +3327,6 @@ func _build_props_async(props_root: Node3D, entries: Array, dir: String,
 			if not is_inside_tree():        # host removed us mid-build: no tree to await
 				if gen == _build_gen:
 					_building = false
-					_pf_release()
 					_end_build_draw(props_root)
 					build_finished.emit(_build_props)
 				return
@@ -4293,14 +3351,12 @@ func _build_props_async(props_root: Node3D, entries: Array, dir: String,
 				return                      # superseded: _clear() already released
 			if not is_instance_valid(props_root):
 				_building = false           # scene/ctx freed underneath us
-				_pf_release()
 				_forget_build_draw(props_id)  # this layer only
 				build_finished.emit(_build_props)
 				return
 			frame_start = Time.get_ticks_msec()
 	_apply_radius()
 	_building = false
-	_pf_release()   # the tail batch is always over-fetched; free what went unused
 	HighpolyProfiler.crumb("props", "build finished, %d built" % _build_props)
 	_end_build_draw(props_root)   # the finished map appears, here
 	# and only NOW write the fast-load cache, with the map already on screen
@@ -4384,119 +3440,6 @@ func _report_progress(final := false) -> void:
 			f.close()
 
 # ---------- incremental props refresh ("Check for Updates") ----------
-# The background re-bake overwrites GLBs in the shared props cache file-by-file
-# while the user works. Rescan every source file this overlay parsed (mtime +
-# size stamped at parse); changed files are handed to _refresh_props_async,
-# which BUILD-THEN-SWAPs each one â€” the old mesh/MultiMeshes stay live until
-# the replacement parsed successfully (camera-out order, same progress bar/
-# signals/label as a full build). Returns the number of changed files queued,
-# 0 when nothing changed, and -1 while a build is still running â€” the running
-# pass owns all build state, so the caller should simply try again after.
-func refresh_changed_props(root: Node) -> int:
-	if _building: return -1
-	if root == null or not _show_objects: return 0
-	var ctx := root.get_node_or_null(NODE)
-	if ctx == null: return 0
-	var props_root := ctx.get_node_or_null("Props") as Node3D
-	if props_root == null: return 0
-	# camera-out ordered jobs: [min_d2, path, entries] for every stamped source
-	# whose on-disk file changed. NOTHING is evicted or freed here â€” the async
-	# refresh swaps each mesh only AFTER its replacement parsed successfully.
-	var cpos := Vector3.ZERO
-	var cam := _editor_cam()
-	if cam: cpos = cam.global_transform.origin
-	var jobs: Array = []
-	for gp in _mesh_stat.keys():
-		var rec: Dictionary = _mesh_stat[gp]
-		var mt: int = FileAccess.get_modified_time(gp) if FileAccess.file_exists(gp) else 0
-		if mt == int(rec.get("mt", -1)) and _file_size(gp) == int(rec.get("sz", -2)):
-			continue
-		var entries: Array = _prop_by_src.get(gp, [])
-		if entries.is_empty(): continue        # stamped but unused by this map
-		var d2 := INF
-		for e in entries:
-			var dd := _min_d2(e.get("xf", []), cpos)
-			if dd < d2: d2 = dd
-		jobs.append([d2, gp, entries])
-	if jobs.is_empty(): return 0
-	jobs.sort_custom(func(a, b): return a[0] < b[0])
-	_build_total = jobs.size()
-	_build_done = 0
-	_build_props = 0
-	_last_report = 0
-	_building = true
-	# same generation as the surrounding overlay: a later full apply()/_clear()
-	# bumps it and cancels this refresh exactly like a full build
-	_refresh_props_async(props_root, jobs, _build_gen)
-	return _build_total
-
-# Incremental REFRESH builder (fire-and-forget, like _build_props_async): one
-# job per changed source file, strictly BUILD-THEN-SWAP â€”
-#   1. parse the replacement mesh (atomic byte snapshot, no cache writes)
-#   2. only on success: swap the caches, build the NEW MultiMeshes, then
-#      queue_free exactly the OLD ones (collected before the add â€” old and new
-#      share the same "src" tag)
-#   3. on failure (e.g. caught the re-bake mid-write): keep the old mesh AND
-#      the old stamp, count it, continue â€” the next Check retries that file.
-# Same per-frame budget, progress reporting and generation-cancel rules as the
-# full builder.
-func _refresh_props_async(props_root: Node3D, jobs: Array, gen: int) -> void:
-	var failed := 0
-	var frame_start := Time.get_ticks_msec()
-	for job in jobs:
-		var gp: String = job[1]
-		var entries: Array = job[2]
-		# stamp BEFORE reading: a file replaced between stamp and read still
-		# differs from the stored stamp on the next Check â€” never missed
-		var stamp := {
-			"mt": FileAccess.get_modified_time(gp) if FileAccess.file_exists(gp) else 0,
-			"sz": _file_size(gp),
-		}
-		var meshes: Array = await _parse_prop_file(gp)
-		if meshes.is_empty():
-			failed += 1
-		else:
-			var old = _mesh_cache.get(gp, null)    # untyped: may be null / a list
-			if old is Array:
-				for om in old:
-					_flip_cache.erase(om)          # each split mesh had its own twin
-			elif old != null:
-				_flip_cache.erase(old)
-			_mesh_cache[gp] = meshes
-			_mesh_stat[gp] = stamp
-			var old_mmis := _collect_prop_mmis(gp)
-			for e in entries:
-				for msh: Mesh in meshes:
-					_add_cell_multimeshes(props_root, msh, e.get("xf", []),
-						_props_textured, _props_mat, gp)
-			_free_mmi_list(old_mmis)               # replacement is live â€” drop the old
-			_build_props += 1
-		_build_done += 1
-		if Time.get_ticks_msec() - frame_start >= BUILD_FRAME_MS:
-			_apply_radius()                 # swapped cells obey the range slider
-			_report_progress()
-			if not is_inside_tree():        # host removed us mid-refresh
-				if gen == _build_gen:
-					_building = false
-					build_finished.emit(_build_props)
-				return
-			await get_tree().process_frame  # keep the editor smooth
-			if gen != _build_gen:
-				return                      # superseded by a new apply()/_clear()
-			if not is_instance_valid(props_root):
-				_building = false           # scene/ctx freed underneath us
-				build_finished.emit(_build_props)
-				return
-			frame_start = Time.get_ticks_msec()
-	_apply_radius()
-	_building = false
-	if failed > 0:
-		print("MapContext: %d changed prop file(s) failed to parse (mid-write?): kept the old meshes; run Check for Updates again" % failed)
-	_report_progress(true)
-	build_finished.emit(_build_props)
-
-# every live props MultiMesh built from `src` (checked BEFORE adding its
-# replacements, which carry the same tag)
 func _collect_prop_mmis(src: String) -> Array:
 	var out: Array = []
 	for key in _cells.keys():
@@ -4526,42 +3469,6 @@ func _free_mmi_list(list: Array) -> void:
 		else: _cells[key] = kept
 
 # ---------- storage / purge ----------
-# maps with downloaded data: user://mapcontext subfolders carrying a
-# placements.json (the shared _props store is not a map)
-static func downloaded_maps() -> Array:
-	var out: Array = []
-	var da := DirAccess.open(CACHE)
-	if da == null: return out
-	var subs := da.get_directories()
-	subs.sort()
-	for sub in subs:
-		if sub == "_props": continue
-		if FileAccess.file_exists("%s/%s/placements.json" % [CACHE, sub]):
-			out.append(sub)
-	return out
-
-# every shared-cache mesh name a downloaded map references (props placements +
-# vegetation scatter kits) â€” the reference sets purge safety is built on
-static func map_prop_refs(map: String) -> Dictionary:
-	var out: Dictionary = {}
-	var pj := "%s/%s/placements.json" % [CACHE, map]
-	if FileAccess.file_exists(pj):
-		var d: Variant = JSON.parse_string(FileAccess.get_file_as_string(pj))
-		if d is Dictionary:
-			for e in (d as Dictionary).get("props", []):
-				if e is Dictionary and e.has("mesh"):
-					out[str(e["mesh"])] = true
-	var sj := "%s/%s/scatter.json" % [CACHE, map]
-	if FileAccess.file_exists(sj):
-		var d2: Variant = JSON.parse_string(FileAccess.get_file_as_string(sj))
-		if d2 is Dictionary:
-			for e in (d2 as Dictionary).get("entries", []):
-				if e is Dictionary and e.has("mesh"):
-					out[str(e["mesh"])] = true
-	return out
-
-# async recursive [file count, bytes] for a folder â€” chunk-yields so multi-GB
-# walks never block the editor; callers re-check their own state after awaits
 func dir_usage_async(path: String) -> Array:
 	var files := 0
 	var bytes := 0
@@ -4583,154 +3490,86 @@ func dir_usage_async(path: String) -> Array:
 				await get_tree().process_frame   # keep the editor smooth
 	return [files, bytes]
 
-# What purging `map` would delete â€” real sizes + sharing, computed BEFORE the
-# confirmation dialog so it shows true numbers:
-#   excl        shared-cache meshes referenced ONLY by this map among the
-#               downloaded maps (deletable)
-#   shared      count referenced by at least one OTHER downloaded map (KEPT â€”
-#               purging must never silently break another map)
-#   excl_bytes  bytes of the deletable shared-cache glbs
-#   map_bytes   bytes of the map's own folder
-# extra_keys lets the caller name the models a level uses when its data was
-# never downloaded â€” the open scene knows them even when no placements file
-# exists, and without this those models could never be freed.
+# Every map with anything cached on disk, for the purge dropdown.
+#
+# It used to mean "maps you have downloaded". Nothing is downloaded now, so it
+# means what the reader has BUILT and kept: the map's own folder plus its
+# geometry cache.
+static func cached_maps() -> Array:
+	var out: Array = []
+	var da := DirAccess.open(CACHE)
+	if da != null:
+		for sub in da.get_directories():
+			if str(sub).begins_with("_"):
+				continue        # _props, _maptiles: shared, not a map
+			out.append(str(sub))
+	out.sort()
+	return out
+
+
+# What deleting this map's cache would free.
+#
+# THE SHARED-MESH ACCOUNTING IS GONE and so is the reason for it. When props
+# arrived as GLBs in one shared store, deleting a map meant working out which
+# meshes no OTHER downloaded map still referenced, or purging one map silently
+# broke another. Every cache is now per-map and per-game-build - the map folder
+# and bf6_geom/<level>_<toc signature> - so nothing is shared and nothing can be
+# broken by removing one.
+#
+# The keys the dock reads are kept, with the shared/exclusive ones zeroed,
+# because a caller that expects them is not wrong to.
 func purge_info(map: String, extra_keys: Dictionary = {},
 		keep_keys: Dictionary = {}) -> Dictionary:
-	var refs := map_prop_refs(map)
-	var others: Dictionary = {}
-	for m in downloaded_maps():
-		if str(m) == map: continue
-		for nm in map_prop_refs(str(m)).keys():
-			others[nm] = true
-		if is_inside_tree():
-			await get_tree().process_frame   # placements parses are chunky
-	# models belonging to a DIFFERENT scene the user currently has open: that
-	# scene's level may have no downloaded map data at all, so nothing else
-	# records that it needs them. Protect them like a downloaded map's.
-	for nm in keep_keys.keys():
-		others[nm] = true
-	var excl: Array = []
-	var shared := 0
-	var excl_bytes := 0
-	var i := 0
-	for nm in refs.keys():
-		if others.has(nm):
-			shared += 1
-			continue
-		var p := "%s/%s.glb" % [PROPS_CACHE, nm]
-		if FileAccess.file_exists(p):
-			excl.append(nm)
-			excl_bytes += maxi(0, _file_size(p))
-		i += 1
-		if i % 400 == 0 and is_inside_tree():
-			await get_tree().process_frame
-	# The high-poly models downloaded for this level's objects live in a separate
-	# folder and were never freed by a purge. Same rule as the scenery: only the
-	# ones no other downloaded level also references, so purging one level can
-	# never break another.
-	var hp_excl: Array = []
-	var hp_bytes := 0
-	i = 0
-	# Sweep the WHOLE model library, not just the names this map's placements
-	# happen to list. Models also arrive via the library sync â€” driven by the
-	# open scene, not by any map's placements â€” so nothing referenced them and
-	# no map purge could ever free them: purging every map still left GBs behind
-	# (measured: 5.1 GB of models against 118 MB of map data).
-	#
-	# The rule is the one that was always intended, just applied to everything:
-	# keep what another DOWNLOADED map (or another open scene) needs, free the
-	# rest. Anything freed in error re-downloads on demand.
-	var hp_names: Dictionary = refs.duplicate()
-	for k in extra_keys.keys():
-		hp_names[k] = true
-	for k in HighpolyStore.models().keys():
-		hp_names[k] = true
-	for nm in hp_names.keys():
-		if others.has(nm): continue
-		var hp := HighpolyStore.model_path(str(nm))
-		if FileAccess.file_exists(hp):
-			hp_excl.append(nm)
-			hp_bytes += maxi(0, _file_size(hp))
-		i += 1
-		if i % 400 == 0 and is_inside_tree():
-			await get_tree().process_frame
-	var mu: Array = await dir_usage_async("%s/%s" % [CACHE, map])
-	return {"excl": excl, "shared": shared, "excl_bytes": excl_bytes,
-		"hp_excl": hp_excl, "hp_bytes": hp_bytes, "map_bytes": int(mu[1])}
+	var u: Array = await dir_usage_async("%s/%s" % [CACHE, map])
+	var bytes := int(u[1])
+	for p in _map_reader_caches(map):
+		if p.ends_with("/"):
+			var ru: Array = await dir_usage_async(p)
+			bytes += int(ru[1])
+		else:
+			bytes += maxi(0, _file_size(p))
+	return {"map_bytes": bytes, "excl": [], "excl_bytes": 0,
+			"hp_excl": [], "hp_bytes": 0, "shared": 0}
 
-# Execute the purge: delete the map's folder + its exclusive shared-cache
-# glbs, scrub them from the props index and the in-RAM caches, and forget the
-# map's session state so a future re-enable re-downloads cleanly. The CALLER
-# turns the overlay off first when purging the currently open map.
+
+# Delete this map's cache: its folder, its geometry cache, and the indexes keyed
+# to it. Nothing here is downloadable, so all of it is rebuilt from the install
+# the next time the map is opened - slower once, then cached again.
 func purge_map(map: String, info: Dictionary) -> void:
-	var idx := _props_index()
-	var idx_changed := false
-	var n := 0
-	for nm in info.get("excl", []):
-		var p := "%s/%s.glb" % [PROPS_CACHE, str(nm)]
-		if FileAccess.file_exists(p):
+	for p in _map_reader_caches(map):
+		if p.ends_with("/"):
+			_rm_dir_recursive(p.rstrip("/"))
+		elif FileAccess.file_exists(p):
 			DirAccess.remove_absolute(p)
-		for sfx in [".baked.res", ".baked2.res", ".baked3.res", ".baked4.res",
-				".baked5.res", ".baked5f.res", ".baked5l.res"]:
-			if FileAccess.file_exists(p + sfx):
-				DirAccess.remove_absolute(p + sfx)   # fast-startup sidecars
-		if idx.has(nm):
-			idx.erase(nm)
-			idx_changed = true
-		_mesh_cache.erase(p)
-		_mesh_stat.erase(p)
-		_prop_by_src.erase(p)
-		n += 1
-		if n % 256 == 0 and is_inside_tree():
-			await get_tree().process_frame   # keep the editor smooth
-	if idx_changed:
-		_save_props_index(idx)
-	# the high-poly models for this level's objects, and their thumbnails
-	var hp_n := 0
-	var store := HighpolyStore.models()      # live dictionary â€” erase in place
-	var store_changed := false
-	for nm in info.get("hp_excl", []):
-		var hp := HighpolyStore.model_path(str(nm))
-		if FileAccess.file_exists(hp):
-			DirAccess.remove_absolute(hp)
-			hp_n += 1
-		var th := HighpolyStore.thumb_path(str(nm))
-		if FileAccess.file_exists(th):
-			DirAccess.remove_absolute(th)
-		# scrub the index too, or the panel keeps counting models whose files are
-		# gone and the next sync diff reasons about a library that isn't there
-		if store.has(nm):
-			store.erase(nm)
-			store_changed = true
-		if hp_n % 256 == 0 and is_inside_tree():
-			await get_tree().process_frame
-	if store_changed:
-		HighpolyStore.save()
-	if hp_n > 0:
-		Log.info("Purge %s: removed %d high-poly model(s) no other level uses" % [map, hp_n])
 	_rm_dir_recursive("%s/%s" % [CACHE, map])
-	_session_checked.erase(map)
-	_props_verified.erase(map)
-	_props_refresh.erase(map)
-	_splat_cache.erase(map)
+	_mesh_cache.clear()
+	_mesh_stat.clear()
+	_prop_by_src.clear()
+	_splat_cache.clear()
 	if _map == map:
 		_data = {}
 		_map = ""
+	Log.info("Removed the cached data for %s (it rebuilds from your game next time)" % map)
 
-# RESET: delete every downloaded byte â€” all map data, the shared scenery cache
-# and the whole model library â€” and drop the in-RAM caches that point at them.
-# The fallback for when per-map purging has left something behind, or when you
-# simply want to start clean; everything re-downloads on demand.
-#
-# Returns the number of bytes freed. The CALLER is responsible for tearing the
-# overlay down first, exactly as _do_purge does, so nothing holds these files.
-# Everything the READER caches, as opposed to everything the download caches.
-#
-# These are all derived from the player's own install and none of them is
-# downloaded, but they are still hundreds of megabytes that appeared without
-# being asked for — Dumbo's geometry alone is 339 MB — and a Reset that leaves
-# them behind is a Reset that does not reset. Listed here rather than inline so
-# the usage report and the purge cannot disagree about what exists.
+
+# The reader's own caches that belong to ONE map. Directories end with "/".
+func _map_reader_caches(map: String) -> Array:
+	var lvl := map.to_lower()
+	var out: Array = []
+	var da := DirAccess.open("user://bf6_geom")
+	if da != null:
+		for sub in da.get_directories():
+			if str(sub).to_lower().begins_with(lvl + "_"):
+				out.append("user://bf6_geom/%s/" % str(sub))
+	var root := DirAccess.open("user://")
+	if root != null:
+		for f in root.get_files():
+			var n := str(f)
+			# bf6_walk_<level>_v<n>_<sig>.idx, bf6_index_<level>_<sig>.idx,
+			# bf6_pidx_<level>_<sig>.idx
+			if n.begins_with("bf6_") and n.ends_with(".idx") and n.to_lower().contains(lvl):
+				out.append("user://%s" % n)
+	return out
 const READER_CACHE_DIR := "user://bf6_geom"
 
 
@@ -5083,152 +3922,37 @@ var _bc_out: Array = []
 static var prefetch_stage := 0
 
 
-func _prefetch_job(i: int) -> void:
-	var p: String = str(_pf_paths[i])
-
-	# THE SIDECAR FIRST, and before anything can return early.
-	#
-	# This used to sit further down, after the prefetch_stage gates â€” and the
-	# default stage is 0, which returns immediately. So it has not run since
-	# v1.35.0, and every texture in every map has been decoding on the MAIN
-	# thread ever since. A recorded Dumbo load spent 43.1 s there across 4,732
-	# props, in a phase named "textures: decoded on the MAIN thread (no
-	# prefetch)" â€” the profiler was reporting it plainly the whole time.
-	#
-	# It is safe out here at any stage: pure Image work, no Node, no
-	# ImageTexture, no RenderingServer. That is the whole reason BcTex splits
-	# decode() from bind().
-	_bc_out[i] = _decode_side(p)
-
-	# AND WITH A SHIPPED BAKE THERE IS NOTHING TO PARSE. _parse_prop_file tries
-	# the .geom.res before it ever asks for a scene, so everything below would
-	# be built, held, and then freed unused.
-	if FileAccess.file_exists(p + GEOM_SUFFIX) \
-			or FileAccess.file_exists(p + _geom_part_suffix(0)):
-		return
-
-	var bytes := FileAccess.get_file_as_bytes(p)
-	if bytes.size() < 12 or bytes.decode_u32(0) != 0x46546C67:
-		return
-	var st := GLTFState.new()
-	st.filename = p.get_file()
-	st.set_handle_binary_image(GLTFState.HANDLE_BINARY_EMBED_AS_UNCOMPRESSED)
-	var doc := GLTFDocument.new()
-	doc.append_from_buffer(bytes, p.get_base_dir(), st)
-	# CRUMBED AROUND generate_scene SPECIFICALLY. A recorded crash ended on
-	# "dispatch 24 file(s) at entry 24/2761" with no matching "returned", which
-	# says the editor died inside this function and nothing more. This job does
-	# four separable things and exactly one of them is already known to be
-	# dangerous â€” generate_scene segfaults on backdrops, proven twice, with and
-	# without their textures. If the next crash's last worker crumb is a
-	# "gen_scene" with no "gen_done" after it, that settles it for props too.
-	if prefetch_stage < 1:
-		# hand the parsed STATE over instead; the main thread builds the scene
-		_pf_scenes[i] = {"doc": doc, "st": st}
-		return
-	HighpolyProfiler.crumb("pf.gen_scene", p.get_file())
-	var sc := doc.generate_scene(st)
-	if sc == null:
-		return
-	HighpolyProfiler.crumb("pf.gen_done", p.get_file())
-	if prefetch_stage < 2:
-		_pf_scenes[i] = {"sc": sc}
-		return
-	HighpolyStore.ensure_scene_tangents(sc)     # mesh maths only: safe here
-	# and the sidecar's textures, if this prop ships stripped. Pure Image work,
-	# which is the one kind of resource work that IS safe out here.
-	_bc_out[i] = _decode_side(p)
-	# AND THE TEXTURE COMPRESSION. This used to be the one part left on the main
-	# thread, on the strength of a comment saying compress_scene_textures "HANGS
-	# THE PROCESS" because "creating GPU textures off the main thread is the
-	# line". That diagnosis was wrong. Tested separately: Image.compress runs on
-	# a worker 5.27x faster than on main, and ImageTexture.create_from_image
-	# runs there too. What actually fails off-thread is creating NODES â€”
-	# MeshInstance3D, PlaneMesh â€” and the experiment that "proved" the texture
-	# rule was creating those as well.
-	#
-	# That test used 24 props in one batch and passed five times out of five. It
-	# was not wrong, it was too small: the same call over hundreds of props in
-	# rolling batches hangs a real editor solid. Scale was the variable nobody
-	# varied, which is why prefetch_stage exists above.
-	if prefetch_stage < 3:
-		_pf_scenes[i] = {"sc": sc}
-		return
-	HighpolyProfiler.crumb("pf.compress", p.get_file())
-	HighpolyStore.compress_scene_textures(sc, false, _pf_mode == VRAM_COMPRESSED)
-	HighpolyProfiler.crumb("pf.compress_done", p.get_file())
-	_pf_scenes[i] = {"sc": sc}
-
-
-# Parse `paths` across all cores. Yields while they run so the editor stays
-# alive, which is the whole point of doing it here rather than inline.
-# SPLIT IN TWO so the workers and the main thread can run at the SAME TIME.
-#
-# The comment on the call site has always said "parse a batch ahead on the worker
-# pool while the main thread places the previous one", and that is not what the
-# code did: this function dispatched a group and then awaited it, so the main
-# thread spent the whole batch pumping empty frames. The two phases were strictly
-# serial — a measured build spent 8.5 s waiting here and a further 17.0 s placing,
-# one after the other, when the pool was idle for the second half and the main
-# thread was idle for the first.
-#
-# _prefetch() keeps its old blocking shape for the callers that want it (the
-# skyline's texture prefetch, which has no second lane to overlap with).
 var _pf_gid := -1
 
 
-func _prefetch_start(paths: Array) -> void:
-	if _pf_mode != vram_mode:
-		_pf_release()          # anything held was baked under another mode
-		_pf_mode = vram_mode
-	# The buffers below are written by the workers, so a second batch must never
-	# be started over a live one. Every caller joins first; this is the backstop.
-	if _pf_gid != -1:
-		WorkerThreadPool.wait_for_group_task_completion(_pf_gid)
-		_pf_gid = -1
-	_pf_paths = paths
-	_pf_scenes = []
-	_pf_scenes.resize(paths.size())
-	_bc_out = []
-	_bc_out.resize(paths.size())
-	_pf_gid = WorkerThreadPool.add_group_task(_prefetch_job, paths.size(),
-		-1, false, "highpoly glb prefetch")
+func _load_external_glb(abs_or_res: String) -> Node:
+	# NO PREFETCH BRANCH ANY MORE. This used to check a worker-thread cache
+	# first; that pipeline existed to hide the cost of parsing thousands of
+	# downloaded prop GLBs, and there are none - scenery comes from the install
+	# now. What still reaches here is local and few: the vegetation scatter's
+	# kit models, and a roads.glb left in an old cache.
+	return _load_external_glb_uncached(abs_or_res)
 
 
-func _prefetch_join() -> void:
-	if _pf_gid == -1:
+# Attach the textures a stripped glb does not carry. Prefers a copy a worker
+# already decoded; falls back to decoding inline, which is correct but is the
+# thing this whole design exists to avoid, so it says so in a recording.
+func _bind_side(inst: Node, glb_path: String) -> void:
+	if inst == null:
 		return
-	var gid := _pf_gid
-	if is_inside_tree():
-		while not WorkerThreadPool.is_group_task_completed(gid):
-			await get_tree().process_frame
-	WorkerThreadPool.wait_for_group_task_completion(gid)
-	_pf_gid = -1
-	var paths: Array = _pf_paths
-	for i in range(paths.size()):
-		var sc: Variant = _pf_scenes[i]
-		# a Dictionary now, not a Node: is_instance_valid on a Dictionary is
-		# false, which would have silently discarded every prefetched prop
-		if not (sc is Dictionary):
-			continue
-		var key := str(paths[i])
-		if _pf.has(key):                        # asked for twice: keep the first
-			_free_pf_entry(sc)                  # MAIN thread, deliberately
-			continue
-		_pf[key] = sc
-	for i in range(paths.size()):
-		var d: Variant = _bc_out[i] if i < _bc_out.size() else null
-		if d is Dictionary and not (d as Dictionary).is_empty():
-			_bc[str(paths[i])] = d
-	_pf_paths = []
-	_pf_scenes = []
-	_bc_out = []
-
-
-# The old blocking shape, for callers with nothing to overlap with.
-func _prefetch(paths: Array) -> void:
-	_prefetch_start(paths)
-	await _prefetch_join()
+	var d: Variant = _bc.get(glb_path)
+	if d is Dictionary:
+		_bc.erase(glb_path)
+	elif BcTex.exists(glb_path):
+		var _t := Time.get_ticks_msec()
+		d = _decode_side(glb_path)
+		HighpolyProfiler.span("textures: decoded on the MAIN thread (no prefetch)",
+			Time.get_ticks_msec() - _t)
+	if d is Dictionary and not (d as Dictionary).is_empty():
+		var _tb := Time.get_ticks_msec()
+		BcTex.bind(inst, d as Dictionary)
+		HighpolyProfiler.span("textures: bind to materials",
+			Time.get_ticks_msec() - _tb)
 
 
 # Free whatever the placement loop never claimed. A cancelled or finished build
@@ -5255,131 +3979,6 @@ func _decode_side(glb_path: String) -> Dictionary:
 # â€” generate_scene segfaults on backdrops, proven twice â€” but its textures can,
 # and that is where 63% of a backdrop's parse went. Decodes a batch of sidecars
 # across all cores while the main thread is still placing the previous one.
-func _bctex_prefetch(paths: Array) -> void:
-	var want: Array = []
-	for p in paths:
-		var s := str(p)
-		if not _bc.has(s) and BcTex.exists(s):
-			want.append(s)
-	if want.is_empty():
-		return
-	_bc_paths = want
-	_bc_out = []
-	_bc_out.resize(want.size())
-	var gid := WorkerThreadPool.add_group_task(_bctex_job, want.size(),
-		-1, false, "highpoly texture prefetch")
-	if is_inside_tree():
-		while not WorkerThreadPool.is_group_task_completed(gid):
-			await get_tree().process_frame
-	WorkerThreadPool.wait_for_group_task_completion(gid)
-	for i in range(want.size()):
-		var d: Variant = _bc_out[i]
-		if d is Dictionary and not (d as Dictionary).is_empty():
-			_bc[str(want[i])] = d
-	_bc_paths = []
-	_bc_out = []
-
-
-func _bctex_job(i: int) -> void:
-	_bc_out[i] = _decode_side(str(_bc_paths[i]))
-
-
-# Images are refcounted, so dropping the dictionary is enough â€” unlike _pf,
-# which holds Nodes and needs them freed by hand.
-func _bc_release() -> void:
-	_bc.clear()
-
-
-func _pf_release() -> void:
-	# A CANCELLED BUILD CAN LEAVE WORKERS RUNNING. Since the prefetch stopped
-	# blocking, a batch may still be writing into _pf_scenes / _bc_out when the
-	# build is torn down — and clearing those arrays underneath live threads is
-	# the kind of crash that reproduces once a fortnight. Wait for them; this is
-	# the cancellation path, so a short block costs nothing anybody sees.
-	if _pf_gid != -1:
-		WorkerThreadPool.wait_for_group_task_completion(_pf_gid)
-		_pf_gid = -1
-		_pf_paths = []
-		_pf_scenes = []
-		_bc_out = []
-	for k in _pf.keys():
-		_free_pf_entry(_pf[k])                  # MAIN thread, deliberately
-	_pf.clear()
-	_pf_mode = -1
-	_bc_release()   # decoded textures belong to the same batch as the scenes
-
-
-# Returns a LIVE scene root that the caller owns and must free. Not a
-# PackedScene: every consumer instantiated one immediately anyway, and the
-# pack/instantiate round trip is what made the prefetch worthless (see above).
-# A prefetch entry is whatever the worker was allowed to finish: either a built
-# scene, or the parsed GLTFState for the main thread to build. Finishing it here
-# is what makes prefetch_stage adjustable without the consumer caring.
-func _finish_pf(entry: Variant) -> Node:
-	if not (entry is Dictionary):
-		return null
-	var d: Dictionary = entry
-	var sc: Node = d.get("sc")
-	if sc == null:
-		var doc: GLTFDocument = d.get("doc")
-		var st: GLTFState = d.get("st")
-		if doc == null or st == null:
-			return null
-		sc = doc.generate_scene(st)
-		if sc == null:
-			return null
-	if not is_instance_valid(sc):
-		return null
-	if prefetch_stage < 2:
-		HighpolyStore.ensure_scene_tangents(sc)
-	if prefetch_stage < 3:
-		HighpolyStore.compress_scene_textures(sc, false, vram_mode == VRAM_COMPRESSED)
-	return sc
-
-
-func _free_pf_entry(entry: Variant) -> void:
-	if not (entry is Dictionary):
-		return
-	var sc: Node = (entry as Dictionary).get("sc")
-	if sc != null and is_instance_valid(sc):
-		sc.free()
-
-
-func _load_external_glb(abs_or_res: String) -> Node:
-	# a prefetch worker may already have done the expensive half
-	if _pf.has(abs_or_res) and _pf_mode == vram_mode:
-		var entry: Variant = _pf[abs_or_res]
-		_pf.erase(abs_or_res)
-		var inst := _finish_pf(entry)
-		if inst != null and is_instance_valid(inst):
-			# the worker generated the tangents and compressed the textures, so
-			# the only thing left is hanging a stripped prop's sidecar textures
-			# on its materials â€” which has to happen here, because it creates
-			# GPU textures
-			_bind_side(inst, abs_or_res)
-			return inst
-	return _load_external_glb_uncached(abs_or_res)
-
-
-# Attach the textures a stripped glb does not carry. Prefers a copy a worker
-# already decoded; falls back to decoding inline, which is correct but is the
-# thing this whole design exists to avoid, so it says so in a recording.
-func _bind_side(inst: Node, glb_path: String) -> void:
-	if inst == null:
-		return
-	var d: Variant = _bc.get(glb_path)
-	if d is Dictionary:
-		_bc.erase(glb_path)
-	elif BcTex.exists(glb_path):
-		var _t := Time.get_ticks_msec()
-		d = _decode_side(glb_path)
-		HighpolyProfiler.span("textures: decoded on the MAIN thread (no prefetch)",
-			Time.get_ticks_msec() - _t)
-	if d is Dictionary and not (d as Dictionary).is_empty():
-		var _tb := Time.get_ticks_msec()
-		BcTex.bind(inst, d as Dictionary)
-		HighpolyProfiler.span("textures: bind to materials",
-			Time.get_ticks_msec() - _tb)
 
 
 func _load_external_glb_uncached(abs_or_res: String) -> Node:

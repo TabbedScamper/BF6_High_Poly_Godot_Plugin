@@ -833,7 +833,7 @@ func _enter_tree() -> void:
 		# not built yet: build JUST the props layer into the existing overlay.
 		# The old path fell through to the full apply, which starts by clearing
 		# the terrain and skyline it is about to rebuild identically.
-		if v and mapctx.props_ready(mapctx.map_of(r0)) \
+		if v and mapctx.game_source != null \
 				and mapctx.ensure_layer(r0, "objects", _mapctx_tex_mode()):
 			lbl.text = "Building the map objects…"
 			_save_mapctx_state()
@@ -1764,11 +1764,6 @@ func _on_manifest_refreshed() -> void:
 	var map: String = mapctx.map_of(r)
 	if map == "": return
 	var gen := _mapctx_gen
-	await mapctx.ensure_props(dock, map, func(s: String): lbl.text = s)
-	# The meshes that just landed are geometry the Object Library can draw icons
-	# from, so tell the previews they exist. Without this the thumbnail for a
-	# downloaded prop stayed the SDK's stock icon until the item was dropped into
-	# a scene, because that placement was what finally fetched the library copy.
 	if previews: previews.rescan_context()
 	if gen != _mapctx_gen:
 		return                         # user toggled Map Context while props re-verified
@@ -1805,19 +1800,12 @@ func _check_updates_now() -> void:
 	if r != null:
 		var _map: String = mapctx.map_of(r)
 		if _map != "" and mapctx.has_data(_map):
-			mapctx.forget_session_check(_map)
-			await mapctx.download_map(dock, _map, func(s: String): lbl.text = s)
-			# The freshness check only FLAGS a republished props.zip; the download
-			# itself lives in ensure_props. Without this the button refreshed the
-			# map data and left every object mesh on the old build until the layer
-			# was toggled off and on again — which is precisely the gap someone
-			# presses this button to close. Only when the layer is actually shown,
-			# so nobody in Low-Poly is handed a multi-GB download they did not ask
-			# for; otherwise the flag simply waits for the layer to come on.
-			if mapctx_objects != null and mapctx_objects.button_pressed \
-					and not mapctx.props_ready(_map):
-				await mapctx.ensure_props(dock, _map, func(s: String): lbl.text = s)
-				if previews: previews.rescan_context()
+			# NOTHING TO RE-FETCH. This used to re-pull mapdata.zip and flag a
+			# republished props.zip. The map is read from the install now, so the
+			# only thing that can make it stale is a game patch - and every reader
+			# cache is keyed on the mounted TOCs' signature, so a patch invalidates
+			# them without anyone pressing anything.
+			pass
 		var _swept: int = mapctx.cleanup_stale(_map)
 		if _swept > 0:
 			lbl.text = "Checked for updates. %d out-of-date file(s) cleared." % _swept
@@ -1830,14 +1818,6 @@ func _check_updates_now() -> void:
 	# prop GLBs (user://mapcontext/_props) file-by-file — re-parse and rebuild
 	# JUST the changed meshes instead of a full overlay re-toggle. Re-fetch the
 	# root: the scene may have changed/closed during the await above.
-	var r2 := EditorInterface.get_edited_scene_root()
-	if r2 != null and mapctx_objects != null and mapctx_objects.button_pressed \
-			and mapctx.map_of(r2) != "":
-		var n: int = mapctx.refresh_changed_props(r2)
-		if n > 0:
-			lbl.text = "%d object meshes refreshed" % n   # subset build: bar + progress follow
-		elif n < 0:
-			lbl.text = "Map objects are still building. Check again when it finishes."
 	_refresh_storage()   # disk usage may have shifted (downloads / re-bake)
 
 # ---------- the floating tool panel ----------
@@ -2263,7 +2243,7 @@ func _refresh_storage() -> void:
 	if gen != _storage_gen: return
 	var maps_bytes := 0
 	var nmaps := 0
-	for m in MapContextScript.downloaded_maps():
+	for m in MapContextScript.cached_maps():
 		var u: Array = await mapctx.dir_usage_async("%s/%s" % [MapContextScript.CACHE, m])
 		if gen != _storage_gen: return
 		maps_bytes += int(u[1])
@@ -2286,7 +2266,7 @@ func _refresh_storage() -> void:
 
 func _reload_purge_options() -> void:
 	if purge_maps == null: return
-	var maps: Array = MapContextScript.downloaded_maps()
+	var maps: Array = MapContextScript.cached_maps()
 	# High-poly models arrive as soon as you open a level, whether or not you
 	# ever switched Extended Terrain on. Without this the level never appears
 	# here, and those models can never be freed.
@@ -2389,7 +2369,7 @@ func _do_reset() -> void:
 	storage_lbl.text = "Deleting everything…"
 	# capture BEFORE the delete: afterwards there are no downloaded maps to list,
 	# and their saved toggle state would be stranded describing data that is gone
-	var maps_before: Array = MapContextScript.downloaded_maps()
+	var maps_before: Array = MapContextScript.cached_maps()
 	var freed: int = await mapctx.purge_everything()
 	# both stores are gone: forget the map-context index and every icon rendered
 	# from it, or the library keeps offering stand-ins for deleted files
@@ -2595,19 +2575,12 @@ func _apply_mapctx(r: Node, on: bool, objs: bool, tex: int, gen: int) -> void:
 	# context is being switched off: one build, no intermediate state.
 	var bd: bool = mapctx_backdrop != null and mapctx_backdrop.button_pressed
 	var wt: bool = mapctx_water != null and mapctx_water.button_pressed
-	if not objs or mapctx.props_ready(map):
-		lbl.text = mapctx.apply(r, on, objs, tex, bd, wt)
-		return
-	lbl.text = mapctx.apply(r, on, false, tex, bd, wt)   # terrain, water, backdrop NOW
-	await mapctx.ensure_props(dock, map, func(s: String): lbl.text = s)
-	# The meshes that just landed are geometry the Object Library can draw icons
-	# from, so tell the previews they exist. Without this the thumbnail for a
-	# downloaded prop stayed the SDK's stock icon until the item was dropped into
-	# a scene, because that placement was what finally fetched the library copy.
-	if previews: previews.rescan_context()
-	if gen != _mapctx_gen:
-		return              # user toggled again while props downloaded — stale state
-	lbl.text = mapctx.apply(r, on, true, tex, bd, wt)    # objects on top once here
+	# ONE APPLY, ALWAYS. This used to build the terrain first, fetch the prop
+	# GLBs, then apply again with objects on top - a two-phase dance whose only
+	# purpose was to show something while a download ran. There is no download:
+	# the scenery is read from the install, so the single apply below is the
+	# whole of it.
+	lbl.text = mapctx.apply(r, on, objs, tex, bd, wt)
 
 # Contact shading, Shadows, Map lights and Interior light: the four options that
 # only mean anything while Lighting is on.
@@ -3051,54 +3024,23 @@ func _mapctx_changed() -> void:
 			# mount cannot resolve, still has the download — but saying nothing
 			# would make "why did it download anyway" unanswerable.
 			HighpolyLog.warn("map context: could not read %s from the install "
-				% map + "(%s) — falling back to the download" % gs.error)
+				% map + "(%s)" % gs.error)
 
-	# Reading from the install: go straight to the build. download_map is
-	# idempotent but it is still a NETWORK call that tops up missing pieces, and
-	# calling it here would download exactly the data the reader just made
-	# unnecessary.
+	# THE INSTALL IS THE ONLY SOURCE. There used to be a fallback here: a cached
+	# map went through download_map to self-heal, and an unseen one raised a
+	# dialog offering to fetch tens of megabytes. Both are gone with the rest of
+	# the download path - the plugin requires Battlefield 6, says so at the top
+	# of the panel, and disables itself when it is not there.
+	#
+	# Reaching this point means the gate let us through and the read still
+	# failed, which is worth saying plainly rather than silently doing nothing.
 	if mapctx.game_source != null and mapctx.game_source.level == map.to_lower():
 		lbl.text = "Building %s…" % map
 		await _apply_mapctx(r, on, objs, tex, gen)
 		return
-
-	if mapctx.has_data(map):
-		# already cached — download_map self-heals (ETag check) + tops up any
-		# missing pieces (idempotent, offline-fast when complete), then apply
-		lbl.text = "Loading %s…" % map
-		await mapctx.download_map(dock, map, func(s: String): lbl.text = s)
-		if gen != _mapctx_gen:
-			return          # a newer toggle owns the state now
-		if not is_instance_valid(r):
-			return          # scene closed during the download
-		await _apply_mapctx(r, on, objs, tex, gen)
-		return
-	# not downloaded yet — prompt (per-map sized, obvious in context)
-	var dlg := ConfirmationDialog.new()
-	dlg.dialog_text = "Map data for %s isn't downloaded yet.\nDownload the terrain + object layout now? (~tens of MB, one time per map)" % map
-	dlg.ok_button_text = "Download"
-	dlg.cancel_button_text = "Cancel"
-	dlg.confirmed.connect(func():
-		_mapctx_gen += 1
-		var gen2 := _mapctx_gen        # confirming the dialog is a fresh user action
-		lbl.text = "Loading map data…"
-		var ok: bool = await mapctx.download_map(dock, map, func(s: String): lbl.text = s)
-		if gen2 != _mapctx_gen:
-			return                     # toggled again while the map downloaded
-		if ok:
-			await _apply_mapctx(r, mapctx_on.button_pressed,
-					mapctx_objects.button_pressed, _mapctx_tex_mode(), gen2)
-		else:
-			mapctx_on.set_pressed_no_signal(false)
-			mapctx_objects.set_pressed_no_signal(false)
-			lbl.text = mapctx.apply(r, false, false, false))
-	dlg.canceled.connect(func():
-		mapctx_on.set_pressed_no_signal(false)
-		mapctx_objects.set_pressed_no_signal(false)
-		lbl.text = mapctx.apply(r, false, false, false)
-		dlg.queue_free())
-	EditorInterface.popup_dialog_centered(dlg)
-
+	mapctx_on.set_pressed_no_signal(false)
+	mapctx_objects.set_pressed_no_signal(false)
+	lbl.text = "Could not read %s from your Battlefield 6 install. Check the game folder at the top of this panel." % map
 func _mode_changed() -> void:
 	# The gate follows the rung: grey the download-backed controls on the rung
 	# that fetches nothing, un-grey them on every other. Dropping onto that rung
