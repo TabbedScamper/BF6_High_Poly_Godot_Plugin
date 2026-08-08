@@ -4958,6 +4958,13 @@ var _smoke_shader = null
 const C_SMOKE_TINT := 0xD021807F      # the only non-neutral float3 in the record
 const C_SMOKE_SCROLL_A := 0xC4C39A0C  # (0.000, 0.100)
 const C_SMOKE_SCROLL_B := 0xC4C39A0D  # (0.000, 0.500), the sibling hash
+# SIGNED, and per material. 0.080 on the horizontal family, -0.030 and -0.100 on
+# the vertical one - which is what a hardcoded 0.08 was standing in for, in the
+# wrong direction on two of the three.
+const C_SMOKE_DISTORT := 0x4315DC37
+# 1.000 on the horizontal plumes, 2.000 on the vertical body, 1.000 on its ramp
+# surface. Read as an overall strength; that reading is OURS.
+const C_SMOKE_GAIN := 0x3B6C99D6
 
 
 func _vec2_const(consts: Dictionary, hash_id: int, fallback: Vector2) -> Vector2:
@@ -4985,10 +4992,30 @@ func _smoke_of(slots: Dictionary, consts: Dictionary):
 	var m := ShaderMaterial.new()
 	m.shader = _smoke_shader
 	m.set_shader_parameter("smoke_tex", sheet)
-	var nz = _texture_for(slots.get("smoke_noise"))
+	# EITHER NOISE. The horizontal family binds t_tilingnoise_01_rgbm and the
+	# vertical one t_tilingnoises_curly_01_d, in different slots; both are the
+	# same job.
+	var nz = _texture_for(slots.get("smoke_noise", slots.get("smoke_noise2")))
 	m.set_shader_parameter("has_noise", nz != null)
 	if nz != null:
 		m.set_shader_parameter("noise_tex", nz)
+	# THE GAME'S OWN EDGE MASK, which replaces an edge fade that was invented.
+	var edge = _texture_for(slots.get("smoke_edge"))
+	m.set_shader_parameter("has_edge", edge != null)
+	if edge != null:
+		m.set_shader_parameter("edge_tex", edge)
+	# THE BLACKBODY RAMP: a temperature-to-colour strip, and the reason the
+	# vertical plumes have a lit base rather than a flat warm tint.
+	var ramp = _texture_for(slots.get("smoke_ramp"))
+	m.set_shader_parameter("has_ramp", ramp != null)
+	if ramp != null:
+		m.set_shader_parameter("ramp_tex", ramp)
+	var dv = consts.get(C_SMOKE_DISTORT)
+	if dv is PackedByteArray and (dv as PackedByteArray).size() >= 4:
+		m.set_shader_parameter("distort_amount", (dv as PackedByteArray).decode_float(0))
+	var gv = consts.get(C_SMOKE_GAIN)
+	if gv is PackedByteArray and (gv as PackedByteArray).size() >= 4:
+		m.set_shader_parameter("gain", (gv as PackedByteArray).decode_float(0))
 	var t = _albedo_tint({C_SMOKE_TINT: consts.get(C_SMOKE_TINT)}) \
 		if consts.has(C_SMOKE_TINT) else null
 	var raw = consts.get(C_SMOKE_TINT)

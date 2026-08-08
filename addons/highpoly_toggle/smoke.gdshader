@@ -1,48 +1,55 @@
 shader_type spatial;
 render_mode blend_mix, depth_draw_never, cull_disabled, unshaded, shadows_disabled;
 
-// BACKDROP SMOKE PLUMES: the columns of smoke standing over the skyline.
+// BACKDROP SMOKE PLUMES, both families.
 //
-// The meshes were being placed all along - 23 of them on mp_aftermath - and
-// drawn WHITE, because the record binds no named basecolor slot. It binds a
-// family of its own, the same way the decals did:
+// The meshes were always placed - 13 horizontal and 10 vertical on
+// mp_aftermath - and drawn WHITE, because the record binds no named basecolor.
+// It binds a family of its own, the way the decals do:
 //
-//   0x48B69B15  t_bd_smokeplumes_02_ca   RGB the smoke, A its shape
-//   0xBA5B7844  t_tilingnoise_01_rgbm    the sheet the motion comes from
+//   0x48B69B15  the smoke sheet, RGB and A
+//   0xBA5B7844  t_tilingnoise_01_rgbm        (horizontal family)
+//   0xD0182167  t_tilingnoises_curly_01_d    (vertical family)
+//   0x42EC27B9  box_softedge_02              a soft-edge mask
+//   0x0127E78C  t_blackbodyramps_01_m        temperature -> colour
 //
-// WHAT IS THE GAME'S, read from the record:
+// TWO RECIPES ON ONE SLOT, which is why one shader with one look was wrong:
 //
-//   0xD021807F  (1.000, 0.920, 0.776)   the tint. The only non-neutral float3
-//                                       in the record; 0xE347A831 beside it is
-//                                       (1,1,1) and says nothing.
-//   0xC4C39A0C  (0.000, 0.100)          scroll A
-//   0xC4C39A0D  (0.000, 0.500)          scroll B
+//   horizontal   19.6 x 10 x 2.6 m card, t_bd_smokeplumes_02_ca, flat warm tint
+//                (1.000, 0.920, 0.776), scrolls (0, 0.1) and (0, 0.5)
+//   vertical     1.0 x 0.9 x 0.0 card in TWO surfaces, the rising sheet, a
+//                NEUTRAL tint, scrolls (1, 0) and (0, 0.1) - crossed rather
+//                than parallel - and a blackbody ramp on the second surface
 //
-// The two scrolls are consecutive hashes holding Vec2s whose x is ZERO and
-// whose y differs by 5x - a slow layer and a fast one, both purely vertical.
-// That is what rising smoke is, and a sibling sheet in the same directory is
-// named t_bd_smokeplume_05_rising_unpremult, which says the same thing in words.
+// FROM THE RECORD, per material: the tint 0xD021807F, both scrolls
+// 0xC4C39A0C / 0xC4C39A0D, the distortion 0x4315DC37 (SIGNED: 0.080 horizontal,
+// -0.030 and -0.100 vertical) and a strength 0x3B6C99D6.
 //
-// WHAT IS OURS, and stated rather than smuggled: that scroll B drives a
-// DISTORTION of the smoke's own lookup rather than a second visible layer, and
-// how strong that distortion is. The record carries 0.020, 0.080 and 0.100 as
-// bare scalars and nothing in it says which is which, so distort_amount starts
-// at the 0.080 sitting in there and is a uniform anyone can turn.
+// OURS, and stated: that the second scroll drives a distortion of the smoke's
+// lookup rather than a second visible layer; that the ramp is indexed by the
+// sheet's own luminance; the noise tiling; and unshaded, because a plume this
+// far out is lit by the sky and a directional light raking it makes it read as
+// a solid object.
 //
-// Also ours: unshaded. A plume this far out is lit by the sky and nothing else,
-// and letting the editor's directional light rake across it makes it read as a
-// solid object rather than as smoke.
+// The sheets are STRAIGHT alpha, measured: t_bd_smokeplumes_02_ca has RGB > A on
+// 91% of its texels. The `_unpremult` in a sibling filename suggested otherwise
+// and was a red herring.
 
 uniform sampler2D smoke_tex : source_color, filter_linear_mipmap;
 uniform sampler2D noise_tex : filter_linear_mipmap, repeat_enable;
+uniform sampler2D edge_tex : filter_linear;
+uniform sampler2D ramp_tex : source_color, filter_linear;
 uniform bool has_noise = false;
+uniform bool has_edge = false;
+uniform bool has_ramp = false;
 uniform vec3 tint : source_color = vec3(1.0, 0.92, 0.776);
 uniform vec2 scroll_a = vec2(0.0, 0.10);
 uniform vec2 scroll_b = vec2(0.0, 0.50);
-uniform float distort_amount : hint_range(0.0, 0.5) = 0.08;
+// Signed, and the record's own number.
+uniform float distort_amount : hint_range(-0.5, 0.5) = 0.08;
+uniform float gain : hint_range(0.0, 4.0) = 1.0;
 uniform float noise_scale = 0.35;
-// The plume fades out where it meets its own top and bottom edges rather than
-// ending on a hard line. Ours: the sheet has the shape, not the falloff.
+// Only used when the record binds no soft-edge mask of its own.
 uniform float edge_fade : hint_range(0.0, 0.5) = 0.12;
 
 void fragment() {
@@ -58,9 +65,26 @@ void fragment() {
 	}
 	uv += scroll_a * TIME;
 	vec4 s = texture(smoke_tex, uv);
-	ALBEDO = s.rgb * tint;
-	// Fade at the top and bottom of the card so the plume dissolves rather than
-	// ending on the mesh edge.
-	float fade = smoothstep(0.0, edge_fade, UV.y) * smoothstep(0.0, edge_fade, 1.0 - UV.y);
-	ALPHA = s.a * fade;
+
+	if (has_ramp) {
+		// BLACKBODY: a temperature-to-colour strip, which is what gives a
+		// vertical column a lit base instead of a uniform warm grey. Indexed by
+		// the sheet's own luminance - that mapping is OURS; the strip is the
+		// level's.
+		float temp = clamp(dot(s.rgb, vec3(0.299, 0.587, 0.114)), 0.0, 1.0);
+		ALBEDO = texture(ramp_tex, vec2(temp, 0.5)).rgb * tint * gain;
+	} else {
+		ALBEDO = s.rgb * tint;
+	}
+
+	float cover = s.a;
+	if (has_edge) {
+		// The card's own soft edge, from the game. Its alpha is a constant 1.0,
+		// so the shape is in the colour channels.
+		cover *= texture(edge_tex, UV).r;
+	} else {
+		cover *= smoothstep(0.0, edge_fade, UV.y)
+			* smoothstep(0.0, edge_fade, 1.0 - UV.y);
+	}
+	ALPHA = cover;
 }

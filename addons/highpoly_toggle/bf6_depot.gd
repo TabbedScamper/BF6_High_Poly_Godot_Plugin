@@ -90,6 +90,12 @@ const SLOT_EMISSIVE_LIT := 0x407055fd
 # sheet beside it is where the motion comes from. See smoke.gdshader.
 const SLOT_SMOKE_CA := 0x48b69b15
 const SLOT_SMOKE_NOISE := 0xba5b7844
+# The VERTICAL plume family is a second recipe on the same colour slot: a 1 m
+# card, a different noise, a soft-edge mask, and a blackbody ramp that colours
+# the hot part of the column instead of a flat tint.
+const SLOT_SMOKE_NOISE2 := 0xd0182167    # t_tilingnoises_curly_01_d
+const SLOT_SMOKE_RAMP := 0x0127e78c      # t_blackbodyramps_01_m
+const SLOT_SMOKE_EDGE := 0x42ec27b9      # box_softedge_02
 
 # Placeable mesh decals bind a family of their own and none of the slots above.
 # Only these two ever carry content: on mp_dumbo's 160 decal prefabs the other
@@ -110,6 +116,8 @@ const SLOT_NAME := {
 	SLOT_DECAL_CA: "decal_ca", SLOT_DECAL_NRM: "decal_nrm",
 	SLOT_EMISSIVE_LIT: "emissive_lit",
 	SLOT_SMOKE_CA: "smoke_ca", SLOT_SMOKE_NOISE: "smoke_noise",
+	SLOT_SMOKE_NOISE2: "smoke_noise2", SLOT_SMOKE_RAMP: "smoke_ramp",
+	SLOT_SMOKE_EDGE: "smoke_edge",
 }
 
 var error := ""
