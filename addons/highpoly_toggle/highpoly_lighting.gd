@@ -268,6 +268,25 @@ static func sun_energy(lux: float) -> float:
 # overlay meshes built while this is false stay shadow-off (the background
 # builder consults it) â€” kept in sync by apply()/set_shadows()
 static var cast_shadows := true
+# SHADOWS IN A RADIUS, and heavily cheaper beyond it.
+#
+# The reason overlay shadows were switched off wholesale is in _set_textured:
+# every placed object casting at once, into a directional atlas covering 1,500
+# m, crashed the editor outright on the multi-threaded renderer this project
+# ships with. The atlas is a fixed budget, so its cost per caster is set by how
+# much WORLD it has to span - 1,500 m of it spread across four splits leaves
+# almost no resolution for anything, and every caster still pays.
+#
+# Bounding the distance fixes both halves at once: Godot culls casters outside
+# the shadow range for free, so a radius is not an extra pass, and the same
+# atlas over 80 m instead of 1,500 is ~19x the linear resolution. Objects past
+# the radius keep their lighting and lose only their shadow, which at that
+# distance is a few pixels.
+static var shadow_radius := 80.0
+# ...and not for litter. The atlas cost is per CASTER, not per square metre, so
+# a bottle books the same slot as a tower and returns a few pixels for it. A car
+# is ~4.5 m and a building far more; both clear this, a crate lid does not.
+static var shadow_min_size := 1.5
 
 # Fraction of ambient held back from sky visibility so enclosed spaces keep a
 # floor of light. See the block in apply() for why interiors were black without
@@ -317,7 +336,7 @@ static func apply(root: Node, map: String, gi := true, shadows := true) -> Strin
 	# show very well"). Note the Aftermath preset is a 24,000-lux overcast sun
 	# vs a full-sky ambient: its shadows ARE soft/shallow in the game photos
 	# too â€” depth here should match the references, not a clear-noon look.
-	sun.directional_shadow_max_distance = 1500.0
+	sun.directional_shadow_max_distance = shadow_radius
 	sun.directional_shadow_mode = DirectionalLight3D.SHADOW_PARALLEL_4_SPLITS
 	# Kept ON. Blending the cascades fixes the seam between splits, and the
 	# draw-call saving from turning it off was measured at nothing: the whole
@@ -612,7 +631,11 @@ static func _apply_mined(env: Environment, sun: DirectionalLight3D, m: Dictionar
 	if ssd is Array and (ssd as Array).size() > 0:
 		var d := float((ssd as Array)[0])
 		if d > 1.0:
-			sun.directional_shadow_max_distance = clampf(d * 8.0, 60.0, 2000.0)
+			# the level's own authored distance, but never past the radius: the
+			# game renders this on a console GPU with a shadow budget the editor
+			# does not have
+			sun.directional_shadow_max_distance = minf(
+				clampf(d * 8.0, 60.0, 2000.0), shadow_radius)
 
 	# --- fog -----------------------------------------------------------------
 	# The most map-distinguishing system in the whole VE: FogColor alone takes 14

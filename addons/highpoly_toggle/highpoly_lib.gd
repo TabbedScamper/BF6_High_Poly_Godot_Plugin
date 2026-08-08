@@ -509,8 +509,24 @@ static func _set_textured(hp: Node, textured: bool) -> void:
 	# placed object in one go, all of it landing in the directional shadow atlas
 	# at a 1,500 m range -- enough to crash the editor outright on the
 	# multi-threaded renderer this project ships with.
-	var shadow: int = GeometryInstance3D.SHADOW_CASTING_SETTING_ON \
-		if HighpolyLighting.cast_shadows else GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	# BIG THINGS CAST, TINY THINGS DO NOT.
+	#
+	# Switching every overlay off was a blunt answer to a real crash, and it
+	# took the buildings and cars down with the litter. The shape of the cost is
+	# per-CASTER, not per-square-metre: a bottle and a tower book the same slot in
+	# the atlas, and the bottle's shadow is a few pixels nobody asked for. So the
+	# gate is a MINIMUM size - a car at ~4.5 m and a building both clear it, a
+	# crate lid does not. Measured on the overlay's own bounds, so no per-asset
+	# list has to be kept and a new model classifies itself the moment it loads.
+	#
+	# The distance half is HighpolyLighting.shadow_radius, which Godot enforces by
+	# culling casters outside the shadow range at no cost to us.
+	var shadow: int = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	if HighpolyLighting.cast_shadows:
+		var ab := _merged_aabb(hp, "")
+		var longest := maxf(ab.size.x, maxf(ab.size.y, ab.size.z))
+		if longest >= HighpolyLighting.shadow_min_size:
+			shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
 	var stack: Array = [hp]
 	while not stack.is_empty():
 		var n: Node = stack.pop_back()
