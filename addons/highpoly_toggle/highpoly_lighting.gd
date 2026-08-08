@@ -350,25 +350,17 @@ static func apply(root: Node, map: String, gi := true, shadows := true) -> Strin
 			pano_tex = gsky["texture"]
 			pano_scale = float(gsky["luminance_scale"])
 			_pano_rot = float(gsky.get("rotation", 0.0))
-	var sp := "%s/%s/sky.exr" % [CACHE, map]
-	if pano_tex != null:
-		sp = ""
-	if sp != "" and FileAccess.file_exists(sp):
-		var img := Image.new()
-		if img.load_exr_from_buffer(FileAccess.get_file_as_bytes(sp)) == OK:
-			pano_tex = ImageTexture.create_from_image(img)
-			# The panorama ships NORMALISED (measured mean 0.057-1.345 across all
-			# 22) and the VE's LuminanceScale carries the magnitude, 500-80000.
-			# Read it; do not measure the texture and normalise to its own
-			# average, which throws the authored brightness away.
-			pano_scale = float(m.get("sky_luminance_scale", 0.0))
-	if pano_tex == null and e.has("pano"):
-		# legacy: the one sky bundled inside the plugin. Already multiplied
-		# through, so it is normalised by its MEASURED luminance, not by
-		# LuminanceScale â€” the two disagree for exactly this reason.
-		var pp := "res://addons/highpoly_toggle/sky/" + str(e["pano"])
-		if ResourceLoader.exists(pp):
-			pano_tex = load(pp)
+	# THE GAME'S SKY OR NO SKY. Two fallbacks used to sit here and both were
+	# things this plugin is not allowed to have: a DOWNLOADED sky.exr conversion
+	# in the cache, and a .dds of Battlefield art bundled inside the addon. The
+	# bundled one was 16.8 MB and was still sitting in the user's install months
+	# after it was supposedly removed, because deleting a file does not stop code
+	# from looking for it.
+	#
+	# A level whose VE cannot be read now gets no panorama, which is visible and
+	# reportable. That is the correct failure: the alternative is one map's sky
+	# quietly standing in for another's, which is what "only one map ever had a
+	# real sky" meant.
 	if pano_tex != null:
 		# THE PANORAMA WITH A SUN DRAWN ON TOP OF IT, rather than a
 		# PanoramaSkyMaterial, which can only show the texture.

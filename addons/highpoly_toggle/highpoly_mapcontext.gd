@@ -584,10 +584,6 @@ func _remove_maptile(root: Node) -> void:
 # layers (albedo + normal, extracted from the terrainmaterials palette) add crisp
 # close-up detail. Layer selected by surface slope (flat = ground, steep = cliff).
 # Normal is applied in view space (no mesh tangents needed).
-# bundled fallback layers live next to this script (path derived at runtime so
-# the plugin works from any install folder under addons/)
-static func _layer_dir() -> String:
-	return (HighpolyMapContext as Script).resource_path.get_base_dir() + "/terrain_layers/"
 # dedicated render layer for our extended terrain, so the SDK maptile decal can
 # be told to skip it (the decal only textures the SDK's own terrain + assets)
 # Layer 20: "this geometry carries its own ground look". It is a TAG, and no
@@ -920,9 +916,12 @@ func _layer_tex(map: String, nm: String) -> Texture2D:
 		if img != null:
 			img.generate_mipmaps()
 			t = ImageTexture.create_from_image(img)
-	if t == null:
-		var p := _layer_dir() + nm + ".png"
-		t = load(p) if ResourceLoader.exists(p) else null
+	# NO BUNDLED FALLBACK. What used to be here loaded a cliff/ground set that
+	# shipped inside the addon - Battlefield art, ~2 MB, and still present in an
+	# install long after it left the repo. The per-map set above is derived from
+	# the level's OWN palette and written to the cache, so a map that has been
+	# read has real layers; one that has not gets none, and no texture is the
+	# honest answer rather than another level's rock.
 	_layer_cache[key] = t
 	return t
 
