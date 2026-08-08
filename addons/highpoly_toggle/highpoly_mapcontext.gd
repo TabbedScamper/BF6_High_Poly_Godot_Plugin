@@ -3868,7 +3868,11 @@ func _add_water_plane(ctx: Node3D, textured: bool) -> void:
 		# blue: a moving, reflective ocean in a flat-colour or clay view reads as
 		# the one thing in the scene that is "finished", which is misleading when
 		# the point of those modes is to look at shape.
-		var wmat: Material = HighpolyWater.material(wcfg) if textured else null
+		# The game source goes in so the water can bind the map's OWN foam and
+		# ripple-normal textures out of the install (HighpolyWater._apply_game_look).
+		# Passing null is not an error - the mined colours ride in wcfg and apply
+		# either way; only the textures need a live mount.
+		var wmat: Material = HighpolyWater.material(wcfg, game_source) if textured else null
 		if wmat == null:
 			var fb := StandardMaterial3D.new()
 			fb.albedo_color = WATER_COLOR

@@ -448,6 +448,7 @@ func drop_map_data() -> void:
 # showing water it does not have.
 func refresh_water() -> void:
 	_water_part = "￿"
+	_water_look_cache.clear()
 	if _map_data.is_empty():
 		return
 	var w := water()

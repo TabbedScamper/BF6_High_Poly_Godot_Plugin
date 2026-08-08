@@ -903,6 +903,90 @@ static func clear_map_lights(root: Node) -> void:
 			root.remove_child(c)
 			c.queue_free()
 
+# ONE LIGHT FROM ONE MINED RECORD, and the only place a Light3D is built.
+#
+# Extracted so the level's own lights and the lights inside a prop the user
+# placed cannot drift apart. They are the same fixtures out of the same install,
+# read by the same walk; the only difference is whether the walk reached them
+# through the level graph or through a pf_portal_ prefab. Two constructions would
+# have meant two answers about energy, cone angle and aim, and the aim in
+# particular took a lot of measuring to get right (see the minus-forward note in
+# highpoly_gamesource._light_record).
+static func make_light(L: Dictionary) -> Light3D:
+	var pos: Array = L.get("pos", [0, 0, 0])
+	var lt: Light3D
+	if bool(L.get("spot", false)):
+		var sp := SpotLight3D.new()
+		sp.spot_range = maxf(float(L.get("radius", 10.0)), 1.0)
+		# mined OuterAngle = FULL cone in degrees; Godot spot_angle = half
+		sp.spot_angle = clampf(float(L.get("angle", 60.0)) * 0.5, 1.0, 89.0)
+		lt = sp
+	else:
+		var om := OmniLight3D.new()
+		om.omni_range = maxf(float(L.get("radius", 8.0)), 1.0)
+		lt = om
+	var c: Array = L.get("color", [1, 1, 1])
+	var cmax: float = maxf(maxf(float(c[0]), float(c[1])), maxf(float(c[2]), 1.0))
+	lt.light_color = Color(float(c[0]) / cmax, float(c[1]) / cmax, float(c[2]) / cmax)
+	# raw Frostbite photometric intensity -> relative energy (empirical divisors
+	# from the mining report; PhotoMatch refines later). Cap at 2.2: a handful of
+	# outlier fixtures carry huge raw values the game's auto-exposure absorbs, and
+	# uncapped they out-shone the sun.
+	var unit := int(L.get("unit", 0))
+	lt.light_energy = clampf(float(L.get("intensity", 1000.0))
+			/ (20000.0 if unit == 0 else 4000.0) * cmax, 0.02, 2.2)
+	lt.shadow_enabled = false
+	# GPU-side fade: shaded pixels skip faded lights entirely and the culling
+	# boundary stops popping
+	lt.distance_fade_enabled = true
+	lt.distance_fade_begin = 90.0
+	lt.distance_fade_length = 40.0
+	lt.position = Vector3(pos[0], pos[1], pos[2])
+	if lt is SpotLight3D and L.get("dir") is Array:
+		var dva: Array = L["dir"]
+		var dv := Vector3(dva[0], dva[1], dva[2])
+		if dv.length() > 0.01:
+			var up := Vector3.UP
+			if absf(dv.normalized().dot(up)) > 0.99:
+				up = Vector3.FORWARD
+			lt.basis = Basis.looking_at(dv.normalized(), up)
+	return lt
+
+
+# THE LIGHTS A PLACED PROP CARRIES, hung under its overlay.
+#
+# A lamp dropped into a scene used to arrive with its geometry and none of its
+# lighting. Not misplaced: absent. object_node only ever built MeshInstance3D,
+# and the prefab walk asked for no entity types at all, so the fixtures inside
+# the prefab were never collected.
+#
+# CAPPED, and the cap is the reason this is a separate call rather than something
+# object_node does by itself. Forward+ clusters lights and stops at 512 in view;
+# a builder who lines a street with lamps would pass that without doing anything
+# unreasonable, and past it lights start dropping out with no explanation. The
+# cap makes the failure a number in the log instead.
+#
+# Shadows stay off and the distance fade is the same one the map lights use, so a
+# placed lamp costs what a level lamp costs.
+const PROP_LIGHT_CAP := 8
+
+static func attach_prop_lights(overlay: Node3D, recs: Array) -> int:
+	if overlay == null or recs.is_empty():
+		return 0
+	var n := 0
+	for r in recs:
+		if n >= PROP_LIGHT_CAP:
+			break
+		if not (r is Dictionary):
+			continue
+		var lt := make_light(r as Dictionary)
+		lt.name = "_HP_LIGHT_%d" % n
+		overlay.add_child(lt)
+		lt.owner = null                 # editor-only, never saved into the scene
+		n += 1
+	return n
+
+
 # `progress` is called as progress.call(done, total) on each yield, so the panel
 # can show a bar. Thousands of fixtures take real seconds to place and the only
 # feedback used to be a status line that changed once at the end.
@@ -961,43 +1045,7 @@ static func set_map_lights(root: Node, on: bool, map: String,
 		if not (L is Dictionary): continue
 		if str(L.get("layer", "base")) != "base":
 			continue                    # winter/gauntlet-only lights stay off
-		var pos: Array = L.get("pos", [0, 0, 0])
-		var lt: Light3D
-		if bool(L.get("spot", false)):
-			var sp := SpotLight3D.new()
-			sp.spot_range = maxf(float(L.get("radius", 10.0)), 1.0)
-			# mined OuterAngle = FULL cone in degrees; Godot spot_angle = half
-			sp.spot_angle = clampf(float(L.get("angle", 60.0)) * 0.5, 1.0, 89.0)
-			lt = sp
-		else:
-			var om := OmniLight3D.new()
-			om.omni_range = maxf(float(L.get("radius", 8.0)), 1.0)
-			lt = om
-		var c: Array = L.get("color", [1, 1, 1])
-		var cmax: float = maxf(maxf(float(c[0]), float(c[1])), maxf(float(c[2]), 1.0))
-		lt.light_color = Color(float(c[0]) / cmax, float(c[1]) / cmax, float(c[2]) / cmax)
-		# raw Frostbite photometric intensity -> relative energy (empirical
-		# divisors from the mining report; PhotoMatch refines later). Cap at
-		# 2.2: a handful of outlier fixtures carry huge raw values the game's
-		# auto-exposure absorbs â€” uncapped they out-shone the sun.
-		var unit := int(L.get("unit", 0))
-		lt.light_energy = clampf(float(L.get("intensity", 1000.0))
-				/ (20000.0 if unit == 0 else 4000.0) * cmax, 0.02, 2.2)
-		lt.shadow_enabled = false
-		# GPU-side fade: shaded pixels skip faded lights entirely and the
-		# 150 m culling boundary stops popping
-		lt.distance_fade_enabled = true
-		lt.distance_fade_begin = 90.0
-		lt.distance_fade_length = 40.0
-		lt.position = Vector3(pos[0], pos[1], pos[2])
-		if lt is SpotLight3D and L.get("dir") is Array:
-			var dva: Array = L["dir"]
-			var dv := Vector3(dva[0], dva[1], dva[2])
-			if dv.length() > 0.01:
-				var up := Vector3.UP
-				if absf(dv.normalized().dot(up)) > 0.99:
-					up = Vector3.FORWARD
-				lt.basis = Basis.looking_at(dv.normalized(), up)
+		var lt := make_light(L)
 		lt.visible = false              # tick_lights enables the near ones
 		holder.add_child(lt)
 		lt.owner = null

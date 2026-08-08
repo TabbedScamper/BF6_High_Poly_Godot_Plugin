@@ -11,6 +11,10 @@ class_name HighpolyLib
 # swaps them in automatically as they land. `use_legacy` keeps the exact 1.4
 # res://highpoly behavior alive for installs that haven't migrated yet.
 
+# The one place a Light3D is built, shared with the level's own lights so a
+# placed lamp and a level lamp cannot disagree about energy, cone or aim.
+const LightScript = preload("highpoly_lighting.gd")
+
 const HP_ROT := Vector3(-90, 0, 0)   # legacy OBJ assets are Z-up; GLB assets are Y-up
 const HP_NODE := "_HIPOLY_PREVIEW"
 # Render layer 19: "this geometry already has its real textures". Shared with the
@@ -316,7 +320,24 @@ static func _instance_for(key: String, id: String) -> Node3D:
 	if id.begins_with("game://"):
 		if game_source == null:
 			return null
-		return game_source.object_node(id.trim_prefix("game://"))
+		var gkey := id.trim_prefix("game://")
+		var gnode: Node3D = game_source.object_node(gkey)
+		# THE FIXTURES INSIDE THE PREFAB, not only its meshes.
+		#
+		# A lamp used to arrive with its geometry and none of its lighting, which
+		# is a stranger result than it sounds: the bulb is there, lit by nothing,
+		# so the prop reads as broken rather than as unlit. The records come from
+		# the same walk and the same builder the level's own lights use, so a
+		# placed lamp and a level lamp are the same fixture.
+		#
+		# Capped inside attach_prop_lights: Forward+ stops at 512 clustered
+		# lights in view, and a lined street would pass that without the builder
+		# doing anything unreasonable.
+		if gnode != null and game_source.has_method("object_lights"):
+			var recs: Array = game_source.object_lights(gkey)
+			if not recs.is_empty():
+				LightScript.attach_prop_lights(gnode, recs)
+		return gnode
 	var res = load(id)
 	if res is PackedScene:
 		return (res as PackedScene).instantiate() as Node3D
