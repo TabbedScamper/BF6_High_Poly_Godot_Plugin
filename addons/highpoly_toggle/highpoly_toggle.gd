@@ -3043,6 +3043,9 @@ func _mapctx_changed() -> void:
 			   "  (walk cached)" if int(gs.timings.get("_cached", 0)) == 1 else ""])
 		if ok_g:
 			mapctx.game_source = gs
+			# The object library reads from the same source: a placed object is
+			# assembled from the game's own prefab instead of a fetched GLB.
+			HighpolyLib.game_source = gs
 		else:
 			# NOT fatal and NOT silent. A machine without BF6, or a map the
 			# mount cannot resolve, still has the download — but saying nothing

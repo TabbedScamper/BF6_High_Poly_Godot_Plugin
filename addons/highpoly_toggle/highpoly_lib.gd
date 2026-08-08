@@ -33,6 +33,15 @@ const LEGACY_DIR := "res://highpoly"
 # carry the same flag data-driven, via `nofit` in the store index.
 const NOFIT := ["WreckTank_Abra01"]
 
+# The open HighpolyGameSource, or null. Set by the plugin when it opens one, and
+# the reason this library no longer needs a download: an object is assembled
+# from the game's own prefab rather than fetched as a pre-baked GLB.
+#
+# Untyped and static: highpoly_gamesource preloads nothing from here, and typing
+# it would make this module depend on the reader stack - which is exactly the
+# dependency that stops the library being usable without one.
+static var game_source = null
+
 enum Tier { LOW, MEDIUM, HIGH }      # MEDIUM retired in 1.4 (kept for compat)
 
 static var use_legacy := false       # pre-migration installs: read res://highpoly
@@ -247,6 +256,15 @@ static func _asset_id(key: String) -> String:
 		var obj := "%s/%s/%s.obj" % [LEGACY_DIR, key, key]
 		if ResourceLoader.exists(obj): return obj
 		return ""
+	# THE GAME FIRST. Every model this library ever shipped was assembled from a
+	# pf_portal_<name> prefab IN THE GAME - the authoritative list of member
+	# meshes and their transforms - and baked into a GLB ahead of time. The
+	# reader can do that assembly here instead, so nothing has to be fetched to
+	# see the object, and the composite case works: 1,066 members at 1,030
+	# distinct transforms for a building, which single-mesh name matching could
+	# never represent.
+	if game_source != null and game_source.has_object(key):
+		return "game://%s" % key
 	if HighpolyStore.has_model(key):
 		return "store://%s#%s" % [key, HighpolyStore.hash_of(key)]
 	# Map-context stand-in: the level's own copy of this mesh is already on disk
@@ -268,6 +286,10 @@ static func _instance_for(key: String, id: String) -> Node3D:
 	if id.begins_with("variant://"):
 		var vs := variant_scene(id.trim_prefix("variant://"))
 		return vs.instantiate() as Node3D if vs != null else null
+	if id.begins_with("game://"):
+		if game_source == null:
+			return null
+		return game_source.object_node(id.trim_prefix("game://"))
 	if id.begins_with("store://"):
 		var ps := HighpolyStore.load_scene(key)
 		return ps.instantiate() as Node3D if ps != null else null

@@ -1026,6 +1026,140 @@ func _fx_graph(path: String) -> String:
 	return ""
 
 
+# ---------------------------------------------------------------------------
+# PORTAL OBJECTS, assembled from the game's own prefab blueprints.
+#
+# Every SDK-placeable object has a matching pf_portal_<name>.ebx under
+# glacierportal/modbuilder: the authoritative list of member meshes and their
+# transforms, often nesting gpf_/pf_/pfls_ sub-prefabs. That is what makes the
+# composite objects work — souk houses, wreck tanks, prop-dressed cars, planter
+# clusters — which single-mesh name matching can never represent.
+#
+# THE LEVEL WALK ALREADY DOES THIS. A prefab is the same graph the level is made
+# of: ReferenceObjectData with Blueprint and BlueprintTransform, exactly the
+# fields BF6Walk reads. Starting it at the prefab with an identity transform
+# gives member meshes in the object's own local space, which is what a placed
+# overlay wants. Nothing new had to be understood; it only had to be pointed
+# somewhere else.
+const PORTAL_PREFIX := "pf_portal_"
+
+var _obj_walk: BF6Walk = null
+var _obj_cache := {}                   # portal name (lower) -> Mesh-bearing Node3D or null
+
+
+# The prefab for a Portal object name, assembled, or null.
+#
+# Returns a fresh Node3D each call: the caller parents it into a scene, and one
+# shared instance placed twice is a node with two parents. The expensive part —
+# resolving and parsing each member MeshSet — is cached inside mesh_for and
+# shared across every placement anyway.
+func object_node(portal_name: String) -> Node3D:
+	var rows := object_rows(portal_name)
+	if rows.is_empty():
+		return null
+	var root := Node3D.new()
+	root.name = portal_name
+	for r in rows:
+		var row: Dictionary = r
+		var m: Mesh = mesh_for(str(row["group"]))
+		if m == null:
+			continue
+		var mi := MeshInstance3D.new()
+		mi.mesh = m
+		mi.transform = row["xf"] as Transform3D
+		root.add_child(mi)
+	return root if root.get_child_count() > 0 else null
+
+
+# [{group, xf}] for one Portal object, cached per name.
+func object_rows(portal_name: String) -> Array:
+	if walk == null or src == null:
+		return []
+	var key := portal_name.to_lower()
+	if _obj_cache.has(key):
+		return _obj_cache[key]
+
+	# pf_portal_<name> first, then the bare name: a few placeables are their own
+	# prefab rather than a wrapped one.
+	var ref = null
+	for cand in [PORTAL_PREFIX + key, key]:
+		ref = walk.resolve_name(cand)
+		if ref != null:
+			break
+	if ref == null:
+		_obj_cache[key] = []
+		return []
+
+	# A SECOND WALKER, sharing the first's catalogue. build_catalog is the
+	# expensive part (223k EBX headers) and it is already done; what must not be
+	# shared is `rows`, because assembling an object in the middle of a level
+	# walk would append members to the map's placement list.
+	if _obj_walk == null:
+		_obj_walk = BF6Walk.new(src, types)
+		_obj_walk.by_name = walk.by_name
+		_obj_walk.gi = walk.gi
+		_obj_walk.scope_index = walk.scope_index
+	_obj_walk.rows.clear()
+	_obj_walk.ents.clear()
+	_obj_walk.walk(str(ref), BF6Walk.IDENT, {}, 0)
+
+	var out: Array = []
+	for r in _obj_walk.rows:
+		var row: Dictionary = r
+		var res_name := resolve_mesh(str(row["mesh"]))
+		if res_name == "":
+			continue
+		var xf = row["xf"]
+		if not (xf is Array) or (xf as Array).size() < 4:
+			continue
+		var scope := str(row.get("scope", ""))
+		if scope == "":
+			# A prefab opened on its own has no mounting subworld to inherit a
+			# depot scope from — that is a property of being placed in a level,
+			# and this one is not. Fall back to directory ancestry, which the
+			# scope research measured as recovering a further 7.5% of sections
+			# on top of the graph rule.
+			scope = _scope_by_path(res_name)
+		var b: Array = xf as Array
+		var t := Transform3D(
+			Basis((b[0] as Vector3), (b[1] as Vector3), (b[2] as Vector3)),
+			b[3] as Vector3)
+		out.append({"group": "%s|%s" % [res_name, scope], "xf": t})
+		if not _group_meta.has("%s|%s" % [res_name, scope]):
+			_group_meta["%s|%s" % [res_name, scope]] = [res_name, scope,
+				str(row.get("src", ""))]
+	_obj_cache[key] = out
+	return out
+
+
+# The nearest bundle that owns a depot, walking UP this asset's directories.
+func _scope_by_path(res_name: String) -> String:
+	var d := res_name.get_base_dir()
+	while d != "" and d != "/":
+		# A bundle asset lives at <dir>/<dir name>, which is the key the depot
+		# index is built on — matching the bare directory finds nothing.
+		var cand := "%s/%s" % [d, d.get_file()]
+		if _depot_bundles.has(cand):
+			return cand
+		if _depot_bundles.has(d):
+			return d
+		d = d.get_base_dir()
+	return ""
+
+
+# Is there a prefab for this name at all? Cheap: catalogue lookup, no walk.
+func has_object(portal_name: String) -> bool:
+	if walk == null:
+		return false
+	var key := portal_name.to_lower()
+	if _obj_cache.has(key):
+		return not (_obj_cache[key] as Array).is_empty()
+	for cand in [PORTAL_PREFIX + key, key]:
+		if walk.resolve_name(cand) != null:
+			return true
+	return false
+
+
 # The level's asset directory, e.g. game/glaciermp/levels/mp_dumbo, taken from
 # the walk's resolved root rather than reconstructed from a studio name.
 func _level_dir() -> String:
