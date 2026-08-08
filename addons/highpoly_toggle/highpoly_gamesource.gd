@@ -2539,6 +2539,24 @@ const NAME_PREFIXES := ["com_", "mil_", "fed_", "naf_", "cas_", "ind_",
 	"psd_", "ter_", "veg_", "ob_"]
 
 
+# THE ONE PLACE THAT DECIDES WHETHER A PORTAL NAME EXISTS.
+#
+# This was written out twice - once in object_rows and once in has_object - and
+# widening only object_rows fixed nothing: _asset_id asks has_object first, got
+# "no" from the copy that had not been widened, and never even tried to build the
+# overlay. BackroomStorageShe01 stayed blank through two deploys because of it.
+#
+# Both callers go through here now, so a name rule cannot be half-applied again.
+func _resolve_object(key: String):
+	if walk == null:
+		return null
+	for cand in [PORTAL_PREFIX + key, key, PORTAL_PREFIX + key + "_a"]:
+		var r = walk.resolve_name(cand)
+		if r != null:
+			return r
+	return _resolve_prefixed(key)
+
+
 func _resolve_prefixed(key: String):
 	var found: Array = []
 	for pre in NAME_PREFIXES:
@@ -2574,13 +2592,7 @@ func object_rows(portal_name: String) -> Array:
 	# of one object and either is the whole thing.
 	#
 	# Last in the list, so it can never override a direct hit.
-	var ref = null
-	for cand in [PORTAL_PREFIX + key, key, PORTAL_PREFIX + key + "_a"]:
-		ref = walk.resolve_name(cand)
-		if ref != null:
-			break
-	if ref == null:
-		ref = _resolve_prefixed(key)
+	var ref = _resolve_object(key)
 	if ref == null:
 		_obj_cache[key] = []
 		_obj_lights[key] = []
@@ -2709,10 +2721,7 @@ func has_object(portal_name: String) -> bool:
 	var key := portal_name.to_lower()
 	if _obj_cache.has(key):
 		return not (_obj_cache[key] as Array).is_empty()
-	for cand in [PORTAL_PREFIX + key, key]:
-		if walk.resolve_name(cand) != null:
-			return true
-	return false
+	return _resolve_object(key) != null
 
 
 # The level's asset directory, e.g. game/glaciermp/levels/mp_dumbo, taken from
