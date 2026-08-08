@@ -11,14 +11,23 @@ class_name BF6Atlas
 # The layout is the research repo's, verified there over 131 distinct atlases
 # from four level mounts (findings/atlastexture-92-byte-header):
 #
-#   0x00 u8       flags, unread
+#   0x00 u16      flags: 1 NormalMap, 2 PerFrameBorder, 4 LightCookie,
+#                        8 LightPrefilteredCookie
 #   0x02 u16      WIDTH            128..4096
 #   0x04 u16      HEIGHT           128..2048
 #   0x06 u8       mip count        6..10
 #   0x07 u8       unread, always >= 0x06
+#   0x08 f32      per-frame border width, texels
+#   0x0C f32      per-frame border height, texels
 #   0x10 16 bytes GUID of the pixel chunk
-#   0x20 u32 x 8  per-mip byte size, descending by /4, unused slots 0
-#   0x40 28 bytes zero on 131/131
+#   0x20 u32 x 15 per-mip byte size, descending by /4, ZERO-TERMINATED
+#
+# THE MIP ARRAY IS FIFTEEN SLOTS, not eight. 0x20 + 15*4 = 0x5C = 92 fills the
+# payload exactly. Reading eight truncates the chain of every atlas with 9 or
+# more mips, which is 21 of the 85 on mp_dumbo and 5 of the 13 sheets the FX
+# graphs actually name - t_clasticsmoke_tg1_8x64_01_d carries 128 and 32 in
+# slots 8 and 9. Nothing decoded WRONG under the short read, there were simply
+# mips it could not reach.
 #
 # Two of those are a joint test rather than three guesses: mip[0] == w*h and
 # mip[i] == mip[i-1]/4 only holds if the u16 offsets AND the one-byte-per-texel
@@ -30,6 +39,13 @@ class_name BF6Atlas
 # resource in this reader where a 16-byte GUID does so - the terrain chunk
 # directory is the other - so raw hex is the expectation and dashed is the
 # exception.
+#
+# findings/atlastexture-mip-array-is-15-slots says to compare the GUID in
+# .NET/LE field order instead. Measured against OUR chunk map, over all 85
+# atlases on mp_dumbo: raw hex resolves 85, LE-guid order resolves 0. Both
+# statements can hold - the two readers key their chunk maps differently - but
+# for this reader raw hex is the correct form and swapping it would break every
+# lookup.
 
 const RES_TYPE := 0x957C32B1
 const HEADER_SIZE := 92
@@ -55,7 +71,7 @@ static func parse(d: PackedByteArray) -> Dictionary:
 	if w <= 0 or h <= 0 or mips <= 0 or mips > 16:
 		return {}
 	var sizes: Array = []
-	for i in range(8):
+	for i in range(15):
 		var s := int(d.decode_u32(0x20 + i * 4))
 		if s == 0:
 			break
@@ -66,11 +82,23 @@ static func parse(d: PackedByteArray) -> Dictionary:
 	# that survives review.
 	if sizes.is_empty() or sizes[0] != w * h:
 		return {}
+	# The border is authored in 0x08/0x0C INDEPENDENTLY of the PerFrameBorder
+	# flag. Across all 85 atlases on mp_dumbo the flags field is nonzero on only
+	# 16, every one of them 4 (LightCookie) - yet 27 carry a nonzero border,
+	# including t_smoke_puff_4x8_d and t_smokepuff_tg1_6x36_d at 2 texels. So
+	# read the floats; do not gate them on bit 2.
 	return {
 		"width": w, "height": h, "mips": mips, "sizes": sizes,
 		"guid": d.slice(0x10, 0x20).hex_encode(),
 		"total": _sum(sizes),
+		"flags": int(d.decode_u16(0x00)),
+		"border": Vector2(d.decode_float(0x08), d.decode_float(0x0C)),
 	}
+
+
+# A light gobo rather than a particle flipbook. 16 of 85 on mp_dumbo.
+static func is_light_cookie(hdr: Dictionary) -> bool:
+	return (int(hdr.get("flags", 0)) & 0x0C) != 0
 
 
 static func _sum(a: Array) -> int:
