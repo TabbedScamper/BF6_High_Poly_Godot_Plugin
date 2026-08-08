@@ -44,6 +44,12 @@ const U_BONE := 2
 const U_NORMAL := 6
 const U_UV0 := 33
 const U_UV1 := 34
+# SubMaterialIndex — the PER-VERTEX PALETTE SELECTOR. Engine enum value 51,
+# which the research repo writes as 0x33 and which is NOT TexCoord0 (that is
+# decimal 33 = 0x21, one line above). A UByte4 in a stream of its own; lane 0
+# picks one of the eight entries of the 0xC2BB295A colour table, and the same
+# lane is the tile-paint zone index. See DESTRUCTION.md 9.3.
+const U_SUBMAT := 0x33
 
 # VertexElementFormat -> byte size
 const FMT_SIZE := {
@@ -340,6 +346,15 @@ func read_lod(d: PackedByteArray, lod := 0, chunk := PackedByteArray(),
 		# read here rather than by the caller because only this function has the
 		# vertex buffer and the stream layout to hand.
 		var parts := _read_parts(buf, voff, vcount, s)
+		# THE PER-VERTEX PALETTE ENTRY, when the mesh carries one. Read here for
+		# the same reason `parts` is: only this function has the vertex buffer
+		# and the stream table to hand.
+		# [values, mask] — the mask has bit k set for every entry k the section
+		# selects, and bit 8 for any value outside the table's eight. Folded here
+		# because the caller wants the SET far more often than the values, and
+		# building it a second time over 20 million vertices is the difference
+		# between a scan and a cost.
+		var pal := _read_sel(buf, voff, vcount, s)
 		# state_key and material_id ride along: a caller that has decoded a
 		# section still needs to know which depot record dresses it, and
 		# re-parsing the file to find out would be absurd.
@@ -348,7 +363,9 @@ func read_lod(d: PackedByteArray, lod := 0, chunk := PackedByteArray(),
 					"uv_sets": uv_sets.size(),
 					"state_key": s.get("state_key", 0),
 					"material_id": s.get("material_id", 0),
-					"parts": parts})
+					"parts": parts,
+					"pal": pal[0] if pal.size() == 2 else PackedByteArray(),
+					"pal_mask": int(pal[1]) if pal.size() == 2 else 0})
 	return out
 
 
@@ -413,6 +430,60 @@ func _read_parts(buf: PackedByteArray, base: int, count: int,
 				out[i] = raw & 0x7FFF
 			return out
 	return out
+
+
+# The SubMaterialIndex element -> one palette entry per vertex, or an empty
+# array when this section does not carry one.
+#
+# This is the selector DESTRUCTION.md 9.3 names for the eight-entry 0xC2BB295A
+# colour table: without it a facade whose eight entries disagree has no way to
+# say which of them a given vertex wants, and the whole table has to be thrown
+# away. Measured on mp_dumbo: every renderable LOD0 section DECLARES the
+# element, 3,520 of 7,900 can actually be read, and the values are 0..7 with 89%
+# of vertices at entry 0.
+#
+# DECLARATION 0 FIRST, which is the opposite of _read_parts and is measured
+# rather than stylistic. Both declarations name this element on those 3,520
+# sections and agree on its stream, offset and stride everywhere they overlap;
+# on the other 740 ONLY declaration 1 names it, and the stream it points at is
+# not in the buffer, so reading it would be reading someone else's bytes. The
+# bounds check is what rejects those, and trying decl0 first means the sections
+# that CAN be read are not risked on the phantom.
+#
+# Format 12 is UByte4 and only lane 0 carries the entry — the other three lanes
+# are zero on 99.9% of 20.1M sampled vertices.
+func _read_sel(buf: PackedByteArray, base: int, count: int,
+		s: Dictionary) -> Array:
+	for which in ["decl0", "decl1"]:
+		var dc = s.get(which)
+		if not (dc is Dictionary):
+			continue
+		var els: Array = (dc as Dictionary)["elements"]
+		var streams: Array = (dc as Dictionary)["streams"]
+		for el in els:
+			if int(el[0]) != U_SUBMAT or int(el[1]) != 12:
+				continue
+			var off := int(el[2])
+			var si := int(el[3])
+			if si >= streams.size():
+				continue
+			var sstride := int(streams[si][0])
+			if sstride == 0:
+				continue
+			var sbase := base
+			for k in range(si):
+				sbase += int(streams[k][0]) * count
+			if sbase + (count - 1) * sstride + off + 4 > buf.size():
+				continue
+			var out := PackedByteArray()
+			out.resize(count)
+			var mask := 0
+			for i in range(count):
+				var b := buf[sbase + i * sstride + off]
+				out[i] = b
+				mask |= 1 << (b if b < 8 else 8)
+			return [out, mask]
+	return []
 
 
 func _read_indices(buf: PackedByteArray, vsize: int, isize: int, idx32: bool,

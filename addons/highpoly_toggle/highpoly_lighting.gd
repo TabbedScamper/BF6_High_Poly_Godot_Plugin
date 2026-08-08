@@ -16,6 +16,8 @@ class_name HighpolyLighting
 # preview sun/environment (Godot re-enables them when the scene stops carrying
 # a DirectionalLight3D / WorldEnvironment).
 #
+const SUN_SKY := preload("res://addons/highpoly_toggle/sky_sun.gdshader")
+
 # Sun-angle convention: SunRotationX is a COMPASS BEARING (0 = +Z, turning
 # toward +X) and SunRotationY is elevation above the horizon. See sun_dir() for
 # the derivation and the evidence.
@@ -359,17 +361,33 @@ static func apply(root: Node, map: String, gi := true, shadows := true) -> Strin
 		if ResourceLoader.exists(pp):
 			pano_tex = load(pp)
 	if pano_tex != null:
-		var pmat := PanoramaSkyMaterial.new()
-		pmat.panorama = pano_tex
-		pmat.filter = true
+		# THE PANORAMA WITH A SUN DRAWN ON TOP OF IT, rather than a
+		# PanoramaSkyMaterial, which can only show the texture.
+		#
+		# BF6's panoramas contain no sun disc. Rendered all 22 and crushed
+		# exposure until only real highlights survive: every one goes black. The
+		# engine draws its own, DrawSunDisc = 1 on every map. So the sky we built
+		# had no sun in it at all, and the brightest thing in the level was
+		# missing while the light casting every shadow came from a direction with
+		# nothing visible there.
+		#
+		# The shader samples the panorama with PanoramaSkyMaterial's exact
+		# mapping, verified pixel-identical on all four compass directions, and
+		# adds a disc placed from the DirectionalLight this rig has already aimed
+		# out of the level's own SunRotationX/Y.
+		var pmat := ShaderMaterial.new()
+		pmat.shader = SUN_SKY
+		pmat.set_shader_parameter("panorama", pano_tex)
+		var emul := 1.0
 		if pano_scale > 0.0:
 			# Bring the authored magnitude onto the ~1.0 scale the rest of the
 			# rig is calibrated against: texture x LuminanceScale is the real
 			# luminance, and SKY_REF is what we call "1".
 			const SKY_REF := 7000.0        # median of texture-mean x scale, fleet-wide
-			pmat.energy_multiplier = clampf(pano_scale / SKY_REF, 0.05, 20.0)
+			emul = clampf(pano_scale / SKY_REF, 0.05, 20.0)
 		else:
-			pmat.energy_multiplier = 1.0 / maxf(float(e.get("pano_lum", 1.0)), 0.001)
+			emul = 1.0 / maxf(float(e.get("pano_lum", 1.0)), 0.001)
+		pmat.set_shader_parameter("energy_multiplier", emul)
 		sky.sky_material = pmat
 	else:
 		var mat := ProceduralSkyMaterial.new()

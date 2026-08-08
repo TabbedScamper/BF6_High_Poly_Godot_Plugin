@@ -204,7 +204,10 @@ const OPEN_STAGES := [ST_MOUNT, ST_TYPES, ST_INDEX, ST_WALK, ST_GROUND,
 #      reload told the user to rebuild the whole map. Now "rebuild" is something
 #      we state deliberately by bumping this, not a side effect of which file an
 #      edit happened to land in.
-const GEOM_EPOCH := 4
+# 5: surfaces now record which palette entries their vertices select, in the
+#    surface name (see the merge loop), so the colour table can be resolved
+#    per surface instead of only when all eight entries agree.
+const GEOM_EPOCH := 5
 
 # A FUNCTION, not read as a constant from outside, and that is load-bearing.
 # GDScript folds a constant into the caller at parse time, so a caller that read
@@ -1636,6 +1639,7 @@ func _water_params(dep: BF6Depot, d: PackedByteArray, key: int) -> Dictionary:
 	var asset := {}        # role -> texture asset name (for logs and reports)
 	var color := {}        # "%08x" slot -> [r, g, b] LINEAR
 	var scalar := {}       # "%08x" slot -> float
+	var other := {}        # "%08x" slot -> [typeHash, raw hex] for non-Float32 inlines
 	for p in dep.params(int(dep.key_to_record[key]), d):
 		var pd: Dictionary = p
 		var n32: int = int(pd["name32"])
@@ -1656,6 +1660,16 @@ func _water_params(dep: BF6Depot, d: PackedByteArray, key: int) -> Dictionary:
 				r3.decode_float(8)]
 		elif th == 0x14a0b1c1:
 			scalar["%08x" % n32] = (pd["raw"] as PackedByteArray).decode_float(0)
+		else:
+			# NOT EVERY 4-BYTE CONSTANT IS A Float32. The ocean variant ships at
+			# least one under a different type hash, and a reader that only
+			# collects 0x14a0b1c1 silently reports one constant fewer than the
+			# record holds - which is exactly how a count gets quoted wrong.
+			# Kept as raw bytes rather than coerced, since the type is the thing
+			# that is not known.
+			var rb = pd["raw"]
+			if rb != null:
+				other["%08x" % n32] = [th, (rb as PackedByteArray).hex_encode()]
 	# The variant is named by what it BINDS, the same data-driven rule the glass
 	# and carpaint fingerprints use — never by the map or by a texture name.
 	var variant := "foam"
@@ -1667,13 +1681,16 @@ func _water_params(dep: BF6Depot, d: PackedByteArray, key: int) -> Dictionary:
 	var shallow: Array = []
 	var deep: Array = []
 	if variant == "ocean":
+		# ONE colour, and "deep" is deliberately left absent rather than set to
+		# the same value: the consumer's fallback darkens it, and writing the
+		# identical colour into both would flatten the depth gradient to nothing
+		# while still looking like mined data.
 		shallow = color.get("%08x" % WSLOT_OCEAN_COLOR, [])
-		deep = shallow
 	else:
 		shallow = color.get("%08x" % WSLOT_WATER_A, [])
 		deep = color.get("%08x" % WSLOT_WATER_B, [])
 	var out := {"variant": variant, "tex": tex, "asset": asset,
-		"color": color, "scalar": scalar,
+		"color": color, "scalar": scalar, "other": other,
 		"key": BF6Depot.key_hex(key)}
 	if not shallow.is_empty():
 		out["shallow"] = shallow
@@ -2497,6 +2514,11 @@ var n_meshes := 0
 # How much the per-material merge below is actually buying, in draw calls.
 var n_sections := 0
 var n_surfaces := 0
+# And what the colour-table split costs: meshes built with their surfaces cut by
+# palette entry, and meshes that had to be read from the game again because the
+# cached copy was merged.
+var n_pal_split := 0
+var n_pal_rebuilt := 0
 
 
 # djb2-lower of an ObjectVariation asset path, `.ebx` dropped, or 0 for none.
@@ -2657,15 +2679,15 @@ func describe(am: Mesh) -> Dictionary:
 		out["variation"] = int(r[3])
 		var keys: Array = r[1]
 		for i in range(keys.size()):
-			out["surfaces"].append(describe_state(int(keys[i]), str(r[2]),
-				int(r[3]), i))
+			out["surfaces"].append(describe_state(_mkey(keys[i]), str(r[2]),
+				int(r[3]), i, _mpal(keys[i])))
 		break
 	return out
 
 
 # One surface's resolution chain, step by step.
 func describe_state(state_key: int, scope: String, var_hash: int,
-		index := -1) -> Dictionary:
+		index := -1, pal := PackedInt32Array()) -> Dictionary:
 	var d := {"index": index, "state_key": BF6Depot.key_hex(state_key),
 		"depot": "", "key_used": "", "record": false, "slots": {},
 		"masked": false, "cut": 0.0, "mask_shape": {}, "material": "none",
@@ -2697,10 +2719,17 @@ func describe_state(state_key: int, scope: String, var_hash: int,
 	# WHY THIS PROP IS THE COLOUR IT IS. Most painted props ship a neutral grey
 	# texture and take their colour from a constant, so "which textures resolved"
 	# on its own answers half the question people actually ask here.
-	var dtint = _albedo_tint(dconsts)
+	var dtint = _albedo_tint(dconsts, pal)
 	d["tint"] = "identity (neutral, as authored)" if dtint == null \
 		else "linear (%.4f, %.4f, %.4f)" % [(dtint as Color).r,
 			(dtint as Color).g, (dtint as Color).b]
+	# WHICH ENTRY OF THE COLOUR TABLE THIS SURFACE ASKED FOR, which is the
+	# difference between "the record has no colour" and "the record has eight and
+	# this surface picked one".
+	if dconsts.has(C_COLOR_TABLE):
+		d["palette"] = "table of 8; this surface selects %s" \
+			% ("nothing readable (no usage 0x33 on these vertices)" if pal.is_empty()
+				else str(Array(pal)))
 	var dcp = _carpaint_of(slots, dconsts)
 	if dcp != null:
 		var bc: Color = (dcp as Array)[0]
@@ -2801,11 +2830,22 @@ func mesh_for(group_key: String, lod := 0) -> Mesh:
 	# same standard the walk cache and height_game.r16 already meet.
 	var cached = _geom_load(kc)
 	if cached is ArrayMesh:
+		# UNLESS THIS SCOPE NEEDS THE MESH CUT DIFFERENTLY. The cached mesh was
+		# merged one surface per shader state, which is the right answer for
+		# every mesh whose colour table this scope resolves to a single colour —
+		# and 154 groups on mp_dumbo where it is not, because their vertices
+		# select two entries that are two different colours. A merged surface
+		# cannot be taken apart after the fact, so those are read from the game
+		# again and NOT written back (see the save below): they are 2.3% of the
+		# groups, and keeping the file on disk merged is what lets every other
+		# scope go on sharing it.
 		var ckeys := _keys_of(cached as ArrayMesh)
-		_keys_for[kc] = ckeys
-		_dress(cached as ArrayMesh, ckeys, scope, var_hash)
-		_mesh_by_sig[_sig_for(kc, ckeys, scope, var_hash)] = cached
-		return cached as ArrayMesh
+		if not _needs_split(ckeys, scope, var_hash):
+			_keys_for[kc] = ckeys
+			_dress(cached as ArrayMesh, ckeys, scope, var_hash)
+			_mesh_by_sig[_sig_for(kc, ckeys, scope, var_hash)] = cached
+			return cached as ArrayMesh
+		n_pal_rebuilt += 1
 
 	var d := src.get_res(res_name)
 	if d.is_empty():
@@ -2868,7 +2908,57 @@ func mesh_for(group_key: String, lod := 0) -> Mesh:
 	var hidden: Dictionary = _hidden_parts(res_name, info)
 	_dress_name = res_name
 
-	var by_mat := {}                # merge key -> [verts, normals, uvs, indices]
+	# ---- WHICH COLOUR-TABLE ENTRIES EACH SHADER STATE SELECTS -------------
+	#
+	# One byte per vertex (usage 0x33, DESTRUCTION.md 9.3) folded down to the SET
+	# of entries a merge key's vertices ask for. Two things come out of it: the
+	# set is written into the surface name so material_for can resolve the table
+	# against it, and where the entries it names are two different colours the
+	# surface has to be cut in two, because one surface takes one material.
+	#
+	# A key is only usable if EVERY section under it could be read: the sections
+	# merge into one surface, so one section without a selector would leave the
+	# surface claiming entries for vertices that never asked for any. Values
+	# above 7 are the same kind of unusable — the table has eight entries, and a
+	# 102 is this element meaning something else on that mesh family. Measured on
+	# mp_dumbo: no section whose record carries a colour table ever selects
+	# outside 0..7.
+	var key_sel := {}               # state key -> {entry: true}
+	var key_bad := {}
+	for s in secs:
+		var sec: Dictionary = s
+		var key := int(sec.get("state_key", 0))
+		var verts0 = sec.get("verts")
+		var sv: PackedByteArray = sec.get("pal", PackedByteArray())
+		if not (verts0 is PackedVector3Array) or sv.is_empty() \
+				or sv.size() != (verts0 as PackedVector3Array).size():
+			key_bad[key] = true
+			continue
+		var set: Dictionary = key_sel.get(key, {})
+		for v in sv:
+			if int(v) > 7:
+				key_bad[key] = true
+				break
+			set[int(v)] = true
+		key_sel[key] = set
+	for k in key_bad.keys():
+		key_sel.erase(k)
+	# ...and of those, the ones whose entries are genuinely different colours in
+	# THIS scope's depot. Everything else merges exactly as it always did.
+	var key_canon := {}             # state key -> entry -> canonical entry
+	for key in key_sel.keys():
+		if (key_sel[key] as Dictionary).size() < 2:
+			continue
+		var canon = _pal_canon(key, scope, var_hash)
+		if canon == null:
+			continue
+		var gs := {}
+		for e in (key_sel[key] as Dictionary).keys():
+			gs[int((canon as PackedByteArray)[int(e)])] = true
+		if gs.size() > 1:
+			key_canon[key] = canon
+
+	var by_mat := {}                # bucket id -> [verts, normals, uvs, indices]
 	var order: Array = []           # insertion order, so the result is stable
 	var want_normals := {}
 	var want_uvs := {}
@@ -2882,62 +2972,117 @@ func mesh_for(group_key: String, lod := 0) -> Mesh:
 			continue
 		var n: int = (verts as PackedVector3Array).size()
 		var key := int(sec.get("state_key", 0))
-		if not by_mat.has(key):
-			by_mat[key] = [PackedVector3Array(), PackedVector3Array(),
-				PackedVector2Array(), PackedInt32Array()]
-			order.append(key)
-			want_normals[key] = true
-			want_uvs[key] = true
-		# PULLED OUT INTO LOCALS AND WRITTEN BACK, which is not stylistic.
-		#
-		# A PackedVector3Array is a VALUE in GDScript, so `acc[0].append_array(v)`
-		# appends to a temporary copy and throws it away. The first version of
-		# this loop did exactly that for the vertices, normals and UVs — only the
-		# indices were assigned back — and every merged surface came out with an
-		# empty vertex array: "Condition array_len == 0 is true", thousands of
-		# times, on a mesh that had just been read correctly.
-		var acc: Array = by_mat[key]
-		var av: PackedVector3Array = acc[0]
-		var an: PackedVector3Array = acc[1]
-		var au: PackedVector2Array = acc[2]
-		var ai: PackedInt32Array = acc[3]
-		var base: int = av.size()
-		av.append_array(verts)
-		# Length-checked before use: Godot rejects the whole surface if an
-		# attribute array disagrees with the vertex count, and a section that
-		# carries no normals hands back an empty one rather than nothing. Merged,
-		# it is worse than a rejected surface — one section without normals would
-		# leave the accumulated array short and silently misalign every section
-		# after it. So a group where ANY section lacks an attribute drops that
-		# attribute for the whole group.
-		var nrm = sec.get("normals")
-		if nrm is PackedVector3Array and (nrm as PackedVector3Array).size() == n:
-			an.append_array(nrm)
+		# THE BUCKETS THIS SECTION FEEDS. One, named after the shader state, for
+		# every section on the map that is not a split facade; one per colour
+		# otherwise. `gk` holds the canonical entry each bucket draws.
+		var canon = key_canon.get(key)
+		var sv: PackedByteArray = sec.get("pal", PackedByteArray())
+		var gk: Array = []
+		var bids: Array = []
+		if canon != null and sv.size() == n:
+			var gs := {}
+			for v in sv:
+				gs[int((canon as PackedByteArray)[int(v)])] = true
+			gk = gs.keys()
+			gk.sort()
+			for p in gk:
+				bids.append("%d@%d" % [key, int(p)])
 		else:
-			want_normals[key] = false
-		var uv = sec.get("uvs")
-		if uv is PackedVector2Array and (uv as PackedVector2Array).size() == n:
-			au.append_array(uv)
-		else:
-			want_uvs[key] = false
+			bids.append(str(key))
+		var bases := {}
+		for bid in bids:
+			if not by_mat.has(bid):
+				by_mat[bid] = [PackedVector3Array(), PackedVector3Array(),
+					PackedVector2Array(), PackedInt32Array()]
+				order.append(bid)
+				want_normals[bid] = true
+				want_uvs[bid] = true
+			# PULLED OUT INTO LOCALS AND WRITTEN BACK, which is not stylistic.
+			#
+			# A PackedVector3Array is a VALUE in GDScript, so `acc[0].append_array(v)`
+			# appends to a temporary copy and throws it away. The first version of
+			# this loop did exactly that for the vertices, normals and UVs — only the
+			# indices were assigned back — and every merged surface came out with an
+			# empty vertex array: "Condition array_len == 0 is true", thousands of
+			# times, on a mesh that had just been read correctly.
+			var acc: Array = by_mat[bid]
+			var av: PackedVector3Array = acc[0]
+			var an: PackedVector3Array = acc[1]
+			var au: PackedVector2Array = acc[2]
+			# THE WHOLE SECTION GOES INTO EVERY BUCKET IT FEEDS, and the pieces
+			# index into their own copy. Splitting the vertices as well would mean
+			# a remap table per piece to buy back the ~500k vertices the 170 split
+			# sections on this map duplicate — real memory, but far less than the
+			# bug surface of renumbering every index twice.
+			bases[bid] = av.size()
+			av.append_array(verts)
+			# Length-checked before use: Godot rejects the whole surface if an
+			# attribute array disagrees with the vertex count, and a section that
+			# carries no normals hands back an empty one rather than nothing. Merged,
+			# it is worse than a rejected surface — one section without normals would
+			# leave the accumulated array short and silently misalign every section
+			# after it. So a group where ANY section lacks an attribute drops that
+			# attribute for the whole group.
+			var nrm = sec.get("normals")
+			if nrm is PackedVector3Array and (nrm as PackedVector3Array).size() == n:
+				an.append_array(nrm)
+			else:
+				want_normals[bid] = false
+			var uv = sec.get("uvs")
+			if uv is PackedVector2Array and (uv as PackedVector2Array).size() == n:
+				au.append_array(uv)
+			else:
+				want_uvs[bid] = false
+			by_mat[bid] = [av, an, au, acc[3]]
 		# PER TRIANGLE, on its first vertex's tag. A triangle spans one
 		# destruction part in practice, and requiring all three to be visible
 		# would also drop the seam triangles between a hidden part and a visible
-		# one - a hole in the intact body rather than a removed overlay.
+		# one - a hole in the intact body rather than a removed overlay. The
+		# palette entry is read the same way and for the same reason.
 		var pv: PackedInt32Array = sec.get("parts", PackedInt32Array())
 		var ii: PackedInt32Array = idx
-		if not hidden.is_empty() and not pv.is_empty():
-			for k in range(0, ii.size() - 2, 3):
-				var v0 := int(ii[k])
-				if v0 < pv.size() and hidden.has(int(pv[v0])):
-					continue
-				ai.push_back(int(ii[k]) + base)
-				ai.push_back(int(ii[k + 1]) + base)
-				ai.push_back(int(ii[k + 2]) + base)
+		if bids.size() == 1:
+			var bid0: String = bids[0]
+			var acc0: Array = by_mat[bid0]
+			var ai: PackedInt32Array = acc0[3]
+			var base: int = int(bases[bid0])
+			if not hidden.is_empty() and not pv.is_empty():
+				for k in range(0, ii.size() - 2, 3):
+					var v0 := int(ii[k])
+					if v0 < pv.size() and hidden.has(int(pv[v0])):
+						continue
+					ai.push_back(int(ii[k]) + base)
+					ai.push_back(int(ii[k + 1]) + base)
+					ai.push_back(int(ii[k + 2]) + base)
+			else:
+				for i in ii:
+					ai.push_back(i + base)
+			acc0[3] = ai
+			by_mat[bid0] = acc0
 		else:
-			for i in ii:
-				ai.push_back(i + base)
-		by_mat[key] = [av, an, au, ai]
+			# ONE PASS PER PIECE rather than one dictionary lookup per triangle:
+			# a Packed array taken out of a container is shared, and pushing to it
+			# from inside a loop that fetches it again would copy the whole array
+			# every triangle.
+			var cb: PackedByteArray = canon
+			for j in range(bids.size()):
+				var bidj: String = bids[j]
+				var accj: Array = by_mat[bidj]
+				var aij: PackedInt32Array = accj[3]
+				var basej: int = int(bases[bidj])
+				var pj: int = int(gk[j])
+				for k in range(0, ii.size() - 2, 3):
+					var v0 := int(ii[k])
+					if int(cb[int(sv[v0])]) != pj:
+						continue
+					if not hidden.is_empty() and not pv.is_empty() \
+							and v0 < pv.size() and hidden.has(int(pv[v0])):
+						continue
+					aij.push_back(v0 + basej)
+					aij.push_back(int(ii[k + 1]) + basej)
+					aij.push_back(int(ii[k + 2]) + basej)
+				accj[3] = aij
+				by_mat[bidj] = accj
 
 	var am := ArrayMesh.new()
 	var kept: Array = []
@@ -2963,13 +3108,16 @@ func mesh_for(group_key: String, lod := 0) -> Mesh:
 		# carries a string per surface. The alternative was a second index file
 		# beside every mesh, which is another thing to keep in step and another
 		# thing to be missing.
-		am.surface_set_name(am.get_surface_count() - 1, str(key))
+		var sname := _surface_name(str(key), key_sel, key_canon)
+		am.surface_set_name(am.get_surface_count() - 1, sname)
 		# `kept`, not `order`: a key whose sections all dropped out contributes no
 		# surface, so recording it would put the surface list and the key list out
 		# of step — and _sig_for reads them as parallel.
-		kept.append(key)
+		kept.append(sname)
 	n_sections += secs.size()
 	n_surfaces += am.get_surface_count()
+	if not key_canon.is_empty():
+		n_pal_split += 1
 	# Parse covers everything from the MeshSet header to the finished ArrayMesh
 	# — read_lod plus the surface building — with the material time subtracted
 	# out, because the materials are interleaved into that loop and counting
@@ -2983,7 +3131,14 @@ func mesh_for(group_key: String, lod := 0) -> Mesh:
 	# in every scope; the materials are 8.3 s against the parse's 25.6 s, they
 	# dedup across the map, and saving them would embed the same textures behind
 	# thousands of separate files.
-	_geom_save(kc, kept, am)
+	#
+	# NOT SAVED WHEN A PALETTE SPLIT CUT IT, because how it is cut depends on
+	# this scope's depot and the file is keyed on the mesh alone. Writing it
+	# would hand the next scope a mesh split for someone else's colours; the
+	# merged spelling stays on disk and the ~2% of groups that need the split
+	# read the game again each session (n_pal_rebuilt).
+	if key_canon.is_empty():
+		_geom_save(kc, kept, am)
 	_dress(am, kept, scope, var_hash)
 	# Recorded so the NEXT scope to want this mesh can decide without parsing.
 	_keys_for[kc] = kept
@@ -3065,10 +3220,14 @@ func _geom_save(kc: String, keys: Array, am: ArrayMesh) -> void:
 
 
 # The merge keys a cached mesh carries, recovered from its surface names.
+#
+# Left as STRINGS rather than parsed to ints: a name can carry the palette
+# entries the surface selects as well as the state key (see _mkey), and the two
+# halves are read by the two helpers rather than by everything downstream.
 func _keys_of(am: ArrayMesh) -> Array:
 	var out: Array = []
 	for i in range(am.get_surface_count()):
-		out.append(int(am.surface_get_name(i)))
+		out.append(am.surface_get_name(i))
 	return out
 
 
@@ -3094,7 +3253,7 @@ func _dress(am: ArrayMesh, keys: Array, scope: String, var_hash := 0) -> void:
 	_dressed.append([am, keys, scope, var_hash, _dress_name])
 	var _t := Time.get_ticks_usec()
 	for i in range(mini(keys.size(), am.get_surface_count())):
-		var mat = material_for(int(keys[i]), scope, var_hash)
+		var mat = material_for(_mkey(keys[i]), scope, var_hash, _mpal(keys[i]))
 		if mat != null:
 			am.surface_set_material(i, mat)
 	t_mat += Time.get_ticks_usec() - _t
@@ -3125,6 +3284,11 @@ func invalidate_materials(only: Array = []) -> Dictionary:
 	# material: nothing is written to them here.
 	_mat_cache.clear()
 	_mat_by_look.clear()
+	# The colour-table grouping is derived from a record the same way a material
+	# is, so a code edit invalidates it too. It decides how a mesh's surfaces are
+	# CUT, though, not just what colour they take: a mesh already in the scene
+	# keeps the surfaces it was built with until it is rebuilt.
+	_pal_canon_cache.clear()
 	_mask_cache.clear()
 	_mask_cut.clear()
 	_tex_cache.clear()
@@ -3163,7 +3327,7 @@ func invalidate_materials(only: Array = []) -> Dictionary:
 # iterating.
 func _dress_only(am: ArrayMesh, keys: Array, scope: String, var_hash: int) -> void:
 	for i in range(mini(keys.size(), am.get_surface_count())):
-		var mat = material_for(int(keys[i]), scope, var_hash)
+		var mat = material_for(_mkey(keys[i]), scope, var_hash, _mpal(keys[i]))
 		am.surface_set_material(i, mat)
 
 
@@ -3176,7 +3340,12 @@ func _sig_for(kc: String, keys: Array, scope: String, var_hash := 0) -> String:
 		return kc
 	var parts: Array = [kc, str(var_hash)]
 	for k in keys:
-		var m = material_for(int(k), scope, var_hash)
+		var m = material_for(_mkey(k), scope, var_hash, _mpal(k))
+		# THE SURFACE LAYOUT IS PART OF THE SIGNATURE, not only the materials it
+		# ends up with: a mesh built with a palette split has more surfaces than
+		# the same mesh built without one, and sharing across that would put a
+		# two-surface mesh where a three-surface one belongs.
+		parts.append(str(k))
 		parts.append("0" if m == null else str((m as Material).get_instance_id()))
 	return "#".join(PackedStringArray(parts))
 
@@ -3188,11 +3357,17 @@ func _sig_for(kc: String, keys: Array, scope: String, var_hash := 0) -> String:
 # onto 6,319 records — so building one material per SECTION would make thousands
 # of identical StandardMaterial3Ds and upload the same pixels behind each.
 # ---------------------------------------------------------------------------
-func material_for(state_key: int, scope: String, var_hash := 0):
+func material_for(state_key: int, scope: String, var_hash := 0,
+		pal := PackedInt32Array()):
 	if state_key == 0:
 		tex_stats["no_key"] = int(tex_stats["no_key"]) + 1
 		return null
-	var ck := "%s|%s|%d" % [scope, BF6Depot.key_hex(state_key), var_hash]
+	# THE PALETTE ENTRIES ARE PART OF THE IDENTITY. Two surfaces of one mesh can
+	# share a shader state and select different entries of its colour table —
+	# that is the whole point of a per-vertex selector — so caching on the state
+	# key alone would hand the second one the first one's colour.
+	var ck := "%s|%s|%d|%s" % [scope, BF6Depot.key_hex(state_key), var_hash,
+		"" if pal.is_empty() else ",".join(Array(pal).map(func(x): return str(x)))]
 	if _mat_cache.has(ck):
 		return _mat_cache[ck]
 
@@ -3298,7 +3473,7 @@ func material_for(state_key: int, scope: String, var_hash := 0):
 		tex_stats["materials"] = int(tex_stats["materials"]) + 1
 		return cm
 
-	var tint = _albedo_tint(consts)
+	var tint = _albedo_tint(consts, pal)
 	var look := _look_key(slots, tint)
 	if _mat_by_look.has(look):
 		var shared = _mat_by_look[look]
@@ -3505,7 +3680,12 @@ static func _near(c: Color, v: float) -> bool:
 
 
 # The linear tint this record applies to its albedo, or null for identity.
-func _albedo_tint(consts: Dictionary):
+#
+# `pal` is the set of 0xC2BB295A entries the SURFACE BEING DRESSED selects, read
+# per vertex off the mesh (usage 0x33) and carried in the surface name. Empty
+# means "not known", which is what every caller that has no mesh in front of it
+# passes; the table is then only usable when all eight entries agree.
+func _albedo_tint(consts: Dictionary, pal := PackedInt32Array()):
 	var out = null
 	# 1. paint, if it is doing anything. Wins outright.
 	var pm = _c3(consts.get(C_PAINT_MUL))
@@ -3519,21 +3699,29 @@ func _albedo_tint(consts: Dictionary):
 		if t != null and not _near(t as Color, 0.5) and not _near(t as Color, 0.4995):
 			out = Color((t as Color).r * 2.0, (t as Color).g * 2.0, (t as Color).b * 2.0)
 	if out == null:
-		# 3. the eight-entry colour table, ONLY when every entry agrees.
+		# 3. the eight-entry colour table, over THE ENTRIES THIS SURFACE SELECTS.
 		#
-		# Which entry a vertex uses is chosen per-vertex by vertex element usage
-		# 0x33, which mp_dumbo's meshes do declare (2,817 of 400 sampled meshes'
-		# sections carry it) but which nothing downstream reads yet. Taking entry
-		# 0 for the whole surface would be a guess on the 473 records whose eight
-		# entries disagree, so those are left untinted until the selector is
-		# wired through — a uniform table has nothing to guess about.
+		# Which entry a vertex takes is chosen per vertex by vertex element usage
+		# 0x33 (SubMaterialIndex, UByte4, lane 0 — DESTRUCTION.md 9.3), and the
+		# mesh builder folds that down to the set of entries each surface's
+		# vertices actually use. So the question here is not "do all eight agree"
+		# but "do the ones this surface uses agree", which is a much weaker thing
+		# to ask: a table with eight entries for eight different props is uniform
+		# as far as any one surface is concerned.
+		#
+		# With `pal` empty the old rule stands — all eight must agree — because a
+		# caller with no mesh in front of it has nothing to select with, and
+		# taking entry 0 for the whole surface would be a guess.
 		var tab = consts.get(C_COLOR_TABLE)
 		if tab is PackedByteArray and (tab as PackedByteArray).size() >= 124:
 			var b: PackedByteArray = tab
-			var e0 = _c3(b, 0)
+			var picks := pal
+			if picks.is_empty():
+				picks = PackedInt32Array([0, 1, 2, 3, 4, 5, 6, 7])
+			var e0 = _c3(b, 16 * clampi(int(picks[0]), 0, 7))
 			var uniform := true
-			for k in range(1, 8):
-				var ek = _c3(b, 16 * k)
+			for k in picks:
+				var ek = _c3(b, 16 * clampi(int(k), 0, 7))
 				if ek == null or not (ek as Color).is_equal_approx(e0 as Color):
 					uniform = false
 					break
@@ -3555,6 +3743,171 @@ func _albedo_tint(consts: Dictionary):
 static func _srgb_of(c: Color) -> Color:
 	return Color(clampf(c.r, 0.0, 4.0), clampf(c.g, 0.0, 4.0),
 		clampf(c.b, 0.0, 4.0)).linear_to_srgb()
+
+
+# ---------------------------------------------------------------------------
+# WHICH COLOUR TABLE ENTRIES ARE THE SAME COLOUR: entry k -> the lowest entry
+# that holds k's colour, or null when this table cannot split anything.
+#
+# Null on three counts, and each of them saves a surface that would otherwise be
+# cut in half for no visible difference:
+#
+#   the record has no table at all;
+#   every entry is neutral, so the table selects between eight identities;
+#   every entry is the SAME colour, which _albedo_tint already applies whole.
+#
+# Grouping by colour rather than by index is what keeps the split honest about
+# cost: br_ind_storagewallsmall's sections use three entries that all hold
+# (1.68, 1.58, 1.47), and splitting those into three surfaces would triple a
+# draw call to draw one colour.
+func _table_canon(raw):
+	if not (raw is PackedByteArray) or (raw as PackedByteArray).size() < 124:
+		return null
+	var b: PackedByteArray = raw
+	var cols: Array = []
+	var any := false
+	for k in range(8):
+		var c = _c3(b, 16 * k)
+		if c == null:
+			return null
+		if not _near(c as Color, 0.5) and not _near(c as Color, 0.4995):
+			any = true
+		cols.append(c)
+	if not any:
+		return null
+	var canon := PackedByteArray()
+	canon.resize(8)
+	var groups := 0
+	for k in range(8):
+		canon[k] = k
+		for j in range(k):
+			if (cols[j] as Color).is_equal_approx(cols[k] as Color):
+				canon[k] = canon[j]
+				break
+		if int(canon[k]) == k:
+			groups += 1
+	if groups < 2:
+		return null
+	return canon
+
+
+# The same, for one shader state under one scope: null unless the colour table
+# is what decides this record's colour AND its entries disagree.
+#
+# Everything with a higher claim on the albedo is checked first, because the
+# table is the LAST rule in _albedo_tint and a record that has a paint or a
+# per-family tint never reaches it — splitting its surface would cost a draw
+# call to select between colours nothing reads. Measured on mp_dumbo: 506 of the
+# 898 sections whose table disagrees are in exactly that position.
+var _pal_canon_cache := {}
+
+
+func _pal_canon(state_key: int, scope: String, var_hash: int):
+	var ck := "%s|%s|%d" % [scope, BF6Depot.key_hex(state_key), var_hash]
+	if _pal_canon_cache.has(ck):
+		return _pal_canon_cache[ck]
+	var out = null
+	var pair = _depot_for(scope)
+	if pair != null:
+		var dep: BF6Depot = pair[0]
+		var used := state_key
+		if var_hash != 0 and dep.key_to_record.has(state_key + var_hash):
+			used = state_key + var_hash
+		if dep.key_to_record.has(used):
+			var slots: Dictionary = dep.textures_for(used, pair[1])
+			var consts: Dictionary = slots.get("constants", {})
+			slots.erase("constants")
+			if _glass_tint(slots, consts) == null \
+					and _carpaint_of(slots, consts) == null \
+					and _albedo_tint(consts) == null:
+				out = _table_canon(consts.get(C_COLOR_TABLE))
+	_pal_canon_cache[ck] = out
+	return out
+
+
+# Would this surface list have to be cut up to be coloured correctly?
+#
+# Asked of a mesh that came back from the geometry cache, whose surfaces were
+# merged without knowing what any depot holds. A surface whose vertices select
+# two entries that are two different colours cannot be dressed in one material,
+# and there is no way to recover the split from a merged surface — so the answer
+# being yes means this mesh has to be read from the game again.
+func _needs_split(keys: Array, scope: String, var_hash: int) -> bool:
+	for v in keys:
+		var pal := _mpal(v)
+		if pal.size() < 2:
+			continue
+		var canon = _pal_canon(_mkey(v), scope, var_hash)
+		if canon == null:
+			continue
+		var seen := {}
+		for e in pal:
+			seen[int((canon as PackedByteArray)[clampi(int(e), 0, 7)])] = true
+			if seen.size() > 1:
+				return true
+	return false
+
+
+# ---------------------------------------------------------------------------
+# THE MERGE KEY, which is a shader state key and now sometimes more than that.
+#
+# Written into the surface name and read back out of it, so it survives the
+# geometry cache without a second file beside every mesh. Two spellings:
+#
+#   "<state key>"            nothing selected, or no selector on this section
+#   "<state key>@2,5"        the surface's vertices select colour-table entries
+#                            2 and 5 (sorted, no duplicates)
+#
+# The entry list is a GEOMETRY FACT — it is read off the vertex buffer and says
+# nothing about any depot — which is what lets one cached mesh serve every scope
+# that places it, exactly as before.
+static func _mkey(v) -> int:
+	var s := str(v)
+	var at := s.find("@")
+	return int(s.substr(0, at)) if at >= 0 else int(s)
+
+
+# The name a finished surface carries: its shader state key, plus the palette
+# entries its vertices selected when every section behind it could be read.
+#
+# `bid` is the bucket the merge loop used — "<key>" or "<key>@<canonical entry>"
+# — and the name it produces lists the RAW entries that bucket drew, which is
+# what material_for needs: two entries of one colour are one bucket but both
+# have to be named, or the record would be asked about an entry the surface does
+# not use.
+func _surface_name(bid: String, key_sel: Dictionary, key_canon: Dictionary) -> String:
+	var at := bid.find("@")
+	var key := int(bid.substr(0, at)) if at >= 0 else int(bid)
+	var sel = key_sel.get(key)
+	if not (sel is Dictionary) or (sel as Dictionary).is_empty():
+		return str(key)
+	var want: Array = []
+	if at < 0:
+		want = (sel as Dictionary).keys()
+	else:
+		var piece := int(bid.substr(at + 1))
+		var canon: PackedByteArray = key_canon[key]
+		for e in (sel as Dictionary).keys():
+			if int(canon[int(e)]) == piece:
+				want.append(int(e))
+	if want.is_empty():
+		return str(key)
+	want.sort()
+	var parts := PackedStringArray()
+	for e in want:
+		parts.append(str(int(e)))
+	return "%d@%s" % [key, ",".join(parts)]
+
+
+static func _mpal(v) -> PackedInt32Array:
+	var out := PackedInt32Array()
+	var s := str(v)
+	var at := s.find("@")
+	if at < 0:
+		return out
+	for t in s.substr(at + 1).split(",", false):
+		out.append(int(t))
+	return out
 
 
 # ---------------------------------------------------------------------------
