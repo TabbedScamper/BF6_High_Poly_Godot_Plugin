@@ -242,18 +242,30 @@ const SHEET_CACHE := "user://fxsheets"
 # there in the header, so a smaller sheet is a smaller mip of the game's own
 # texture rather than a resample of the largest one.
 const SHEET_MAX := 1024
+# BUMP THIS WHENEVER THE FOLD OR THE MIP BUDGET CHANGES. The decoded sheets are
+# cached to disk, so a corrected fold is invisible until the old PNGs stop being
+# read - which is how the first version of this shipped looking identical to the
+# broken one. The epoch is in the FILENAME so a stale file cannot be mistaken
+# for a current one, and anything from another epoch is swept.
+const FOLD_EPOCH := 2
 
 
 # Six directional lighting terms folded down to one flat card.
 #
 # A LeftRightTiles sheet is a six-way lightmap: the same frames twice, and the
-# halves are the two signs, so `L.rgb` is three directions and `R.rgb` is their
-# three opposites (findings/atlastexture-grid-and-sixway-packing). Opposing
-# terms sum to the total light arriving at that texel, so averaging the halves
-# gives the directionally averaged lighting - which is exactly what a billboard
-# with no six-way shader should show. Alpha comes from the LEFT half only: that
-# is the density, proved by a sheet whose right alpha is entirely empty while
-# the effect plainly renders.
+# two halves carry six directional lighting terms across their RGB
+# (findings/atlastexture-grid-and-sixway-packing). Alpha comes from the LEFT
+# half only: that is the density, proved by a sheet whose right alpha is
+# entirely empty while the effect plainly renders.
+#
+# THE LIGHTING FOLDS TO ONE SCALAR, not to three. A billboard with no six-way
+# shader should show the light averaged over all directions, and that is the
+# mean of all SIX terms - a single number, written to r, g and b alike. The
+# first attempt averaged the halves per channel, (L.r+R.r)/2 and so on, which
+# leaves three different values and therefore a colour: measured saturation
+# 0.21 against 0.000 for the six-term mean, and it looked exactly as pastel as
+# the raw sheet did. It also has the advantage of not depending on WHICH pairs
+# are opposite, since the mean of six is the same however they pair up.
 #
 # Done over the raw byte buffer rather than get_pixel/set_pixel, which is the
 # difference between milliseconds and a visible stall, and the result is cached
@@ -275,18 +287,37 @@ static func _fold_sixway(img: Image) -> Image:
 			var li := row + x * 4
 			var ri := row + (half + x) * 4
 			var oi := orow + x * 4
-			out[oi] = (s[li] + s[ri]) >> 1
-			out[oi + 1] = (s[li + 1] + s[ri + 1]) >> 1
-			out[oi + 2] = (s[li + 2] + s[ri + 2]) >> 1
+			@warning_ignore("integer_division")
+			var v := (s[li] + s[li + 1] + s[li + 2]
+				+ s[ri] + s[ri + 1] + s[ri + 2]) / 6
+			out[oi] = v
+			out[oi + 1] = v
+			out[oi + 2] = v
 			out[oi + 3] = s[li + 3]
 	return Image.create_from_data(half, h, false, Image.FORMAT_RGBA8, out)
+
+
+static var _swept := false
+
+# Drop sheets decoded by an older fold, once per session.
+static func _sweep_stale_cache() -> void:
+	if _swept:
+		return
+	_swept = true
+	var d := DirAccess.open(SHEET_CACHE)
+	if d == null:
+		return
+	var keep := ".e%d.png" % FOLD_EPOCH
+	for f in d.get_files():
+		if f.ends_with(".png") and not f.ends_with(keep):
+			d.remove(f)
 
 
 static func _decode_sheet(gs, sheet: String) -> Texture2D:
 	var stem := BF6Atlas.norm_stem(sheet)
 	if stem == "":
 		return null
-	var png := "%s/%s.png" % [SHEET_CACHE, stem]
+	var png := "%s/%s.e%d.png" % [SHEET_CACHE, stem, FOLD_EPOCH]
 	if FileAccess.file_exists(png):
 		var ci := Image.new()
 		if ci.load_png_from_buffer(FileAccess.get_file_as_bytes(png)) == OK:
@@ -329,6 +360,7 @@ static func _decode_sheet(gs, sheet: String) -> Texture2D:
 # one then reuses, so a sheet that became available a moment later never
 # appears. Returns how many resolved.
 static func _prime_sheets(gs) -> int:
+	_sweep_stale_cache()
 	var seen := {}
 	var added := false
 	for k in _params.keys():
