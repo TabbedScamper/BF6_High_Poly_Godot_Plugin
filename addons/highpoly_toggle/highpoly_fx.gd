@@ -311,6 +311,12 @@ static var _sizes: Dictionary = {}      # lowercase graph name -> {size, field, 
 # draw a 158-vertex wood shard. This is the mesh most often substituted per
 # graph, util placeholders and anything over 4k triangles excluded.
 const SPAWN_PATH := "res://addons/highpoly_toggle/fx_spawn.json"
+# Per-layer speed and lifetime, the same template-versus-layer story again.
+# Lifetime genuinely varies: eg_gs_basicsmoke_01 alone authors 83 distinct
+# values. Values at or above 1000 s are "never expires" sentinels and were
+# excluded upstream rather than being fed to a preview as a real lifetime.
+const MOTION_PATH := "res://addons/highpoly_toggle/fx_motion.json"
+static var _motion: Dictionary = {}
 static var _spawn: Dictionary = {}      # lowercase graph name -> {rate, max_count, spawn_spread}
 const MESHES_PATH := "res://addons/highpoly_toggle/fx_meshes.json"
 static var _meshtbl: Dictionary = {}    # lowercase graph name -> {mesh, verts, tris}
@@ -466,6 +472,10 @@ static func _load_sheet_table() -> void:
 		var sp: Variant = JSON.parse_string(FileAccess.get_file_as_string(SPAWN_PATH))
 		if sp is Dictionary:
 			_spawn = sp
+	if FileAccess.file_exists(MOTION_PATH):
+		var mo: Variant = JSON.parse_string(FileAccess.get_file_as_string(MOTION_PATH))
+		if mo is Dictionary:
+			_motion = mo
 	if FileAccess.file_exists(MESHES_PATH):
 		var mt: Variant = JSON.parse_string(FileAccess.get_file_as_string(MESHES_PATH))
 		if mt is Dictionary:
@@ -662,6 +672,10 @@ static func _emitter(cls: String, effect: String, gp: Variant, sheet_res := "") 
 				g.one_shot = true
 				g.explosiveness = 1.0
 				amount = clampi(int(s.get("initial_count", cap)), 1, maxi(cap, 1))
+	# the layer's lifetime, not the template's
+	var mo2: Variant = _motion.get(effect.to_lower())
+	if mo2 is Dictionary and (mo2 as Dictionary).get("lifetime") != null:
+		life = float((mo2 as Dictionary)["lifetime"])
 	g.lifetime = clampf(life, 0.05, MAX_LIFETIME)
 	g.amount = clampi(amount, 1, 256)
 
@@ -787,6 +801,20 @@ static func _build_mats(cls: String, gp: Variant, sheet_res := "") -> Array:
 		var f := str((sz as Dictionary).get("field", ""))
 		if f == "BaseSize" or f == "QuadSize":
 			size = float((sz as Dictionary).get("size", size))
+
+	# AUTHORED SPEED. spawn_speed in fx_params is the template's, so every
+	# emitter of a graph moved identically. Note what this is NOT: the Vec3 form
+	# of SpawnSpeed is a per-axis scatter box on debris shards (x = z on every
+	# one of the 12 graphs that use it), not an aimed direction, so it is not
+	# read as one. And a smoke column does not rise from initial velocity at all
+	# - that is Buoyancy, a force applied over life - so driving rise from speed
+	# here would be wrong in a way that looks almost right.
+	var mo: Variant = _motion.get(gkey)
+	if mo is Dictionary and (mo as Dictionary).get("speed_min") != null:
+		var lo := float((mo as Dictionary)["speed_min"])
+		var hi := float((mo as Dictionary).get("speed_max", lo))
+		pm.initial_velocity_min = minf(lo, hi)
+		pm.initial_velocity_max = maxf(lo, hi)
 
 	pm.color = _colour_of(gp, fb)
 

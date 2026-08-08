@@ -71,6 +71,7 @@ static func build(gs, faction: String) -> Node3D:
 		var m = gs.mesh_for(res)
 		if m == null:
 			continue
+		_dress(gs, m, cha)
 		var mi := MeshInstance3D.new()
 		mi.mesh = m
 		mi.name = rel.get_file()
@@ -93,6 +94,7 @@ static func build(gs, faction: String) -> Node3D:
 	var fb := base + "face/_base/%s_face_base_standard_mesh" % cha
 	var fm = gs.mesh_for(fb)
 	if fm != null:
+		_dress(gs, fm, cha)
 		var fi := MeshInstance3D.new()
 		fi.mesh = fm
 		fi.name = "face_base"
@@ -113,6 +115,39 @@ static func build(gs, faction: String) -> Node3D:
 	return root
 
 
+# THE CHARACTER'S OWN DEPOT, which mesh_for cannot reach on its own.
+#
+# material_for(state_key, scope) resolves a surface through the ShaderBlockDepot
+# of the bundle named by `scope`, and mesh_for passes "" for anything that is
+# not a known group - which is every character mesh, so _depot_for("") returned
+# null and the soldier arrived as bare geometry. The scope we need is the
+# character's own 3p bundle, and the state key is already sitting in the surface
+# NAME that mesh_for leaves behind ("<stateKey>@<variationHash>").
+#
+# So nothing had to be re-read: the join was one argument away the whole time.
+static func _dress(gs, m, cha: String) -> void:
+	var am := m as ArrayMesh
+	if am == null or not gs.has_method("material_for"):
+		return
+	for scope in ["cd_%s_bundle_3p" % cha, "cd_%s_bundle_3p_highdef" % cha]:
+		var missing := 0
+		for i in range(am.get_surface_count()):
+			if am.surface_get_material(i) != null:
+				continue
+			var nm := am.surface_get_name(i)
+			if nm == "":
+				continue
+			var bits := nm.split("@")
+			var mat = gs.material_for(int(bits[0]), scope,
+				int(bits[1]) if bits.size() > 1 else 0)
+			if mat != null:
+				am.surface_set_material(i, mat)
+			else:
+				missing += 1
+		if missing == 0:
+			return
+
+
 static func _patch_material(gs, faction: String) -> StandardMaterial3D:
 	var t = _texture(gs, str(PATCH[faction]))
 	if t == null:
@@ -126,8 +161,12 @@ static func _patch_material(gs, faction: String) -> StandardMaterial3D:
 
 static func _face_material(gs, cha: String) -> StandardMaterial3D:
 	# the depot gives head_mat nothing, so the face sheet is named directly
-	for cand in ["common/characters/mp/main/%s/face/face_001/t_%s_face_001_cs" % [cha, cha],
-				 "common/characters/mp/main/%s/face/_base/textures/t_%s_face_cs" % [cha, cha]]:
+	# the real layout has a /textures/ segment, which my first guess omitted;
+	# both spellings exist in the res table depending on the character
+	for cand in [
+			"common/characters/mp/main/%s/face/face_001/textures/t_%s_face_001_cs" % [cha, cha],
+			"common/characters/mp/main/%s/face/_base/textures/t_%s_face_cs" % [cha, cha],
+			"common/characters/mp/main/%s/face/_base/textures/t_%s_face_001_cs" % [cha, cha]]:
 		var t = _texture(gs, cand)
 		if t != null:
 			var m := StandardMaterial3D.new()

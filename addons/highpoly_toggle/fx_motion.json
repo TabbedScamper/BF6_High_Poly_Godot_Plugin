@@ -1,0 +1,2786 @@
+{
+ "eg_airburst_predictedpath_line": {
+  "speed_min": null,
+  "speed_max": null,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 5.0,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "none",
+   "direction": "none",
+   "lifetime": "template"
+  },
+  "n": 1,
+  "speed_n": 0,
+  "lifetime_n": 0,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_airburstimpactpoint_circle": {
+  "speed_min": null,
+  "speed_max": null,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 5.0,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "none",
+   "direction": "none",
+   "lifetime": "template"
+  },
+  "n": 1,
+  "speed_n": 0,
+  "lifetime_n": 0,
+  "speed_axis": null,
+  "direction_box": null,
+  "lifetime_never_expires_n": 1
+ },
+ "eg_airburstimpactpoint_decal": {
+  "speed_min": null,
+  "speed_max": null,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 5.0,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "none",
+   "direction": "none",
+   "lifetime": "template"
+  },
+  "n": 2,
+  "speed_n": 0,
+  "lifetime_n": 0,
+  "speed_axis": null,
+  "direction_box": null,
+  "lifetime_never_expires_n": 2
+ },
+ "eg_airburstimpactpoint_groundconnectline": {
+  "speed_min": 0.0,
+  "speed_max": 0.0,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 5.0,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "override_zero",
+   "direction": "none",
+   "lifetime": "template"
+  },
+  "n": 4,
+  "speed_n": 0,
+  "lifetime_n": 0,
+  "speed_axis": null,
+  "direction_box": null,
+  "lifetime_never_expires_n": 4
+ },
+ "eg_ambwar_artillarystrike_spawn": {
+  "speed_min": null,
+  "speed_max": null,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 1.0,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "none",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 1,
+  "speed_n": 0,
+  "lifetime_n": 1,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_ambwar_uav_circling": {
+  "speed_min": null,
+  "speed_max": null,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 5.0,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "none",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 1,
+  "speed_n": 0,
+  "lifetime_n": 1,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_bird_flocking_es": {
+  "speed_min": null,
+  "speed_max": null,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 99999.0,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "none",
+   "direction": "none",
+   "lifetime": "template"
+  },
+  "n": 2,
+  "speed_n": 0,
+  "lifetime_n": 0,
+  "speed_axis": null,
+  "direction_box": null,
+  "lifetime_never_expires_n": 2
+ },
+ "eg_butterfly_es": {
+  "speed_min": null,
+  "speed_max": null,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 6.0,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "none",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 1,
+  "speed_n": 0,
+  "lifetime_n": 1,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_concussion_grenade_screeneffect_occlusioncheck": {
+  "speed_min": null,
+  "speed_max": null,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 0.05,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "none",
+   "direction": "none",
+   "lifetime": "template"
+  },
+  "n": 2,
+  "speed_n": 0,
+  "lifetime_n": 0,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_debris_cont_es_terrain_vortex_1": {
+  "speed_min": 1.0,
+  "speed_max": 1.0,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 3.0,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "SpeedMult",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 3,
+  "speed_n": 0,
+  "lifetime_n": 3,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_debrisclusteroid_many_es_24p": {
+  "speed_min": 10.0,
+  "speed_max": 10.0,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 5.0,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "override",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 3,
+  "speed_n": 3,
+  "lifetime_n": 3,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_debrisclusteroid_many_es_6p": {
+  "speed_min": 15.0,
+  "speed_max": 15.0,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 5.0,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "override",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 4,
+  "speed_n": 4,
+  "lifetime_n": 4,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_debrisclusteroid_many_es_7p": {
+  "speed_min": 30.0,
+  "speed_max": 30.0,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 5.0,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "override",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 1,
+  "speed_n": 1,
+  "lifetime_n": 1,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_debrisclusteroid_many_es_8p": {
+  "speed_min": 5.0,
+  "speed_max": 5.0,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 5.0,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "override",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 31,
+  "speed_n": 31,
+  "lifetime_n": 31,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_debrisclusteroid_shells_continuous_es": {
+  "speed_min": 1.0,
+  "speed_max": 1.0,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 10.0,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "override",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 2,
+  "speed_n": 2,
+  "lifetime_n": 2,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_debrisclusteroid_simplecollisionobject_es": {
+  "speed_min": 10.0,
+  "speed_max": 10.0,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 20.0,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "template",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 25,
+  "speed_n": 0,
+  "lifetime_n": 1,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_decal_lit_firehydrant_es": {
+  "speed_min": null,
+  "speed_max": null,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 3.0,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "none",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 1,
+  "speed_n": 0,
+  "lifetime_n": 1,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_decal_mortar_target_area": {
+  "speed_min": null,
+  "speed_max": null,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 5.0,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "none",
+   "direction": "none",
+   "lifetime": "template"
+  },
+  "n": 1,
+  "speed_n": 0,
+  "lifetime_n": 0,
+  "speed_axis": null,
+  "direction_box": null,
+  "lifetime_never_expires_n": 1
+ },
+ "eg_decal_unlit_waterexplosion_ripple": {
+  "speed_min": null,
+  "speed_max": null,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 4.0,
+  "lifetime_varies": true,
+  "src": {
+   "speed": "none",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 10,
+  "speed_n": 0,
+  "lifetime_n": 10,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_decal_unlit_waterexplosion_ripple_wave": {
+  "speed_min": null,
+  "speed_max": null,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 1.0,
+  "lifetime_varies": true,
+  "src": {
+   "speed": "none",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 10,
+  "speed_n": 0,
+  "lifetime_n": 10,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_deployablemortar_firevortexring": {
+  "speed_min": null,
+  "speed_max": null,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 0.03,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "none",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 2,
+  "speed_n": 0,
+  "lifetime_n": 2,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_dummyemitter": {
+  "speed_min": null,
+  "speed_max": null,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 10.0,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "none",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 3,
+  "speed_n": 0,
+  "lifetime_n": 3,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_dummyemitter_deletemetracker": {
+  "speed_min": null,
+  "speed_max": null,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 5.0,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "none",
+   "direction": "none",
+   "lifetime": "template"
+  },
+  "n": 12,
+  "speed_n": 0,
+  "lifetime_n": 0,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_electicity_es": {
+  "speed_min": null,
+  "speed_max": null,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 0.15,
+  "lifetime_varies": true,
+  "src": {
+   "speed": "none",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 11,
+  "speed_n": 0,
+  "lifetime_n": 11,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_explosion_dust_kickup_decal": {
+  "speed_min": null,
+  "speed_max": null,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 0.17,
+  "lifetime_varies": true,
+  "src": {
+   "speed": "none",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 19,
+  "speed_n": 0,
+  "lifetime_n": 19,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_explosion_shrapnel_hits": {
+  "speed_min": 0.0,
+  "speed_max": 0.0,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 2.5,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "override_zero",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 34,
+  "speed_n": 0,
+  "lifetime_n": 34,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_explosion_shrapnel_hits_supersphere": {
+  "speed_min": 0.0,
+  "speed_max": 0.0,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 2.5,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "override_zero",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 2,
+  "speed_n": 0,
+  "lifetime_n": 2,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_firedistortion_es": {
+  "speed_min": 1.0,
+  "speed_max": 1.0,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 0.8,
+  "lifetime_varies": true,
+  "src": {
+   "speed": "override",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 79,
+  "speed_n": 49,
+  "lifetime_n": 79,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_firedistortion_moving_es": {
+  "speed_min": 1.0,
+  "speed_max": 1.0,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 0.5,
+  "lifetime_varies": true,
+  "src": {
+   "speed": "override",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 6,
+  "speed_n": 6,
+  "lifetime_n": 6,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_flashbang_burnin": {
+  "speed_min": null,
+  "speed_max": null,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 4.5,
+  "lifetime_varies": true,
+  "src": {
+   "speed": "none",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 6,
+  "speed_n": 0,
+  "lifetime_n": 6,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_flashbang_burnin_occlusioncheck": {
+  "speed_min": null,
+  "speed_max": null,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 0.05,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "none",
+   "direction": "none",
+   "lifetime": "template"
+  },
+  "n": 2,
+  "speed_n": 0,
+  "lifetime_n": 0,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_flashbang_concussion_screeneffect": {
+  "speed_min": null,
+  "speed_max": null,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 3.5,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "none",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 1,
+  "speed_n": 0,
+  "lifetime_n": 1,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_fly_se": {
+  "speed_min": null,
+  "speed_max": null,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 5.0,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "none",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 1,
+  "speed_n": 0,
+  "lifetime_n": 1,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_gadget_adrenalineshot_screeneffect": {
+  "speed_min": null,
+  "speed_max": null,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 30.0,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "none",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 1,
+  "speed_n": 0,
+  "lifetime_n": 1,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_gadget_breachingdart_projectile_stuck": {
+  "speed_min": null,
+  "speed_max": null,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 4.0,
+  "lifetime_varies": true,
+  "src": {
+   "speed": "none",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 2,
+  "speed_n": 0,
+  "lifetime_n": 2,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_gadget_claymore_laser_tripwire": {
+  "speed_min": null,
+  "speed_max": null,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 5.0,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "none",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 2,
+  "speed_n": 0,
+  "lifetime_n": 2,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_gadget_drone_screeneffect_outofrange_distortion": {
+  "speed_min": null,
+  "speed_max": null,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 5.0,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "none",
+   "direction": "none",
+   "lifetime": "template"
+  },
+  "n": 1,
+  "speed_n": 0,
+  "lifetime_n": 0,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_gadget_screeneffect_remoteturret_healthdamage": {
+  "speed_min": null,
+  "speed_max": null,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 5.0,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "none",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 1,
+  "speed_n": 0,
+  "lifetime_n": 1,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_grid_sparks": {
+  "speed_min": null,
+  "speed_max": null,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 0.1,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "none",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 1,
+  "speed_n": 0,
+  "lifetime_n": 1,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_gs_basicchunks_01": {
+  "speed_min": 10.0,
+  "speed_max": 10.0,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 1.5,
+  "lifetime_varies": true,
+  "src": {
+   "speed": "override",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 161,
+  "speed_n": 156,
+  "lifetime_n": 161,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_gs_basicchunks_fountain": {
+  "speed_min": 2.0,
+  "speed_max": 2.0,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 2.1,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "override",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 2,
+  "speed_n": 2,
+  "lifetime_n": 2,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_gs_basicchunks_impact_sub": {
+  "speed_min": 1.0,
+  "speed_max": 1.0,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 5.0,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "template",
+   "direction": "none",
+   "lifetime": "template"
+  },
+  "n": 1,
+  "speed_n": 0,
+  "lifetime_n": 0,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_gs_basicelectric_01": {
+  "speed_min": 0.0,
+  "speed_max": 0.0,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 0.08584,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "override_zero",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 2,
+  "speed_n": 0,
+  "lifetime_n": 2,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_gs_basicfire_01": {
+  "speed_min": 2.0,
+  "speed_max": 2.0,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 0.25,
+  "lifetime_varies": true,
+  "src": {
+   "speed": "override",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 203,
+  "speed_n": 118,
+  "lifetime_n": 203,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_gs_basicfire_emitterposition_01": {
+  "speed_min": 1.0,
+  "speed_max": 1.0,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 0.15,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "override",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 2,
+  "speed_n": 2,
+  "lifetime_n": 2,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_gs_basicfire_facing_01": {
+  "speed_min": 0.1,
+  "speed_max": 0.1,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 0.06,
+  "lifetime_varies": true,
+  "src": {
+   "speed": "override",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 28,
+  "speed_n": 27,
+  "lifetime_n": 16,
+  "speed_axis": null,
+  "direction_box": null,
+  "lifetime_never_expires_n": 12
+ },
+ "eg_gs_basicfire_mimicchild_01": {
+  "speed_min": 2.0,
+  "speed_max": 2.0,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 1.0,
+  "lifetime_varies": true,
+  "src": {
+   "speed": "override",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 34,
+  "speed_n": 4,
+  "lifetime_n": 34,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_gs_basicfire_mimicpsearch_02": {
+  "speed_min": null,
+  "speed_max": null,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 0.8,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "none",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 1,
+  "speed_n": 0,
+  "lifetime_n": 1,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_gs_basicfire_moving_01": {
+  "speed_min": 1.5,
+  "speed_max": 1.5,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 0.3,
+  "lifetime_varies": true,
+  "src": {
+   "speed": "override",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 9,
+  "speed_n": 9,
+  "lifetime_n": 9,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_gs_basicfire_secuirtylight_minscreen": {
+  "speed_min": 0.0,
+  "speed_max": 0.0,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 5.0,
+  "lifetime_varies": true,
+  "src": {
+   "speed": "override_zero",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 2,
+  "speed_n": 0,
+  "lifetime_n": 2,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_gs_basicfire_terrainsnap_01": {
+  "speed_min": 1.0,
+  "speed_max": 1.0,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 2.75,
+  "lifetime_varies": true,
+  "src": {
+   "speed": "override",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 6,
+  "speed_n": 4,
+  "lifetime_n": 6,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_gs_basicfire_terrainsnap_01_snapeveryframe": {
+  "speed_min": 0.0,
+  "speed_max": 0.0,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 5.0,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "override_zero",
+   "direction": "none",
+   "lifetime": "template"
+  },
+  "n": 1,
+  "speed_n": 0,
+  "lifetime_n": 0,
+  "speed_axis": null,
+  "direction_box": null,
+  "lifetime_never_expires_n": 1
+ },
+ "eg_gs_basicribbon_01": {
+  "speed_min": 1.0,
+  "speed_max": 1.0,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 1.0,
+  "lifetime_varies": true,
+  "src": {
+   "speed": "override",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 30,
+  "speed_n": 9,
+  "lifetime_n": 30,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_gs_basicribbon_moving_01": {
+  "speed_min": 0.25,
+  "speed_max": 0.25,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 1.5,
+  "lifetime_varies": true,
+  "src": {
+   "speed": "override",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 8,
+  "speed_n": 8,
+  "lifetime_n": 8,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_gs_basicsmoke_01": {
+  "speed_min": 5.0,
+  "speed_max": 5.0,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 3.0,
+  "lifetime_varies": true,
+  "src": {
+   "speed": "override",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 518,
+  "speed_n": 449,
+  "lifetime_n": 502,
+  "speed_axis": null,
+  "direction_box": null,
+  "lifetime_never_expires_n": 6
+ },
+ "eg_gs_basicsmoke_camheightfade": {
+  "speed_min": 0.05,
+  "speed_max": 0.05,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 10.0,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "override",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 1,
+  "speed_n": 1,
+  "lifetime_n": 1,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_gs_basicsmoke_mimicparent_01": {
+  "speed_min": 6.0,
+  "speed_max": 6.0,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 4.0,
+  "lifetime_varies": true,
+  "src": {
+   "speed": "override",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 42,
+  "speed_n": 38,
+  "lifetime_n": 37,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_gs_basicsmoke_moving_01": {
+  "speed_min": 1.0,
+  "speed_max": 1.0,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 1.0,
+  "lifetime_varies": true,
+  "src": {
+   "speed": "override",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 14,
+  "speed_n": 12,
+  "lifetime_n": 14,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_gs_basicsmoke_moving_turbulence_01": {
+  "speed_min": 6.0,
+  "speed_max": 6.0,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 1.25,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "override",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 2,
+  "speed_n": 2,
+  "lifetime_n": 2,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_gs_basicsmoke_portal": {
+  "speed_min": 5.0,
+  "speed_max": 5.0,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 1.0,
+  "lifetime_varies": true,
+  "src": {
+   "speed": "override",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 4,
+  "speed_n": 4,
+  "lifetime_n": 4,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_gs_basicsmoke_preroll_01": {
+  "speed_min": 1.0,
+  "speed_max": 1.0,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 5.75,
+  "lifetime_varies": true,
+  "src": {
+   "speed": "override",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 7,
+  "speed_n": 4,
+  "lifetime_n": 7,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_gs_basicsmoke_terrainsnap_03": {
+  "speed_min": 0.2,
+  "speed_max": 0.2,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 1.5,
+  "lifetime_varies": true,
+  "src": {
+   "speed": "override",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 11,
+  "speed_n": 5,
+  "lifetime_n": 11,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_gs_basicsmoke_terrainsnap_endeffect": {
+  "speed_min": 1.0,
+  "speed_max": 1.0,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 1.0,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "template",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 1,
+  "speed_n": 0,
+  "lifetime_n": 1,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_gs_basicsmoke_turbulence_moving_02": {
+  "speed_min": 40.0,
+  "speed_max": 40.0,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 2.0,
+  "lifetime_varies": true,
+  "src": {
+   "speed": "override",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 5,
+  "speed_n": 5,
+  "lifetime_n": 5,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_gs_basicsmoke_vehicle_exhaust_01": {
+  "speed_min": 320.0,
+  "speed_max": 320.0,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 3.0,
+  "lifetime_varies": true,
+  "src": {
+   "speed": "override",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 25,
+  "speed_n": 25,
+  "lifetime_n": 25,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_gs_basicsmokearm_01": {
+  "speed_min": 3.0,
+  "speed_max": 3.0,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 1.0,
+  "lifetime_varies": true,
+  "src": {
+   "speed": "override",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 52,
+  "speed_n": 48,
+  "lifetime_n": 52,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_gs_cohesivesmoke_preroll_5pt_01": {
+  "speed_min": 0.5,
+  "speed_max": 0.5,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 42.0,
+  "lifetime_varies": true,
+  "src": {
+   "speed": "override",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 2,
+  "speed_n": 1,
+  "lifetime_n": 2,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_gs_firelinesegments_01": {
+  "speed_min": 0.1,
+  "speed_max": 0.1,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 2.74,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "override",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 1,
+  "speed_n": 1,
+  "lifetime_n": 1,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_gs_gadget_muzzleflash_fire_01": {
+  "speed_min": 0.001,
+  "speed_max": 0.001,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 0.2,
+  "lifetime_varies": true,
+  "src": {
+   "speed": "override",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 4,
+  "speed_n": 4,
+  "lifetime_n": 4,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_gs_multiribbondist_01": {
+  "speed_min": null,
+  "speed_max": null,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 1.5,
+  "lifetime_varies": true,
+  "src": {
+   "speed": "none",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 22,
+  "speed_n": 0,
+  "lifetime_n": 22,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_gs_muzzleflash_fire_01": {
+  "speed_min": 1.0,
+  "speed_max": 1.0,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 0.075,
+  "lifetime_varies": true,
+  "src": {
+   "speed": "override",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 51,
+  "speed_n": 46,
+  "lifetime_n": 47,
+  "speed_axis": null,
+  "direction_box": null,
+  "lifetime_never_expires_n": 4
+ },
+ "eg_gs_muzzleflash_smoke_01": {
+  "speed_min": 1.0,
+  "speed_max": 1.0,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 0.06,
+  "lifetime_varies": true,
+  "src": {
+   "speed": "override",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 28,
+  "speed_n": 28,
+  "lifetime_n": 16,
+  "speed_axis": null,
+  "direction_box": null,
+  "lifetime_never_expires_n": 12
+ },
+ "eg_gs_screensplats_static_02": {
+  "speed_min": 0.0001,
+  "speed_max": 0.0001,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 6.5,
+  "lifetime_varies": true,
+  "src": {
+   "speed": "override",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 10,
+  "speed_n": 3,
+  "lifetime_n": 10,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_gs_staticemissive_01": {
+  "speed_min": 0.0,
+  "speed_max": 0.0,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 0.3,
+  "lifetime_varies": true,
+  "src": {
+   "speed": "override_zero",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 20,
+  "speed_n": 0,
+  "lifetime_n": 16,
+  "speed_axis": null,
+  "direction_box": null,
+  "lifetime_never_expires_n": 4
+ },
+ "eg_gs_staticemissive_gadgetlight_01": {
+  "speed_min": 0.0,
+  "speed_max": 0.0,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 3.0,
+  "lifetime_varies": true,
+  "src": {
+   "speed": "override_zero",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 22,
+  "speed_n": 0,
+  "lifetime_n": 13,
+  "speed_axis": null,
+  "direction_box": null,
+  "lifetime_never_expires_n": 9
+ },
+ "eg_gs_staticemissive_gadgetlight_tugs_01": {
+  "speed_min": 0.0,
+  "speed_max": 0.0,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 3.0,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "override_zero",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 2,
+  "speed_n": 0,
+  "lifetime_n": 2,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_gs_staticemissive_looping_01": {
+  "speed_min": 0.0,
+  "speed_max": 0.0,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 0.55,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "override_zero",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 1,
+  "speed_n": 0,
+  "lifetime_n": 1,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_gs_staticquads_01": {
+  "speed_min": 10.0,
+  "speed_max": 10.0,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 0.1,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "override",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 1,
+  "speed_n": 1,
+  "lifetime_n": 1,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_lensflare_looping_x2_child_es": {
+  "speed_min": null,
+  "speed_max": null,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 8.0,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "none",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 1,
+  "speed_n": 0,
+  "lifetime_n": 1,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_lensflare_looping_x2_es": {
+  "speed_min": null,
+  "speed_max": null,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 0.1,
+  "lifetime_varies": true,
+  "src": {
+   "speed": "none",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 6,
+  "speed_n": 0,
+  "lifetime_n": 3,
+  "speed_axis": null,
+  "direction_box": null,
+  "lifetime_never_expires_n": 2
+ },
+ "eg_lensflare_looping_x3_es": {
+  "speed_min": null,
+  "speed_max": null,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 0.55,
+  "lifetime_varies": true,
+  "src": {
+   "speed": "none",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 6,
+  "speed_n": 0,
+  "lifetime_n": 6,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_missile_airstrike_impact": {
+  "speed_min": null,
+  "speed_max": null,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 5.0,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "none",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 1,
+  "speed_n": 0,
+  "lifetime_n": 1,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_missile_thruster_shockdiamonds": {
+  "speed_min": null,
+  "speed_max": null,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 10.0,
+  "lifetime_varies": true,
+  "src": {
+   "speed": "none",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 2,
+  "speed_n": 0,
+  "lifetime_n": 2,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_multiribbondist_es": {
+  "speed_min": null,
+  "speed_max": null,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 0.65,
+  "lifetime_varies": true,
+  "src": {
+   "speed": "none",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 3,
+  "speed_n": 0,
+  "lifetime_n": 3,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_panzerfaust_stabilizer_unfold": {
+  "speed_min": null,
+  "speed_max": null,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 10.0,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "none",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 12,
+  "speed_n": 0,
+  "lifetime_n": 12,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_pebbles_burst_es": {
+  "speed_min": 11.96,
+  "speed_max": 20.0,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 4.0,
+  "lifetime_varies": true,
+  "src": {
+   "speed": "SpeedMult",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 33,
+  "speed_n": 0,
+  "lifetime_n": 10,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_pebbles_cont_es": {
+  "speed_min": 2.0,
+  "speed_max": 2.0,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 6.0,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "SpeedMult",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 4,
+  "speed_n": 0,
+  "lifetime_n": 4,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_projectile_mk82_air_animated": {
+  "speed_min": null,
+  "speed_max": null,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 100.0,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "none",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 1,
+  "speed_n": 0,
+  "lifetime_n": 1,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_projectile_sabot_petal": {
+  "speed_min": null,
+  "speed_max": null,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 2.0,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "none",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 4,
+  "speed_n": 0,
+  "lifetime_n": 4,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_prop_destroy_static_simple": {
+  "speed_min": null,
+  "speed_max": null,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 999.0,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "none",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 2,
+  "speed_n": 0,
+  "lifetime_n": 2,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_propdest_shard_meshp_geo_box": {
+  "speed_min": 1.732051,
+  "speed_max": 1.732051,
+  "speed_is_vec": true,
+  "direction": [
+   0.2164,
+   0.952,
+   0.2164
+  ],
+  "lifetime": 8.0,
+  "lifetime_varies": true,
+  "src": {
+   "speed": "override",
+   "direction": "SpawnDirectionMinMax",
+   "lifetime": "override"
+  },
+  "n": 12,
+  "speed_n": 12,
+  "lifetime_n": 12,
+  "speed_axis": [
+   1.0,
+   1.0,
+   1.0
+  ],
+  "direction_box": [
+   [
+    -0.5,
+    0.2,
+    -0.5
+   ],
+   [
+    1.0,
+    2.0,
+    1.0
+   ]
+  ]
+ },
+ "eg_propdest_shard_meshp_geo_box_continuous": {
+  "speed_min": 1.732051,
+  "speed_max": 1.732051,
+  "speed_is_vec": true,
+  "direction": [
+   0.4851,
+   0.7276,
+   0.4851
+  ],
+  "lifetime": 3.0,
+  "lifetime_varies": true,
+  "src": {
+   "speed": "override",
+   "direction": "SpawnDirectionMinMax",
+   "lifetime": "override"
+  },
+  "n": 8,
+  "speed_n": 8,
+  "lifetime_n": 8,
+  "speed_axis": [
+   1.0,
+   1.0,
+   1.0
+  ],
+  "direction_box": [
+   [
+    -0.2,
+    0.2,
+    -0.2
+   ],
+   [
+    1.0,
+    1.0,
+    1.0
+   ]
+  ]
+ },
+ "eg_propdest_shard_meshp_geo_box_rotxyz_norollyawpitch": {
+  "speed_min": 51.961524,
+  "speed_max": 51.961524,
+  "speed_is_vec": true,
+  "direction": [
+   0.0,
+   0.8944,
+   0.4472
+  ],
+  "lifetime": 8.0,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "override",
+   "direction": "SpawnDirectionMinMax",
+   "lifetime": "override"
+  },
+  "n": 1,
+  "speed_n": 1,
+  "lifetime_n": 1,
+  "speed_axis": [
+   10.0,
+   50.0,
+   10.0
+  ],
+  "direction_box": [
+   [
+    -1.0,
+    0.0,
+    -1.0
+   ],
+   [
+    1.0,
+    1.0,
+    1.5
+   ]
+  ]
+ },
+ "eg_propdest_shard_meshp_geo_supersphere": {
+  "speed_min": 1.509967,
+  "speed_max": 1.509967,
+  "speed_is_vec": true,
+  "direction": [
+   0.0,
+   1.0,
+   0.0
+  ],
+  "lifetime": 8.0,
+  "lifetime_varies": true,
+  "src": {
+   "speed": "override",
+   "direction": "SpawnDirectionMinMax",
+   "lifetime": "override"
+  },
+  "n": 13,
+  "speed_n": 13,
+  "lifetime_n": 13,
+  "speed_axis": [
+   0.5,
+   1.0,
+   0.8
+  ],
+  "direction_box": [
+   [
+    -1.0,
+    0.2,
+    -1.0
+   ],
+   [
+    1.0,
+    1.0,
+    1.0
+   ]
+  ]
+ },
+ "eg_propdest_shard_meshp_geo_supersphere_contin": {
+  "speed_min": 2.061553,
+  "speed_max": 2.061553,
+  "speed_is_vec": true,
+  "direction": [
+   0.1122,
+   0.9873,
+   0.1122
+  ],
+  "lifetime": 2.5,
+  "lifetime_varies": true,
+  "src": {
+   "speed": "override",
+   "direction": "SpawnDirectionMinMax",
+   "lifetime": "override"
+  },
+  "n": 10,
+  "speed_n": 5,
+  "lifetime_n": 10,
+  "speed_axis": [
+   1.0,
+   1.5,
+   1.0
+  ],
+  "direction_box": [
+   [
+    -0.75,
+    0.2,
+    -0.75
+   ],
+   [
+    1.0,
+    2.0,
+    1.0
+   ]
+  ]
+ },
+ "eg_propdest_shard_meshp_geo_supersphere_parentrot": {
+  "speed_min": 1.854724,
+  "speed_max": 1.854724,
+  "speed_is_vec": true,
+  "direction": [
+   0.0,
+   1.0,
+   0.0
+  ],
+  "lifetime": 3.0,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "override",
+   "direction": "SpawnDirectionMinMax",
+   "lifetime": "override"
+  },
+  "n": 34,
+  "speed_n": 34,
+  "lifetime_n": 34,
+  "speed_axis": [
+   1.0,
+   1.2,
+   1.0
+  ],
+  "direction_box": [
+   [
+    -0.75,
+    0.2,
+    -0.75
+   ],
+   [
+    0.75,
+    1.0,
+    0.75
+   ]
+  ]
+ },
+ "eg_propdest_shard_unitquad_box": {
+  "speed_min": 8.485281,
+  "speed_max": 8.485281,
+  "speed_is_vec": true,
+  "direction": [
+   0.0,
+   1.0,
+   0.0
+  ],
+  "lifetime": 0.4,
+  "lifetime_varies": true,
+  "src": {
+   "speed": "override",
+   "direction": "SpawnDirectionMinMax",
+   "lifetime": "override"
+  },
+  "n": 6,
+  "speed_n": 6,
+  "lifetime_n": 6,
+  "speed_axis": [
+   2.0,
+   8.0,
+   2.0
+  ],
+  "direction_box": [
+   [
+    -1.0,
+    0.2,
+    -1.0
+   ],
+   [
+    1.0,
+    1.0,
+    1.0
+   ]
+  ]
+ },
+ "eg_propdest_shard_unitquad_front_supersphere": {
+  "speed_min": 1.854724,
+  "speed_max": 1.854724,
+  "speed_is_vec": true,
+  "direction": [
+   0.0,
+   1.0,
+   0.0
+  ],
+  "lifetime": 3.0,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "override",
+   "direction": "SpawnDirectionMinMax",
+   "lifetime": "override"
+  },
+  "n": 11,
+  "speed_n": 11,
+  "lifetime_n": 11,
+  "speed_axis": [
+   1.0,
+   1.2,
+   1.0
+  ],
+  "direction_box": [
+   [
+    -1.0,
+    -0.2,
+    -1.0
+   ],
+   [
+    1.0,
+    1.0,
+    1.0
+   ]
+  ]
+ },
+ "eg_propdest_shard_unitquad_supersphere": {
+  "speed_min": 1.732051,
+  "speed_max": 1.732051,
+  "speed_is_vec": true,
+  "direction": null,
+  "lifetime": 8.0,
+  "lifetime_varies": true,
+  "src": {
+   "speed": "override",
+   "direction": "none_vec3_speed_is_per_axis",
+   "lifetime": "override"
+  },
+  "n": 7,
+  "speed_n": 7,
+  "lifetime_n": 7,
+  "speed_axis": [
+   1.0,
+   1.0,
+   1.0
+  ],
+  "direction_box": null
+ },
+ "eg_propdest_soft_unitquad_box_flag_test": {
+  "speed_min": 5.196152,
+  "speed_max": 5.196152,
+  "speed_is_vec": true,
+  "direction": [
+   0.0,
+   1.0,
+   0.0
+  ],
+  "lifetime": 5.0,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "override",
+   "direction": "SpawnDirectionMinMax",
+   "lifetime": "override"
+  },
+  "n": 1,
+  "speed_n": 1,
+  "lifetime_n": 1,
+  "speed_axis": [
+   3.0,
+   3.0,
+   3.0
+  ],
+  "direction_box": [
+   [
+    -0.75,
+    -0.2,
+    -0.75
+   ],
+   [
+    0.75,
+    1.2,
+    0.75
+   ]
+  ]
+ },
+ "eg_propdest_softmesh_burst": {
+  "speed_min": 2.375921,
+  "speed_max": 2.375921,
+  "speed_is_vec": true,
+  "direction": [
+   0.0,
+   1.0,
+   0.0
+  ],
+  "lifetime": 5.0,
+  "lifetime_varies": true,
+  "src": {
+   "speed": "override",
+   "direction": "SpawnDirectionMinMax",
+   "lifetime": "override"
+  },
+  "n": 101,
+  "speed_n": 101,
+  "lifetime_n": 101,
+  "speed_axis": [
+   1.45,
+   1.3,
+   1.45
+  ],
+  "direction_box": [
+   [
+    -1.0,
+    -0.2,
+    -1.0
+   ],
+   [
+    1.0,
+    1.0,
+    1.0
+   ]
+  ]
+ },
+ "eg_ptkm_submunition": {
+  "speed_min": null,
+  "speed_max": null,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 30.0,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "none",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 1,
+  "speed_n": 0,
+  "lifetime_n": 1,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_rats_01": {
+  "speed_min": null,
+  "speed_max": null,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 5.0,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "none",
+   "direction": "none",
+   "lifetime": "template"
+  },
+  "n": 1,
+  "speed_n": 0,
+  "lifetime_n": 0,
+  "speed_axis": null,
+  "direction_box": null,
+  "lifetime_never_expires_n": 1
+ },
+ "eg_rolltracks_01_es": {
+  "speed_min": null,
+  "speed_max": null,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 10.0,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "none",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 1,
+  "speed_n": 0,
+  "lifetime_n": 1,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_rotorblade_vortex_ring": {
+  "speed_min": null,
+  "speed_max": null,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 1.0,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "none",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 4,
+  "speed_n": 0,
+  "lifetime_n": 4,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_rpg7_fins": {
+  "speed_min": null,
+  "speed_max": null,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 5.0,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "none",
+   "direction": "none",
+   "lifetime": "template"
+  },
+  "n": 2,
+  "speed_n": 0,
+  "lifetime_n": 0,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_sand_frustrum_quad_es": {
+  "speed_min": 5.0,
+  "speed_max": 5.0,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 8.0,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "SpeedMult",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 7,
+  "speed_n": 0,
+  "lifetime_n": 4,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_sand_frustrum_quad_es_maindefault": {
+  "speed_min": 1.0,
+  "speed_max": 2.0,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 0.75,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "SpeedMult",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 5,
+  "speed_n": 0,
+  "lifetime_n": 5,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_sand_spawnvolume_quad_es": {
+  "speed_min": null,
+  "speed_max": null,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 5.0,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "none",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 1,
+  "speed_n": 0,
+  "lifetime_n": 1,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_sand_spawnvolume_quad_es_bg": {
+  "speed_min": 1.0,
+  "speed_max": 1.0,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 5.0,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "SpeedMult",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 1,
+  "speed_n": 0,
+  "lifetime_n": 1,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_soldier_screeneffect_flashbang": {
+  "speed_min": null,
+  "speed_max": null,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 5.0,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "none",
+   "direction": "none",
+   "lifetime": "template"
+  },
+  "n": 1,
+  "speed_n": 0,
+  "lifetime_n": 0,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_soldier_screeneffect_vignette": {
+  "speed_min": null,
+  "speed_max": null,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 2.0,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "none",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 1,
+  "speed_n": 0,
+  "lifetime_n": 1,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_sparks_burst_es": {
+  "speed_min": 10.0,
+  "speed_max": 20.0,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 2.0,
+  "lifetime_varies": true,
+  "src": {
+   "speed": "SpeedMult",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 197,
+  "speed_n": 0,
+  "lifetime_n": 192,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_sparks_burst_parent": {
+  "speed_min": 6.0,
+  "speed_max": 12.0,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 3.0,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "SpeedMult",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 2,
+  "speed_n": 0,
+  "lifetime_n": 2,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_sparks_burst_pop_es": {
+  "speed_min": null,
+  "speed_max": null,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 0.5,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "none",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 2,
+  "speed_n": 0,
+  "lifetime_n": 2,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_sparks_cont_es": {
+  "speed_min": 2.25,
+  "speed_max": 5.0,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 1.5,
+  "lifetime_varies": true,
+  "src": {
+   "speed": "SpeedMult",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 95,
+  "speed_n": 0,
+  "lifetime_n": 95,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_sparks_cont_es_portal": {
+  "speed_min": null,
+  "speed_max": null,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 5.0,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "none",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 1,
+  "speed_n": 0,
+  "lifetime_n": 1,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_sparks_cont_moving_es": {
+  "speed_min": 1.0,
+  "speed_max": 1.0,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 1.0,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "SpeedMult",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 1,
+  "speed_n": 0,
+  "lifetime_n": 1,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_sparks_cont_pop_es": {
+  "speed_min": 9.0,
+  "speed_max": 30.0,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 1.5,
+  "lifetime_varies": true,
+  "src": {
+   "speed": "SpeedMult",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 8,
+  "speed_n": 0,
+  "lifetime_n": 8,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_sparks_cont_vortex": {
+  "speed_min": 0.8,
+  "speed_max": 4.0,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 3.0,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "SpeedMult",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 2,
+  "speed_n": 0,
+  "lifetime_n": 2,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_sparktrails_es": {
+  "speed_min": 30.0,
+  "speed_max": 30.0,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 2.0,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "SpeedMult",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 1,
+  "speed_n": 0,
+  "lifetime_n": 1,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_static_meshp": {
+  "speed_min": 0.0,
+  "speed_max": 0.0,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 8.0,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "override_zero",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 1,
+  "speed_n": 0,
+  "lifetime_n": 1,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_thindebris_burning_cont_es": {
+  "speed_min": 1.840276,
+  "speed_max": 1.840276,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 8.0,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "SpeedMult",
+   "direction": "none",
+   "lifetime": "template"
+  },
+  "n": 1,
+  "speed_n": 0,
+  "lifetime_n": 0,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_thindebris_burst_es": {
+  "speed_min": 6.0,
+  "speed_max": 10.0,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 2.0,
+  "lifetime_varies": true,
+  "src": {
+   "speed": "SpeedMult",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 30,
+  "speed_n": 0,
+  "lifetime_n": 23,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_thindebris_phys_txtr_es": {
+  "speed_min": null,
+  "speed_max": null,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 5.0,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "none",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 1,
+  "speed_n": 0,
+  "lifetime_n": 1,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_thindebris_txtr_burst_es": {
+  "speed_min": 30.0,
+  "speed_max": 30.0,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 8.0,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "SpeedMult",
+   "direction": "none",
+   "lifetime": "template"
+  },
+  "n": 2,
+  "speed_n": 0,
+  "lifetime_n": 0,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_thindebris_txtr_cont_es": {
+  "speed_min": 2.0,
+  "speed_max": 2.0,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 5.0,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "SpeedMult",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 1,
+  "speed_n": 0,
+  "lifetime_n": 1,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_trash_default_spawnmap": {
+  "speed_min": null,
+  "speed_max": null,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 5.0,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "none",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 2,
+  "speed_n": 0,
+  "lifetime_n": 2,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_vegdest_shard_unitquad_leaves_burst": {
+  "speed_min": 2.531798,
+  "speed_max": 2.531798,
+  "speed_is_vec": true,
+  "direction": [
+   0.0,
+   1.0,
+   0.0
+  ],
+  "lifetime": 8.0,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "override",
+   "direction": "SpawnDirectionMinMax",
+   "lifetime": "override"
+  },
+  "n": 2,
+  "speed_n": 2,
+  "lifetime_n": 2,
+  "speed_axis": [
+   1.0,
+   2.1,
+   1.0
+  ],
+  "direction_box": [
+   [
+    -1.5,
+    0.2,
+    -1.5
+   ],
+   [
+    1.5,
+    2.0,
+    1.5
+   ]
+  ]
+ },
+ "eg_vehicle_screeneffect_damage_distortion_looping": {
+  "speed_min": null,
+  "speed_max": null,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 5.0,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "none",
+   "direction": "none",
+   "lifetime": "template"
+  },
+  "n": 1,
+  "speed_n": 0,
+  "lifetime_n": 0,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_velocitystabilized_projectile_antitank_grenade": {
+  "speed_min": null,
+  "speed_max": null,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 20.0,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "none",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 1,
+  "speed_n": 0,
+  "lifetime_n": 1,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_vfx_debug_axis": {
+  "speed_min": null,
+  "speed_max": null,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 3.0,
+  "lifetime_varies": true,
+  "src": {
+   "speed": "none",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 18,
+  "speed_n": 0,
+  "lifetime_n": 10,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_volumedecalos_dirt_3d_es": {
+  "speed_min": null,
+  "speed_max": null,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 20.0,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "none",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 1,
+  "speed_n": 0,
+  "lifetime_n": 1,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_volumedecalos_dirt_3d_nomask_es": {
+  "speed_min": null,
+  "speed_max": null,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 40.0,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "none",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 1,
+  "speed_n": 0,
+  "lifetime_n": 1,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_volumedecalos_fire_es_test": {
+  "speed_min": null,
+  "speed_max": null,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 0.1,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "none",
+   "direction": "none",
+   "lifetime": "template"
+  },
+  "n": 3,
+  "speed_n": 0,
+  "lifetime_n": 0,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_volumedecalos_firepatch_es": {
+  "speed_min": null,
+  "speed_max": null,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 6.0,
+  "lifetime_varies": true,
+  "src": {
+   "speed": "none",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 43,
+  "speed_n": 0,
+  "lifetime_n": 9,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_volumedecalos_simple_emitterparented_es": {
+  "speed_min": null,
+  "speed_max": null,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 1.5,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "none",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 15,
+  "speed_n": 0,
+  "lifetime_n": 4,
+  "speed_axis": null,
+  "direction_box": null,
+  "lifetime_never_expires_n": 11
+ },
+ "eg_volumedecalos_sootpatch_es": {
+  "speed_min": null,
+  "speed_max": null,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 15.0,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "none",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 3,
+  "speed_n": 0,
+  "lifetime_n": 1,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_volumedecalos_sootpatch_es_nodynmask": {
+  "speed_min": null,
+  "speed_max": null,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 10.0,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "none",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 3,
+  "speed_n": 0,
+  "lifetime_n": 3,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_wireguidedmissile_poseventbroadcast": {
+  "speed_min": null,
+  "speed_max": null,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 10.0,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "none",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 1,
+  "speed_n": 0,
+  "lifetime_n": 1,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_wireguidedmissile_spooledwire": {
+  "speed_min": null,
+  "speed_max": null,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 8.0,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "none",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 1,
+  "speed_n": 0,
+  "lifetime_n": 1,
+  "speed_axis": null,
+  "direction_box": null
+ },
+ "eg_yoon_debug_axis": {
+  "speed_min": null,
+  "speed_max": null,
+  "speed_is_vec": false,
+  "direction": null,
+  "lifetime": 15.0,
+  "lifetime_varies": false,
+  "src": {
+   "speed": "none",
+   "direction": "none",
+   "lifetime": "override"
+  },
+  "n": 1,
+  "speed_n": 0,
+  "lifetime_n": 1,
+  "speed_axis": null,
+  "direction_box": null
+ }
+}
