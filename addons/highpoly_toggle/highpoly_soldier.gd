@@ -30,7 +30,16 @@ const WEARER := {"alliance": "cha0001wisp", "pax": "cha0002know"}
 # The spawner proxies these stand in for. SpawnPoint is where the player comes
 # in, AI_Spawner is a bot, so they get opposite sides and a placed pair reads as
 # two forces rather than as one.
-const SPAWNERS := {"SpawnPoint": "alliance", "AI_Spawner": "pax"}
+# THE KEYS ARE THE SCENE BASENAMES, and I had the player one wrong: the SDK's
+# player spawner is gameplay/common/PlayerSpawner, not entities/SpawnPoint.
+# A wrong key here fails silently - the proxy simply keeps its placeholder -
+# which is why it read as "the soldier does not work" rather than as a typo.
+const SPAWNERS := {
+	"PlayerSpawner": "alliance",
+	"HQ_PlayerSpawner": "alliance",
+	"SpawnPoint": "alliance",
+	"AI_Spawner": "pax",
+}
 
 const PARTS := [
 	["set/set_%s/%s_set_%s_mesh", true],

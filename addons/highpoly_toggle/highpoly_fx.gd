@@ -129,7 +129,7 @@ static func apply(root: Node, map: String, on: bool, progress := Callable(),
 	# _prime_sheets). Cheap after the first run: they are cached as PNG.
 	var n_sheets := _prime_sheets(gs)
 	var n_meshes := _prime_meshes(gs)
-	var n_want := _sheet_tbl.size()
+	var n_want := _sheet_by_res.size()
 	var p := "user://mapcontext/%s/fx.json" % map
 	if not FileAccess.file_exists(p):
 		return "No FX data for %s" % map
@@ -175,6 +175,10 @@ static func apply(root: Node, map: String, on: bool, progress := Callable(),
 		# is the winter/gauntlet set the original filter was aiming at.
 		if str(f.get("source_class", "base")).begins_with("seasonal"):
 			continue
+		# fx.json's `name` IS the effect blueprint, which is what the sheet is
+		# really keyed on. Without it the backdrop columns fall back to a
+		# per-graph majority and get somebody else's smoke.
+		var nm := str(f.get("name", ""))
 		var cls := str(f.get("class", ""))
 		if not CLASS_FALLBACK.has(cls):
 			cls = "other"               # never drop a spawn point
@@ -215,12 +219,12 @@ static func apply(root: Node, map: String, on: bool, progress := Callable(),
 			decals += 1
 			continue
 
-		if not _drawable(effect, gp):
+		if not _drawable(nm, effect, gp):
 			nonsprite += 1
 			continue
 
 		var pos: Array = f.get("pos", [0, 0, 0])
-		var e := _emitter(cls, effect, gp)
+		var e := _emitter(cls, effect, gp, _sheet_res(nm, effect))
 		e.position = Vector3(pos[0], pos[1], pos[2])
 		e.rotation.y = float(f.get("yaw", 0.0))
 		holder.add_child(e)
@@ -290,6 +294,15 @@ static var _sheet_tbl_loaded := false
 # sheet MOST OFTEN bound for each graph, with the sample counts kept so the
 # status line can admit how firm the pick is. It covers 103 graphs against 44.
 const SHEETS_PATH := "res://addons/highpoly_toggle/fx_sheets.json"
+# PER-EFFECT SHEETS, which beat the per-graph majority whenever we know the
+# effect. fx.json's `name` field IS the effect blueprint
+# (fx_backdrop_mp_aftermath_firesmokecolumn_l_01), so the distant backdrop
+# columns can be resolved exactly instead of averaged: they bind
+# t_smokethick_02_tg1_4x32f, which no majority over eg_gs_basicsmoke_preroll_01
+# would ever have picked. Keyed "<effect>|<graph>" first, then "<effect>".
+const EFFECT_SHEETS_PATH := "res://addons/highpoly_toggle/fx_effect_sheets.json"
+static var _effect_tbl: Dictionary = {}
+static var _sheet_by_res: Dictionary = {}   # atlas res name -> sheet dict
 const SIZES_PATH := "res://addons/highpoly_toggle/fx_sizes.json"
 static var _sizes: Dictionary = {}      # lowercase graph name -> {size, field, n, ...}
 # MESH PARTICLES. The propdest and clusteroid graphs import a 3-vertex default
@@ -404,11 +417,11 @@ const DECAL_BOX := Vector3(2.0, 2.0, 2.0)
 # What made them look wrong was never the texture, it was the SIZE: drawn at the
 # 2.4-3.0 m class fallback when the game authors 2 to 100 cm. With the authored
 # size wired they are specks, which is what they are, so draw them.
-static func _drawable(effect: String, gp: Variant) -> bool:
+static func _drawable(nm: String, effect: String, gp: Variant) -> bool:
 	var key := effect.to_lower()
 	if gp is Dictionary and NO_DRAW_FAMILIES.has(str((gp as Dictionary).get("family", ""))):
 		return false
-	var sd: Variant = _sheets.get(key)
+	var sd: Variant = _sheet_by_res.get(_sheet_res(nm, effect))
 	if sd is Dictionary and not (sd as Dictionary).is_empty():
 		return true
 	# no sheet: a quad is still right if the game authored a quad size for it
@@ -417,6 +430,19 @@ static func _drawable(effect: String, gp: Variant) -> bool:
 		var f := str((sz as Dictionary).get("field", ""))
 		return f == "QuadSize" or f == "BaseSize"
 	return false
+
+
+# The atlas res for one spawn point. Most specific wins.
+static func _sheet_res(nm: String, graph: String) -> String:
+	var e := nm.to_lower()
+	var g := graph.to_lower()
+	for k in ["%s|%s" % [e, g], e, g]:
+		var t: Variant = _effect_tbl.get(k, _sheet_tbl.get(k))
+		if t is Dictionary:
+			var r := str((t as Dictionary).get("sheet", ""))
+			if r != "":
+				return r
+	return ""
 
 
 static func _load_sheet_table() -> void:
@@ -428,6 +454,10 @@ static func _load_sheet_table() -> void:
 	var raw: Variant = JSON.parse_string(FileAccess.get_file_as_string(SHEETS_PATH))
 	if raw is Dictionary:
 		_sheet_tbl = raw
+	if FileAccess.file_exists(EFFECT_SHEETS_PATH):
+		var ef: Variant = JSON.parse_string(FileAccess.get_file_as_string(EFFECT_SHEETS_PATH))
+		if ef is Dictionary:
+			_effect_tbl = ef
 	if FileAccess.file_exists(SIZES_PATH):
 		var sz: Variant = JSON.parse_string(FileAccess.get_file_as_string(SIZES_PATH))
 		if sz is Dictionary:
@@ -561,40 +591,40 @@ static func _prime_sheets(gs) -> int:
 	_sweep_stale_cache()
 	_load_sheet_table()
 	var added := false
-	var by_res := {}        # decode each distinct atlas once, not once per graph
-	for g in _sheet_tbl.keys():
-		if _sheets.has(g):
+	# every atlas named by EITHER table, decoded once each
+	var want := {}
+	for tbl in [_sheet_tbl, _effect_tbl]:
+		for k in tbl.keys():
+			var rec: Variant = tbl[k]
+			if rec is Dictionary:
+				var r := str((rec as Dictionary).get("sheet", ""))
+				if r != "":
+					want[r] = true
+	for res in want.keys():
+		if _sheet_by_res.has(res):
 			continue
-		var rec: Variant = _sheet_tbl[g]
-		if not (rec is Dictionary):
-			continue
-		var res := str((rec as Dictionary).get("sheet", ""))
-		if res == "":
-			continue
-		if not by_res.has(res):
-			by_res[res] = _decode_sheet(gs, res)
-		var d: Dictionary = by_res[res]
+		var d: Dictionary = _decode_sheet(gs, res)
 		# DO NOT MEMOISE A MISS THAT ONLY HAPPENED FOR WANT OF A SOURCE. FX can
 		# be switched on before the map has been read, and caching the empty
 		# result then means the sheet never appears for the rest of the session
 		# even once the source is open - the same shape of bug as _obj_cache
 		# remembering NOT-FOUND.
 		if not d.is_empty() or (gs != null and gs.src != null):
-			_sheets[g] = d
+			_sheet_by_res[res] = d
 			added = true
 	var found := 0
-	for g in _sheets.keys():
-		var d: Variant = _sheets[g]
-		if d is Dictionary and not (d as Dictionary).is_empty():
+	for r in _sheet_by_res.keys():
+		var dd: Variant = _sheet_by_res[r]
+		if dd is Dictionary and not (dd as Dictionary).is_empty():
 			found += 1
 	if added:
 		_mats.clear()       # materials built before this would have no texture
 	return found
 
 
-static func _emitter(cls: String, effect: String, gp: Variant) -> GPUParticles3D:
+static func _emitter(cls: String, effect: String, gp: Variant, sheet_res := "") -> GPUParticles3D:
 	var g := GPUParticles3D.new()
-	var cfg := _build_mats(cls, gp)
+	var cfg := _build_mats(cls, gp, sheet_res)
 	g.process_material = cfg[0]
 	g.draw_pass_1 = cfg[1]
 
@@ -644,11 +674,17 @@ static func _emitter(cls: String, effect: String, gp: Variant) -> GPUParticles3D
 	return g
 
 
-static func _build_mats(cls: String, gp: Variant) -> Array:
+static func _build_mats(cls: String, gp: Variant, sheet_res := "") -> Array:
 	var fb: Dictionary = CLASS_FALLBACK[cls]
 	var ck := cls
 	if gp is Dictionary:
 		ck = str((gp as Dictionary).get("graph", cls))
+	var gkey := ck.to_lower()          # graph alone, for the size/spawn tables
+	# TWO EFFECTS OF ONE GRAPH NOW DIFFER, so the sheet has to be part of the
+	# material identity. Leaving it out would hand the first effect's sheet to
+	# every later one, which is the same cache bug the untextured materials had.
+	if sheet_res != "":
+		ck += "|" + sheet_res
 	if _mats.has(ck): return _mats[ck]
 
 	var pm := ParticleProcessMaterial.new()
@@ -721,7 +757,7 @@ static func _build_mats(cls: String, gp: Variant) -> Array:
 		# a vertical stalk - while the absolute metre scale is inferred, so a
 		# graph with none falls back to the small default sphere above rather
 		# than borrowing the bound.
-		var sp2: Variant = _spawn.get(ck.to_lower())
+		var sp2: Variant = _spawn.get(gkey)
 		if sp2 is Dictionary and (sp2 as Dictionary).get("spawn_spread") != null:
 			var sv: Array = (sp2 as Dictionary)["spawn_spread"]
 			if sv.size() >= 3:
@@ -746,7 +782,7 @@ static func _build_mats(cls: String, gp: Variant) -> Array:
 	#
 	# Half-extent versus full-extent is UNRESOLVED in the data. If everything
 	# comes out uniformly 2x or 0.5x, that is this reading, not the numbers.
-	var sz: Variant = _sizes.get(ck.to_lower())
+	var sz: Variant = _sizes.get(gkey)
 	if sz is Dictionary:
 		var f := str((sz as Dictionary).get("field", ""))
 		if f == "BaseSize" or f == "QuadSize":
@@ -764,7 +800,7 @@ static func _build_mats(cls: String, gp: Variant) -> Array:
 	# from fx_params would sample a 6x36 grid off an 8x64 sheet - right texture,
 	# wrong frames, and it reads as the animation stuttering rather than as a
 	# mismatch. Only fps stays authored per graph.
-	var sd: Variant = _sheets.get(ck.to_lower())
+	var sd: Variant = _sheet_by_res.get(sheet_res)
 	var tex: Texture2D = (sd as Dictionary).get("tex") if sd is Dictionary else null
 	if tex != null:
 		var sdd: Dictionary = sd
@@ -790,7 +826,7 @@ static func _build_mats(cls: String, gp: Variant) -> Array:
 	# already dressed through the depot, so these arrive textured rather than
 	# tinted. The authored SpawnSize is a mesh scale, not a quad edge, so it is
 	# deliberately not applied here - the chunk is drawn at its authored size.
-	var gm: Variant = _meshes.get(ck.to_lower())
+	var gm: Variant = _meshes.get(gkey)
 	if gm is Mesh:
 		_mats[ck] = [pm, gm]
 		return _mats[ck]
