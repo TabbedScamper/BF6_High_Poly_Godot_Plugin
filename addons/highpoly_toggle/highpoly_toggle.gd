@@ -916,7 +916,8 @@ All of it is read from your own Battlefield 6 installation."
 		# the level's flipbook cards are drawn as props, so they follow this
 		# switch too rather than arriving unbidden with the map objects
 		mapctx.set_fx_cards_shown(_r, v)
-		lbl.text = await HighpolyFx.apply(_r, mapctx.map_of(_r), v, _lane(FX_JOB))
+		lbl.text = await HighpolyFx.apply(_r, mapctx.map_of(_r), v, _lane(FX_JOB),
+			mapctx.game_source)
 		_save_mapctx_state())
 	mc_chips.add_child(mapctx_fx)
 
@@ -3335,7 +3336,8 @@ func _restore_mapctx_state() -> void:
 	if mapctx_fx and bool(d.get("fx", false)):
 		mapctx_fx.set_pressed_no_signal(true)
 		mapctx.set_fx_cards_shown(r, true)
-		lbl.text = await HighpolyFx.apply(r, map, true, _lane(FX_JOB))
+		lbl.text = await HighpolyFx.apply(r, map, true, _lane(FX_JOB),
+			mapctx.game_source)
 	# The FX apply above yields. A scene closed during it leaves `r` freed, and
 	# everything below still hands it to typed `root: Node` parameters, which
 	# fail at the call rather than inside.

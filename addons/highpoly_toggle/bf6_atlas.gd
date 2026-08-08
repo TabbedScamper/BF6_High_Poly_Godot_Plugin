@@ -115,6 +115,81 @@ static func image(src, hdr: Dictionary, fmt := Image.FORMAT_DXT5) -> Image:
 		false, fmt, bytes)
 
 
+# Bytes for one mip, from its offset along the chain.
+#
+# The chain is stored largest first and each entry is exactly (w>>i) * (h>>i)
+# bytes, so a level's dimensions are checkable rather than assumed - and this
+# checks them, because reading a smaller mip at a larger mip's offset produces
+# a picture, just a corrupt one.
+static func mip_bytes(src, hdr: Dictionary, level: int) -> PackedByteArray:
+	if hdr.is_empty() or src == null:
+		return PackedByteArray()
+	var sizes: Array = hdr["sizes"]
+	if level < 0 or level >= sizes.size():
+		return PackedByteArray()
+	var g := str(hdr["guid"])
+	if not src.has_chunk(g):
+		return PackedByteArray()
+	var raw: PackedByteArray = src.get_chunk(g)
+	var off := 0
+	for i in range(level):
+		off += int(sizes[i])
+	var n := int(sizes[level])
+	if raw.size() < off + n:
+		return PackedByteArray()
+	return raw.slice(off, off + n)
+
+
+static func mip_image(src, hdr: Dictionary, level: int,
+		fmt := Image.FORMAT_DXT5) -> Image:
+	var b := mip_bytes(src, hdr, level)
+	if b.is_empty():
+		return null
+	var w := int(hdr["width"]) >> level
+	var h := int(hdr["height"]) >> level
+	if w < 4 or h < 4 or w * h != b.size():
+		return null
+	return Image.create_from_data(w, h, false, fmt, b)
+
+
+# The stem with any WxN group removed, lowercased.
+#
+# The FX graph table names sheets by a DERIVED filename that reorders the group
+# to the end: `t_clasticsmoke_tg1_8x64_01_d` is written
+# `t_clasticsmoke_tg1_01_d_8x64.png`, and `impact_sparks_02_4x2` is written
+# `impact_sparks_02_2x4.png` because the group is columns by frames and the
+# filename had it backwards. Removing the group from BOTH sides makes the two
+# spellings meet. Measured over mp_dumbo, mp_granite and mp_aftermath: all 13
+# referenced sheets resolve, none ambiguously, and no two atlases in any of the
+# three levels share a normalised stem.
+static var _re_dims: RegEx = null
+
+static func norm_stem(s: String) -> String:
+	if _re_dims == null:
+		_re_dims = RegEx.create_from_string("_\\d+x\\d+")
+	return _re_dims.sub(s.get_file().get_basename().to_lower(), "", true)
+
+
+static var _idx: Dictionary = {}
+static var _idx_for: Object = null
+
+# The atlas RES whose name matches this sheet, or "".
+static func find_res(src, sheet: String) -> String:
+	if src == null:
+		return ""
+	if _idx_for != src:
+		_idx.clear()
+		_idx_for = src
+		for rn in src.res.keys():
+			if int(src.res[rn][5]) != RES_TYPE:
+				continue
+			var k := norm_stem(str(rn))
+			# a collision would make the match a coin toss, so drop both rather
+			# than return whichever was seen first
+			_idx[k] = "" if _idx.has(k) else str(rn)
+	return str(_idx.get(norm_stem(sheet), ""))
+
+
 # The authored grid: {"cols", "frames", "rows", "lr"}, or empty.
 static func grid(src, types, gi: Dictionary, name: String) -> Dictionary:
 	var raw: PackedByteArray = src.get_ebx(name)

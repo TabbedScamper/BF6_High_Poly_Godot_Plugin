@@ -46,18 +46,20 @@ static var _params_loaded := false
 
 # Fallback look per class, used only when a spawn point's graph is absent from
 # the table. Deliberately plain so a miss looks like a miss rather than quietly
-# passing for authored data.
+# passing for authored data - and deliberately with no sheet, because lending a
+# graph some other graph's flipbook is the kind of plausible wrong answer that
+# never gets reported.
 const CLASS_FALLBACK := {
 	"fire":     {"lifetime_s": 5.0, "base_size": 2.4, "render": "emissive",
-				 "color": [1.0, 0.55, 0.2, 1.0], "sheet_key": "fire"},
+				 "color": [1.0, 0.55, 0.2, 1.0]},
 	"smoke":    {"lifetime_s": 5.0, "base_size": 4.0, "render": "sixway",
-				 "color": [0.32, 0.31, 0.30, 0.75], "sheet_key": "smoke"},
+				 "color": [0.32, 0.31, 0.30, 0.75]},
 	"dust":     {"lifetime_s": 4.0, "base_size": 3.0, "render": "lit",
-				 "color": [0.55, 0.5, 0.44, 0.5], "sheet_key": "smoke"},
+				 "color": [0.55, 0.5, 0.44, 0.5]},
 	"electric": {"lifetime_s": 0.6, "base_size": 0.35, "render": "emissive",
-				 "color": [1.0, 0.72, 0.35, 1.0], "sheet_key": ""},
+				 "color": [1.0, 0.72, 0.35, 1.0]},
 	"other":    {"lifetime_s": 3.0, "base_size": 1.0, "render": "lit",
-				 "color": [0.8, 0.8, 0.8, 0.6], "sheet_key": ""},
+				 "color": [0.8, 0.8, 0.8, 0.6]},
 }
 # draw distance per class (metres). Smoke columns read from far away.
 const CLASS_RANGE := {"fire": 300.0, "smoke": 600.0, "dust": 400.0,
@@ -117,11 +119,23 @@ static func clear(root: Node) -> void:
 # stopped responding until it finished. A progress bar on a function that never
 # gives a frame back cannot draw, so the yielding is not decoration here — it is
 # what makes the bar possible.
-static func apply(root: Node, map: String, on: bool, progress := Callable()) -> String:
+static func apply(root: Node, map: String, on: bool, progress := Callable(),
+		gs = null) -> String:
 	clear(root)
 	if root == null: return "No scene open"
 	if not on: return "FX off"
 	_load_params()
+	# Sheets first, so no material is baked untextured and then cached (see
+	# _prime_sheets). Cheap after the first run: they are cached as PNG.
+	var n_sheets := _prime_sheets(gs)
+	var n_want := 0
+	var seen_sheets := {}
+	for k in _params.keys():
+		if _params[k] is Dictionary:
+			var sh := str((_params[k] as Dictionary).get("sheet", ""))
+			if sh != "" and not seen_sheets.has(sh):
+				seen_sheets[sh] = true
+				n_want += 1
 	var p := "user://mapcontext/%s/fx.json" % map
 	if not FileAccess.file_exists(p):
 		return "No FX data for %s" % map
@@ -183,6 +197,7 @@ static func apply(root: Node, map: String, on: bool, progress := Callable()) -> 
 		progress.call(all.size(), all.size())
 	var msg := "FX: %d emitters, %d with authored parameters (%d%%)" % [
 		n, authored, (authored * 100 / maxi(n, 1))]
+	msg += ", %d of %d flipbooks from the game" % [n_sheets, n_want]
 	if skipped > 0:
 		msg += " - %d more skipped at the %d budget" % [skipped, MAX_EMITTERS]
 	return msg
@@ -212,31 +227,136 @@ static func _colour_of(gp: Variant, fb: Dictionary) -> Color:
 				 _lin_to_srgb(float(a[2])), clampf(alpha, 0.0, 1.0))
 
 
-static func _sheet_for(gp: Variant, fb: Dictionary) -> String:
-	# THESE SHEETS USED TO SHIP INSIDE THE ADDON, and they are Battlefield art:
-	# fire_6x36.png and smoke_8x64.png, 5.5 MB of it. So every install of this
-	# plugin handed someone a copy of EA's textures, entirely separately from
-	# the download service — which is the same thing the takedown was about,
-	# just quieter. They are gone, from the tree and from the history.
-	#
-	# v2.0 reads them from the player's own installation like everything else
-	# (see docs/V20-DESIGN.md). Until that lands, an emitter with no sheet
-	# draws untextured, which is why the existence check below matters: handing
-	# back a path that does not resolve gets a broken texture and an error per
-	# emitter, and that reads as a bug rather than a missing feature.
-	#
-	# AND NOTHING LOOKS FOR THEM ANY MORE. Deleting the files was not enough,
-	# because this went on POINTING at addons/highpoly_toggle/fx_textures: an
-	# install that still had the old copies went on drawing them, and the user's
-	# did - 5.7 MB of EA art dated months before the removal, untracked by git
-	# and invisible to every parity check. The existence test that was supposed
-	# to make a missing sheet harmless is exactly what made a leftover one
-	# silent.
-	#
-	# A path that is never built cannot be resurrected by a stale file. When the
-	# game-sourced sheets land (docs/V20-DESIGN.md) this returns those; until
-	# then an emitter draws untextured, which is the honest state.
-	return ""
+# THE SHEETS USED TO SHIP INSIDE THE ADDON, and they were Battlefield art:
+# fire_6x36.png and smoke_8x64.png, 5.5 MB of it, so every install handed
+# someone a copy of EA's textures. Deleting the files was not enough either -
+# this went on POINTING at addons/highpoly_toggle/fx_textures, and an install
+# that still had the old copies went on drawing them, untracked by git and
+# invisible to every parity check.
+#
+# They now come out of the player's own installation, decoded from the
+# AtlasTexture the graph names. Nothing is bundled and nothing is downloaded.
+static var _sheets: Dictionary = {}     # graph `sheet` value -> Texture2D or null
+const SHEET_CACHE := "user://fxsheets"
+# Cap on the usable width AFTER the LeftRightTiles crop. The mip chain is right
+# there in the header, so a smaller sheet is a smaller mip of the game's own
+# texture rather than a resample of the largest one.
+const SHEET_MAX := 1024
+
+
+# Six directional lighting terms folded down to one flat card.
+#
+# A LeftRightTiles sheet is a six-way lightmap: the same frames twice, and the
+# halves are the two signs, so `L.rgb` is three directions and `R.rgb` is their
+# three opposites (findings/atlastexture-grid-and-sixway-packing). Opposing
+# terms sum to the total light arriving at that texel, so averaging the halves
+# gives the directionally averaged lighting - which is exactly what a billboard
+# with no six-way shader should show. Alpha comes from the LEFT half only: that
+# is the density, proved by a sheet whose right alpha is entirely empty while
+# the effect plainly renders.
+#
+# Done over the raw byte buffer rather than get_pixel/set_pixel, which is the
+# difference between milliseconds and a visible stall, and the result is cached
+# to disk so it happens once per sheet ever.
+static func _fold_sixway(img: Image) -> Image:
+	var w := img.get_width()
+	var h := img.get_height()
+	@warning_ignore("integer_division")
+	var half := w / 2
+	if half < 1:
+		return img
+	var s := img.get_data()
+	var out := PackedByteArray()
+	out.resize(half * h * 4)
+	for y in range(h):
+		var row := y * w * 4
+		var orow := y * half * 4
+		for x in range(half):
+			var li := row + x * 4
+			var ri := row + (half + x) * 4
+			var oi := orow + x * 4
+			out[oi] = (s[li] + s[ri]) >> 1
+			out[oi + 1] = (s[li + 1] + s[ri + 1]) >> 1
+			out[oi + 2] = (s[li + 2] + s[ri + 2]) >> 1
+			out[oi + 3] = s[li + 3]
+	return Image.create_from_data(half, h, false, Image.FORMAT_RGBA8, out)
+
+
+static func _decode_sheet(gs, sheet: String) -> Texture2D:
+	var stem := BF6Atlas.norm_stem(sheet)
+	if stem == "":
+		return null
+	var png := "%s/%s.png" % [SHEET_CACHE, stem]
+	if FileAccess.file_exists(png):
+		var ci := Image.new()
+		if ci.load_png_from_buffer(FileAccess.get_file_as_bytes(png)) == OK:
+			return ImageTexture.create_from_image(ci)
+	if gs == null or gs.src == null:
+		return null
+	var rn := BF6Atlas.find_res(gs.src, sheet)
+	if rn == "":
+		return null
+	var hdr := BF6Atlas.parse(gs.src.get_res(rn))
+	if hdr.is_empty():
+		return null
+	var g := BF6Atlas.grid(gs.src, gs.types,
+		gs.walk.gi if gs.walk != null else {}, rn)
+	var lr := bool(g.get("lr", false))
+	var level := 0
+	var sizes: Array = hdr["sizes"]
+	while level + 1 < sizes.size():
+		@warning_ignore("integer_division")
+		var uw := (int(hdr["width"]) >> level) / (2 if lr else 1)
+		if uw <= SHEET_MAX:
+			break
+		level += 1
+	var img := BF6Atlas.mip_image(gs.src, hdr, level)
+	if img == null:
+		return null
+	img.decompress()
+	img.convert(Image.FORMAT_RGBA8)
+	if lr:
+		img = _fold_sixway(img)
+	DirAccess.make_dir_recursive_absolute(SHEET_CACHE)
+	img.save_png(png)
+	return ImageTexture.create_from_image(img)
+
+
+# Resolve every sheet the graph table names, BEFORE any emitter is built.
+#
+# Doing it up front is what keeps the `_mats` cache honest: resolve lazily and
+# the first emitter of a graph bakes an untextured material that every later
+# one then reuses, so a sheet that became available a moment later never
+# appears. Returns how many resolved.
+static func _prime_sheets(gs) -> int:
+	var seen := {}
+	var added := false
+	for k in _params.keys():
+		var d: Variant = _params[k]
+		if not (d is Dictionary):
+			continue
+		var sh := str((d as Dictionary).get("sheet", ""))
+		# graphs share sheets - count the DISTINCT ones, not the references
+		if sh == "" or seen.has(sh):
+			continue
+		seen[sh] = true
+		if not _sheets.has(sh):
+			var t := _decode_sheet(gs, sh)
+			# DO NOT MEMOISE A MISS THAT ONLY HAPPENED FOR WANT OF A SOURCE.
+			# FX can be switched on before the map has been read, and caching
+			# the null then means the sheet never appears for the rest of the
+			# session even once the source is open - the same shape of bug as
+			# _obj_cache remembering NOT-FOUND.
+			if t != null or (gs != null and gs.src != null):
+				_sheets[sh] = t
+				added = true
+	var found := 0
+	for sh in seen.keys():
+		if _sheets.get(sh) != null:
+			found += 1
+	if added:
+		_mats.clear()       # materials built before this would have no texture
+	return found
 
 
 static func _emitter(cls: String, effect: String, gp: Variant) -> GPUParticles3D:
@@ -354,9 +474,10 @@ static func _build_mats(cls: String, gp: Variant) -> Array:
 	dm.blend_mode = BaseMaterial3D.BLEND_MODE_ADD if render == "emissive" \
 		else BaseMaterial3D.BLEND_MODE_MIX
 
-	var sheet := _sheet_for(gp, fb)
-	if sheet != "" and ResourceLoader.exists(sheet):
-		dm.albedo_texture = load(sheet)
+	var sheet := str((gp as Dictionary).get("sheet", "")) if gp is Dictionary else ""
+	var tex: Texture2D = _sheets.get(sheet)
+	if tex != null:
+		dm.albedo_texture = tex
 		var cols := 6
 		var rows := 6
 		var frames := 36
@@ -367,8 +488,6 @@ static func _build_mats(cls: String, gp: Variant) -> Array:
 			rows = int(d2.get("rows", rows))
 			frames = int(d2.get("frames", cols * rows))
 			fps = float(d2.get("fps", fps))
-		elif str(fb.get("sheet_key", "")) == "smoke":
-			cols = 8; rows = 8; frames = 64; fps = 12.8
 		dm.particles_anim_h_frames = maxi(cols, 1)
 		dm.particles_anim_v_frames = maxi(rows, 1)
 		dm.particles_anim_loop = true
