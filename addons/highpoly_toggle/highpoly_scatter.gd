@@ -94,11 +94,24 @@ func clear() -> void:
 # Returns the number of scatter types placed; 0 = no scatter data (no-op).
 func setup(mc: Object, ctx: Node3D, map: String, dir: String, hm: Dictionary, tile: Dictionary) -> int:
 	clear()
-	var sj := "%s/scatter.json" % dir
-	if not FileAccess.file_exists(sj): return 0
-	var d: Variant = JSON.parse_string(FileAccess.get_file_as_string(sj))
-	if not (d is Dictionary): return 0
-	var ents: Array = (d as Dictionary).get("entries", [])
+	# THE CATALOGUE COMES FROM THE GAME. scatter.json was a downloaded list of
+	# which clutter meshes a level uses, invented by the pipeline on the belief
+	# that the game ships none. It ships a MeshScatteringDatabase per level - 44
+	# meshes on mp_dumbo, each a real MeshSet - with a view distance and a ratio
+	# for every one. That is read here; scatter.json is only a fallback for a
+	# cache built before this existed.
+	var ents: Array = []
+	var from_game := false
+	if mc != null and mc.game_source != null:
+		ents = mc.game_source.scatter_entries()
+		from_game = not ents.is_empty()
+	if ents.is_empty():
+		var sj := "%s/scatter.json" % dir
+		if not FileAccess.file_exists(sj): return 0
+		var d: Variant = JSON.parse_string(FileAccess.get_file_as_string(sj))
+		if not (d is Dictionary): return 0
+		ents = (d as Dictionary).get("entries", [])
+		_budget = int((d as Dictionary).get("budget", 16384))
 	if ents.is_empty(): return 0
 	# heightfield (required — grass must sit on the terrain)
 	if not hm.has("file"): return 0
@@ -109,7 +122,6 @@ func setup(mc: Object, ctx: Node3D, map: String, dir: String, hm: Dictionary, ti
 	_hm_span = float(hm.get("world_max", 2048)) - _hm_min
 	_hm_base = float(hm.get("base", 0.0))
 	_hm_scale = float(hm.get("scale", 1.0)) / 65535.0
-	_budget = int((d as Dictionary).get("budget", 16384))
 	# optional maptile for greenness weighting
 	if tile.has("img"):
 		var gp := ProjectSettings.globalize_path(str(tile["img"]))
@@ -138,16 +150,25 @@ func setup(mc: Object, ctx: Node3D, map: String, dir: String, hm: Dictionary, ti
 	_root.owner = null
 	var skipped: Array = []
 	for e in ents:
-		if not (e is Dictionary) or not e.has("mesh") or not e.has("kit"): continue
+		if not (e is Dictionary) or not e.has("mesh"): continue
+		# A game-sourced entry has no kit pattern, because the game does not ship
+		# one: the database says WHICH meshes and with what parameters, not where
+		# each clump goes. One is generated below, which is what the pipeline did
+		# for every entry anyway.
+		if not from_game and not e.has("kit"): continue
 		var nm := str(e["mesh"])
 		var mesh := _scatter_mesh(mc, nm)
 		if mesh == null:
 			skipped.append(nm)
 			continue
 		var kit := PackedVector3Array()
-		for p in e["kit"]:
-			if p is Array and p.size() >= 2:
-				kit.append(Vector3(float(p[0]), float(p[1]), float(p[2]) if p.size() > 2 else 0.0))
+		if from_game:
+			kit = _make_kit(nm, float(e.get("ratio", 0.15)))
+		else:
+			for p in e["kit"]:
+				if p is Array and p.size() >= 2:
+					kit.append(Vector3(float(p[0]), float(p[1]),
+						float(p[2]) if p.size() > 2 else 0.0))
 		if kit.is_empty(): continue
 		var mm := MultiMesh.new()
 		mm.transform_format = MultiMesh.TRANSFORM_3D
@@ -392,9 +413,44 @@ static func _hash01(seed_i: int, a: int, b: int, k: int) -> float:
 	return float(h & 0xFFFFFF) / 16777215.0
 
 # ---------- kit mesh loading (shared props cache, foliage-corrected) ----------
+# A clump pattern for one clutter mesh.
+#
+# The game ships no placement data - the MeshScatteringDatabase names the
+# meshes and their parameters, not where each one goes - so the pattern is
+# generated, which is what the pipeline did for every entry before this.
+#
+# SEEDED ON THE MESH NAME, so a given mesh has the same clump on every machine
+# and every reopen. An unseeded pattern would reshuffle the grass each time the
+# camera crossed a cell, which reads as the ground crawling.
+#
+# `ratio` comes from the record and scales the clump's spread: the values seen
+# are 0, 0.1, 0.15, 0.2 and 0.25, and a bigger one gets a wider, denser clump.
+func _make_kit(nm: String, ratio: float) -> PackedVector3Array:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = hash(nm)
+	var spread: float = 0.6 + clampf(ratio, 0.0, 0.5) * 6.0
+	var n: int = 6 + int(clampf(ratio, 0.0, 0.5) * 40.0)
+	var out := PackedVector3Array()
+	for i in range(n):
+		# Poisson-ish: a jittered ring rather than uniform noise, which clumps
+		# far less and leaves obvious bald patches at these counts.
+		var a := rng.randf() * TAU
+		var r := spread * sqrt(rng.randf())
+		out.append(Vector3(cos(a) * r, sin(a) * r, rng.randf_range(0.7, 1.0)))
+	return out
+
+
 func _scatter_mesh(mc: Object, nm: String) -> Mesh:
 	if _mesh_cache.has(nm): return _mesh_cache[nm]
 	var m: Mesh = null
+	# FROM THE GAME when the entry came from the game. A catalogue entry's
+	# "mesh" is a resolved group key, not a file stem, so it goes straight to
+	# the reader - same MeshSet path the props take, same texture chain, same
+	# cache.
+	if mc != null and mc.game_source != null and nm.contains("|"):
+		m = mc.game_source.mesh_for(nm)
+		_mesh_cache[nm] = m
+		return m
 	var gp := "%s/%s.glb" % [PROPS_CACHE, nm]
 	if FileAccess.file_exists(gp):
 		var inst: Node = mc._load_external_glb(gp)   # live root, ours to free

@@ -1027,6 +1027,72 @@ func _fx_graph(path: String) -> String:
 
 
 # ---------------------------------------------------------------------------
+# GROUND CLUTTER, from the level's own MeshScatteringDatabase.
+#
+# The scatter generator was built on the belief that the game does not ship
+# scatter data, so it invented a kit list and placed it by reading greenness off
+# the map photo. The CATALOGUE is shipped: one resource per level naming the
+# MeshSets it strews — pebbles, asphalt chunks, brick rubble, litter, grass
+# kits, weeds, shrubs — with a view distance and a ratio for each. 44 records on
+# mp_dumbo, every one resolving to a real MeshSet.
+#
+# WHAT THIS DOES NOT GIVE, and why the placement heuristic stays: where each
+# clump goes. The resource answers WHICH and WITH WHAT PARAMETERS, not WHERE.
+#
+# The records do carry a point list, and it is tempting to read it as the kit
+# pattern the scatter wants — it is not claimed to be. Only 6 of the 44 records
+# have one, they are all vegetation while hard debris has none, and the values
+# sit in a +/-0.5 range. A placement kit would need one per scattered mesh. The
+# research lists that array's meaning as open (a bend/wind pivot list is the
+# leading guess), so it is carried through unread rather than assumed.
+func scatter_entries() -> Array:
+	if src == null or walk == null:
+		return []
+	if not _scatter_cache.is_empty():
+		return _scatter_cache
+	var name := BF6Scatter.find_res(src, level)
+	if name == "":
+		return []
+	var raw := src.get_res(name)
+	if raw.is_empty():
+		return []
+	var sc := BF6Scatter.new()
+	if not sc.parse(raw):
+		_say("game source: scatter — %s" % sc.error)
+		return []
+	if not sc.exact(raw.size()):
+		# A variable-length walk that does not land on the last byte has lost
+		# sync, and everything after the desync is fiction. Better no clutter
+		# than a catalogue of misread names.
+		_say("game source: scatter — parse ended at %d of %d bytes, ignoring it"
+			% [sc.consumed, raw.size()])
+		return []
+	var out: Array = []
+	for r in sc.records:
+		var rec: Dictionary = r
+		var res_name := resolve_mesh(str(rec["name"]))
+		if res_name == "":
+			continue
+		var scope := _scope_by_path(res_name)
+		var gkey := "%s|%s" % [res_name, scope]
+		if not _group_meta.has(gkey):
+			_group_meta[gkey] = [res_name, scope, ""]
+		out.append({
+			"mesh": gkey,
+			"name": str(rec["name"]).get_file(),
+			"distance": float(rec["distance"]),
+			"ratio": float(rec["ratio"]),
+		})
+	_scatter_cache = out
+	_say("game source: scatter — %d clutter mesh(es) of %d in the catalogue"
+		% [out.size(), sc.records.size()])
+	return out
+
+
+var _scatter_cache: Array = []
+
+
+# ---------------------------------------------------------------------------
 # PORTAL OBJECTS, assembled from the game's own prefab blueprints.
 #
 # Every SDK-placeable object has a matching pf_portal_<name>.ebx under
