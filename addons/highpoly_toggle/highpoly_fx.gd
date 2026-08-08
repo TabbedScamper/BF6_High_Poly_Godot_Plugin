@@ -224,19 +224,19 @@ static func _sheet_for(gp: Variant, fb: Dictionary) -> String:
 	# draws untextured, which is why the existence check below matters: handing
 	# back a path that does not resolve gets a broken texture and an error per
 	# emitter, and that reads as a bug rather than a missing feature.
-	var base := (HighpolyFx as Script).resource_path.get_base_dir() + "/fx_textures"
-	var key := str(fb.get("sheet_key", ""))
-	if gp is Dictionary:
-		var s := str((gp as Dictionary).get("sheet", "")).to_lower()
-		if s.contains("fire") or s.contains("muzzleflash") or s.contains("glow"):
-			key = "fire"
-		elif s.contains("smoke") or s.contains("clastic") or s.contains("puff"):
-			key = "smoke"
-	var p := ""
-	match key:
-		"fire":  p = base + "/fire_6x36.png"
-		"smoke": p = base + "/smoke_8x64.png"
-	return p if p != "" and ResourceLoader.exists(p) else ""
+	#
+	# AND NOTHING LOOKS FOR THEM ANY MORE. Deleting the files was not enough,
+	# because this went on POINTING at addons/highpoly_toggle/fx_textures: an
+	# install that still had the old copies went on drawing them, and the user's
+	# did - 5.7 MB of EA art dated months before the removal, untracked by git
+	# and invisible to every parity check. The existence test that was supposed
+	# to make a missing sheet harmless is exactly what made a leftover one
+	# silent.
+	#
+	# A path that is never built cannot be resurrected by a stale file. When the
+	# game-sourced sheets land (docs/V20-DESIGN.md) this returns those; until
+	# then an emitter draws untextured, which is the honest state.
+	return ""
 
 
 static func _emitter(cls: String, effect: String, gp: Variant) -> GPUParticles3D:

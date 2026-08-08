@@ -373,9 +373,13 @@ static func apply(root: Node, map: String, gi := true, shadows := true) -> Strin
 		# THE PANORAMA WITH A SUN DRAWN ON TOP OF IT, rather than a
 		# PanoramaSkyMaterial, which can only show the texture.
 		#
-		# BF6's panoramas contain no sun disc. Rendered all 22 and crushed
-		# exposure until only real highlights survive: every one goes black. The
-		# engine draws its own, DrawSunDisc = 1 on every map. So the sky we built
+		# CORRECTION: this used to say the panoramas contain no sun disc, on the
+		# evidence that all 22 go black when exposure is crushed. That is FALSE
+		# and was retracted to the research repo - measured on the decoded
+		# panorama, aftermath's painted sun is 9 texels at elevation 12.8 against
+		# an authored SunRotationY of 12.9. The disc drawn here lands BESIDE a
+		# painted one. DrawSunDisc = 1 on every map is still true; it just does
+		# not mean the art has no sun in it. So the sky we built
 		# had no sun in it at all, and the brightest thing in the level was
 		# missing while the light casting every shadow came from a direction with
 		# nothing visible there.
