@@ -767,6 +767,13 @@ static func _describe(m: Mesh, gs, ind: String, only := -1) -> String:
 			out.append("%s    cutout: %s, threshold %.3f"
 				% [ind, "honoured" if bool(s["masked"]) else "REJECTED",
 				   float(s["cut"])])
+		# The colour question. Most painted props ship a neutral grey sheet and
+		# take their colour from a shader constant, so the texture list alone
+		# does not explain what is on screen.
+		if s.has("tint"):
+			out.append("%s    tint: %s" % [ind, str(s["tint"])])
+		if s.has("carpaint"):
+			out.append("%s    carpaint: %s" % [ind, str(s["carpaint"])])
 		if str(s["note"]).strip_edges() != "":
 			out.append("%s    -> %s" % [ind, str(s["note"]).strip_edges()])
 	return "\n".join(PackedStringArray(out))
