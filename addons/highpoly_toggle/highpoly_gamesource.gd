@@ -3708,6 +3708,21 @@ func material_for(state_key: int, scope: String, var_hash := 0,
 		_mat_cache[ck] = shared
 		return shared
 
+	# ---- DECALS --------------------------------------------------------
+	# Placeable puddles, dirt, road lines and wall staining. They bind their own
+	# slot family and none of the named prop slots, so without this every one of
+	# them fell through to the plain path, found no basecolor, and was written
+	# off as procedural: they drew nothing at all. Shared by look like everything
+	# below, because a decal binds real distinct sheets and its look key already
+	# separates it from anything else.
+	var dm = _decal_of(slots)
+	if dm != null:
+		_mat_cache[ck] = dm
+		_mat_by_look[look] = dm
+		tex_stats["decals"] = int(tex_stats.get("decals", 0)) + 1
+		tex_stats["materials"] = int(tex_stats["materials"]) + 1
+		return dm
+
 	# ---- masked? -------------------------------------------------------
 	# 52.8% of this map's sections bind the alpha slot and 81% of those bind
 	# `t_debug_r`: 64x64, constant 255, a default rather than a mask. Trusting
@@ -4240,15 +4255,23 @@ func _look_key(slots: Dictionary, tint = null) -> String:
 	# with the constants changed, so the green container and the grey one bind
 	# byte-identical textures. Keyed on textures alone the second one is handed
 	# the first one's material and both come out the same colour.
+	# THE DECAL SHEETS ARE PART OF THE LOOK, and this is the same trap the
+	# paragraph above describes, one family further on. A decal binds NONE of the
+	# four slots below, so without these two every decal on the map produced the
+	# identical key and the first material built was handed to all 134 of them -
+	# a puddle came back wearing a dirt sheet. Caught by a test that asserted the
+	# puddle takes the colourless path and found it had a colour sheet it cannot
+	# have.
 	var t := "-"
 	if tint is Color:
 		t = "%.4f,%.4f,%.4f" % [(tint as Color).r, (tint as Color).g,
 			(tint as Color).b]
-	return "%s|%s|%s|%s|%s" % [
+	return "%s|%s|%s|%s|%s|%s|%s" % [
 		str(slots.get("basecolor_veg", slots.get("basecolor", ""))),
 		str(slots.get("normal", slots.get("normal_vt", ""))),
 		str(slots.get("emissive", "")),
-		str(slots.get("alpha", "")), t]
+		str(slots.get("alpha", "")), t,
+		str(slots.get("decal_ca", "")), str(slots.get("decal_nrm", ""))]
 
 
 # ---------------------------------------------------------------------------
@@ -4577,6 +4600,108 @@ func _tint_mask_for(file_guid):
 # with. Below it a sheet is flat to within BC7's own quantisation.
 const TINT_MASK_MIN_RANGE := 0.02
 const TINT_MASK_PROBE_DIM := 128
+
+
+# ---------------------------------------------------------------------------
+# PLACEABLE MESH DECALS: puddles, dirt, road lines, wall staining.
+#
+# They bind a slot family of their own and NONE of the named prop slots, so this
+# reader resolved nothing for them and every one drew untextured. See
+# decal.gdshader for the channel packing and how the two decal families are told
+# apart; here is only which sheets are real.
+#
+# THE PLACEHOLDERS ARE REJECTED ON CONTENT, NOT ON THEIR NAMES. t_grey, t_grid,
+# t_debug_r and t_base_n are recognisable today and a name test is a guess about
+# every map nobody has opened. A defaulted sheet is flat, and flat is measurable.
+# This is the same rule the alpha slot already follows.
+var _decal_tex_cache := {}             # texture asset -> bool, does it vary
+
+
+func _decal_sheet(file_guid, is_normal: bool):
+	if file_guid == null or str(file_guid) == "":
+		return null
+	var asset = walk.gi.get(str(file_guid))
+	if asset == null:
+		return null
+	var an := str(asset).to_lower()
+	if an.ends_with(".ebx"):
+		an = an.substr(0, an.length() - 4)
+	var known = _decal_tex_cache.get(an)
+	if known != null and not bool(known):
+		return null
+	var tex = _texture_for(file_guid, is_normal)
+	if tex == null:
+		_decal_tex_cache[an] = false
+		return null
+	if known != null:
+		return tex
+	# Same instrument as the tint mask: a small copy answers "flat or not", and
+	# is dropped from the cache immediately so a probe does not keep a second
+	# copy of every decal sheet resident for the session.
+	var small = _texture_for(file_guid, is_normal, TINT_MASK_PROBE_DIM)
+	_tex_cache.erase("%s@%d" % [an, TINT_MASK_PROBE_DIM])
+	var img: Image = (small as ImageTexture).get_image() if small != null else null
+	if img == null:
+		_decal_tex_cache[an] = false
+		return null
+	var c := img.duplicate() as Image
+	if c.is_compressed() and c.decompress() != OK:
+		_decal_tex_cache[an] = false
+		return null
+	var w := c.get_width()
+	var h := c.get_height()
+	if w < 4 or h < 4:
+		_decal_tex_cache[an] = false
+		return null
+	var lo := [2.0, 2.0, 2.0, 2.0]
+	var hi := [-1.0, -1.0, -1.0, -1.0]
+	for y in range(0, h, maxi(1, int(h / 48))):
+		for x in range(0, w, maxi(1, int(w / 48))):
+			var p := c.get_pixel(x, y)
+			var v := [p.r, p.g, p.b, p.a]
+			for i in range(4):
+				lo[i] = minf(lo[i], float(v[i]))
+				hi[i] = maxf(hi[i], float(v[i]))
+	var varies := false
+	for i in range(4):
+		if hi[i] - lo[i] > TINT_MASK_MIN_RANGE:
+			varies = true
+			break
+	_decal_tex_cache[an] = varies
+	tex_stats["decal_sheets_checked"] = int(tex_stats.get("decal_sheets_checked", 0)) + 1
+	return tex if varies else null
+
+
+var _decal_shader = null
+
+
+# The decal material, or null when this record is not one.
+func _decal_of(slots: Dictionary):
+	if not (slots.has("decal_ca") or slots.has("decal_nrm")):
+		return null
+	var ca = _decal_sheet(slots.get("decal_ca"), false)
+	var nrm = _decal_sheet(slots.get("decal_nrm"), true)
+	if ca == null and nrm == null:
+		# Every sheet defaulted. Nothing to draw, and drawing the placeholders
+		# would put a debug grid or a red field on the map.
+		return null
+	if _decal_shader == null:
+		var dir := (get_script() as Script).resource_path.get_base_dir()
+		var s = load("%s/decal.gdshader" % dir)
+		if not (s is Shader):
+			return null
+		_decal_shader = s
+	var m := ShaderMaterial.new()
+	m.shader = _decal_shader
+	m.set_shader_parameter("has_col", ca != null)
+	m.set_shader_parameter("has_nrm", nrm != null)
+	if ca != null:
+		m.set_shader_parameter("col_tex", ca)
+	if nrm != null:
+		m.set_shader_parameter("nrm_tex", nrm)
+	# Transparent, so it has to sort after the opaque surface it marks.
+	m.render_priority = 1
+	return m
 
 
 # The masked-tint material, or null when this record wants the plain one.

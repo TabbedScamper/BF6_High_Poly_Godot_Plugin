@@ -78,6 +78,12 @@ const SLOT_BACKDROP_ROOF := 0x62dfb21a
 const SLOT_BACKDROP_PALETTE := 0x31ebaba9
 const SLOT_GLASS_VOLUME := 0xbb245590
 const SLOT_CARPAINT_FLAKES := 0xa11011b8
+# Placeable mesh decals bind a family of their own and none of the slots above.
+# Only these two ever carry content: on mp_dumbo's 160 decal prefabs the other
+# three are defaulted on every record (0x416b0e23 = t_grid 134/134, 0x4227843b =
+# t_debug_r 120/120, 0x91dfa679 = t_base_n 22/22), so they are never read.
+const SLOT_DECAL_CA := 0x87180b38        # RGB colour, A coverage
+const SLOT_DECAL_NRM := 0x6a19658a       # RG normal; B/A per family, see decal.gdshader
 
 const SLOT_NAME := {
 	SLOT_BASECOLOR: "basecolor", SLOT_BASECOLOR_VEG: "basecolor_veg",
@@ -88,6 +94,7 @@ const SLOT_NAME := {
 	SLOT_BACKDROP_FACADE: "backdrop_facade", SLOT_BACKDROP_ROOF: "backdrop_roof",
 	SLOT_BACKDROP_PALETTE: "backdrop_palette",
 	SLOT_GLASS_VOLUME: "glass_volume", SLOT_CARPAINT_FLAKES: "carpaint_flakes",
+	SLOT_DECAL_CA: "decal_ca", SLOT_DECAL_NRM: "decal_nrm",
 }
 
 var error := ""
