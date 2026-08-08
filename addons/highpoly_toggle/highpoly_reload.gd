@@ -41,6 +41,9 @@ class_name HighpolyReload
 
 const SHADER_EXTS := ["gdshader"]
 
+# Replaced after everything else. See reload_code.
+const LAST_FILES := ["highpoly_toggle.gd"]
+
 # What THIS EDITOR currently has loaded, so the next reload can tell what moved.
 #
 # CONTENT HASHES, not modification times. An update that rewrites every file in
@@ -153,6 +156,20 @@ static func reload_code(force := false) -> Dictionary:
 		todo = now.keys()
 	else:
 		todo = (p["changed"] as Array) + (p["added"] as Array)
+	# THE DOCK IS REPLACED LAST, and this is not tidiness.
+	#
+	# The script running this function IS the dock, and the new dock is parsed
+	# against whatever else is loaded at the moment it is replaced. If it calls
+	# something that exists only in the new version of another file and that file
+	# has not been replaced yet, the parse fails and the reload reports a file it
+	# could not load — which is the one outcome that sends the user to restart the
+	# editor, i.e. the exact thing this feature exists to avoid.
+	#
+	# Alphabetical order happens to put highpoly_toggle.gd after every file it
+	# calls into today. That is luck, and it is one rename away from not being
+	# true.
+	todo.sort_custom(func(a, b):
+		return int(LAST_FILES.has(str(a))) < int(LAST_FILES.has(str(b))))
 	var dir := plugin_dir()
 	for pass_ext in [true, false]:              # shaders, then scripts
 		for f in todo:
