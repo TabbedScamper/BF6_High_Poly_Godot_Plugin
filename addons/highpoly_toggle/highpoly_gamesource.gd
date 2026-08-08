@@ -61,6 +61,29 @@ var walk: BF6Walk = null
 var level := ""
 var error := ""
 
+# MOUNT EVERY LEVEL'S ARCHIVES, not just this one.
+#
+# Reading a level needs only that level. The objects a PLAYER places need the
+# whole catalogue, because a pf_portal_ prefab lives in the bundles of the levels
+# that USE the object. Someone placing a Cairo awning on Dumbo is asking for
+# something Dumbo's archives have never heard of.
+#
+# Measured on this install, mounting mp_dumbo against mounting everything:
+#
+#            archives   ebx      pf_portal_   SDK objects covered
+#   level     18 s      223,185   1,723        1,609 of 10,883  (14.8%)
+#   all       85 s      450,884   9,456        8,840 of 10,883  (81.2%)
+#
+# The cold mount is 85 s instead of 18 s, once per install, cached against the
+# archives' signature; warm it is 2.7 s against 0.8 s. In exchange the placeable
+# catalogue actually resolves, and it resolves BETTER than the model library this
+# replaced, which had 8,303 rows. Of the 2,043 still unmatched, 1,408 are audio
+# and fx scenes with no geometry to draw, so real coverage is 93% of the objects
+# that have a model at all.
+#
+# That trade is the whole plugin: it exists to draw the objects you place.
+var catalogue_mount := true
+
 # Where terrain_surface writes, when the caller wants the ground built as part of
 # the open rather than in the middle of the build. Empty = do not build it here.
 var surface_cache := ""
@@ -213,7 +236,8 @@ func open_map(map: String, game_dir := "", progress := Callable()) -> bool:
 		progress.call(ST_MOUNT, 0, 0)
 	if not src.mount(level, func(tocs, paths, _ebx):
 			if progress.is_valid():
-				progress.call(ST_MOUNT, tocs, paths)):
+				progress.call(ST_MOUNT, tocs, paths),
+			true, 0, catalogue_mount):
 		error = src.last_error()
 		return false
 	timings["mount"] = Time.get_ticks_msec() - t

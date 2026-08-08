@@ -74,7 +74,24 @@ static func _is_level(p: String) -> bool:
 	return p.to_lower().replace("\\", "/").contains("/levels/")
 
 
-func _find_tocs(level: String) -> Array:
+# WHICH ARCHIVES TO MOUNT.
+#
+# Non-level archives are always mounted. Level archives are normally just the one
+# asked for, and that is the right answer for reading a level: its terrain, its
+# placements, its lighting.
+#
+# It is the wrong answer for the objects a PLAYER places. Measured on mp_dumbo,
+# the mount carries pf_portal_ prefabs for 1,609 of the SDK's 10,883 placeable
+# objects, and another 235 are reachable by folder name. The remaining 9,039 are
+# not in the mount in any form: a pf_portal_ prefab lives in the bundles of the
+# levels that use the object, so mounting one level exposes one level's share of
+# the catalogue. Someone placing a Cairo awning on Dumbo is asking for something
+# Dumbo's archives have never heard of.
+#
+# So  mounts every level's archives, which is what makes the whole
+# placeable catalogue resolvable. It is not the default for reading a level,
+# because a level read does not need it and it is not free.
+func _find_tocs(level: String, all_levels := false) -> Array:
 	var shared: Array = []
 	var lvl: Array = []
 	var want := "/levels/%s/" % level.to_lower()
@@ -91,7 +108,7 @@ func _find_tocs(level: String) -> Array:
 				continue
 			var p := dir.path_join(f)
 			if _is_level(p):
-				if level != "" and p.to_lower().replace("\\", "/").contains(want):
+				if all_levels or (level != "" and p.to_lower().replace("\\", "/").contains(want)):
 					lvl.append(p)
 			else:
 				shared.append(p)
@@ -139,6 +156,16 @@ func _cache_path(level: String, sig: String) -> String:
 			level if level != "" else "shared", CACHE_VERSION, sig]
 
 
+# The all-levels mount is a DIFFERENT index of the same install, so it needs its
+# own file. The signature covers the archives mounted, which already differs, but
+# leaning on that alone would mean the two scopes silently share a name whenever
+# a signature collides.
+func _cache_path_scoped(level: String, sig: String, all_levels: bool) -> String:
+	if not all_levels:
+		return _cache_path(level, sig)
+	return "user://bf6_index_all_v%d_%s.idx" % [CACHE_VERSION, sig]
+
+
 func _load_cache(p: String) -> bool:
 	if not FileAccess.file_exists(p):
 		return false
@@ -177,9 +204,9 @@ func _save_cache(p: String) -> void:
 # It is a PROJECTION, and reported as one. Use it to steer, then confirm the
 # real number with an unbounded run before believing it.
 func mount(level := "", progress := Callable(), use_cache := true,
-		bundle_limit := 0) -> bool:
+		bundle_limit := 0, all_levels := false) -> bool:
 	var t0 := Time.get_ticks_msec()
-	var paths := _find_tocs(level)
+	var paths := _find_tocs(level, all_levels)
 
 	# The TOCs still have to be PARSED even on a cache hit: chunk_location()
 	# reads the loose-chunk record straight out of toc.body, so the bodies must
@@ -193,7 +220,7 @@ func mount(level := "", progress := Callable(), use_cache := true,
 	if use_cache:
 		sig = _signature(paths)
 		_sig = sig
-		if _load_cache(_cache_path(level, sig)):
+		if _load_cache(_cache_path_scoped(level, sig, all_levels)):
 			stats["ms"] = Time.get_ticks_msec() - t0
 			return true
 
@@ -285,7 +312,7 @@ func mount(level := "", progress := Callable(), use_cache := true,
 		# with mount_cold before believing any total.
 		return opened > 0
 	if use_cache and opened > 0 and sig != "":
-		_save_cache(_cache_path(level, sig))
+		_save_cache(_cache_path_scoped(level, sig, all_levels))
 	return opened > 0
 
 
