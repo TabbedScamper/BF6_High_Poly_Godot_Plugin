@@ -584,6 +584,17 @@ static func run(host: Node, dock: Node, mapctx: Node) -> void:
 		if shot != "":
 			rep["screenshot"] = shot
 			_say("autorun: wrote %s" % shot)
+		# AND A CLOSE-UP OF ACTUAL FOLIAGE, because the flyover cannot answer a
+		# question about leaf cutouts. Six plants in one wide frame puts each at
+		# about 40 pixels, and at that size any leafy silhouette reads as speckle
+		# whether the cutout is right or wrong - a previous investigation drew a
+		# conclusion from exactly that frame and got it wrong. One plant filling
+		# the view is the instrument this question needs.
+		var fshot: String = await _shoot_foliage(_tree,
+			"user://bf6_autorun_%s_foliage.png" % str(cfg["map"]))
+		if fshot != "":
+			rep["foliage_shot"] = fshot
+			_say("autorun: wrote %s" % fshot)
 		rep.merge(await _fly(_tree, samples))
 
 		# ---- what is each layer costing? ---------------------------------
@@ -1141,6 +1152,95 @@ static func _shoot(path: String) -> String:
 	if img.save_png(path) != OK:
 		return ""
 	return path
+
+
+# Park the editor camera on the biggest piece of vegetation and photograph it.
+#
+# Foliage is found by MATERIAL, not by name: a mesh counts as vegetation when a
+# surface carries the foliage_wind shader, which the game path only assigns when
+# the depot bound the vegetation basecolor slot. Name matching was tried in an
+# earlier probe and duly picked a street lamp, because "street" contains "tree".
+static func _shoot_foliage(_tree: SceneTree, path: String) -> String:
+	var root := EditorInterface.get_edited_scene_root()
+	if root == null:
+		return ""
+	var ctx := root.get_node_or_null("_MAP_CONTEXT")
+	if ctx == null:
+		return ""
+	# PLANT-SIZED AND WELL-INSTANCED, not "biggest".
+	#
+	# "Biggest foliage mesh" picked a BACKDROP ATLAS CARD - those carry the same
+	# vegetation material and are hundreds of metres across - so the camera was
+	# parked `size * 1.3` away and photographed the whole city. Bound the size to
+	# something that can be a plant and then prefer the mesh with the most
+	# instances, which is the one there is most of to look at.
+	var best_score := -1
+	var best_size := 0.0
+	var best_at := Vector3.ZERO
+	var found := false
+	var stack: Array = [ctx]
+	while not stack.is_empty():
+		var n: Node = stack.pop_back()
+		for c in n.get_children():
+			stack.append(c)
+		if not (n is MultiMeshInstance3D):
+			continue
+		var mmi := n as MultiMeshInstance3D
+		if mmi.multimesh == null or mmi.multimesh.mesh == null:
+			continue
+		var mesh := mmi.multimesh.mesh
+		var leafy := false
+		for i in range(mesh.get_surface_count()):
+			var m = mesh.surface_get_material(i)
+			if m is ShaderMaterial and (m as ShaderMaterial).shader != null 					and str((m as ShaderMaterial).shader.resource_path).ends_with(
+						"/foliage_wind.gdshader"):
+				leafy = true
+				break
+		if not leafy:
+			continue
+		var sz := mesh.get_aabb().get_longest_axis_size()
+		var count := mmi.multimesh.instance_count
+		if count == 0 or sz < 1.0 or sz > 25.0:
+			continue
+		if count <= best_score:
+			continue
+		var gx: Transform3D = mmi.global_transform if mmi.is_inside_tree() 			else mmi.transform
+		best_score = count
+		best_size = sz
+		best_at = (gx * mmi.multimesh.get_instance_transform(0)).origin 			+ Vector3(0.0, mesh.get_aabb().size.y * 0.5, 0.0)
+		found = true
+	if not found:
+		_say("autorun: no foliage material in the scene to photograph")
+		return ""
+	var evp := EditorInterface.get_editor_viewport_3d(0)
+	if evp == null:
+		return ""
+	var cam: Camera3D = evp.get_camera_3d()
+	if cam == null:
+		return ""
+	# Far enough to hold the whole plant, close enough that leaves are hundreds
+	# of pixels rather than tens.
+	var dist: float = clampf(best_size * 1.4, 2.5, 30.0)
+	var eye := best_at + Vector3(dist * 0.7, dist * 0.35, dist * 0.7)
+	cam.global_transform = Transform3D().looking_at(best_at - eye, Vector3.UP)
+	cam.global_transform.origin = eye
+	# The editor throttles itself when unfocused; without this the frames after
+	# the move are the pre-move image.
+	var es := EditorInterface.get_editor_settings()
+	var k := "interface/editor/unfocused_low_processor_mode_sleep_usec"
+	var was = es.get_setting(k) if es.has_setting(k) else null
+	if was != null:
+		es.set_setting(k, 0)
+	for i in range(20):
+		await _tree.process_frame
+	var out := _shoot(path)
+	if was != null:
+		es.set_setting(k, was)
+	_say(("autorun: foliage close-up - %d instances of a %.1f m plant at %s, "
+		+ "camera %.1f m away, ended at %s")
+		% [best_score, best_size, str(best_at), dist,
+		   str(cam.global_transform.origin)])
+	return out
 
 
 static func _load_path(p: String) -> Array:

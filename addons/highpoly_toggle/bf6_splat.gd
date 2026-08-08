@@ -213,13 +213,18 @@ func detect_layout(dir: Dictionary) -> bool:
 #
 # -> {quadtree key: BC7 bytes}
 # ---------------------------------------------------------------------------
-func color_tiles(dir: Dictionary, fetch: Callable) -> Dictionary:
+func color_tiles(dir: Dictionary, fetch: Callable,
+		progress := Callable()) -> Dictionary:
 	var out := {}
 	if tile_bytes <= 0:
 		error = "detect_layout has not run"
 		return out
+	var seen := 0
 	for n in nodes:
 		var nd: Dictionary = n
+		seen += 1
+		if progress.is_valid() and (seen & 63) == 0:
+			progress.call(seen, nodes.size())
 		var e = dir.get(int(nd["key"]))
 		if e == null:
 			continue
@@ -370,7 +375,8 @@ static func depth_of(key: int) -> int:
 # -> {"idx": PackedByteArray (4 layer indices per texel),
 #     "w": PackedByteArray (4 weights), "pages": int, "layers": {index: texels}}
 # ---------------------------------------------------------------------------
-func composite(dir: Dictionary, fetch: Callable, size: int) -> Dictionary:
+func composite(dir: Dictionary, fetch: Callable, size: int,
+		progress := Callable()) -> Dictionary:
 	var idx := PackedByteArray(); idx.resize(size * size * 4)
 	var wgt := PackedByteArray(); wgt.resize(size * size * 4)
 	var span: Vector2 = root_max - root_min
@@ -380,8 +386,12 @@ func composite(dir: Dictionary, fetch: Callable, size: int) -> Dictionary:
 	var order: Array = nodes.duplicate()
 	order.sort_custom(func(x, y): return int(x["depth"]) < int(y["depth"]))
 	var decoded := 0
+	var seen := 0
 	for n in order:
 		var nd: Dictionary = n
+		seen += 1
+		if progress.is_valid() and (seen & 15) == 0:
+			progress.call(seen, order.size())
 		if int(nd["pages"]) <= 0:
 			continue
 		var pages: Array = node_pages(nd, dir, fetch)

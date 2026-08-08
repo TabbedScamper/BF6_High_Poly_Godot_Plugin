@@ -146,11 +146,32 @@ static func available(game_dir := "") -> bool:
 	return s.open(game_dir)
 
 
+# THE STAGES OF A READ, in the order they happen, so a caller can draw the whole
+# list up front with the ones still to come greyed out rather than discovering
+# them one at a time. A cold read is a minute and a half; a list that grows as it
+# goes cannot tell you whether you are near the end, and "near the end" is the
+# only thing anyone actually wants to know while waiting.
+const ST_MOUNT  := "mounting the install"
+const ST_TYPES  := "reading type layouts"
+const ST_INDEX  := "indexing partitions"
+const ST_WALK   := "reading placements"
+const ST_GROUND := "reading the ground"
+const ST_COLOUR := "the ground: colour map"
+const ST_PAL    := "the ground: layer palette"
+const ST_SPLAT  := "the ground: blending layers"
+const ST_BASE   := "the ground: street materials"
+const ST_LAYERS := "the ground: layer textures"
+
+const OPEN_STAGES := [ST_MOUNT, ST_TYPES, ST_INDEX, ST_WALK, ST_GROUND,
+	ST_COLOUR, ST_PAL, ST_SPLAT, ST_BASE, ST_LAYERS]
+
 # Everything up to (and including) the placements. Long on a cold run — this is
 # the 85 s — so callers should be showing progress while it happens.
 #
-# `progress` is called as (stage: String, done: int, total: int); total is 0 for
-# stages that cannot report a fraction.
+# `progress` is called as (stage: String, done: int, total: int). A total of 0
+# means "done is a running count, not a fraction" — the walk knows how many
+# placements it has found but nothing knows how many there will be, and a
+# denominator we would have to invent is worse than none.
 func open_map(map: String, game_dir := "", progress := Callable()) -> bool:
 	error = ""
 	level = map.to_lower()
@@ -162,13 +183,17 @@ func open_map(map: String, game_dir := "", progress := Callable()) -> bool:
 		error = src.error
 		return false
 	if progress.is_valid():
-		progress.call("mounting the install", 0, 0)
-	if not src.mount(level):
+		progress.call(ST_MOUNT, 0, 0)
+	if not src.mount(level, func(tocs, paths, _ebx):
+			if progress.is_valid():
+				progress.call(ST_MOUNT, tocs, paths)):
 		error = src.last_error()
 		return false
 	timings["mount"] = Time.get_ticks_msec() - t
 	t = Time.get_ticks_msec()
 
+	if progress.is_valid():
+		progress.call(ST_TYPES, 0, 0)
 	types = BF6Types.new()
 	var exe := ""
 	for c in BF6Types.exe_candidates(src.game):
@@ -192,9 +217,9 @@ func open_map(map: String, game_dir := "", progress := Callable()) -> bool:
 	walk.want_fields = LIGHT_FIELDS
 	timings["typeinfo"] = Time.get_ticks_msec() - t
 	t = Time.get_ticks_msec()
-	walk.build_catalog(func(done, total, found):
+	walk.build_catalog(func(done, total, _found):
 		if progress.is_valid():
-			progress.call("indexing partitions", done, total))
+			progress.call(ST_INDEX, done, total))
 	timings["partition index"] = Time.get_ticks_msec() - t
 	t = Time.get_ticks_msec()
 
@@ -212,7 +237,9 @@ func open_map(map: String, game_dir := "", progress := Callable()) -> bool:
 	for d in _depot_bundles:
 		walk.scope_index[str(d)] = str(d)
 	if progress.is_valid():
-		progress.call("reading placements", 0, 0)
+		progress.call(ST_WALK, 0, 0)
+		walk.progress = func(found: int, _seen: int):
+			progress.call(ST_WALK, found, 0)
 	if not walk.run_cached(level):
 		error = str(walk.stats.get("error", "the placement walk produced nothing"))
 		return false
@@ -233,8 +260,8 @@ func open_map(map: String, game_dir := "", progress := Callable()) -> bool:
 	if surface_cache != "":
 		t = Time.get_ticks_msec()
 		if progress.is_valid():
-			progress.call("reading the ground", 0, 0)
-		terrain_surface(surface_cache)
+			progress.call(ST_GROUND, 0, 0)
+		terrain_surface(surface_cache, false, progress)
 		timings["terrain surface"] = Time.get_ticks_msec() - t
 	timings["_total"] = Time.get_ticks_msec() - t_all
 	timings["_cached"] = 1 if walk.stats.get("from_cache", false) else 0
@@ -596,7 +623,8 @@ const COLOR_RES := 4096                # colour map side (~2 m per texel on a 8 
 const LAYER_TEX_DIM := 512             # per-slice detail textures; all slices must match
 
 
-func terrain_surface(cache_dir: String, force := false) -> Dictionary:
+func terrain_surface(cache_dir: String, force := false,
+		progress := Callable()) -> Dictionary:
 	if src == null or cache_dir == "":
 		return {}
 	var dir_splat := "%s/splat" % cache_dir
@@ -650,7 +678,9 @@ func terrain_surface(cache_dir: String, force := false) -> Dictionary:
 
 	# ---- the colour map ------------------------------------------------------
 	var t0 := Time.get_ticks_msec()
-	var tiles := sp.color_tiles(chunks, fetch)
+	var tiles := sp.color_tiles(chunks, fetch, func(done: int, total: int):
+		if progress.is_valid():
+			progress.call(ST_COLOUR, done, total))
 	var t_read := Time.get_ticks_msec() - t0
 	t0 = Time.get_ticks_msec()
 	var cmap := sp.assemble_colors(tiles, COLOR_RES)
@@ -663,6 +693,8 @@ func terrain_surface(cache_dir: String, force := false) -> Dictionary:
 		   (Time.get_ticks_msec() - t0) / 1000.0])
 
 	# ---- the palette ---------------------------------------------------------
+	if progress.is_valid():
+		progress.call(ST_PAL, 0, 0)
 	var pidx: Dictionary = walk.gi if walk != null and walk.gi is Dictionary \
 		else src.partition_index()
 	var pal := BF6TerrainLayers.new()
@@ -672,7 +704,9 @@ func terrain_surface(cache_dir: String, force := false) -> Dictionary:
 
 	# ---- the splat -----------------------------------------------------------
 	t0 = Time.get_ticks_msec()
-	var comp := sp.composite(chunks, fetch, SURFACE_RES)
+	var comp := sp.composite(chunks, fetch, SURFACE_RES, func(done: int, total: int):
+		if progress.is_valid():
+			progress.call(ST_SPLAT, done, total))
 	_say("game source: terrain splat composite — %.1fs"
 		% ((Time.get_ticks_msec() - t0) / 1000.0))
 	if comp.is_empty():
@@ -694,6 +728,8 @@ func terrain_surface(cache_dir: String, force := false) -> Dictionary:
 	var base := PackedByteArray()
 	var b7 := t.find_block(res, 7)
 	if not b7.is_empty():
+		if progress.is_valid():
+			progress.call(ST_BASE, 0, 0)
 		var mt := BF6MaterialTree.new()
 		t0 = Time.get_ticks_msec()
 		if mt.parse(b7):
@@ -777,6 +813,8 @@ func terrain_surface(cache_dir: String, force := false) -> Dictionary:
 	var slice_meta: Array = []
 	var written := 0
 	for s in range(picked.size()):
+		if progress.is_valid():
+			progress.call(ST_LAYERS, s, picked.size())
 		var li: int = picked[s]
 		var alb := _layer_image(pal.albedo_of(li), false)
 		var nrm := _layer_image(pal.normal_of(li), true)

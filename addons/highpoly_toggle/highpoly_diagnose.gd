@@ -513,7 +513,7 @@ static func focus_label(gs) -> String:
 				_surface_tag(mesh, int(lv["surf"]), gs)]
 	var depth := "  [Tab] deeper" if int(_focus["idx"]) < (_focus["levels"] as Array).size() - 1 else ""
 	var up := "  [Shift+Tab] out" if int(_focus["idx"]) > 0 else ""
-	return "%s — %s%s%s" % [name, body, depth, up]
+	return "%s: %s%s%s" % [name, body, depth, up]
 
 
 static func _mesh_name(mesh: Mesh, gs) -> String:
@@ -543,7 +543,7 @@ static func _surface_tag(mesh: Mesh, s: int, gs) -> String:
 			if slots.has(k):
 				return "  (%s)" % str(slots[k]).get_basename()
 		if not bool(sr["record"]):
-			return "  (no depot record — drawn white)"
+			return "  (no depot record, drawn white)"
 		return "  (%s)" % str(sr["state_key"])
 	return ""
 
@@ -737,7 +737,7 @@ static func _overlay_mesh(m: Mesh, gs) -> String:
 static func _describe(m: Mesh, gs, ind: String, only := -1) -> String:
 	var out: Array = []
 	if gs == null or not gs.has_method("describe"):
-		out.append("%s(no game source open — nothing to explain)" % ind)
+		out.append("%s(no game source open, nothing to explain)" % ind)
 		return "\n".join(PackedStringArray(out))
 	var d: Dictionary = gs.describe(m)
 	if not bool(d["found"]):

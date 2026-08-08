@@ -143,6 +143,12 @@ var banner: Label              # legacy-mode notice ("reorganization pending")
 var sync_lbl: Label
 var jobs: Node                 # HighpolyJobs: the download queue
 var job_row: VBoxContainer     # the one universal bar, in the Check-for-Updates slot
+# the stage checklist shown while the install is being read
+var read_panel: VBoxContainer
+var read_title: Label
+var read_list: Label
+var read_note: Label
+var _read_model: Dictionary = {}   # empty when no read is running
 var job_bar: ProgressBar
 var job_pct: Label             # "45%  1/2"
 var job_what: Label            # what is downloading right now
@@ -585,6 +591,38 @@ func _enter_tree() -> void:
 	check_btn.pressed.connect(_check_updates_now)
 	dock.add_child(_centred(check_btn))
 	dock.add_child(job_row)      # takes the button's place while anything downloads
+
+	# ---- what the read of the install is actually doing ----------------------
+	#
+	# The first read of a map is about a minute and a half: mounting 144 archives,
+	# indexing 223k partition guids, walking 268k instances for the placements,
+	# then decoding the ground. All of that used to be one status line that said
+	# "reading the ground…" and then sat still, because the stages that take the
+	# longest are exactly the ones with no fraction to report. A line that does
+	# not move is indistinguishable from a crash, and the reasonable thing to do
+	# about a crashed editor is kill it.
+	#
+	# So: the whole stage list up front, every one of them timed, and the elapsed
+	# clock ticking twice a second whether or not the worker has anything new to
+	# say. Being able to see that "reading placements" has been running for 40
+	# seconds and has found 21,000 things is the difference between waiting and
+	# giving up.
+	read_panel = VBoxContainer.new()
+	read_panel.visible = false
+	read_title = Label.new()
+	read_title.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	read_title.add_theme_font_size_override("font_size", Theme_.fs(12))
+	read_panel.add_child(read_title)
+	read_list = Label.new()
+	read_list.add_theme_font_size_override("font_size", Theme_.fs(11))
+	read_list.add_theme_color_override("font_color", Color(1, 1, 1, 0.75))
+	read_panel.add_child(read_list)
+	read_note = Label.new()
+	read_note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	read_note.add_theme_font_size_override("font_size", Theme_.fs(11))
+	read_note.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
+	read_panel.add_child(read_note)
+	dock.add_child(read_panel)
 
 	scope_btn = OptionButton.new()
 	scope_btn.add_item("Prepare only what this map needs", 0)
@@ -1312,7 +1350,7 @@ All of it is read from your own Battlefield 6 installation."
 			return
 		var gs = mapctx.game_source if mapctx != null else null
 		if gs == null or not gs.has_method("invalidate_materials"):
-			lbl.text = "Nothing is read from the install yet — build the map context once."
+			lbl.text = "Nothing is read from the install yet. Build the map context once."
 			return
 		var meshes := _marked_meshes(r)
 		if meshes.is_empty():
@@ -1332,7 +1370,7 @@ All of it is read from your own Battlefield 6 installation."
 	host.add_child(diag_row)
 	var diag := Button.new()
 	diag.text = "Diagnose Selection"
-	diag.tooltip_text = "Tints the selected placed prop — or, if nothing of ours is selected, whatever map geometry is in front of the camera — bright red, and writes its full resolution chain into the log: which depot answered, whether the shader state had a record, what textures it bound, and whether its cutout mask was honoured or rejected. Save log file afterwards and send it."
+	diag.tooltip_text = "Tints the selected placed prop bright red (or, if nothing of ours is selected, whatever map geometry is in front of the camera), and writes its full resolution chain into the log: which depot answered, whether the shader state had a record, what textures it bound, and whether its cutout mask was honoured or rejected. Save log file afterwards and send it."
 	diag.pressed.connect(func():
 		var r := EditorInterface.get_edited_scene_root()
 		if r == null:
@@ -1346,7 +1384,7 @@ All of it is read from your own Battlefield 6 installation."
 			return
 		var n := text.count("
 ") + 1
-		lbl.text = "Diagnosed and tinted. %d line(s) in the log — press Save log file." % n)
+		lbl.text = "Diagnosed and tinted. %d line(s) in the log. Press Save log file." % n)
 	diag_row.add_child(diag)
 
 	# ---- pick mode: click the original map objects ----
@@ -1366,7 +1404,7 @@ All of it is read from your own Battlefield 6 installation."
 	# liveries and cutouts actually go wrong.
 	diag_pick = CheckButton.new()
 	diag_pick.text = "Pick mode"
-	diag_pick.tooltip_text = "Click any object in the viewport — including original map geometry, which the editor itself cannot select. Tab drills in (whole batch, one instance, one part); Shift+Tab steps back out; clicking the same spot again also drills in. Alt+click steps out. Press Diagnose Selection to report exactly what is focused."
+	diag_pick.tooltip_text = "Click any object in the viewport, including original map geometry, which the editor itself cannot select. Tab drills in (whole batch, one instance, one part); Shift+Tab steps back out; clicking the same spot again also drills in. Alt+click steps out. Press Diagnose Selection to report exactly what is focused."
 	diag_pick.toggled.connect(func(on: bool):
 		_pick_last = Vector2(-1e9, -1e9)
 		if not on:
@@ -1379,7 +1417,7 @@ All of it is read from your own Battlefield 6 installation."
 
 	var diag_clear := Button.new()
 	diag_clear.text = "Clear tints"
-	diag_clear.tooltip_text = "Removes the red diagnostic tint. The objects themselves are untouched — the tint is an overlay pass, never a material swap."
+	diag_clear.tooltip_text = "Removes the red diagnostic tint. The objects themselves are untouched: the tint is an overlay pass, never a material swap."
 	diag_clear.pressed.connect(func():
 		lbl.text = "Cleared %d tint(s)." % HighpolyDiagnose.clear())
 	diag_row.add_child(diag_clear)
@@ -1587,6 +1625,11 @@ All of it is read from your own Battlefield 6 installation."
 		# fixture. Which one it is should come from a recording rather than from
 		# whichever looks worst in the source.
 		var _tt := Time.get_ticks_msec()
+		# The read's clock, ticked here rather than by the worker. The stages that
+		# take longest report nothing at all while they run, so this is the only
+		# thing that keeps the panel moving through them.
+		if not _read_model.is_empty():
+			_read_refresh()
 		_crumb_state_change()
 		_check_scene_change()
 		_lighting_guard()
@@ -2146,6 +2189,159 @@ func _lane(label: String) -> Callable:
 		else:
 			jobs.clear_activity(label)
 
+
+# ---------- the read of the install, stage by stage ----------
+#
+# Three entry points, and the split matters. _read_begin and _read_stage_set are
+# driven by the worker (through open_async's once-a-frame pump); _read_refresh is
+# driven by the panel's own half-second timer. Only the second kind can keep a
+# clock moving through a stage that reports nothing at all for forty seconds,
+# which is most of a cold read.
+#
+# THE MODEL IS STATIC AND TAKES ITS CLOCK AS AN ARGUMENT so it can be tested.
+# An EditorPlugin cannot be instantiated outside a running editor, so anything
+# living on `self` is only ever exercised by hand, and the part worth testing
+# here is exactly the fiddly part: a stage that never reported at all still has
+# to end up marked done rather than sitting on "waiting" forever.
+
+# model: {map, cold, stage, done, total, t0, stage_t0, spent}
+static func read_model_new(map: String, cold: bool, now: int) -> Dictionary:
+	return {"map": map, "cold": cold,
+		"stage": str(HighpolyGameSource.OPEN_STAGES[0]),
+		"done": 0, "total": 0, "t0": now, "stage_t0": now, "spent": {}}
+
+
+static func read_model_stage(m: Dictionary, stage: String, done: int,
+		total: int, now: int) -> void:
+	if str(m["stage"]) != stage:
+		# EVERYTHING EARLIER IN THE LIST IS FINISHED, whether or not it ever
+		# reported. Stages get skipped outright all the time: a cached walk never
+		# calls back, a map with no ground skips five of them at once. Marking
+		# only the stage we just left would leave those on "waiting" for the rest
+		# of the read, which reads as stuck at precisely the moment things are
+		# going well.
+		var at: int = HighpolyGameSource.OPEN_STAGES.find(stage)
+		for i in range(maxi(at, 0)):
+			var s := str(HighpolyGameSource.OPEN_STAGES[i])
+			if not (m["spent"] as Dictionary).has(s):
+				(m["spent"] as Dictionary)[s] = 0
+		if str(m["stage"]) != "":
+			(m["spent"] as Dictionary)[str(m["stage"])] = now - int(m["stage_t0"])
+		m["stage"] = stage
+		m["stage_t0"] = now
+	m["done"] = done
+	m["total"] = total
+
+
+static func read_model_title(m: Dictionary, now: int) -> String:
+	return "Reading %s from your game install (%s)" % [str(m["map"]),
+		_clock(now - int(m["t0"]))]
+
+
+static func read_model_lines(m: Dictionary, now: int) -> Array:
+	var spent: Dictionary = m["spent"]
+	var out: Array = []
+	for st in HighpolyGameSource.OPEN_STAGES:
+		var s := str(st)
+		if spent.has(s):
+			var ms := int(spent[s])
+			# A stage that took no measurable time was served from a cache or was
+			# not needed, and saying which is worth a word: "cached" is the whole
+			# reason a read that took two minutes yesterday takes two seconds now.
+			out.append("   done      %s   %s" % [s, "cached" if ms < 60 else _clock(ms)])
+		elif s == str(m["stage"]):
+			var detail := ""
+			if int(m["total"]) > 0:
+				detail = "   %d%%" % int(100.0 * float(m["done"])
+					/ float(maxi(1, int(m["total"]))))
+			elif int(m["done"]) > 0:
+				detail = "   %s found so far" % _grouped(int(m["done"]))
+			out.append("   NOW       %s   %s%s"
+				% [s, _clock(now - int(m["stage_t0"])), detail])
+		else:
+			out.append("   waiting   %s" % s)
+	return out
+
+
+func _map_read_before(map: String) -> bool:
+	return FileAccess.file_exists("%s/%s/colormap.png"
+		% [HighpolyMapContext.CACHE, map])
+
+
+func _read_begin(map: String, cold: bool) -> void:
+	_read_model = read_model_new(map, cold, Time.get_ticks_msec())
+	if read_note != null:
+		# Said BEFORE the wait rather than after it. The read is about a minute
+		# and a half the first time a map is seen and about two seconds every
+		# time after, and someone who does not know that is watching what looks
+		# like a hang.
+		read_note.text = ("First time on this map, so this reads it out of your "
+			+ "game install. It takes a couple of minutes. After this it takes "
+			+ "about two seconds.") if cold else ""
+		read_note.visible = cold
+	_read_refresh()
+
+
+func _read_stage_set(stage: String, done: int, total: int) -> void:
+	if _read_model.is_empty():
+		return
+	read_model_stage(_read_model, stage, done, total, Time.get_ticks_msec())
+	_read_refresh()
+
+
+func _read_end() -> void:
+	if jobs != null and not _read_model.is_empty():
+		for s in HighpolyGameSource.OPEN_STAGES:
+			jobs.clear_activity(str(s))
+	_read_model = {}
+	if read_panel != null and is_instance_valid(read_panel):
+		read_panel.visible = false
+	if job_bar != null and is_instance_valid(job_bar):
+		job_bar.indeterminate = false
+
+
+func _read_refresh() -> void:
+	if read_panel == null or not is_instance_valid(read_panel):
+		return
+	if _read_model.is_empty():
+		read_panel.visible = false
+		return
+	var now := Time.get_ticks_msec()
+	read_panel.visible = true
+	read_title.text = read_model_title(_read_model, now)
+	read_list.text = "\n".join(PackedStringArray(
+		read_model_lines(_read_model, now)))
+	# and the same thing on the one real bar, so it reads at a glance
+	var total := int(_read_model["total"])
+	if jobs != null:
+		jobs.set_activity(str(_read_model["stage"]),
+			int(_read_model["done"]) if total > 0 else 0,
+			total if total > 0 else 1)
+	if job_bar != null and is_instance_valid(job_bar):
+		# No denominator exists for this stage, and there is no honest one to
+		# invent. An indeterminate bar says "running" without claiming a figure.
+		job_bar.indeterminate = total <= 0
+
+
+static func _clock(ms: int) -> String:
+	var s := int(ms / 1000)
+	if s < 60:
+		return "%ds" % s
+	return "%d:%02d" % [int(s / 60), s % 60]
+
+
+# 268587 -> "268,587". Long numbers are the point of the walk's readout and
+# unreadable without the separators.
+static func _grouped(n: int) -> String:
+	var s := str(absi(n))
+	var out := ""
+	var c := 0
+	for i in range(s.length() - 1, -1, -1):
+		out = s[i] + out
+		c += 1
+		if c % 3 == 0 and i > 0:
+			out = "," + out
+	return ("-" + out) if n < 0 else out
 
 func _refresh_job_bar() -> void:
 	if jobs == null or job_row == null: return
@@ -3196,13 +3392,24 @@ func _ensure_game_source(map: String, gen: int = -1) -> bool:
 	if mapctx.game_source != null and mapctx.game_source.level == map.to_lower():
 		return true
 	_gs_opening = true
-	lbl.text = "Reading %s from your Battlefield 6 install…" % map
+	lbl.text = "Reading %s from your Battlefield 6 install." % map
 	var gs = HighpolyGameSource.new()
 	gs.surface_cache = "%s/%s" % [HighpolyMapContext.CACHE, map]
+	# Cold is the ~90 s case, and it has to be decided BEFORE the read: the whole
+	# point of saying "this takes a couple of minutes" is saying it first.
+	#
+	# Asked of the ground cache rather than of the walk cache, which is the one
+	# that actually governs the time. The walk's cache path is keyed on the
+	# signature of the mounted archives, and mounting is the first stage of the
+	# read itself, so nothing can consult it before the read begins. A map that
+	# has a decoded ground on disk has been read on this machine before, which is
+	# the same question in a form that can be answered from a file test.
+	_read_begin(map, not _map_read_before(map))
 	var ok_g: bool = await gs.open_async(dock, map, "",
 		func(stage: String, done: int, total: int):
-			lbl.text = ("%s — %s %d%%" % [map, stage,
-				int(100.0 * done / maxf(1.0, float(total)))]) if total > 0 				else ("%s — %s…" % [map, stage]))
+			_read_stage_set(stage, done, total)
+			lbl.text = "%s: %s" % [map, stage])
+	_read_end()
 	_gs_opening = false
 	if gen >= 0 and gen != _mapctx_gen:
 		return false
@@ -3326,6 +3533,15 @@ func _mode_changed() -> void:
 	# returns nothing. Awaiting here means the first switch to High-Poly in a
 	# session pays the read once and then actually swaps.
 	await _ensure_source_for_mode()
+	# SAID, AND GIVEN A FRAME TO BE SEEN, before the swap starts. HighpolyLib
+	# .apply walks the whole scene and builds an overlay per prop in one
+	# uninterrupted pass: the editor does not repaint until it returns, so
+	# whatever the panel said last is what stays on screen for the duration. With
+	# nothing set here that was the last line from the read, which had just
+	# finished, so the plugin looked done and idle while it was in fact busy.
+	lbl.text = "Swapping placed objects to %s." % mode_btn.get_item_text(mode_btn.selected)
+	if dock != null and dock.get_tree() != null:
+		await dock.get_tree().process_frame
 	# The SDK's merged _Assets mesh is NOT this dropdown's business. Detail Mode
 	# governs the pieces YOU placed; the thing that actually stands in for the
 	# level's own shipped assets is "Original map objects", which brings in the

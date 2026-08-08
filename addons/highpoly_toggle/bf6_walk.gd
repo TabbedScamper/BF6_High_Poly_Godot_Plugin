@@ -382,6 +382,10 @@ var t_read := 0
 var t_parse := 0
 var t_decode := 0
 var n_instances := 0
+
+# Called as (placements_found, instances_seen) every few thousand instances, so
+# a caller can show the walk moving. Left unset costs one is_valid() per 8,192.
+var progress := Callable()
 var n_skipped := 0
 
 # EVERY field visit() looks at. If a type declares none of these, visiting an
@@ -487,6 +491,15 @@ func walk(ref, parent: Array, guard: Dictionary, depth := 0) -> void:
 	_scope = scope
 	for i in range(dz.instance_offsets.size()):
 		n_instances += 1
+		# THE ONLY PLACE THIS WALK CAN REPORT FROM. The traversal is recursive and
+		# has no outer loop to count, but every instance the level contains passes
+		# through here — 268,587 of them on mp_dumbo, which is the ~100 s a cold
+		# read spends with nothing to show. Reported by placements FOUND rather
+		# than instances seen: there is no honest denominator (nothing knows how
+		# many instances a level has until the walk ends), and "21,400 found and
+		# climbing" says more than a percentage that was invented.
+		if progress.is_valid() and (n_instances & 8191) == 0:
+			progress.call(rows.size(), n_instances)
 		# CAN THIS INSTANCE POSSIBLY MATTER? visit() reads exactly the fields in
 		# WALK_FIELDS, so an instance whose type declares NONE of them is a
 		# provable no-op — not a heuristic, an equivalence. Decoding it means
