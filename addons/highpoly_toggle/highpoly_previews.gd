@@ -122,7 +122,54 @@ func invalidate(nm: String) -> void:
 	_cache.erase(nm)
 	_pending.erase(nm)
 
+# SUSPECT IN THE 2-SECOND STALL. Fitting frame time against draw calls on a
+# worst-case flight leaves 48 residual outliers of 70-145 ms that rendering does
+# not explain, spaced about 2 s apart - and this runs on a 2 s timer and walks
+# the WHOLE editor tree looking for ItemLists. Timed separately from the rest of
+# _refresh so the walk can be convicted or cleared on its own, rather than the
+# whole refresh being blamed for whichever part is actually slow.
 func _find_lists() -> Array:
+	HighpolyProfile.begin("previews: walk the editor tree for ItemLists")
+	var r := _find_lists_body()
+	HighpolyProfile.end("previews: walk the editor tree for ItemLists")
+	return r
+
+
+# The ItemLists we found last time, and when we last went looking.
+#
+# MEASURED: the full-tree search below costs 28.8 ms on average and peaked at
+# 31.19 ms, and it ran every 2 s forever - 979 ms of a 69.5 s run, and the
+# single biggest instrumented cost in the plugin. It showed up as a rhythmic
+# lag spike. find_children() on the editor root walks the ENTIRE editor UI, and
+# the answer almost never changes.
+var _lists_cache: Array = []
+var _lists_found_at := 0
+
+# How long to wait before searching again when the last search found NOTHING.
+# A hit is validated cheaply and reused indefinitely, but a miss has nothing to
+# validate, so it needs a clock or a closed Object Library would put the full
+# walk back on every tick.
+const LISTS_RETRY_MS := 10000
+
+
+func _find_lists_body() -> Array:
+	# Reuse while every cached list is still alive and still populated. This is
+	# a handful of pointer checks against a walk of the whole editor tree.
+	if not _lists_cache.is_empty():
+		var ok := true
+		for il in _lists_cache:
+			if not is_instance_valid(il) or il.item_count == 0:
+				ok = false
+				break
+		if ok:
+			return _lists_cache
+		_lists_cache = []
+	# A miss is rate limited: nothing found means nothing to validate, and
+	# searching every 2 s for something that is not there is what this fixes.
+	if _lists_cache.is_empty() and _lists_found_at > 0 \
+			and Time.get_ticks_msec() - _lists_found_at < LISTS_RETRY_MS:
+		return _lists_cache
+	_lists_found_at = Time.get_ticks_msec()
 	var out: Array = []
 	for il in get_tree().root.find_children("*", "ItemList", true, false):
 		if il.item_count == 0:
@@ -133,6 +180,7 @@ func _find_lists() -> Array:
 			if md is Dictionary and md.has("path"):
 				out.append(il)
 				break
+	_lists_cache = out
 	return out
 
 # Which render the current Detail Mode wants. Low-Poly draws our geometry in
@@ -142,6 +190,14 @@ func _mode_tag() -> String:
 	return "clay" if (tier == HighpolyLib.Tier.LOW or not textured) else "tex"
 
 func _refresh() -> void:
+	# The whole 2 s tick, so the tree walk above can be compared against what
+	# the rest of the refresh costs instead of guessing which half matters.
+	HighpolyProfile.begin("previews: 2 s refresh")
+	_refresh_body()
+	HighpolyProfile.end("previews: 2 s refresh")
+
+
+func _refresh_body() -> void:
 	if not active:
 		if _swapped:
 			_restore()

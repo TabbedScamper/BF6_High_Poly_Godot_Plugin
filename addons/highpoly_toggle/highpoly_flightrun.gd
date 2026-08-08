@@ -393,6 +393,19 @@ static func run(host: Node, dock: Node, mapctx: Node) -> bool:
 	#
 	# Sampled every frame rather than every N, because the heartbeat that is the
 	# prime suspect fires twice a second and a coarse series would alias it.
+	# THE PROFILER GOES ON HERE, not at the top of the run.
+	#
+	# It is off by default and costs ~1.4 us per begin/end pair when on, which is
+	# nothing against a 4 ms frame but is not free during a 126 s build, and the
+	# build's own phase table already covers that stretch. Switched on for the
+	# settle and the flight, which is where per-frame costs live.
+	#
+	# This existed and was never enabled by any run, so five runs were spent
+	# inferring per-frame costs from the SHAPE of frame times while the
+	# instrument that names them sat switched off.
+	HighpolyProfile.reset()
+	HighpolyProfile.set_enabled(true)
+
 	_phase_begin("settle")
 	t = Time.get_ticks_msec()
 	var idle_mem: Array = []
@@ -457,6 +470,11 @@ static func run(host: Node, dock: Node, mapctx: Node) -> bool:
 	# is structural (a tree walk, not a frustum query), so the camera position
 	# does not matter: it counts everything built, which at the vista viewpoint
 	# is very nearly what is on screen.
+	# Stop before the census: a deep tree walk is not a per-frame cost and would
+	# only add a bucket nobody asked about.
+	HighpolyProfile.set_enabled(false)
+	_rep["profile"] = HighpolyProfile.stats()
+
 	_phase_begin("census")
 	var croot := EditorInterface.get_edited_scene_root()
 	if croot != null:
