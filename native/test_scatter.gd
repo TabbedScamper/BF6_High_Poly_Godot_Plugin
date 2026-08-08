@@ -2,7 +2,7 @@ extends SceneTree
 
 # Does MeshScatteringDatabase parse, and are its names real?
 #
-# Two checks, both from dfanz0r's finding, because they are the two that a
+# Two checks, both from the finding, because they are the two that a
 # variable-length walk can actually fail:
 #
 #   EXACT END. Each record starts with a nul-terminated name, so nothing after

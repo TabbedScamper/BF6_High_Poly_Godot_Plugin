@@ -4519,7 +4519,7 @@ func _mask_for(file_guid):
 
 # IS THIS A CUTOUT, OR SOMETHING ELSE LIVING IN THE ALPHA SLOT?
 #
-# dfanz0r's rule, and the reason for it: "alpha is only honored when it looks
+# The rule, and the reason for it: "alpha is only honored when it looks
 # like a cutout — wear/blend masks stored in alpha channels otherwise punch
 # holes in solid surfaces." The slot is not a vegetation slot; it holds
 # placeholders, wear masks and real coverage alike.
@@ -4545,7 +4545,7 @@ func _mask_for(file_guid):
 # THE LOWER BOUND WAS TOO GENEROUS, and the evidence for that is in the table
 # above rather than anywhere new. The measured placeholders sit at 0.0%, 1.3%
 # and 3.6% clear; the measured real cutouts start at 20%. A 1% floor accepts all
-# three placeholders as cutouts, and dfanz0r's warning is exactly what that
+# three placeholders as cutouts, and that warning is exactly what that
 # looks like on screen — "wear/blend masks stored in alpha channels punch holes
 # in solid surfaces". 13,796 of this map's state keys bind an alpha slot against
 # 708 that bind vegetation, so the great majority of the things this test sees

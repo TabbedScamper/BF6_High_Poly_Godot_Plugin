@@ -22,7 +22,7 @@ class_name BF6Scatter
 # not answered by this resource — nor, per the terrain research, by the
 # per-node DensityMap, which is not a scatter mask either.
 #
-# Layout from dfanz0r's meshscatteringdatabase-layout, which lands on the exact
+# Layout from the meshscatteringdatabase-layout finding, which lands on the exact
 # final byte of four different levels. Everything is BYTE PACKED: each record
 # starts with a variable-length string, so the numbers after it are not 4-byte
 # aligned and have to be read unaligned.

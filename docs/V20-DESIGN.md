@@ -13,7 +13,7 @@ user's own installed copy of the game. Nothing is hosted, nothing is
 redistributed, and the R2 bucket goes away.
 
 > **Not built yet, and should not be, until EA have been asked.** They named
-> TabbedScamper and dfanz0r as people they are already talking to and said they
+> TabbedScamper as someone they are already talking to and said they
 > want to bring these capabilities into their supported ecosystem. "We rebuilt
 > it to read each user's own copy, does that work for you?" is a far better
 > conversation than them finding out afterwards — and if they would rather
@@ -39,7 +39,7 @@ implements the hard formats.
 | `shaderblock.py` | ShaderBlockDepotResource |
 | `walk_level.py` | level to subworld to placement traversal |
 
-And the specification to build the rest from: dfanz0r's
+And the specification to build the rest from: the
 `bf6-highpoly-pipeline/docs/frostbite-reference`, 512 KB across 14 documents,
 written to be "sufficient to reimplement the described formats and pipelines
 from scratch, with no other material beyond the game's own files and

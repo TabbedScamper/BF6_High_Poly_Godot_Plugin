@@ -100,7 +100,7 @@ func _init() -> void:
 
 	# Which alpha textures, most-bound first, WITH the shape of their R channel.
 	#
-	# dfanz0r's rule is that alpha is only honoured when it looks like a cutout —
+	# The rule is that alpha is only honoured when it looks like a cutout —
 	# a mostly-opaque sheet with a meaningful fully-transparent fraction — because
 	# wear and blend masks also live in this slot and scissoring one punches holes
 	# in a solid surface. That is a threshold on a distribution, so the

@@ -1414,9 +1414,9 @@ All of it is read from your own Battlefield 6 installation."
 	_apply_bf6_gate()
 
 	var ver_lbl := Label.new()
-	ver_lbl.text = "v%s  ·  TabbedScamper & dfanz0r" % HighpolyUpdater.plugin_version()
+	ver_lbl.text = "v%s  ·  TabbedScamper" % HighpolyUpdater.plugin_version()
 	ver_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	ver_lbl.tooltip_text = "Built by TabbedScamper. Frostbite format research by TabbedScamper and dfanz0r."
+	ver_lbl.tooltip_text = "Built by TabbedScamper. Frostbite format research by TabbedScamper."
 	ver_lbl.add_theme_color_override("font_color", Color(1, 1, 1, 0.35))
 	dock.add_child(ver_lbl)
 
