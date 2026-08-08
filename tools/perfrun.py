@@ -309,9 +309,14 @@ CATEGORIES = [
         r"Invalid call|Cannot call method|previously freed|"
         r"Invalid (get|set) index|Trying to (assign|call)|"
         r"res://[^\s]+\.gd:\d+", re.I)),
+    # Bare "vulkan" and bare "RenderingDevice" used to be enough here, which
+    # made the Vulkan DEVICE BANNER every editor prints on boot the top-ranked
+    # rendering "diagnostic" of every run. A renderer name is not a finding, so
+    # these now need an actual failure word next to them.
     ("rendering", re.compile(
-        r"RenderingDevice|VK_ERROR|vulkan|servers/rendering|"
-        r"rendering_device|out of (video )?memory|device lost", re.I)),
+        r"VK_ERROR|device lost|out of (video )?memory|"
+        r"(RenderingDevice|vulkan|rendering_device|servers/rendering)"
+        r"[^\n]{0,60}(error|fail|invalid|cannot|unable)", re.I)),
     ("error", re.compile(r"^(USER )?ERROR:")),
     ("warning", re.compile(r"^(USER )?WARNING:")),
 ]
@@ -328,7 +333,54 @@ def classify(text):
     return "output"
 
 
-def digest_log(report, frames):
+def digest_log_file(path):
+    """Classify the log FILE, as a fallback for the in-process capture.
+
+    THE IN-PROCESS TAILER CAN COME BACK EMPTY AND SAY NOTHING ABOUT IT. It
+    opens the file Godot is itself writing, and on a failed open it returns
+    quietly, so "lines_seen: 0" reads identically whether the run was clean or
+    the capture never worked. The first real run hit exactly that: the report
+    said 0 lines while the log held a SCRIPT ERROR and 13 warnings.
+
+    This reads the finished file instead, so a run always gets an error census
+    even when the live capture fails. What it CANNOT do is stamp a line with
+    the phase and frame it happened in, because that context only exists while
+    the run is happening - which is why the tailer exists and this does not
+    replace it.
+    """
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            raw = f.read().splitlines()
+    except Exception:
+        return []
+    # Fold GDScript backtraces into the message above them: "at:" and the
+    # numbered frames are continuations, not separate findings.
+    msgs = []
+    for ln in raw:
+        s = ln.rstrip()
+        if not s.strip():
+            continue
+        cont = (s.lstrip().startswith("at:")
+                or re.match(r"^\s*\[\d+\]\s", s)
+                or s.lstrip().startswith("GDScript backtrace"))
+        if cont and msgs:
+            msgs[-1][1].append(s.strip())
+        else:
+            msgs.append([s.strip(), []])
+    # Group by signature with digits dropped, so five numbered copies of one
+    # message count as one finding with n=5 rather than five findings.
+    groups = {}
+    for text, trail in msgs:
+        sig = re.sub(r"\d+", "N", text)
+        g = groups.get(sig)
+        if g is None:
+            groups[sig] = {"text": text, "at": trail, "n": 1}
+        else:
+            g["n"] += 1
+    return list(groups.values())
+
+
+def digest_log(report, frames, log_path=None):
     """Rank what was printed, and say which of it is a per-frame cost.
 
     AN ERROR THROWN ONCE IS A BUG. THE SAME ERROR THROWN EVERY FRAME IS A BUG
@@ -336,6 +388,18 @@ def digest_log(report, frames):
     distinct messages instead of counting them.
     """
     log = report.get("log", {}) if isinstance(report, dict) else {}
+    source = "in-process (stamped with phase and frame)"
+    entries = log.get("ranked", [])
+    if not entries and log_path:
+        # The live capture produced nothing. Fall back to the file rather than
+        # reporting a clean run that was never actually inspected.
+        entries = digest_log_file(log_path)
+        if entries:
+            source = ("the log FILE after exit - the in-process capture "
+                      "returned nothing, so these lines carry no phase or "
+                      "frame")
+    log = dict(log)
+    log["ranked"] = entries
     ranked = []
     counts = {}
     for e in log.get("ranked", []):
@@ -363,8 +427,9 @@ def digest_log(report, frames):
     diag = [r for r in ranked if r["category"] in DIAGNOSTIC]
     hot = [r for r in diag if frames and r["n"] > frames]
     return {
-        "lines_seen": log.get("lines_seen", 0),
-        "distinct": log.get("distinct", 0),
+        "lines_seen": log.get("lines_seen", 0) or sum(e["n"] for e in entries),
+        "distinct": log.get("distinct", 0) or len(entries),
+        "source": source,
         "by_category": counts,
         "ranked": ranked[:80],
         "diagnostics": diag[:40],
@@ -929,7 +994,8 @@ def main():
     if outcome == "crash":
         print("\nCRASH: the editor exited (code %s) without writing a report."
               % detail.get("exit_code"))
-    digest = digest_log(report, (report or {}).get("frames", 0))
+    digest = digest_log(report, (report or {}).get("frames", 0),
+                        session.get("log"))
     # THE LAST FIFTY LINES GO IN THE ARTEFACT whatever happened, because on a
     # crash they are the only account of it, and a cause that exists only on
     # somebody's screen has to be reproduced to be read twice.
