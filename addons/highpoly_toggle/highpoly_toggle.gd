@@ -76,7 +76,6 @@ var previews: Node
 var profiler: Node          # performance recorder (highpoly_profiler.gd)
 var perf_btn: Button       # its start/stop button
 var mapctx: Node
-var reopen_btn: Button       # shown when a reload changed the panel layout
 var diag_pick: Button        # Pick mode: click-select our own overlay geometry
 # The note box. A member rather than a local because two different paths label
 # their reports with it: dropping a marker, and picking an object.
@@ -566,15 +565,6 @@ func _enter_tree() -> void:
 	check_btn.tooltip_text = "Checks for newly fixed models straight away. This happens by itself every hour, so you rarely need to press it."
 	check_btn.pressed.connect(_check_updates_now)
 	dock.add_child(_centred(check_btn))
-
-	# Shown only after a reload that changed the panel layout. See _reopen_panel:
-	# that is the one kind of change live reload cannot apply by itself.
-	reopen_btn = Button.new()
-	reopen_btn.text = "Reopen panel"
-	reopen_btn.visible = false
-	reopen_btn.tooltip_text = "The controls on this panel were built when the editor opened, so a change to the panel itself needs it built again. This switches the plugin off and straight back on: quicker than restarting the editor, and everything else you have open stays open. The level scenery is built again afterwards."
-	reopen_btn.pressed.connect(_reopen_panel)
-	dock.add_child(_centred(reopen_btn))
 
 	dock.add_child(job_row)      # takes the button's place while anything downloads
 
@@ -1746,6 +1736,7 @@ func _unstock_after_save() -> void:
 # first one frees this object, and freeing it while one of its own methods is
 # on the stack is the crash that would follow.
 const PLUGIN_NAME := "highpoly_toggle"
+var _needs_reopen := false
 
 func _reopen_panel() -> void:
 	Log.info("Reopening the panel to apply a layout change.")
@@ -1808,12 +1799,15 @@ func _hot_reload() -> bool:
 	# The panel is built once, at startup. A change to the file that builds it
 	# cannot move a control that already exists, so say so and put the button
 	# that applies it where the message is.
-	if names.has("highpoly_toggle.gd") and reopen_btn != null:
-		reopen_btn.visible = true
-		lbl.text += "  The panel layout changed: press Reopen panel."
+	# DONE, not offered. The plugin knows when a layout change cannot be applied
+	# in place, and a button that must be pressed after another button is one the
+	# user has to learn the meaning of. The caller reopens and stops there,
+	# because reopening frees this object.
+	_needs_reopen = names.has("highpoly_toggle.gd")
+	if _needs_reopen:
 		Log.info("The panel itself changed. Its controls were built when the "
-			+ "editor opened, so reopening the plugin is what applies a layout "
-			+ "change. Nothing else needs it.")
+			+ "editor opened, so the plugin is being reopened to build them "
+			+ "again. The level scenery is rebuilt with it.")
 	return true
 
 
@@ -1832,6 +1826,12 @@ func _check_updates_now() -> void:
 	# entire addon on every press and re-dress a map for nothing.
 	if not _hot_reload():
 		check_btn.disabled = false
+		return
+	if _needs_reopen:
+		# Nothing after this point: reopening frees the plugin, and the storage
+		# readout below awaits, so it would resume inside a freed object.
+		lbl.text = "Applying a panel change…"
+		_reopen_panel()
 		return
 	check_btn.disabled = false
 	_refresh_storage()
