@@ -3030,6 +3030,7 @@ func _mapctx_changed() -> void:
 			# The object library reads from the same source: a placed object is
 			# assembled from the game's own prefab instead of a fetched GLB.
 			HighpolyLib.game_source = gs
+			LightingScript.game_source = gs   # the level's own sky panorama
 		else:
 			# NOT fatal and NOT silent. A machine without BF6, or a map the
 			# mount cannot resolve, still has the download — but saying nothing

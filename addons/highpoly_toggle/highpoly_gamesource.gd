@@ -1027,6 +1027,215 @@ func _fx_graph(path: String) -> String:
 
 
 # ---------------------------------------------------------------------------
+# THE SKY, from the level's own VisualEnvironment preset.
+#
+# The panorama the game draws behind the level. One .dds of it used to ship
+# inside this addon — Battlefield art, handed to everyone who installed the
+# plugin — which is exactly what it must not do; it is read from the player's
+# install instead, like everything else.
+#
+# The active preset is the non-`thermal` ve_* partition the level root imports.
+# `SkyType` 0 selects the panoramic path, `PanoramicTexture` is the HDR image,
+# and `LuminanceScale` carries its magnitude: panoramas ship NORMALISED, so the
+# texture alone is not the brightness.
+#
+# 360 x 90, NOT 360 x 180 — the trap this whole feature turns on. The 4:1 aspect
+# is angular coverage: the top row is the ZENITH, the bottom row the HORIZON,
+# and there is no below-horizon content at all. Godot's PanoramaSkyMaterial
+# wants a 2:1 equirect, and handing it the texture directly stretches 90 degrees
+# of sky over a full sphere — measured across 22 maps, that puts the painted sun
+# BELOW the horizon on every one. So it is remapped: the panorama occupies the
+# upper half and the horizon row is carried down to fill the lower.
+const F_PANORAMIC_TEXTURE := 0xC4184CD8
+const F_LUMINANCE_SCALE := 0x5EBAF2B1
+const F_SKY_TYPE := 0xFF6D65E7
+const F_PANORAMIC_ROTATION := 0x89F2223A
+
+
+# {texture, luminance_scale, rotation} or {} when the level has no panorama.
+func sky() -> Dictionary:
+	if src == null or walk == null or types == null:
+		return {}
+	if not _sky_cache.is_empty():
+		return _sky_cache
+	# EVERY ve_* the root imports, best candidate first, because the level root
+	# imports several and only one of them is the environment. Dumbo's first is
+	# ve_sunflare_01, a lens-flare preset with no sky in it at all - so the
+	# choice is made on CONTENT (does it carry a PanoramicTexture) rather than on
+	# the name, with the name only used to order the search.
+	for ve in _ve_candidates():
+		var got := _sky_from(str(ve))
+		if not got.is_empty():
+			_sky_cache = got
+			_say("game source: sky - %s, luminance scale %.0f"
+				% [str(ve).get_file(), got["luminance_scale"]])
+			return got
+	return {}
+
+
+func _sky_from(ve: String) -> Dictionary:
+	var raw := src.get_ebx(ve)
+	if raw.is_empty():
+		return {}
+	var e := BF6Ebx.new(types, walk.gi)
+	if not e.parse(raw):
+		return {}
+
+	# THE PANORAMA IS AN IMPORT, NOT A FIELD VALUE. PanoramicTexture is present
+	# on the sky component and is NULL in the shipped data - the pointer is
+	# resolved at load - while SkyType and LuminanceScale beside it are set. So
+	# the texture is found the only way it can be: among the partition's
+	# imports, which name it directly.
+	var pano := _panorama_import(e)
+	if pano == "":
+		return {}
+	var tex = _texture_for_asset(pano)
+	if tex == null:
+		return {}
+	var img: Image = (tex as ImageTexture).get_image()
+	if img == null:
+		return {}
+
+	# The scalars DO come from the component, where they are real.
+	var lum := 0.0
+	var rot := 0.0
+	for i in range(e.instance_offsets.size()):
+		var inst = e.read_instance(i)
+		if not (inst is Dictionary) or not (inst as Dictionary).has(F_LUMINANCE_SCALE):
+			continue
+		var d: Dictionary = inst
+		lum = float(d.get(F_LUMINANCE_SCALE, 0.0))
+		rot = float(d.get(F_PANORAMIC_ROTATION, 0.0))
+		break
+	return {
+		"texture": ImageTexture.create_from_image(_to_equirect(img)),
+		"luminance_scale": lum,
+		"rotation": rot,
+		"preset": ve.get_file(),
+		"panorama": pano.get_file(),
+	}
+
+
+# The sky panorama among a VE partition's imports.
+#
+# Told apart by name, because that is what distinguishes them: the same
+# partition also imports hdrcube_<level>_NN (the reflection cubemap, not a sky)
+# and t_skypanoramicprocedural_b (a procedural fallback, not this level's
+# painted sky). Both would resolve and both would be wrong.
+func _panorama_import(e: BF6Ebx) -> String:
+	var best := ""
+	for imp in e.imports:
+		var t = walk.gi.get(str((imp as Dictionary)["partition"]))
+		if t == null:
+			continue
+		var n := str(t).to_lower()
+		if n.ends_with(".ebx"):
+			n = n.substr(0, n.length() - 4)
+		var leaf := n.get_file()
+		if not leaf.contains("panoramicsky"):
+			continue
+		if leaf.contains("procedural") or leaf.contains("hdrcube"):
+			continue
+		if leaf.contains(level):
+			return n              # this level's own sky wins outright
+		if best == "":
+			best = n
+	return best
+
+
+# Decode a texture by ASSET NAME rather than by guid. The panorama is reached
+# through the import list, which already gives the name.
+func _texture_for_asset(asset: String):
+	var an := asset.to_lower()
+	if an.ends_with(".ebx"):
+		an = an.substr(0, an.length() - 4)
+	if _tex_cache.has(an):
+		return _tex_cache[an]
+	var raw := src.get_res(an)
+	if raw.is_empty():
+		_tex_cache[an] = null
+		return null
+	var got := _tex.decode(raw, func(form): return src.get_chunk(str(form)), 0)
+	if got.is_empty() or not (got.get("image") is Image):
+		_tex_cache[an] = null
+		return null
+	var t := ImageTexture.create_from_image(got["image"] as Image)
+	_tex_cache[an] = t
+	return t
+
+
+var _sky_cache := {}
+
+
+# Every ve_* the level root imports, most likely first: the ones naming this
+# level, then the rest. `thermal` is dropped outright - it is the thermal-optic
+# preset, it decodes fine, and it is not what the level looks like.
+func _ve_candidates() -> Array:
+	var root := str(walk.stats.get("root", ""))
+	if root == "":
+		return []
+	if root.to_lower().ends_with(".ebx"):
+		root = root.substr(0, root.length() - 4)
+	var raw := src.get_ebx(root)
+	if raw.is_empty():
+		return []
+	var e := BF6Ebx.new(types, walk.gi)
+	if not e.parse(raw):
+		return []
+	var named: Array = []
+	var other: Array = []
+	for imp in e.imports:
+		var target = walk.gi.get(str((imp as Dictionary)["partition"]))
+		if target == null:
+			continue
+		var n := str(target).to_lower()
+		if n.ends_with(".ebx"):
+			n = n.substr(0, n.length() - 4)
+		var leaf := n.get_file()
+		if not leaf.begins_with("ve_") or leaf.contains("thermal"):
+			continue
+		if leaf.contains(level):
+			named.append(n)
+		else:
+			other.append(n)
+	named.append_array(other)
+	return named
+
+
+# A PointerRef's FILE guid, whichever shape the deserializer handed back.
+static func _ref_guid(v):
+	if v is Dictionary:
+		var d: Dictionary = v
+		for k in ["import", "file", "partition"]:
+			if d.has(k) and str(d[k]) != "":
+				return str(d[k])
+	return null
+
+
+# 4:1 sky-dome panorama -> the 2:1 equirect PanoramaSkyMaterial expects.
+#
+# Upper half is the panorama (zenith at the top, horizon at its bottom row);
+# lower half repeats the horizon row, so below the horizon reads as haze rather
+# than as a mirrored or stretched sky.
+static func _to_equirect(src_img: Image) -> Image:
+	var w := src_img.get_width()
+	var h := src_img.get_height()
+	if w <= 0 or h <= 0 or w < h * 3:
+		return src_img            # already 2:1-ish; leave it alone
+	var img := src_img.duplicate() as Image
+	if img.is_compressed() and img.decompress() != OK:
+		return src_img
+	var out := Image.create(w, h * 2, false, img.get_format())
+	out.blit_rect(img, Rect2i(0, 0, w, h), Vector2i(0, 0))
+	# The horizon row, carried down. Copied as a 1-pixel-tall strip per row
+	# rather than pixel by pixel: a 4096-wide sky is 4 million set_pixel calls
+	# otherwise, which is seconds of stall for a gradient nobody looks at.
+	for y in range(h, h * 2):
+		out.blit_rect(img, Rect2i(0, h - 1, w, 1), Vector2i(0, y))
+	return out
+
+
+# ---------------------------------------------------------------------------
 # GROUND CLUTTER, from the level's own MeshScatteringDatabase.
 #
 # The scatter generator was built on the belief that the game does not ship

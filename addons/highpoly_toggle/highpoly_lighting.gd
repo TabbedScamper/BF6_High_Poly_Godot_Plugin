@@ -329,8 +329,20 @@ static func apply(root: Node, map: String, gi := true, shadows := true) -> Strin
 	# EXR because Godot cannot load .dds at runtime â€” that limitation is why the
 	# one sky this plugin used to have was welded into its own zip, and why only
 	# one map ever had a real sky.
+	# THE LEVEL'S OWN SKY, out of the install. The VE preset names its panorama
+	# in its import list; the reader decodes it and remaps 360x90 to the 2:1
+	# equirect PanoramaSkyMaterial wants. Preferred over everything below,
+	# which is a downloaded conversion and a .dds that used to ship inside this
+	# addon - Battlefield art no plugin should be handing out.
+	if game_source != null:
+		var gsky: Dictionary = game_source.sky()
+		if not gsky.is_empty():
+			pano_tex = gsky["texture"]
+			pano_scale = float(gsky["luminance_scale"])
 	var sp := "%s/%s/sky.exr" % [CACHE, map]
-	if FileAccess.file_exists(sp):
+	if pano_tex != null:
+		sp = ""
+	if sp != "" and FileAccess.file_exists(sp):
 		var img := Image.new()
 		if img.load_exr_from_buffer(FileAccess.get_file_as_bytes(sp)) == OK:
 			pano_tex = ImageTexture.create_from_image(img)
@@ -861,6 +873,10 @@ static func _env_of(root: Node) -> Environment:
 # 3,716 real light entities on Aftermath (PbrSpot/Sphere/Rect/Tube, positions +
 # colour + intensity + radius + cones decoded from the level EBX). Too many to
 # run at once â€” the dock timer culls to the nearest `lights_range` metres.
+# The open HighpolyGameSource, or null. Set by the plugin; untyped so this
+# module does not depend on the reader stack.
+static var game_source = null
+
 const LIGHTS_NODE := "_MAP_LIGHTS"
 
 # How long to work before handing a frame back. Was 30 ms, which sounded polite
