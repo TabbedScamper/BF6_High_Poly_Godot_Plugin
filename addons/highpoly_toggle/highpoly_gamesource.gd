@@ -5040,7 +5040,16 @@ func _smoke_of(slots: Dictionary, consts: Dictionary):
 	# packed across RGB, and drawing that as albedo gives a rainbow column.
 	# Measured rather than guessed from the filename: a lighting-packed sheet
 	# carries chroma a smoke sheet has no reason to have.
-	m.set_shader_parameter("lighting_packed", _is_lighting_packed(sheet))
+	# NOT SET, AND THAT IS THE POINT. I added a channel-average here on the
+	# reading that this sheet packs directional lighting, from measured channel
+	# correlations of 0.92 / 0.94 / 0.97. The download build - which looked
+	# right - treats the same channels as THREE ANIMATION-TIME SAMPLES and
+	# crossfades them (fx_smoke.gdshader, "__fxanim3"). Three time samples of one
+	# plume correlate exactly that highly too, so the correlations do not
+	# distinguish the two readings, and averaging them turns a three-frame
+	# flipbook into a static blur. The consumer that shipped and worked wins over
+	# my inference until something settles it properly.
+	m.set_shader_parameter("lighting_packed", false)
 	# EITHER NOISE. The horizontal family binds t_tilingnoise_01_rgbm and the
 	# vertical one t_tilingnoises_curly_01_d, in different slots; both are the
 	# same job.
