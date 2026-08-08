@@ -176,10 +176,13 @@ static func _waves_from(sim: Dictionary) -> Array:
 	# than water. The extra components fan off the dominant bearing and fall
 	# away in amplitude - the sea's own small-scale spread, not the map's.
 	var n := out.size()
+	var tail: float = float((out[n - 1] as Vector4).z)
 	for i in range(n, 4):
 		var a: float = angle + (float(picked[0][0]) - 0.5) * TAU \
 			+ deg_to_rad(14.0 + 17.0 * float(i)) * (1.0 if i % 2 == 0 else -1.0)
-		out.append(Vector4(cos(a), sin(a), pow(0.55, float(i - n + 1)),
+		# decays from the WEAKEST authored lobe, not from the strongest: padding
+		# that outweighs a real lobe would be our invention drowning the map's
+		out.append(Vector4(cos(a), sin(a), tail * pow(0.55, float(i - n + 1)),
 			float(WAVE_LENGTH_RATIO[i])))
 	return out
 

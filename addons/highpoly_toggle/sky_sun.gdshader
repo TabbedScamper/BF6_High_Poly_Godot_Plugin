@@ -2,15 +2,24 @@ shader_type sky;
 
 // THE PANORAMA, WITH A SUN DRAWN ON TOP OF IT.
 //
-// BF6's sky panoramas contain no sun disc. Verified by rendering all 22 and
-// crushing exposure until only real highlights survive: every one goes black.
-// The engine draws the disc itself, DrawSunDisc = 1 on every map. So a
-// PanoramaSkyMaterial, which can only show the texture, renders a sky with no
-// sun in it at all, and the brightest thing in the scene is missing.
-//
 // This is the panorama sampled exactly as PanoramaSkyMaterial samples it, plus a
 // disc and a halo placed from the DirectionalLight the rig has already aimed
 // from the level's own SunRotationX/Y. The sky is behind, the sun is in front.
+//
+// CORRECTION. This comment used to say BF6's panoramas contain no sun disc, on
+// the evidence that all 22 go black when exposure is crushed, and that the drawn
+// disc was therefore filling an absence. That is FALSE. Measured on the decoded
+// panorama, aftermath's painted sun is 9 texels at elevation 12.8 against an
+// authored SunRotationY of 12.9. The disc drawn here lands BESIDE a painted one.
+//
+// So the numbers below are cosmetic, not corrective. They exist because the
+// painted sun is baked at the level's authored exposure and reads flat next to
+// real geometry in the editor, and because a diffuse painted glow on an overcast
+// map gives no crisp highlight to key off. Keep the disc modest: it is seating
+// the art, not replacing it. Turning sun_intensity up until it dominates would
+// produce two suns of different brightness, which is worse than one.
+// DrawSunDisc = 1 on every map is still true; the engine draws its own on top of
+// art that already has one.
 
 uniform sampler2D panorama : source_color, filter_linear;
 uniform float energy_multiplier = 1.0;

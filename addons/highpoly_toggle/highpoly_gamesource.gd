@@ -2968,7 +2968,7 @@ func describe_state(state_key: int, scope: String, var_hash: int,
 		if m == null:
 			d["note"] += ("  alpha slot bound but REJECTED as a cutout "
 				+ "(placeholder or wear mask) - surface drawn opaque")
-	var mat = material_for(state_key, scope, var_hash)
+	var mat = material_for(state_key, scope, var_hash, pal)
 	if mat == null:
 		d["material"] = "none (white)"
 	elif mat is ShaderMaterial:
@@ -3679,6 +3679,28 @@ func material_for(state_key: int, scope: String, var_hash := 0,
 		tex_stats["materials"] = int(tex_stats["materials"]) + 1
 		return cm
 
+	# ---- TILE PAINT ----------------------------------------------------
+	# Before the look-key share for the third time, and for the third version of
+	# the same reason: a tile-painted body binds NO colour sheet, no normal and
+	# no mask, so every one of the map's 25 tile-paint records keys alike and all
+	# of them would collapse onto whichever material was built first.
+	#
+	# SHARED BY WHAT IT PAINTS, though, which glass and carpaint above still are
+	# not: one bus placed from four subworlds resolves four state keys onto the
+	# same two palette entries, and building a material each would be four
+	# uploads of one colour.
+	var tp = _tilepaint_of(slots, consts, pal)
+	if tp != null:
+		var tpl := str((tp as Array)[1])
+		var tpm = _mat_by_look.get(tpl)
+		if tpm == null:
+			tpm = (tp as Array)[0]
+			_mat_by_look[tpl] = tpm
+			tex_stats["materials"] = int(tex_stats["materials"]) + 1
+		_mat_cache[ck] = tpm
+		tex_stats["tilepaint"] = int(tex_stats.get("tilepaint", 0)) + 1
+		return tpm
+
 	var tint = _albedo_tint(consts, pal)
 	var look := _look_key(slots, tint)
 	if _mat_by_look.has(look):
@@ -4011,6 +4033,39 @@ func _table_canon(raw):
 	return canon
 
 
+# The same grouping for the tile-paint pair: two zones are one surface only if
+# they agree on BOTH the clean colour and the aged one, since the tilebreaker
+# moves every texel between them.
+func _pair_canon(raw_a, raw_b):
+	if not (raw_a is PackedByteArray) or (raw_a as PackedByteArray).size() < 124:
+		return null
+	var canon := PackedByteArray()
+	canon.resize(8)
+	var groups := 0
+	for k in range(8):
+		canon[k] = k
+		var ak = _c3(raw_a, 16 * k)
+		var bk = _c3(raw_b, 16 * k)
+		if ak == null:
+			return null
+		for j in range(k):
+			var aj = _c3(raw_a, 16 * j)
+			var bj = _c3(raw_b, 16 * j)
+			if not (ak as Color).is_equal_approx(aj as Color):
+				continue
+			if (bk == null) != (bj == null):
+				continue
+			if bk != null and not (bk as Color).is_equal_approx(bj as Color):
+				continue
+			canon[k] = canon[j]
+			break
+		if int(canon[k]) == k:
+			groups += 1
+	if groups < 2:
+		return null
+	return canon
+
+
 # The same, for one shader state under one scope: null unless the colour table
 # is what decides this record's colour AND its entries disagree.
 #
@@ -4038,9 +4093,15 @@ func _pal_canon(state_key: int, scope: String, var_hash: int):
 			var consts: Dictionary = slots.get("constants", {})
 			slots.erase("constants")
 			if _glass_tint(slots, consts) == null \
-					and _carpaint_of(slots, consts) == null \
-					and _albedo_tint(consts) == null:
-				out = _table_canon(consts.get(C_COLOR_TABLE))
+					and _carpaint_of(slots, consts) == null:
+				# Tile paint first: it is read before the tint chain in
+				# material_for, and its zones are absolute colours rather than
+				# multipliers, so they group by the (clean, aged) PAIR.
+				if consts.has(C_TILEPAINT_A):
+					out = _pair_canon(consts.get(C_TILEPAINT_A),
+						consts.get(C_TILEPAINT_B))
+				elif _albedo_tint(consts) == null:
+					out = _table_canon(consts.get(C_COLOR_TABLE))
 	_pal_canon_cache[ck] = out
 	return out
 
@@ -4542,6 +4603,7 @@ func _tint_masked_material(slots: Dictionary, tint: Color):
 	m.set_shader_parameter("albedo_tex", albedo)
 	m.set_shader_parameter("normal_tex", mask)
 	m.set_shader_parameter("use_normal", true)
+	m.set_shader_parameter("use_paint_mask", true)
 	# LINEAR, straight through. The shader's uniform is a plain vec3 for exactly
 	# this reason (see the note there): the depot's number is a multiplier that
 	# reaches 1.92, and a source_color Color would both clamp it and linearise it
@@ -4552,6 +4614,93 @@ func _tint_masked_material(slots: Dictionary, tint: Color):
 		m.set_shader_parameter("emission_tex", emis)
 		m.set_shader_parameter("use_emission", true)
 	return m
+
+
+# ---------------------------------------------------------------------------
+# TILE PAINT: the bus, the semi trailer and the delivery van.
+#
+# 25 distinct records on mp_dumbo, 81 surfaces on the built map, and every one
+# of those 81 draws today with NO MATERIAL AT ALL — Godot's default white — for
+# a reason that is correct as far as it goes: the record binds no basecolour
+# sheet, so the "a record with no albedo is shader-computed" rule declines to
+# invent one. What it computes is a paint, and the paint is right here:
+#
+#   0xF1CEE56D  palette A, eight float3 entries, the clean colour per zone
+#   0xF1CEE56E  palette B, the same eight aged/charred
+#   0x851A1207  the tilebreaker sheet, greyscale, the lerp between them
+#   0x98D18DE2  its UV tiling (3.0 or 4.0 on this map's records)
+#   usage 0x33  the zone, per vertex, resolved into `pal` upstream
+#
+# Both palettes are ABSOLUTE COLOURS, not multipliers: there is no x2 and no
+# neutral here, and treating them like the 0.5-neutral tints would halve every
+# bus on the map.
+#
+# THE UV SCALE IS THE ONE GUESS. impl/notes/material-recipes.md reads
+# 0x98D18DE2 as the tilebreaker's tiling and marks that unconfirmed; the recipe
+# either side of it — two palettes lerped by that sheet's red channel — is the
+# most strongly evidenced thing in that document, fitted numerically against
+# in-game photographs of the bus. Getting the scale wrong changes how coarse the
+# weathering reads and nothing else: every texel still lands between two colours
+# the artist authored for this vehicle, which is why this is worth drawing and
+# white is not.
+const C_TILE_UV := 0x98D18DE2
+
+
+func _tilepaint_of(slots: Dictionary, consts: Dictionary, pal: PackedInt32Array):
+	if not consts.has(C_TILEPAINT_A):
+		return null
+	# The zone. With no selector on these vertices there is nothing to choose
+	# with, and entry 0 is the body colour on all 25 of this map's records — the
+	# only reading that is ever right by construction rather than by luck.
+	var zone := 0
+	if not pal.is_empty():
+		zone = clampi(int(pal[0]), 0, 7)
+	else:
+		tex_stats["tilepaint_zone0"] = int(tex_stats.get("tilepaint_zone0", 0)) + 1
+	var a = _c3(consts.get(C_TILEPAINT_A), 16 * zone)
+	if a == null:
+		return null
+	var b = _c3(consts.get(C_TILEPAINT_B), 16 * zone)
+	if b == null:
+		b = a
+	if _prop_tint_shader == null:
+		var dir := (get_script() as Script).resource_path.get_base_dir()
+		var s = load("%s/prop_tint.gdshader" % dir)
+		if not (s is Shader):
+			return null
+		_prop_tint_shader = s
+	var m := ShaderMaterial.new()
+	m.shader = _prop_tint_shader
+	m.set_shader_parameter("tint", Vector3((a as Color).r, (a as Color).g, (a as Color).b))
+	m.set_shader_parameter("tint_b", Vector3((b as Color).r, (b as Color).g, (b as Color).b))
+	# None of mp_dumbo's 25 tile-paint records binds a colour sheet — the paint
+	# IS the colour — but the shader multiplies by one and a record on another
+	# map that carries both should get both rather than have its sheet dropped.
+	var alb = _texture_for(slots.get("basecolor_veg", slots.get("basecolor")))
+	if alb != null:
+		m.set_shader_parameter("albedo_tex", alb)
+	var tb = _texture_for(slots.get("tilebreaker"))
+	if tb != null:
+		m.set_shader_parameter("breaker_tex", tb)
+		m.set_shader_parameter("use_breaker", true)
+		var uv = consts.get(C_TILE_UV)
+		var sc := 1.0
+		if uv is PackedByteArray and (uv as PackedByteArray).size() >= 4:
+			sc = (uv as PackedByteArray).decode_float(0)
+		m.set_shader_parameter("breaker_scale", clampf(sc, 0.01, 64.0))
+	var nrm = _texture_for(slots.get("normal_vt", slots.get("normal")), true)
+	if nrm != null:
+		m.set_shader_parameter("normal_tex", nrm)
+		# NOT as a paint mask. The mask branch multiplies the tint by this
+		# sheet's alpha, and a tile-painted body's colour is not masked by
+		# anything — it is the tilebreaker's job to vary it.
+		m.set_shader_parameter("use_normal", true)
+	# The two colours and the sheet ARE the material; the state key is not.
+	return [m, "tp|%.4f,%.4f,%.4f|%.4f,%.4f,%.4f|%s|%s|%s" % [
+		(a as Color).r, (a as Color).g, (a as Color).b,
+		(b as Color).r, (b as Color).g, (b as Color).b,
+		str(slots.get("tilebreaker", "")), str(slots.get("normal_vt", "")),
+		str(slots.get("basecolor_veg", slots.get("basecolor", "")))]]
 
 
 # `cap` overrides texture_max_dim for this one texture. 0 means "whatever the

@@ -28,12 +28,21 @@ shader_type spatial;
 // be this material quietly shading differently from its neighbour.
 render_mode cull_disabled;
 
-uniform sampler2D albedo_tex : source_color, hint_default_white, filter_linear_mipmap;
+// UNBOUND READS WHITE, which is what the tile-paint records need: they carry no
+// colour sheet at all and their paint is the whole of their colour. Spelled as
+// the absence of a hint rather than hint_default_white, so the declaration stays
+// inside the same idiom foliage_wind.gdshader is already known to compile in.
+uniform sampler2D albedo_tex : source_color, filter_linear_mipmap;
 // The `_nmt` sheet: RGB is the normal, A is the paint mask. One texture, two
 // jobs, which is why the mask costs no extra memory.
 uniform sampler2D normal_tex : hint_normal, filter_linear_mipmap;
-uniform sampler2D emission_tex : source_color, hint_default_black, filter_linear_mipmap;
+uniform sampler2D emission_tex : source_color, filter_linear_mipmap;
 uniform bool use_normal = false;
+// SEPARATE FROM use_normal ON PURPOSE. A tile-painted body binds a normal map
+// too, and its alpha is not a paint mask — masking the tile paint by it would
+// wash a bus out wherever that channel happened to dip. Only the tint path,
+// which measured this sheet's alpha and found it varying, turns the mask on.
+uniform bool use_paint_mask = false;
 uniform bool use_emission = false;
 // LINEAR, AND DELIBERATELY NOT source_color. Every Godot material colour is a
 // source_color and gets srgb_to_linear applied before the shader sees it, so a
@@ -44,11 +53,35 @@ uniform bool use_emission = false;
 uniform vec3 tint = vec3(1.0);
 uniform float normal_scale : hint_range(-16.0, 16.0) = 1.0;
 
+// TILE PAINT — the second job this shader does.
+//
+// A bus, a semi trailer and a delivery van do not ship a colour sheet at all
+// (impl/notes/material-recipes.md, recipe 1): their paint is two eight-entry
+// palettes, one clean and one aged, and a greyscale "tilebreaker" sheet that
+// says how far each texel has weathered:
+//
+//     paint[zone] = lerp(A[zone], B[zone], tilebreaker(uv))
+//
+// The zone is the same per-vertex selector the colour table uses, resolved on
+// the CPU, so what arrives here is one A and one B. This is the recipe the
+// research repo validated numerically against in-game photographs of the bus —
+// the strongest-evidenced recipe in it — and the result is bounded by two
+// authored paint colours whatever the breaker does, which is the important
+// property while its UV scale is still a guess.
+uniform vec3 tint_b = vec3(1.0);
+uniform sampler2D breaker_tex : filter_linear_mipmap;
+uniform bool use_breaker = false;
+uniform float breaker_scale = 1.0;
+
 void fragment() {
 	vec4 c = texture(albedo_tex, UV);
 	vec4 n = texture(normal_tex, UV);
-	float paint = use_normal ? n.a : 1.0;
-	ALBEDO = c.rgb * mix(vec3(1.0), tint, paint);
+	float paint = use_paint_mask ? n.a : 1.0;
+	vec3 t = tint;
+	if (use_breaker) {
+		t = mix(tint, tint_b, texture(breaker_tex, UV * breaker_scale).r);
+	}
+	ALBEDO = c.rgb * mix(vec3(1.0), t, paint);
 	if (use_normal) {
 		NORMAL_MAP = n.rgb;
 		NORMAL_MAP_DEPTH = normal_scale;
