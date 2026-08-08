@@ -3553,6 +3553,7 @@ func invalidate_materials(only: Array = []) -> Dictionary:
 	_hidden_cache.clear()
 	_tint_mask_cache.clear()
 	_decal_tex_cache.clear()
+	_smooth_cache.clear()
 	# THE ASSEMBLED-OBJECT CACHE, AND ESPECIALLY ITS FAILURES.
 	#
 	# object_rows caches a NOT-FOUND as an empty array, and nothing was clearing
@@ -3837,6 +3838,27 @@ func material_for(state_key: int, scope: String, var_hash := 0,
 			tex_stats["tint_masked"] = int(tex_stats.get("tint_masked", 0)) + 1
 			tex_stats["materials"] = int(tex_stats["materials"]) + 1
 			return tm
+
+	# ---- does this sheet carry a smoothness map? -----------------------
+	# _cs is colour+smoothness and its ALPHA is the smoothness, which nothing
+	# read: every prop drew at a flat roughness 1, so painted metal, glass-fibre
+	# panels and bare concrete all came out equally matte. A StandardMaterial3D
+	# cannot express it - its roughness_texture MULTIPLIES, and this needs
+	# 1 - alpha - so it takes the same shader the masked tint uses, which already
+	# samples the sheet and gets the channel for one subtract and no extra fetch.
+	#
+	# Content test, once per texture, like every other channel here. A sheet with
+	# a constant alpha says nothing per texel and keeps the plain material, so
+	# this does not convert the whole map to shaders for nothing.
+	var bc_guid = slots.get("basecolor_veg", slots.get("basecolor"))
+	if bc_guid != null and not slots.has("basecolor_veg") and _smooth_varies(bc_guid):
+		var sm = _smooth_material(slots, tint)
+		if sm != null:
+			_mat_cache[ck] = sm
+			_mat_by_look[look] = sm
+			tex_stats["smooth"] = int(tex_stats.get("smooth", 0)) + 1
+			tex_stats["materials"] = int(tex_stats["materials"]) + 1
+			return sm
 
 	var mat := StandardMaterial3D.new()
 	var any := false
@@ -4754,6 +4776,48 @@ func _decal_sheet(file_guid, is_normal: bool):
 	return tex if varies else null
 
 
+var _smooth_cache := {}                # texture asset -> bool, does its alpha vary
+
+
+# THE COLOUR SHEETS SMOOTHNESS, or false when its alpha says nothing per texel.
+#
+# Same instrument and the same law as every other channel test in this file:
+# decided on CONTENT, cached per texture, and the probe copy dropped as soon as
+# it has answered so it does not sit in video memory behind the full-size sheet.
+func _smooth_varies(file_guid) -> bool:
+	if file_guid == null or str(file_guid) == "":
+		return false
+	var asset = walk.gi.get(str(file_guid))
+	if asset == null:
+		return false
+	var an := str(asset).to_lower()
+	if an.ends_with(".ebx"):
+		an = an.substr(0, an.length() - 4)
+	if _smooth_cache.has(an):
+		return bool(_smooth_cache[an])
+	var small = _texture_for(file_guid, false, TINT_MASK_PROBE_DIM)
+	_tex_cache.erase("%s@%d" % [an, TINT_MASK_PROBE_DIM])
+	var img: Image = (small as ImageTexture).get_image() if small != null else null
+	if img == null:
+		_smooth_cache[an] = false
+		return false
+	var c := img.duplicate() as Image
+	if c.is_compressed() and c.decompress() != OK:
+		_smooth_cache[an] = false
+		return false
+	var lo := 2.0
+	var hi := -1.0
+	for y in range(0, c.get_height(), maxi(1, int(c.get_height() / 32))):
+		for x in range(0, c.get_width(), maxi(1, int(c.get_width() / 32))):
+			var a := c.get_pixel(x, y).a
+			lo = minf(lo, a)
+			hi = maxf(hi, a)
+	var varies := (hi - lo) > TINT_MASK_MIN_RANGE
+	_smooth_cache[an] = varies
+	tex_stats["smooth_checked"] = int(tex_stats.get("smooth_checked", 0)) + 1
+	return varies
+
+
 var _decal_shader = null
 
 # THE DECAL'S OWN GLOSS SCALE, and the only per-decal number in the record worth
@@ -4871,6 +4935,39 @@ func _tint_masked_material(slots: Dictionary, tint: Color):
 	if emis != null:
 		m.set_shader_parameter("emission_tex", emis)
 		m.set_shader_parameter("use_emission", true)
+	return m
+
+
+# The same shader as the masked tint, used only for its smoothness. Everything
+# else is exactly what the plain StandardMaterial3D path builds, so a prop that
+# takes this route must not shade differently from its neighbour that does not.
+func _smooth_material(slots: Dictionary, tint):
+	var albedo = _texture_for(slots.get("basecolor"))
+	if albedo == null:
+		return null
+	if _prop_tint_shader == null:
+		var dir := (get_script() as Script).resource_path.get_base_dir()
+		var sh = load("%s/prop_tint.gdshader" % dir)
+		if not (sh is Shader):
+			return null
+		_prop_tint_shader = sh
+	var m := ShaderMaterial.new()
+	m.shader = _prop_tint_shader
+	m.set_shader_parameter("albedo_tex", albedo)
+	m.set_shader_parameter("use_smooth", true)
+	var nrm = _texture_for(slots.get("normal", slots.get("normal_vt")), true)
+	if nrm != null:
+		m.set_shader_parameter("normal_tex", nrm)
+		m.set_shader_parameter("use_normal", true)
+	var emis = _texture_for(slots.get("emissive"))
+	if emis != null:
+		m.set_shader_parameter("emission_tex", emis)
+		m.set_shader_parameter("use_emission", true)
+	# Uniform, as the plain path applies it: the per-texel paint mask is the
+	# masked-tint path above and is a separate decision from smoothness.
+	if tint is Color:
+		m.set_shader_parameter("tint", Vector3((tint as Color).r,
+			(tint as Color).g, (tint as Color).b))
 	return m
 
 

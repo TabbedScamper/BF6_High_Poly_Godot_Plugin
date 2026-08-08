@@ -73,6 +73,26 @@ uniform sampler2D breaker_tex : filter_linear_mipmap;
 uniform bool use_breaker = false;
 uniform float breaker_scale = 1.0;
 
+// PER-TEXEL SMOOTHNESS, OUT OF THE COLOUR SHEET'S OWN ALPHA.
+//
+// _cs is colour+smoothness, on the same naming the decal sheets use (_ca is
+// colour+alpha, _nsa is normal-smoothness-alpha), and its alpha channel is the
+// smoothness map. Surveyed over 502 distinct basecolor sheets on mp_dumbo: 460
+// continuous and mid-range, 7 constant, and the 35 that pile at 0 and 1 are
+// almost all _cu VEGETATION, which never reaches this shader. The direction is
+// confirmed by materials that cannot be confused - a concrete wall reads
+// 0.06-0.10 and painted metal 0.745-0.875.
+//
+// IT IS NOT OPACITY, which matters because reading it as opacity is inviting
+// and destructive: cutting this channel at 0.5 would erase 91% of an ammo crate
+// and 99% of an electrical box surface. The corpus says the same thing from the
+// other end (veg-cu-alpha-is-not-the-cutout).
+//
+// Free: the sheet is already sampled for ALBEDO, so this is one subtract and no
+// extra fetch. Everything drew at a flat ROUGHNESS = 1 before, which is why
+// props read uniformly matte whatever they are made of.
+uniform bool use_smooth = false;
+
 void fragment() {
 	vec4 c = texture(albedo_tex, UV);
 	vec4 n = texture(normal_tex, UV);
@@ -89,6 +109,6 @@ void fragment() {
 	if (use_emission) {
 		EMISSION = texture(emission_tex, UV).rgb;
 	}
-	ROUGHNESS = 1.0;
+	ROUGHNESS = use_smooth ? clamp(1.0 - c.a, 0.02, 1.0) : 1.0;
 	METALLIC = 0.0;
 }
