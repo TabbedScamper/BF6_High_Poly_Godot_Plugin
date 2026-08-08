@@ -26,6 +26,7 @@ var _pending: Dictionary = {}        # name (or legacy path) -> true
 var _orig: Dictionary = {}           # proxy path -> stock Texture2D
 var _ours: Dictionary = {}           # texture instance id -> true (icons we set)
 var _swapped: bool = false
+var _gs_id: int = 0                  # the game source the cached icons came from
 var _timer: Timer
 var _queue: Array = []               # names waiting for a local render
 var _busy := false
@@ -58,6 +59,33 @@ func rescan_context() -> void:
 	_cache.clear()
 	_pending.clear()
 	_queue.clear()
+
+# THE GAME FIRST, exactly as the library resolves a placed prop.
+#
+# An icon should be a picture of what dropping the item actually produces, and
+# what it produces now is assembled from the install. This used to know two
+# sources: a downloaded model, and there are no downloads any more, or a
+# map-context bake, which exists only for props the open level happens to
+# contain. Everything else showed the SDK's white blockout, including every
+# object the install can assemble perfectly well.
+#
+# -> "game" when the install can build it, else a path, else "".
+func _source_for(nm: String) -> String:
+	if HighpolyLib.game_source != null and HighpolyLib.game_source.has_object(nm):
+		return "game"
+	return _local_glb(nm)
+
+
+# Which store a picture came from, so a render from one is never served as the
+# other. The map-context bake is a distance-streaming copy (merged parts,
+# half-res basecolor) and must not masquerade as the assembled model.
+func _tag_suffix(nm: String, src: String) -> String:
+	if src == "game":
+		return "_game"
+	if src == HighpolyStore.model_path(nm):
+		return ""
+	return "_ctx"
+
 
 # Local geometry we can render for this proxy, or "" if there is none.
 func _local_glb(nm: String) -> String:
@@ -128,6 +156,21 @@ func _refresh() -> void:
 		_cache.clear()
 		_pending.clear()
 		_queue.clear()
+	# THE INSTALL OPENING IS ALSO A CHANGE OF WHAT AN ICON SHOULD BE.
+	#
+	# The in-memory cache is keyed by NAME, so it cannot tell a picture rendered
+	# from a map-context bake apart from one assembled out of the game. Before
+	# the install is read the bake is the best available answer; the moment it is
+	# read it stops being. Without this the browser keeps serving the half-res
+	# distance copy for the rest of the session, and only the props the level
+	# happens to contain have an icon at all.
+	var gsid: int = HighpolyLib.game_source.get_instance_id() \
+		if HighpolyLib.game_source != null else 0
+	if gsid != _gs_id:
+		_gs_id = gsid
+		_cache.clear()
+		_pending.clear()
+		_queue.clear()
 	HighpolyStore.ctx_scan()
 	var ks := HighpolyLib.known()
 	if ks.is_empty():
@@ -143,7 +186,10 @@ func _refresh() -> void:
 			# `ks[key]` is false for registry-only proxies, but that only means the
 			# LIBRARY has not got it. The map context may already hold the same
 			# geometry, so ask for any local source rather than trusting that flag.
-			if not bool(ks[key]) and _local_glb(key) == "": continue
+			# ks[key] only says the SDK ships this proxy. Whether we can DRAW it
+			# is a different question, and the renderer is about to ask it, so
+			# ask it here rather than queue work that cannot finish.
+			if _source_for(key) == "": continue
 			if _cache.has(key):
 				var cur: Texture2D = il.get_item_icon(i)
 				if cur != _cache[key]:
@@ -226,8 +272,8 @@ func _render_one(nm: String) -> void:
 	# Without the _ctx half, a stand-in render and the real library render share
 	# one file: place an item, the library copy arrives, and the icon keeps
 	# showing the half-res distance bake with nothing to say it is stale.
-	var src0 := _local_glb(nm)
-	var tag := _mode_tag() + ("" if src0 == HighpolyStore.model_path(nm) else "_ctx")
+	var src0 := _source_for(nm)
+	var tag := _mode_tag() + _tag_suffix(nm, src0)
 	var tp := HighpolyStore.thumb_path(nm, tag)
 	if FileAccess.file_exists(tp):
 		var img := Image.load_from_file(ProjectSettings.globalize_path(tp))
@@ -242,19 +288,25 @@ func _render_one(nm: String) -> void:
 	if src == "":
 		_pending.erase(nm)
 		return
-	var ps: PackedScene = HighpolyStore.load_scene(nm) if src == HighpolyStore.model_path(nm) \
-		else HighpolyStore.load_ctx_scene(src)
-	if ps == null:
-		_pending.erase(nm)
-		return
-	_ensure_viewport()
-	var inst := ps.instantiate() as Node3D
+	var inst: Node3D = null
+	if src == "game":
+		# The same call the library makes for a placed prop, so the icon and the
+		# thing you drop are built by one path and cannot disagree about what the
+		# object looks like.
+		inst = HighpolyLib.game_source.object_node(nm)
+	else:
+		var ps: PackedScene = HighpolyStore.load_scene(nm) \
+			if src == HighpolyStore.model_path(nm) \
+			else HighpolyStore.load_ctx_scene(src)
+		if ps != null:
+			inst = ps.instantiate() as Node3D
 	if inst == null:
 		_pending.erase(nm)
 		return
+	_ensure_viewport()
 	# Skin the render the same way the scene will be skinned, so the icon is a
 	# picture of what dropping this item actually produces.
-	if tag == "clay":
+	if _mode_tag() == "clay":
 		var stack: Array = [inst]
 		while not stack.is_empty():
 			var n: Node = stack.pop_back()
