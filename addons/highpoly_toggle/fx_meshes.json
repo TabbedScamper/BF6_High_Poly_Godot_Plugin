@@ -1,0 +1,458 @@
+{
+ "eg_airplane_overwingvapor": {
+  "distinct": 3,
+  "mesh": "common/fx/vehicles/aircraft/vapor/meshes/meshp_f16_overwingvapor_mesh",
+  "n": 1,
+  "total": 3,
+  "tris": 96,
+  "verts": 80
+ },
+ "eg_ambwar_aadefensesystem_interceptor_missile_target_parent": {
+  "distinct": 1,
+  "mesh": "common/fx/ambientwarfare/meshes/meshp_missile_aim9x_mesh",
+  "n": 1,
+  "total": 1,
+  "tris": 595,
+  "verts": 870
+ },
+ "eg_attitudeindicator": {
+  "distinct": 1,
+  "mesh": "common/fx/vehicles/aircraft/displays/meshes/meshp_f16_backup_attitude_indicator_mesh",
+  "n": 1,
+  "total": 1,
+  "tris": 32,
+  "verts": 34
+ },
+ "eg_bird_flocking_es": {
+  "distinct": 2,
+  "mesh": "common/fx/emittergraph/birds/meshes/meshp_bird_black_01_mesh",
+  "n": 1,
+  "total": 2,
+  "tris": 170,
+  "verts": 490
+ },
+ "eg_debrisclusteroid_es": {
+  "distinct": 6,
+  "mesh": "common/fx/destruction/meshes/multimesh/meshp_acunit_01_mesh",
+  "n": 1,
+  "total": 6,
+  "tris": 520,
+  "verts": 741
+ },
+ "eg_debrisclusteroid_many_altstate_4p": {
+  "distinct": 1,
+  "mesh": "common/fx/debris/vfxdebris_clusteroids/asphalt/meshp_asphalt_clusteroid_sml_4p_mesh",
+  "n": 2,
+  "total": 2,
+  "tris": 556,
+  "verts": 457
+ },
+ "eg_debrisclusteroid_many_es_16p": {
+  "distinct": 3,
+  "mesh": "common/fx/debris/vfxdebris_clusteroids/wood/meshp_wood_clusteroid_ml_16p_mesh",
+  "n": 3,
+  "total": 5,
+  "tris": 634,
+  "verts": 935
+ },
+ "eg_debrisclusteroid_many_es_24p": {
+  "distinct": 2,
+  "mesh": "common/fx/debris/vfxdebris_clusteroids/concrete/meshp_concrete_clusteroid_sml_24p_mesh",
+  "n": 7,
+  "total": 11,
+  "tris": 2604,
+  "verts": 1932
+ },
+ "eg_debrisclusteroid_many_es_24p_destructiondamage": {
+  "distinct": 1,
+  "mesh": "common/fx/debris/vfxdebris_clusteroids/wood/meshp_wood_clusteroid_sml_24p_mesh",
+  "n": 7,
+  "total": 7,
+  "tris": 844,
+  "verts": 2382
+ },
+ "eg_debrisclusteroid_many_es_2p": {
+  "distinct": 1,
+  "mesh": "common/fx/debris/vfxdebris_clusteroids/metal/meshp_metal_clusteroid_l_mesh",
+  "n": 5,
+  "total": 5,
+  "tris": 404,
+  "verts": 345
+ },
+ "eg_debrisclusteroid_many_es_4p": {
+  "distinct": 5,
+  "mesh": "common/fx/debris/vfxdebris_clusteroids/treebranch/meshp_treebranch_clusteroid_ml_4p_mesh",
+  "n": 7,
+  "total": 20,
+  "tris": 720,
+  "verts": 568
+ },
+ "eg_debrisclusteroid_many_es_6p": {
+  "distinct": 2,
+  "mesh": "common/fx/debris/vfxdebris_clusteroids/metal/meshp_metal_clusteroid_sm_mesh",
+  "n": 10,
+  "total": 16,
+  "tris": 308,
+  "verts": 388
+ },
+ "eg_debrisclusteroid_many_es_7p": {
+  "distinct": 4,
+  "mesh": "common/fx/debris/vfxdebris_clusteroids/plastic/meshp_plastic_clusteroid_sm_7p_mesh",
+  "n": 23,
+  "total": 45,
+  "tris": 404,
+  "verts": 569
+ },
+ "eg_debrisclusteroid_many_es_8p": {
+  "distinct": 5,
+  "mesh": "common/fx/debris/vfxdebris_clusteroids/stone/meshp_stone_clusteroid_sml_8p_mesh",
+  "n": 39,
+  "total": 60,
+  "tris": 698,
+  "verts": 518
+ },
+ "eg_debrisclusteroid_shells_continuous_es": {
+  "distinct": 17,
+  "mesh": "common/fx/weapons/shellejections/meshes/meshp_shelleject_5_56x45_clusteroid_mesh",
+  "n": 19,
+  "total": 90,
+  "tris": 288,
+  "verts": 269
+ },
+ "eg_debrisclusteroid_simplecollisionobject_es": {
+  "distinct": 33,
+  "mesh": "common/fx/gadgets/grenades/smoke/meshes/meshp_m18_smoke_strikelever_mesh",
+  "n": 2,
+  "total": 39,
+  "tris": 256,
+  "verts": 308
+ },
+ "eg_electicity_es": {
+  "distinct": 3,
+  "mesh": "common/fx/emittergraph/electricity/meshes/meshp_electricarc_32_nobranching_es_mesh",
+  "n": 10,
+  "total": 17,
+  "tris": 126,
+  "verts": 128
+ },
+ "eg_hallucinogenic_soldiermirage": {
+  "distinct": 2,
+  "mesh": "common/fx/meshes/psygas/meshp_soldiermirage_standing_l2_s_mesh",
+  "n": 1,
+  "total": 2,
+  "tris": 1777,
+  "verts": 2282
+ },
+ "eg_heathaze_gpu": {
+  "distinct": 1,
+  "mesh": "common/fx/emittergraph/distortion/mesh/meshp_distortion_sphere_mesh",
+  "n": 1,
+  "total": 1,
+  "tris": 364,
+  "verts": 223
+ },
+ "eg_jet_afterburner_internals": {
+  "distinct": 3,
+  "mesh": "common/fx/vehicles/aircraft/afterburners/meshes/meshp_f22_afterburnerinternals_mesh",
+  "n": 1,
+  "total": 3,
+  "tris": 320,
+  "verts": 264
+ },
+ "eg_meshdebris_single_burst_es_multix4": {
+  "distinct": 5,
+  "mesh": "common/fx/destruction/meshes/multimesh/meshp_trashdebris_x4_2_5_glassbottle_01_mesh",
+  "n": 5,
+  "total": 12,
+  "tris": 492,
+  "verts": 507
+ },
+ "eg_meshdebris_single_burst_es_multix8": {
+  "distinct": 2,
+  "mesh": "common/fx/destruction/meshes/multimesh/meshp_trashdebris_x8_2_5_trash_01_mesh",
+  "n": 6,
+  "total": 8,
+  "tris": 658,
+  "verts": 723
+ },
+ "eg_meshp_fluid_01": {
+  "distinct": 2,
+  "mesh": "common/fx/emittergraph/fluid/meshes/meshp_fluid_01_mesh",
+  "n": 28,
+  "total": 45,
+  "tris": 2274,
+  "verts": 2411
+ },
+ "eg_projectile_mesh_velocity_aligned": {
+  "distinct": 3,
+  "mesh": "common/fx/vehicles/weapons/guns/meshes/meshp_he_shell_mesh",
+  "n": 2,
+  "total": 6,
+  "tris": 414,
+  "verts": 448
+ },
+ "eg_projectile_mk82_air_animated": {
+  "distinct": 1,
+  "mesh": "common/fx/vehicles/weapons/bombs/meshp_projectile_mk82air_mesh",
+  "n": 2,
+  "total": 2,
+  "tris": 3509,
+  "verts": 3096
+ },
+ "eg_projectile_sabot_petal": {
+  "distinct": 3,
+  "mesh": "common/fx/vehicles/weapons/guns/meshes/meshp_m830a1_mpat_sabot_petal_mesh",
+  "n": 6,
+  "total": 14,
+  "tris": 336,
+  "verts": 316
+ },
+ "eg_propdest_meshp_altstate": {
+  "distinct": 4,
+  "mesh": "common/fx/meshes/debris/meshp_rock_piece_2_mesh",
+  "n": 5,
+  "total": 12,
+  "tris": 84,
+  "verts": 236
+ },
+ "eg_propdest_shard_meshp_geo_box": {
+  "distinct": 65,
+  "mesh": "common/fx/destruction/meshes/wood/meshp_env_wood_chunk_02_mesh",
+  "n": 82,
+  "total": 618,
+  "tris": 108,
+  "verts": 163
+ },
+ "eg_propdest_shard_meshp_geo_box_destructiondamage": {
+  "distinct": 1,
+  "mesh": "common/fx/meshes/debris/meshp_stone_debris_mesh",
+  "n": 14,
+  "total": 14,
+  "tris": 192,
+  "verts": 121
+ },
+ "eg_propdest_shard_meshp_geo_box_footstep": {
+  "distinct": 1,
+  "mesh": "common/fx/destruction/meshes/wood/meshp_env_wood_chunk_02_mesh",
+  "n": 2,
+  "total": 2,
+  "tris": 108,
+  "verts": 163
+ },
+ "eg_propdest_shard_meshp_geo_box_rotxyz_norollyawpitch": {
+  "distinct": 31,
+  "mesh": "common/fx/destruction/meshes/wood/meshp_env_woodshards_02_mesh",
+  "n": 14,
+  "total": 121,
+  "tris": 76,
+  "verts": 100
+ },
+ "eg_propdest_shard_meshp_geo_supersphere": {
+  "distinct": 47,
+  "mesh": "common/fx/meshes/debris/meshp_metal_plank_02_mesh",
+  "n": 84,
+  "total": 385,
+  "tris": 280,
+  "verts": 304
+ },
+ "eg_propdest_shard_meshp_geo_supersphere_contin": {
+  "distinct": 8,
+  "mesh": "common/fx/destruction/meshes/concrete/meshp_concrete_debris_c_mesh",
+  "n": 24,
+  "total": 61,
+  "tris": 90,
+  "verts": 75
+ },
+ "eg_propdest_shard_meshp_geo_supersphere_destructiondamage": {
+  "distinct": 8,
+  "mesh": "common/fx/meshes/debris/meshp_rock_piece_2_mesh",
+  "n": 43,
+  "total": 61,
+  "tris": 84,
+  "verts": 236
+ },
+ "eg_propdest_shard_meshp_geo_supersphere_parentrot": {
+  "distinct": 7,
+  "mesh": "common/fx/destruction/meshes/metal/meshp_metal_strip_c_mesh",
+  "n": 4,
+  "total": 19,
+  "tris": 32,
+  "verts": 33
+ },
+ "eg_propdest_shard_meshp_geo_supersphere_terrainspawn": {
+  "distinct": 3,
+  "mesh": "common/fx/meshes/debris/meshp_rock_generic_01_mesh",
+  "n": 2,
+  "total": 4,
+  "tris": 44,
+  "verts": 112
+ },
+ "eg_propdest_shard_meshp_sphere_deprecated": {
+  "distinct": 1,
+  "mesh": "common/fx/destruction/meshes/brick/meshp_brick_d_mesh",
+  "n": 1,
+  "total": 1,
+  "tris": 92,
+  "verts": 81
+ },
+ "eg_propdest_shard_unitquad_box": {
+  "distinct": 15,
+  "mesh": "common/fx/meshes/debris/meshp_papershape_01_mesh",
+  "n": 18,
+  "total": 641,
+  "tris": 56,
+  "verts": 48
+ },
+ "eg_propdest_shard_unitquad_box_rate": {
+  "distinct": 3,
+  "mesh": "common/fx/meshes/debris/meshp_papershape_01_mesh",
+  "n": 4,
+  "total": 7,
+  "tris": 56,
+  "verts": 48
+ },
+ "eg_propdest_shard_unitquad_box_rotxyz_norollyawpitch": {
+  "distinct": 4,
+  "mesh": "common/fx/meshes/debris/meshp_metal_plank_thick_mesh",
+  "n": 1,
+  "total": 23,
+  "tris": 112,
+  "verts": 154
+ },
+ "eg_propdest_shard_unitquad_front_supersphere": {
+  "distinct": 4,
+  "mesh": "common/fx/meshes/debris/meshp_clay_shard01_mesh",
+  "n": 4,
+  "total": 167,
+  "tris": 44,
+  "verts": 58
+ },
+ "eg_propdest_shard_unitquad_supersphere": {
+  "distinct": 5,
+  "mesh": "common/fx/meshes/debris/vegetations/meshp_tree_branch_thin_02_mesh",
+  "n": 13,
+  "total": 79,
+  "tris": 24,
+  "verts": 26
+ },
+ "eg_propdest_soft_unitquad_box_flag_test": {
+  "distinct": 1,
+  "mesh": "common/fx/mesh/legacy/debris/vfxm_sheet_y_md_flag_rus_mesh",
+  "n": 1,
+  "total": 1,
+  "tris": 200,
+  "verts": 121
+ },
+ "eg_propdest_softmesh_burst": {
+  "distinct": 8,
+  "mesh": "common/fx/meshes/debris/vfxm_sheet_y_md_mesh",
+  "n": 210,
+  "total": 275,
+  "tris": 200,
+  "verts": 121
+ },
+ "eg_propdest_softmesh_burst_footstep": {
+  "distinct": 1,
+  "mesh": "common/fx/meshes/debris/vfxm_sheet_y_md_mesh",
+  "n": 1,
+  "total": 1,
+  "tris": 200,
+  "verts": 121
+ },
+ "eg_psygas_hallucination_tracer": {
+  "distinct": 1,
+  "mesh": "common/fx/emittergraph/tracers/meshes/meshp_tracer_straight_mesh",
+  "n": 1,
+  "total": 1,
+  "tris": 68,
+  "verts": 53
+ },
+ "eg_re_propdest_edgemodelseams_meshp_geo_box": {
+  "distinct": 8,
+  "mesh": "common/fx/meshes/debris/meshp_env_concretewall_01_mesh",
+  "n": 4,
+  "total": 15,
+  "tris": 84,
+  "verts": 87
+ },
+ "eg_soldier_meshp_fluid_sliding_feet_01": {
+  "distinct": 1,
+  "mesh": "common/fx/emittergraph/fluid/meshes/meshp_fluid_02_mesh",
+  "n": 2,
+  "total": 2,
+  "tris": 3448,
+  "verts": 3325
+ },
+ "eg_static_meshp": {
+  "distinct": 2,
+  "mesh": "common/fx/meshes/debris/meshp_env_metal_components_14_mesh",
+  "n": 1,
+  "total": 2,
+  "tris": 36,
+  "verts": 46
+ },
+ "eg_tracer_es": {
+  "distinct": 2,
+  "mesh": "common/fx/emittergraph/tracers/meshes/meshp_tracer_straight_mesh",
+  "n": 34,
+  "total": 41,
+  "tris": 68,
+  "verts": 53
+ },
+ "eg_underwater_frustrum_meshp_es": {
+  "distinct": 4,
+  "mesh": "common/fx/meshes/generic/meshp_water_seaweed_mesh",
+  "n": 1,
+  "total": 4,
+  "tris": 512,
+  "verts": 324
+ },
+ "eg_vat_softbody_chute_burst_es": {
+  "distinct": 2,
+  "mesh": "common/fx/vehicles/airdrop/mesh/meshp_airdrop_chutes_single_01_es_mesh",
+  "n": 2,
+  "total": 4,
+  "tris": 600,
+  "verts": 1199
+ },
+ "eg_vegdest_shard_unitquad_leaves_burst": {
+  "distinct": 16,
+  "mesh": "common/fx/destruction/meshes/vegetation/meshp_veg_bush_branch_s_mesh",
+  "n": 10,
+  "total": 90,
+  "tris": 5,
+  "verts": 9
+ },
+ "eg_vegdest_shard_unitquad_leaves_burst_footstep": {
+  "distinct": 2,
+  "mesh": "common/fx/destruction/meshes/vegetation/meshp_veg_bush_branch_s_mesh",
+  "n": 1,
+  "total": 3,
+  "tris": 5,
+  "verts": 9
+ },
+ "eg_velocitystabilized_projectile_antitank_grenade": {
+  "distinct": 1,
+  "mesh": "common/fx/gadgets/grenades/antitank/meshes/meshp_antitank_grenade_mesh",
+  "n": 1,
+  "total": 1,
+  "tris": 1176,
+  "verts": 1733
+ },
+ "eg_volumedecalos_ring_hs": {
+  "distinct": 2,
+  "mesh": "common/fx/thering/mesh/meshp_volumedecal_tube_gnt_foam_mesh",
+  "n": 1,
+  "total": 2,
+  "tris": 512,
+  "verts": 520
+ },
+ "eg_volumedecalos_spring": {
+  "distinct": 1,
+  "mesh": "common/fx/thering/mesh/meshp_volumedecal_tube_gnt_granite_mesh",
+  "n": 1,
+  "total": 1,
+  "tris": 512,
+  "verts": 520
+ }
+}

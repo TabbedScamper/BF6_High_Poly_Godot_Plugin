@@ -128,6 +128,7 @@ static func apply(root: Node, map: String, on: bool, progress := Callable(),
 	# Sheets first, so no material is baked untextured and then cached (see
 	# _prime_sheets). Cheap after the first run: they are cached as PNG.
 	var n_sheets := _prime_sheets(gs)
+	var n_meshes := _prime_meshes(gs)
 	var n_want := _sheet_tbl.size()
 	var p := "user://mapcontext/%s/fx.json" % map
 	if not FileAccess.file_exists(p):
@@ -143,6 +144,7 @@ static func apply(root: Node, map: String, on: bool, progress := Callable(),
 	var authored := 0
 	var skipped := 0
 	var nonsprite := 0
+	var decals := 0
 	var all: Array = d.get("fx", [])
 	var seen := 0
 	var slice := Time.get_ticks_msec()
@@ -195,6 +197,24 @@ static func apply(root: Node, map: String, on: bool, progress := Callable(),
 		# So draw what can be drawn correctly and COUNT the rest into the status
 		# line. A coloured square that reads as a solid lit cube is a wrong
 		# answer; nothing, said out loud, is an honest one.
+		# VOLUME DECALS GET A DECAL, NOT A BILLBOARD. All 34 projection meshes
+		# measure exactly +/-1, so the real extent is the emitter transform's
+		# basis scale and the flattened axis is always Y. fx.json records only
+		# position and yaw, so the box falls back to the commonest authored
+		# scale rather than being invented per point.
+		if gp is Dictionary and str((gp as Dictionary).get("family", "")) == "volumedecals":
+			var pos2: Array = f.get("pos", [0, 0, 0])
+			var dc := Decal.new()
+			dc.size = DECAL_BOX
+			dc.texture_albedo = _decal_texture()
+			dc.modulate = _colour_of(gp, CLASS_FALLBACK[cls])
+			dc.position = Vector3(pos2[0], pos2[1], pos2[2])
+			dc.rotation.y = float(f.get("yaw", 0.0))
+			holder.add_child(dc)
+			dc.owner = null
+			decals += 1
+			continue
+
 		if not _drawable(effect, gp):
 			nonsprite += 1
 			continue
@@ -211,6 +231,10 @@ static func apply(root: Node, map: String, on: bool, progress := Callable(),
 	var msg := "FX: %d emitters, %d with authored parameters (%d%%)" % [
 		n, authored, (authored * 100 / maxi(n, 1))]
 	msg += ", %d of %d flipbooks from the game" % [n_sheets, n_want]
+	if n_meshes > 0:
+		msg += ", %d graphs draw real debris geometry" % n_meshes
+	if decals > 0:
+		msg += ", %d volume decals" % decals
 	if nonsprite > 0:
 		msg += ". %d points are mesh, decal, spark or light effects rather than billboards, and are not drawn" % nonsprite
 	if skipped > 0:
@@ -268,6 +292,14 @@ static var _sheet_tbl_loaded := false
 const SHEETS_PATH := "res://addons/highpoly_toggle/fx_sheets.json"
 const SIZES_PATH := "res://addons/highpoly_toggle/fx_sizes.json"
 static var _sizes: Dictionary = {}      # lowercase graph name -> {size, field, n, ...}
+# MESH PARTICLES. The propdest and clusteroid graphs import a 3-vertex default
+# triangle as a placeholder and each EFFECT substitutes the real chunk, so the
+# graph looks mesh-less while the 210 debris-pile points on Aftermath actually
+# draw a 158-vertex wood shard. This is the mesh most often substituted per
+# graph, util placeholders and anything over 4k triangles excluded.
+const MESHES_PATH := "res://addons/highpoly_toggle/fx_meshes.json"
+static var _meshtbl: Dictionary = {}    # lowercase graph name -> {mesh, verts, tris}
+static var _meshes: Dictionary = {}     # lowercase graph name -> Mesh or null
 const SHEET_CACHE := "user://fxsheets"
 # Cap on the usable width AFTER the LeftRightTiles crop. The mip chain is right
 # there in the header, so a smaller sheet is a smaller mip of the game's own
@@ -350,8 +382,11 @@ static func _sweep_stale_cache() -> void:
 # graphs `dummy`. A Decal node is the right primitive for the first of those and
 # is not built yet.
 const NO_DRAW_FAMILIES := {
-	"volumedecals": true, "dummy": true, "debug": true, "lights": true,
+	"dummy": true, "debug": true, "lights": true,
 }
+# The commonest authored volume-decal box, doubled from the half-extent basis:
+# (1,1,1) on 129 of 250 emitter rows, then (1.24,0.3,1.2) and (2.0,0.3,2.0).
+const DECAL_BOX := Vector3(2.0, 2.0, 2.0)
 
 
 # Is this graph something a camera-facing quad can honestly stand in for?
@@ -395,6 +430,59 @@ static func _load_sheet_table() -> void:
 		var sz: Variant = JSON.parse_string(FileAccess.get_file_as_string(SIZES_PATH))
 		if sz is Dictionary:
 			_sizes = sz
+	if FileAccess.file_exists(MESHES_PATH):
+		var mt: Variant = JSON.parse_string(FileAccess.get_file_as_string(MESHES_PATH))
+		if mt is Dictionary:
+			_meshtbl = mt
+
+
+# Real geometry for the mesh-emitter graphs, resolved once per distinct mesh.
+static func _prime_meshes(gs) -> int:
+	if gs == null or gs.src == null or not gs.has_method("mesh_for"):
+		return 0
+	var by_res := {}
+	for g in _meshtbl.keys():
+		if _meshes.has(g):
+			continue
+		var rec: Variant = _meshtbl[g]
+		if not (rec is Dictionary):
+			continue
+		var rn := str((rec as Dictionary).get("mesh", ""))
+		if rn == "":
+			continue
+		if not by_res.has(rn):
+			by_res[rn] = gs.mesh_for(rn)
+		_meshes[g] = by_res[rn]
+	var n := 0
+	for g in _meshes.keys():
+		if _meshes[g] != null:
+			n += 1
+	return n
+
+
+# A soft radial falloff for the volume decals.
+#
+# STAND-IN, AND SAID SO. The scorch and soot marks have no decal texture
+# anywhere in the EBX - an exhaustive walk of 592 graph partitions found no
+# decal texture field at all, and the mark's art lives inside the compiled
+# GraphEmVSF shader. This is a generated gradient, not game art and not
+# something downloaded; it carries the authored COLOUR and the authored BOX,
+# which are real, and makes no claim about the pattern.
+static var _decal_tex: Texture2D = null
+
+static func _decal_texture() -> Texture2D:
+	if _decal_tex != null:
+		return _decal_tex
+	var n := 64
+	var img := Image.create(n, n, false, Image.FORMAT_RGBA8)
+	var c := (n - 1) * 0.5
+	for y in range(n):
+		for x in range(n):
+			var d := Vector2(x - c, y - c).length() / c
+			var a := clampf(1.0 - d * d, 0.0, 1.0)
+			img.set_pixel(x, y, Color(1, 1, 1, a))
+	_decal_tex = ImageTexture.create_from_image(img)
+	return _decal_tex
 
 
 # {"tex", "cols", "rows", "frames"} for one graph's sheet, or an empty dict.
@@ -663,6 +751,14 @@ static func _build_mats(cls: String, gp: Variant) -> Array:
 
 	qm.size = Vector2(size, size)
 	qm.material = dm
+	# REAL GEOMETRY WHERE THE GAME SUBSTITUTES IT. mesh_for returns the mesh
+	# already dressed through the depot, so these arrive textured rather than
+	# tinted. The authored SpawnSize is a mesh scale, not a quad edge, so it is
+	# deliberately not applied here - the chunk is drawn at its authored size.
+	var gm: Variant = _meshes.get(ck.to_lower())
+	if gm is Mesh:
+		_mats[ck] = [pm, gm]
+		return _mats[ck]
 	_mats[ck] = [pm, qm]
 	return _mats[ck]
 

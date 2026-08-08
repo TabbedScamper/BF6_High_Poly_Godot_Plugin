@@ -77,6 +77,13 @@
   "sheet": "common/fx/textures/water/t_waterbubbles_2x4_d",
   "total": 7
  },
+ "eg_gs_basicchunks_impact_sub": {
+  "distinct": 1,
+  "n": 1,
+  "sheet": "common/fx/textures/debris/t_debris_finedetail_03_d",
+  "total": 1,
+  "via": "graph"
+ },
  "eg_gs_basicchunks_moving_01": {
   "distinct": 1,
   "n": 1,
@@ -173,6 +180,13 @@
   "sheet": "common/fx/textures/fire/t_anim_fireturbulent_01_6x36_d",
   "total": 54
  },
+ "eg_gs_basicfire_terrainsnap_01_snapeveryframe": {
+  "distinct": 1,
+  "n": 1,
+  "sheet": "common/fx/textures/fire/t_anim_fireturbulent_01_6x36_d",
+  "total": 1,
+  "via": "graph"
+ },
  "eg_gs_basicfiresmoke_ringmimicchild_hs": {
   "distinct": 1,
   "n": 5,
@@ -220,6 +234,13 @@
   "n": 7,
   "sheet": "common/fx/textures/smoke/t_clasticsmoke_tg1_8x64_01_d",
   "total": 20
+ },
+ "eg_gs_basicsmoke_camheightfade": {
+  "distinct": 1,
+  "n": 1,
+  "sheet": "common/fx/textures/smoke/t_clasticsmoke_tg1_8x64_01_d",
+  "total": 1,
+  "via": "graph"
  },
  "eg_gs_basicsmoke_dist_mimicparent_01": {
   "distinct": 4,
@@ -335,6 +356,13 @@
   "sheet": "common/fx/textures/smoke/t_smokepuff_tg1_6x36_d",
   "total": 1
  },
+ "eg_gs_basicsmoke_terrainsnap_endeffect": {
+  "distinct": 1,
+  "n": 1,
+  "sheet": "common/fx/textures/smoke/t_smoke_puff_4x8_d",
+  "total": 1,
+  "via": "graph"
+ },
  "eg_gs_basicsmoke_terrainsnap_schematic": {
   "distinct": 1,
   "n": 5,
@@ -430,6 +458,13 @@
   "n": 3,
   "sheet": "common/fx/textures/smoke/t_smokepuff_tg1_6x36_d",
   "total": 3
+ },
+ "eg_gs_cohesivesmoke_preroll_5pt_01": {
+  "distinct": 1,
+  "n": 1,
+  "sheet": "common/fx/textures/smoke/t_clasticsmoke_tg1_8x64_01_d",
+  "total": 1,
+  "via": "graph"
  },
  "eg_gs_dust_excl_hrztrpz_02": {
   "distinct": 4,
@@ -598,6 +633,13 @@
   "n": 4,
   "sheet": "common/fx/textures/blood/t_bloodsplats_8x4",
   "total": 8
+ },
+ "eg_rotorblade_vortex_ring": {
+  "distinct": 1,
+  "n": 1,
+  "sheet": "common/fx/textures/shapes/t_wingtipvortexring",
+  "total": 1,
+  "via": "graph"
  },
  "eg_soldier_sliding_feet_01": {
   "distinct": 3,
