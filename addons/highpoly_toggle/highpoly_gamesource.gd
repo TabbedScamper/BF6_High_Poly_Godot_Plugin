@@ -3554,6 +3554,7 @@ func invalidate_materials(only: Array = []) -> Dictionary:
 	_tint_mask_cache.clear()
 	_decal_tex_cache.clear()
 	_smooth_cache.clear()
+	_emissive_mats.clear()
 	# THE ASSEMBLED-OBJECT CACHE, AND ESPECIALLY ITS FAILURES.
 	#
 	# object_rows caches a NOT-FOUND as an empty array, and nothing was clearing
@@ -3882,6 +3883,7 @@ func material_for(state_key: int, scope: String, var_hash := 0,
 		# The same switch as the shader path, so a lamp does not depend on which
 		# material class it happened to take.
 		mat.emission_energy_multiplier = prop_emission
+		_emissive_mats.append(mat)
 		any = true
 	if tint is Color:
 		# Applied UNIFORMLY, which is the honest approximation and not the whole
@@ -4786,6 +4788,37 @@ func _decal_sheet(file_guid, is_normal: bool):
 # the dock can set it and re-dress without threading it through every call.
 static var prop_emission := 1.0
 
+# EVERY MATERIAL THAT CARRIES A GLOW, so the switch can change one number on a
+# few dozen of them instead of rebuilding the map.
+#
+# Toggling Prop Lighting used to call invalidate_materials, which re-resolves
+# every surface from the depot: 13,097 surfaces, MEASURED AT 12.7 SECONDS in the
+# user's own log. All of that to change an emission multiplier - and only 53 of
+# 1,075 sampled records bind a lit sheet at all, so 99% of the work could not
+# change a pixel.
+#
+# The materials are shared between the map context and the props the builder
+# placed (both resolve through _mat_cache), so setting the parameter in place
+# updates everything at once with no rebuild and no re-dress.
+var _emissive_mats: Array = []
+
+
+# Returns how many materials it touched. Dead ones are dropped as they are found,
+# so a scene change does not leak them.
+func set_prop_emission(v: float) -> int:
+	prop_emission = v
+	var alive: Array = []
+	for m in _emissive_mats:
+		if not is_instance_valid(m):
+			continue
+		if m is ShaderMaterial:
+			(m as ShaderMaterial).set_shader_parameter("emission_energy", v)
+		elif m is StandardMaterial3D:
+			(m as StandardMaterial3D).emission_energy_multiplier = v
+		alive.append(m)
+	_emissive_mats = alive
+	return alive.size()
+
 var _smooth_cache := {}                # texture asset -> bool, does its alpha vary
 
 
@@ -5004,6 +5037,7 @@ func _tint_masked_material(slots: Dictionary, tint: Color):
 		m.set_shader_parameter("emission_tex", emis)
 		m.set_shader_parameter("use_emission", true)
 		m.set_shader_parameter("emission_energy", prop_emission)
+		_emissive_mats.append(m)
 	return m
 
 
@@ -5035,6 +5069,7 @@ func _smooth_material(slots: Dictionary, tint):
 		m.set_shader_parameter("emission_tex", emis)
 		m.set_shader_parameter("use_emission", true)
 		m.set_shader_parameter("emission_energy", prop_emission)
+		_emissive_mats.append(m)
 	# Uniform, as the plain path applies it: the per-texel paint mask is the
 	# masked-tint path above and is a separate decision from smoothness.
 	if tint is Color:

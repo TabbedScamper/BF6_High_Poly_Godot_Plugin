@@ -3712,20 +3712,27 @@ func _set_prop_lighting(on: bool) -> void:
 	# switched off, which draws the lit sheet at the strength the artist gave it -
 	# and a lamp's lit sheet is a lit sheet, so every bulb still glowed. A switch
 	# labelled Prop Lighting that leaves the bulbs on is just wrong.
-	GameSourceScript.prop_emission = PROP_EMISSION_ON if on else 0.0
 	var r := EditorInterface.get_edited_scene_root()
 	var n: int = LightingScript.set_prop_lights_shown(r, on)
+	# ONE NUMBER ON A FEW DOZEN MATERIALS, not a rebuild.
+	#
+	# This used to call invalidate_materials and then re-apply every placed
+	# overlay. That re-resolves every surface from the depot - 13,097 of them,
+	# measured at 12.7 SECONDS in the user's log - to change an emission
+	# multiplier, and 99% of those surfaces have no glow to change. The materials
+	# are shared between the map context and placed props, so setting the
+	# parameter in place reaches both and nothing has to be rebuilt at all.
+	var want: float = PROP_EMISSION_ON if on else 0.0
 	var gs = mapctx.game_source if mapctx != null else null
-	if gs != null and gs.has_method("invalidate_materials"):
-		var st: Dictionary = gs.invalidate_materials()
-		# AND THE OBJECTS THE USER PLACED. invalidate_materials re-dresses the
-		# meshes the MAP CONTEXT recorded; a placed prop's overlay is not one of
-		# them, and a lamp the builder placed is exactly what this switch is for.
-		# Same mechanism the materials reload uses.
-		LibScript.build_epoch += 1
-		_swap_placed_after_build()
-		Log.info("Prop lighting %s: %d fixture(s), %d mesh(es) re-dressed"
-			% ["on" if on else "off", n, st["meshes"]])
+	if gs != null and gs.has_method("set_prop_emission"):
+		var t0 := Time.get_ticks_msec()
+		var touched: int = gs.set_prop_emission(want)
+		Log.info("Prop lighting %s: %d fixture(s), %d material(s) in %d ms"
+			% ["on" if on else "off", n, touched, Time.get_ticks_msec() - t0])
+	else:
+		# No map open yet. Nothing exists to update, but the value has to be
+		# right for whatever gets built next.
+		GameSourceScript.prop_emission = want
 	lbl.text = "Prop lighting " + ("on" if on else "off")
 	_save_mapctx_state()
 
