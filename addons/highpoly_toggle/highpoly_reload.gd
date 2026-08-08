@@ -213,15 +213,29 @@ const MIXED_FILES := ["highpoly_gamesource.gd", "highpoly_mapcontext.gd",
 	"highpoly_lib.gd", "highpoly_scatter.gd"]
 
 
-static func impact(names: Array) -> String:
+# `geom_changed` is whether HighpolyGameSource.geom_epoch() moved across the
+# reload, and it overrides both geometry verdicts.
+#
+# The file lists alone cannot answer "are the meshes on screen stale". Every file
+# on them contains code that builds geometry AND code that does not, so adding a
+# progress callback to bf6_walk.gd came out as "rebuild the whole map" when it
+# cannot move a vertex. A rebuild costs the user a minute or more, so it should
+# be something the author of a change STATES, by bumping the epoch, rather than
+# something inferred from which file an edit happened to land in.
+#
+# Defaults to true so a caller that does not know keeps the old, pessimistic
+# answer. The two mistakes are not symmetrical: telling someone to rebuild when
+# they need not costs a minute, and not telling them when they must leaves them
+# looking at a map that is quietly wrong.
+static func impact(names: Array, geom_changed := true) -> String:
 	if names.is_empty():
 		return "none"
 	for n in names:
 		if GEOMETRY_FILES.has(str(n)):
-			return "geometry"
+			return "geometry" if geom_changed else "materials"
 	for n in names:
 		if MIXED_FILES.has(str(n)):
-			return "mixed"
+			return "mixed" if geom_changed else "materials"
 	for n in names:
 		if not COSMETIC_FILES.has(str(n)):
 			return "materials"

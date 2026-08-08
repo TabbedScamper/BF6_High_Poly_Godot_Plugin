@@ -1630,6 +1630,12 @@ All of it is read from your own Battlefield 6 installation."
 		# thing that keeps the panel moving through them.
 		if not _read_model.is_empty():
 			_read_refresh()
+		# Safety net for the save guard. _apply_changes defers the restore, and a
+		# deferred call is normally run the same frame, but if anything ever eats
+		# it the scene would sit stocked with the preview off and no way to tell
+		# why. Half a second late is invisible; never is not.
+		if _stocked_for_save:
+			_unstock_after_save()
 		_crumb_state_change()
 		_check_scene_change()
 		_lighting_guard()
@@ -1979,8 +1985,65 @@ func _marked_meshes(root: Node) -> Array:
 	return out
 
 
+# ---------- the scene ON DISK stays stock ----------
+#
+# Everything the plugin ADDS is owner-less, so none of it can ever be written to
+# a .tscn. That was always the plan and it holds. What it does not cover is
+# everything the plugin CHANGES on nodes that are the user's own:
+#
+#   * the SDK proxy meshes of every placed object, hidden while an overlay draws
+#     in their place (`visible`, which serialises as an instance override)
+#   * the level's own _Assets and terrain, hidden by Original map objects
+#   * the level's ground decal, hidden by the map tile
+#   * visibility_range_* on placed meshes, written by the distance cull
+#
+# Every one of those is a serialized property on a node the scene owns, so a
+# scene saved with the plugin on carries them into the file. Uninstall the plugin
+# afterwards and the level opens with its assets hidden and its placed props
+# invisible, with nothing left to explain why. Teardown restores all of it in
+# memory, which is no help to a file that was written an hour earlier.
+#
+# _apply_changes is the editor's "about to save" hook. Put the scene back to
+# stock here, let the save write a stock file, restore the preview on the next
+# frame. Cheap for the same reason a mode switch is cheap: the overlays stay
+# parented and only visibility flips, so nothing is rebuilt, re-fitted or
+# re-read. It costs two visibility walks per Ctrl+S.
+var _stocked_for_save := false
+
+func _apply_changes() -> void:
+	var r := EditorInterface.get_edited_scene_root()
+	if r == null or _stocked_for_save:
+		return
+	_stocked_for_save = true
+	PlacedCull.release(r)              # visibility_range_* back to what it was
+	SdkHide.restore_all(r)             # the level's own assets and terrain back
+	if mapctx != null:
+		mapctx.restore_sdk_decals()    # their ground decal back
+	HighpolyLib.restore(r)             # overlays hidden, SDK proxies shown
+	# Deferred rather than awaited: the save runs the moment this returns, so
+	# anything queued here lands after the file has been written.
+	call_deferred("_unstock_after_save")
+
+
+func _unstock_after_save() -> void:
+	if not _stocked_for_save:
+		return
+	_stocked_for_save = false
+	if EditorInterface.get_edited_scene_root() == null:
+		return
+	_sdk_assets_hidden(mapctx_objects != null and mapctx_objects.button_pressed)
+	_sdk_terrain_hidden(mapctx_on != null and mapctx_on.button_pressed)
+	await _apply_scene()
+	_reapply_placed_cull()
+
+
 func _hot_reload() -> bool:
+	# Asked on BOTH sides of the reload, because the answer is the difference.
+	# See HighpolyGameSource.geom_epoch for why it has to be a call and not a
+	# constant read.
+	var epoch_before: int = HighpolyGameSource.geom_epoch()
 	var r: Dictionary = HighpolyReload.reload_code()
+	var geom_changed: bool = HighpolyGameSource.geom_epoch() != epoch_before
 	var names: Array = r["names"]
 	if bool(r["first"]):
 		Log.info("Live reload armed: this install is now the baseline, so the "
@@ -1994,7 +2057,7 @@ func _hot_reload() -> bool:
 		Log.info("Plugin code unchanged — nothing to reload.")
 		return true
 
-	var what := HighpolyReload.impact(names)
+	var what := HighpolyReload.impact(names, geom_changed)
 	Log.info("Reloaded %d file(s) in place: %s" % [names.size(), ", ".join(names)])
 	match what:
 		"code":
@@ -2014,7 +2077,7 @@ func _hot_reload() -> bool:
 				# Those files resolve materials AND build geometry, and only the
 				# first half of that is live now. Saying so beats letting a road
 				# height change look like it applied.
-				lbl.text += " — rebuild if you changed geometry"
+				lbl.text += ". Rebuild the map to pick up the geometry change."
 				Log.info("Those files also build geometry (roads, terrain drape, "
 					+ "prop meshes). If that is what changed, toggle Map Context "
 					+ "off and on.")

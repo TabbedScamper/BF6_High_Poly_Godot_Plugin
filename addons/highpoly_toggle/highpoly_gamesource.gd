@@ -165,6 +165,33 @@ const ST_LAYERS := "the ground: layer textures"
 const OPEN_STAGES := [ST_MOUNT, ST_TYPES, ST_INDEX, ST_WALK, ST_GROUND,
 	ST_COLOUR, ST_PAL, ST_SPLAT, ST_BASE, ST_LAYERS]
 
+# WHAT THE BUILT GEOMETRY IS. Bumped when a change alters the meshes this reader
+# produces: a different cull, a different merge, a corrected winding. NOT bumped
+# for anything that only changes how they are dressed, logged or reported.
+#
+# It has two jobs, and the second is why it is a number rather than the literal
+# "g2" that used to be spelled into the cache path:
+#
+#   1. it versions the on-disk geometry cache, so a stale entry from before the
+#      change is never served;
+#   2. it is what a live reload asks to decide whether the meshes already in the
+#      scene are stale. That used to be answered by which FILE changed, and the
+#      file list is far too coarse: adding a progress callback to bf6_walk.gd
+#      cannot move a vertex, but bf6_walk.gd is on the geometry list, so the
+#      reload told the user to rebuild the whole map. Now "rebuild" is something
+#      we state deliberately by bumping this, not a side effect of which file an
+#      edit happened to land in.
+const GEOM_EPOCH := 2
+
+# A FUNCTION, not read as a constant from outside, and that is load-bearing.
+# GDScript folds a constant into the caller at parse time, so a caller that read
+# HighpolyGameSource.GEOM_EPOCH would keep reporting the value it was compiled
+# against even after this script is replaced in place. A call cannot be folded,
+# so it returns what the CURRENTLY LOADED code says, which is the whole question
+# a live reload is asking.
+static func geom_epoch() -> int:
+	return GEOM_EPOCH
+
 # Everything up to (and including) the placements. Long on a cold run — this is
 # the 85 s — so callers should be showing progress while it happens.
 #
@@ -2594,9 +2621,9 @@ func _geom_open() -> void:
 	# VERSIONED, because this cache holds the RESULT of decisions this reader
 	# makes and not just the game's bytes. The TOC signature catches a game patch;
 	# it does not catch us starting to cull destruction overlays, and a stale entry
-	# would keep serving a car with its crash panels inside it forever. Bump on any
-	# change to what the geometry itself contains.
-	var d := "user://bf6_geom/%s_%s_g2" % [level, sig]
+	# would keep serving a car with its crash panels inside it forever. Bump
+	# GEOM_EPOCH on any change to what the geometry itself contains.
+	var d := "user://bf6_geom/%s_%s_g%d" % [level, sig, GEOM_EPOCH]
 	if DirAccess.make_dir_recursive_absolute(d) != OK and not DirAccess.dir_exists_absolute(d):
 		return
 	_geom_dir = d
