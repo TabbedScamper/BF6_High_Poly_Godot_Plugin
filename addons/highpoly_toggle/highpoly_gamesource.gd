@@ -1524,14 +1524,170 @@ func water() -> Array:
 		var tz := e.data.decode_float(base + 0x58)
 		if absf(sx) < 1.0 or absf(sz) < 1.0:
 			continue
-		out.append({"height": ty, "center": [tx, tz],
-			"size": [absf(sx), absf(sz)]})
+		var row := {"height": ty, "center": [tx, tz],
+			"size": [absf(sx), absf(sz)]}
+		# THE LOOK, from the same depot chain every other surface uses.
+		# Read from the deserialized instance rather than a raw offset: unlike
+		# the transform, the state key sits past the fields whose offsets shift
+		# between the two water shader variants.
+		var inst = e.read_instance(i)
+		if inst is Dictionary:
+			var look := _water_look(int((inst as Dictionary).get(WATER_STATE_KEY, 0)))
+			if not look.is_empty():
+				row["look"] = look
+		out.append(row)
 	if not out.is_empty():
-		_say("game source: water — %d surface(s), first at y %.1f, %.0f x %.0f m"
+		var l0: Dictionary = (out[0] as Dictionary).get("look", {})
+		_say("game source: water — %d surface(s), first at y %.1f, %.0f x %.0f m%s"
 			% [out.size(), float(out[0]["height"]),
 			   float((out[0]["size"] as Array)[0]),
-			   float((out[0]["size"] as Array)[1])])
+			   float((out[0]["size"] as Array)[1]),
+			   "" if l0.is_empty() else ", %s shader, %d texture(s)"
+					% [str(l0.get("variant", "?")), (l0.get("tex", {}) as Dictionary).size()]])
 	return out
+
+
+# ---------------------------------------------------------------------------
+# WHAT THE WATER IS ACTUALLY MADE OF.
+#
+# WaterSurfaceEntityData carries a u64 in field 0x2E15621F, and that u64 IS a
+# ShaderBlockDepot StateKey — so water resolves through exactly the same chain
+# as any mesh section (SHADERS.md 3, 5), no special case in the depot at all.
+#
+# Measured rather than assumed: every 8-byte-aligned u64 in the 0x260-byte
+# instance was tested against ALL 16,936 depots the mp_dumbo mount carries.
+# Of 47 candidates, exactly ONE key matched in exactly ONE depot
+# (42f38eeaac4aa54e in game/glaciermp/levels/mp_dumbo/mp_dumbo) — a single hit
+# out of ~800k lookups, which is not something a coincidence produces.
+#
+# TWO SHADER VARIANTS, and they disagree on almost everything. This is the
+# reason a reader must not generalise from one map:
+#
+#   foam-only  mp_dumbo, mp_aftermath      1 texture,  7 constants
+#              t_waterfoam_rgb + two linear float3 water colours
+#   full ocean mp_tungsten, mp_eastwood,   3-4 textures, 25-27 constants
+#              granite/limestone/outskirts/isolated
+#              t_oceanmicrodetail_nsh (the ripple normal), t_oceanfoam_nsh,
+#              t_oceannoise, perlin2d, and ONE linear float3 water colour
+#
+# mp_dumbo's own depots bind the ocean slots ZERO times (checked across every
+# depot under the level), so the reduced variant is a real authoring choice for
+# the harbour maps and not a resolution miss.
+#
+# The parameter NAMES are not recoverable — cooked depot parameters are
+# machine-generated expression-shader names and no hash construction reproduces
+# them (SHADERS.md 3.5). The slot ids below are therefore stable opaque hashes,
+# identified by what they bind and by which maps change them.
+const WATER_STATE_KEY := 0x2E15621F
+
+const WSLOT_FOAM_RGB := 0x3faa6a0b       # t_waterfoam_rgb   R patches, G bubbles, B crest streaks
+const WSLOT_WATER_A := 0x50b54e74        # linear float3, the brighter of the pair
+const WSLOT_WATER_B := 0xdfcb439c        # linear float3, the darker of the pair
+const WSLOT_FOAM_NSH := 0x60181bbf       # t_oceanfoam_nsh
+const WSLOT_DETAIL_NSH := 0x635b5631     # t_oceanmicrodetail_nsh — the ripple normal
+const WSLOT_NOISE := 0x18caba16          # t_oceannoise
+const WSLOT_PERLIN := 0xf9b82d1e         # perlin2d (128x128 R8, gradient noise)
+const WSLOT_OCEAN_COLOR := 0xeaca953a    # linear float3, the ocean variant's water colour
+
+const WSLOT_ROLE := {
+	WSLOT_FOAM_RGB: "foam_rgb", WSLOT_FOAM_NSH: "foam_nsh",
+	WSLOT_DETAIL_NSH: "detail_nsh", WSLOT_NOISE: "noise", WSLOT_PERLIN: "perlin",
+}
+
+var _water_look_cache := {}
+
+
+# The depot record for one water state key, as {variant, tex, color, scalar}.
+#
+# SCOPED TO THIS LEVEL'S OWN BUNDLES. A StateKey is only unique within a scope,
+# so a global search can bind a colliding key from a parallel level — a
+# confidently wrong material, which is worse than none because nothing about it
+# looks broken (SHADERS.md 4). The water entity's own partition is a sibling of
+# the depot that holds it (aftermath declares water in _layers_content/water and
+# the record lives in _layers_content/content), so walking UP from the partition
+# does not reach it; the level directory is the narrowest prefix that does.
+func _water_look(state_key: int) -> Dictionary:
+	if state_key == 0 or src == null or walk == null:
+		return {}
+	if _water_look_cache.has(state_key):
+		return _water_look_cache[state_key]
+	var out := {}
+	var lvl := _level_dir()
+	for scope in _depot_bundles.keys():
+		var sn := str(scope)
+		if lvl != "" and not sn.begins_with(lvl):
+			continue
+		var pair = _depot_for(sn)
+		if pair == null:
+			continue
+		var dep: BF6Depot = pair[0]
+		if not dep.key_to_record.has(state_key):
+			continue
+		out = _water_params(dep, pair[1] as PackedByteArray, state_key)
+		out["depot"] = sn
+		break
+	_water_look_cache[state_key] = out
+	return out
+
+
+func _water_params(dep: BF6Depot, d: PackedByteArray, key: int) -> Dictionary:
+	var tex := {}          # role -> texture EBX file guid
+	var asset := {}        # role -> texture asset name (for logs and reports)
+	var color := {}        # "%08x" slot -> [r, g, b] LINEAR
+	var scalar := {}       # "%08x" slot -> float
+	for p in dep.params(int(dep.key_to_record[key]), d):
+		var pd: Dictionary = p
+		var n32: int = int(pd["name32"])
+		var th: int = int(pd["type_hash"])
+		if th == BF6Depot.TH_TEXTURE:
+			var refs: Array = pd["refs"]
+			if refs.is_empty():
+				continue
+			var g := str((refs[0] as Array)[1])
+			var role := str(WSLOT_ROLE.get(n32, "nh_%08x" % n32))
+			tex[role] = g
+			var an = walk.gi.get(g)
+			if an != null:
+				asset[role] = str(an)
+		elif th == 0x25f81af1:
+			var r3: PackedByteArray = pd["raw"]
+			color["%08x" % n32] = [r3.decode_float(0), r3.decode_float(4),
+				r3.decode_float(8)]
+		elif th == 0x14a0b1c1:
+			scalar["%08x" % n32] = (pd["raw"] as PackedByteArray).decode_float(0)
+	# The variant is named by what it BINDS, the same data-driven rule the glass
+	# and carpaint fingerprints use — never by the map or by a texture name.
+	var variant := "foam"
+	if tex.has("detail_nsh") or tex.has("foam_nsh"):
+		variant = "ocean"
+	# Normalised colours, so a consumer does not have to know which variant it
+	# got. Which of the foam variant's two float3s is shallow and which is deep
+	# is NOT settled — see water.gdshader.
+	var shallow: Array = []
+	var deep: Array = []
+	if variant == "ocean":
+		shallow = color.get("%08x" % WSLOT_OCEAN_COLOR, [])
+		deep = shallow
+	else:
+		shallow = color.get("%08x" % WSLOT_WATER_A, [])
+		deep = color.get("%08x" % WSLOT_WATER_B, [])
+	var out := {"variant": variant, "tex": tex, "asset": asset,
+		"color": color, "scalar": scalar,
+		"key": BF6Depot.key_hex(key)}
+	if not shallow.is_empty():
+		out["shallow"] = shallow
+	if not deep.is_empty():
+		out["deep"] = deep
+	return out
+
+
+# One of the water textures as a Texture2D, by the file guid _water_look put in
+# the look dict. Goes through the ordinary texture path so it gets the same
+# cache, the same block compression and the same normal-map handling as every
+# other surface; `detail_nsh` and `foam_nsh` carry a normal in RG and are
+# tagged as such, because DXT-compressing a normal map bands every ripple.
+func water_texture(file_guid, is_normal := false):
+	return _texture_for(file_guid, is_normal, 0)
 
 
 # ---------------------------------------------------------------------------
@@ -1594,54 +1750,85 @@ const LIGHT_FIELDS: Array = [F_COLOR, F_INTENSITY, F_ATTEN_RADIUS,
 # builder is 150 lines of Godot-side work — culling, distance fade, the spot
 # cone convention — and a second entry point into it is how the two drift until
 # only one is right.
+# One collected entity -> one record of the schema set_map_lights reads, or
+# null when it is not a light or is authored off.
+#
+# Split out of lights() so the placed-object walker can produce the same shape:
+# a lamp dropped into a scene and the same lamp standing on the map are the same
+# fixture read the same way, and two builders would drift.
+func _light_record(ent: Dictionary):
+	if str(ent.get("tag", "")) != "light":
+		return null
+	var tname := str(LIGHT_TYPES.get(str(ent.get("type", "")), ""))
+	if tname == "":
+		return null
+	var f: Dictionary = ent.get("f", {})
+	# An explicitly disabled fixture is off in the game and stays off here.
+	# Absent means enabled: most lights declare none of the six spellings.
+	for h in F_ENABLED:
+		if f.has(h) and f[h] == false:
+			return null
+	if f.get(F_VISIBLE) == false:
+		return null
+	var xf: Array = ent["xf"]
+	var pos: Vector3 = xf[3]
+	var col: Vector3 = f.get(F_COLOR, Vector3.ONE) if f.get(F_COLOR) is Vector3 \
+		else Vector3.ONE
+	var rad = f.get(F_ATTEN_RADIUS)
+	if not (rad is float or rad is int):
+		rad = f.get(F_RADIUS_A, f.get(F_RADIUS_B, 10.0))
+	var spot := tname.contains("Spot")
+	var rec := {
+		"pos": [pos.x, pos.y, pos.z],
+		"spot": spot,
+		"radius": float(rad) if (rad is float or rad is int) else 10.0,
+		"color": [col.x, col.y, col.z],
+		"intensity": float(f.get(F_INTENSITY, 1000.0)),
+		"unit": int(f.get(F_LIGHT_UNIT, 0)),
+		"layer": "base",
+		"type": tname,
+	}
+	if spot:
+		rec["angle"] = float(f.get(F_OUTER_ANGLE, 60.0))
+		# A SPOT SHINES ALONG MINUS ITS FORWARD AXIS. Basis row 2 is FORWARD
+		# (right/up/forward/translation at 0..3), and the sign is the whole
+		# answer: get it backwards and every cone in the map points at the
+		# ceiling it is mounted in.
+		#
+		# MEASURED, not assumed. Read off the fixtures whose real aim is not
+		# in doubt: lf_com_potlight_round_01 is a recessed ceiling downlight
+		# and its component sits 0.11 m BELOW the fixture origin with forward
+		# = (0, +1, 0); lf_com_flushmount_round_01 (-0.13 m) and
+		# lf_ind_ceilingled_square_01 (-0.47 m) are the same, and
+		# lf_com_streetlight_02 and lf_euu_streetlamp_vintage_01 sit 9.9 m and
+		# 7.1 m up their poles with forward = (0, +1, 0). Taking forward as
+		# the beam would have every one of them lighting the ceiling or the
+		# sky, so the beam is -forward.
+		var d: Vector3 = -(xf[2] as Vector3)
+		if d.length() > 1e-4:
+			rec["dir"] = [d.x, d.y, d.z]
+	return rec
+
+
+func _light_records(ents: Array) -> Array:
+	var out: Array = []
+	for e in ents:
+		if not (e is Dictionary):
+			continue
+		var rec = _light_record(e)
+		if rec != null:
+			out.append(rec)
+	return out
+
+
 func lights(cache_dir: String) -> int:
 	if walk == null or walk.ents.is_empty():
 		return 0
-	var out: Array = []
+	var out: Array = _light_records(walk.ents)
 	var spots := 0
-	for e in walk.ents:
-		var ent: Dictionary = e
-		if str(ent.get("tag", "")) != "light":
-			continue
-		var tname := str(LIGHT_TYPES.get(str(ent.get("type", "")), ""))
-		if tname == "":
-			continue
-		var f: Dictionary = ent.get("f", {})
-		# An explicitly disabled fixture is off in the game and stays off here.
-		# Absent means enabled: most lights declare none of the six spellings.
-		var off := false
-		for h in F_ENABLED:
-			if f.has(h) and f[h] == false:
-				off = true
-				break
-		if off or f.get(F_VISIBLE) == false:
-			continue
-		var xf: Array = ent["xf"]
-		var pos: Vector3 = xf[3]
-		var col: Vector3 = f.get(F_COLOR, Vector3.ONE) if f.get(F_COLOR) is Vector3 \
-			else Vector3.ONE
-		var rad = f.get(F_ATTEN_RADIUS)
-		if not (rad is float or rad is int):
-			rad = f.get(F_RADIUS_A, f.get(F_RADIUS_B, 10.0))
-		var spot := tname.contains("Spot")
-		var rec := {
-			"pos": [pos.x, pos.y, pos.z],
-			"spot": spot,
-			"radius": float(rad) if (rad is float or rad is int) else 10.0,
-			"color": [col.x, col.y, col.z],
-			"intensity": float(f.get(F_INTENSITY, 1000.0)),
-			"unit": int(f.get(F_LIGHT_UNIT, 0)),
-			"layer": "base",
-			"type": tname,
-		}
-		if spot:
+	for r in out:
+		if bool((r as Dictionary).get("spot", false)):
 			spots += 1
-			rec["angle"] = float(f.get(F_OUTER_ANGLE, 60.0))
-			# Basis row 2 is FORWARD (right/up/forward/translation at 0..3).
-			var d: Vector3 = xf[2]
-			if d.length() > 1e-4:
-				rec["dir"] = [d.x, d.y, d.z]
-		out.append(rec)
 	if out.is_empty():
 		return 0
 	DirAccess.make_dir_recursive_absolute(cache_dir)
@@ -2080,6 +2267,7 @@ const PORTAL_PREFIX := "pf_portal_"
 
 var _obj_walk: BF6Walk = null
 var _obj_cache := {}                   # portal name (lower) -> Mesh-bearing Node3D or null
+var _obj_lights := {}                  # portal name (lower) -> [light record], object-local
 
 
 # The prefab for a Portal object name, assembled, or null.
@@ -2123,6 +2311,7 @@ func object_rows(portal_name: String) -> Array:
 			break
 	if ref == null:
 		_obj_cache[key] = []
+		_obj_lights[key] = []
 		return []
 
 	# A SECOND WALKER, sharing the first's catalogue. build_catalog is the
@@ -2134,9 +2323,21 @@ func object_rows(portal_name: String) -> Array:
 		_obj_walk.by_name = walk.by_name
 		_obj_walk.gi = walk.gi
 		_obj_walk.scope_index = walk.scope_index
+		# A PLACED PROP'S OWN LIGHTS. This walker was built for meshes and asked
+		# for no entities, so a lamp dropped into a scene from the SDK arrived
+		# with its geometry and none of its lighting — not misplaced, absent.
+		# Collecting them costs the same pass; object_lights() is what reads them
+		# and nothing is built unless a caller asks.
+		for gd in LIGHT_TYPES:
+			_obj_walk.want_types[str(gd)] = "light"
+		_obj_walk.want_fields = LIGHT_FIELDS
 	_obj_walk.rows.clear()
 	_obj_walk.ents.clear()
 	_obj_walk.walk(str(ref), BF6Walk.IDENT, {}, 0)
+	# Read off the same pass, in the object's own local space, and cached beside
+	# the rows: object_rows is memoised, so a later object_lights() call would
+	# otherwise be looking at whichever object was assembled most recently.
+	_obj_lights[key] = _light_records(_obj_walk.ents)
 
 	var out: Array = []
 	for r in _obj_walk.rows:
@@ -2168,6 +2369,21 @@ func object_rows(portal_name: String) -> Array:
 			_group_meta[gk] = [res_name, scope, str(row.get("src", "")), vh]
 	_obj_cache[key] = out
 	return out
+
+
+# The light records a placed Portal object carries, in the object's own local
+# space, in the same schema as lights.json.
+#
+# Not wired into object_node(): whether a scene full of placed lamps should also
+# build thousands of Light3D nodes is a budget decision (Forward+ caps clustered
+# elements at 512 in view), not something a mesh assembler should decide on its
+# own. This is the data, ready for whatever does.
+func object_lights(portal_name: String) -> Array:
+	var key := portal_name.to_lower()
+	if not _obj_lights.has(key):
+		object_rows(portal_name)
+	var got = _obj_lights.get(key, [])
+	return got if got is Array else []
 
 
 # THE BUNDLE THAT SHIPPED THIS RESOURCE, which is what a depot is keyed on.

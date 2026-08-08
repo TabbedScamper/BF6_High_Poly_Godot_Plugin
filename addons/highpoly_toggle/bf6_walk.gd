@@ -75,6 +75,37 @@ const F_LT_FORWARD := 0x695D12A4      # offset 32
 const F_LT_TRANS := 0xBC4B07B4        # offset 48
 const LT_MEMBERS: Array = [F_LT_RIGHT, F_LT_UP, F_LT_FORWARD, F_LT_TRANS]
 
+# ---------------------------------------------------------------------------
+# WHERE A LIGHT FIXTURE'S PLACEMENT ACTUALLY LIVES.
+#
+# A *LightEntityData carries its own `Transform` (0xD6351EDE), and reading that
+# instead of `BlueprintTransform` is already the difference between a fixture at
+# its holder's origin and one in the right place. It is not enough, and the
+# measurement says so: on mp_dumbo 6,848 of 7,878 collected lights (86.9%) have
+# an IDENTITY `Transform`, so they land exactly on their holder's origin anyway.
+# That is the "light at the base of the lamp post" symptom, quantified.
+#
+# The reason is the authoring model. Light fixtures ship as ObjectBlueprints
+# (bf455610-...), and in one the light entity is not a placed object at all: it
+# is reachable only through the blueprint's PropertyConnections and its own
+# Transform is left identity. The placement sits on a SEPARATE component in the
+# owning object's `Components` array, and that component points BACK at the
+# light through field 0x11F57ECA — typed as an integer by the reflection tables
+# and holding an ordinary internal PointerRef (see BF6Ebx.int_pointer).
+#
+# lf_com_streetlight_02 is the clean example. The PbrSpotLightEntityData sits at
+# identity; its component sits at (3.890, 9.923, -0.002) — 9.9 m up the pole and
+# 3.9 m out along the arm, which is the lamp head — and aims down. Reading the
+# entity alone puts a street lamp's light on the pavement at the foot of its own
+# pole, and it looks plausible enough on a map to survive.
+#
+# The join is exact rather than positional: measured on mp_dumbo every component
+# resolves to one light entity and every light in an ObjectBlueprint fixture is
+# resolved by exactly one component, so nothing is paired by order or by guess.
+const LIGHT_XF_COMPONENT := "dcac04fc-2a7a-e798-1382-328a95b9484a"
+const F_COMPONENT_LIGHT := 0x11F57ECA
+const F_TRANSFORM := 0xD6351EDE
+
 const LT_GUID := "06ce1d10-9a4e-fc64-2a9f-a9d482576ffa"
 const K_VEC_X := 956422932
 const K_VEC_Y := 1123815262
@@ -171,6 +202,23 @@ static func vec_of(d) -> Vector3:
 
 static func is_lt(v) -> bool:
 	return v is Dictionary and str((v as Dictionary).get("__type", "")) == LT_GUID
+
+
+# The inverse of BF6Types.guid_str, so a guid constant written the way the rest
+# of this file writes them can still be compared against raw type bytes without
+# formatting a string per instance.
+static func raw_guid(s: String) -> PackedByteArray:
+	var h := s.replace("-", "")
+	var out := PackedByteArray()
+	if h.length() != 32:
+		return out
+	out.resize(16)
+	out.encode_u32(0, h.substr(0, 8).hex_to_int())
+	out.encode_u16(4, h.substr(8, 4).hex_to_int())
+	out.encode_u16(6, h.substr(12, 4).hex_to_int())
+	for i in range(8):
+		out[8 + i] = h.substr(16 + i * 2, 2).hex_to_int()
+	return out
 
 
 static func lt_to_mat(t) -> Array:
@@ -489,6 +537,32 @@ func walk(ref, parent: Array, guard: Dictionary, depth := 0) -> void:
 			scope = str(scope_index[bare])
 	var prev_scope := _scope
 	_scope = scope
+
+	# THE SPATIAL COMPONENTS THAT CARRY A LIGHT'S PLACEMENT, resolved before the
+	# instance loop because a component sits AFTER the light it places (in
+	# lf_com_streetlight_02 the light is instance 10 and its component is 29), so
+	# there is nothing to look up yet by the time the light is visited.
+	#
+	# Costs one PackedByteArray compare per instance and a decode only for the
+	# handful that match, and runs only when a caller asked for entities at all —
+	# a plain placement walk does none of it.
+	var prev_xf: Dictionary = _light_xf
+	_light_xf = {}
+	if not want_types.is_empty():
+		for i in range(dz.instance_offsets.size()):
+			if dz.instance_type_bytes(i) != _light_xf_guid:
+				continue
+			var target := int(dz.int_pointer(i, F_COMPONENT_LIGHT))
+			if target < 0:
+				_bump("light_component_unlinked")
+				continue
+			var ci = dz.read_instance(i)
+			if not (ci is Dictionary):
+				continue
+			var clt = (ci as Dictionary).get(F_TRANSFORM)
+			if is_lt(clt):
+				_light_xf[target] = lt_to_mat(clt)
+
 	for i in range(dz.instance_offsets.size()):
 		n_instances += 1
 		# THE ONLY PLACE THIS WALK CAN REPORT FROM. The traversal is recursive and
@@ -521,10 +595,12 @@ func walk(ref, parent: Array, guard: Dictionary, depth := 0) -> void:
 		if not (inst is Dictionary):
 			_bump("inst_fail")
 			continue
+		_cur_inst = i
 		visit(inst, parent, str(ref), sub_guard, depth)
 	# Restored on the way out: a sibling branch must not inherit the scope a
 	# subworld set for its own subtree.
 	_scope = prev_scope
+	_light_xf = prev_xf
 
 
 # The transform fields a collected entity might carry, tried in order.
@@ -535,18 +611,39 @@ func walk(ref, parent: Array, guard: Dictionary, depth := 0) -> void:
 # so every light there lands at its holder's origin — near enough to look right
 # on a map and wrong by a room's width in a building. Both are tried, and which
 # one fired is counted, so the difference is a measurement rather than a claim.
-var want_xf_fields: Array = [0xD6351EDE, F_BP_TRANSFORM]
+var want_xf_fields: Array = [F_TRANSFORM, F_BP_TRANSFORM]
+
+# instance index of the light -> the local matrix its spatial component carries,
+# rebuilt per partition by walk(). Empty for a walk that collects nothing.
+var _light_xf := {}
+var _light_xf_guid: PackedByteArray = raw_guid(LIGHT_XF_COMPONENT)
+# The instance visit() is currently on, which is what joins a collected light to
+# its component. visit() takes a decoded Dictionary and a Dictionary has no
+# index; nothing else in the traversal needs one.
+var _cur_inst := -1
 
 
 func _collect(tag: String, inst: Dictionary, parent: Array) -> void:
 	var world := parent
 	var which := "parent"
-	for h in want_xf_fields:
-		var lt = inst.get(int(h))
-		if is_lt(lt):
-			world = matmul(parent, lt_to_mat(lt))
-			which = "0x%08X" % int(h)
-			break
+	# THE COMPONENT WINS when there is one. It is the entity's placement; the
+	# entity's own Transform in that authoring model is identity, so on the data
+	# this is not a preference but the only non-empty answer. Counted separately
+	# so a build where the two disagree is visible rather than silently resolved.
+	var comp = _light_xf.get(_cur_inst)
+	if comp is Array:
+		world = matmul(parent, comp)
+		which = "component"
+		var own = inst.get(F_TRANSFORM)
+		if is_lt(own) and (lt_to_mat(own)[3] as Vector3).length() > 0.001:
+			_bump("ent_xf_component_and_own")
+	else:
+		for h in want_xf_fields:
+			var lt = inst.get(int(h))
+			if is_lt(lt):
+				world = matmul(parent, lt_to_mat(lt))
+				which = "0x%08X" % int(h)
+				break
 	_bump("ent_xf_%s" % which)
 	var f := {}
 	for h in want_fields:
@@ -684,7 +781,10 @@ func visit(inst: Dictionary, parent: Array, ref: String, guard: Dictionary,
 # 3: the walk can carry collected entities (lights and anything else placed
 #    rather than drawn) beside the rows. A v2 cache has none, and serving one
 #    would give a map its props and no lights with nothing to say so.
-const VERSION := 3
+# 4: a collected light's transform comes from its spatial component when it has
+#    one. A v3 cache has 86.9% of Dumbo's lights sitting on their holder's
+#    origin, which is not an error anything downstream can detect.
+const VERSION := 4
 
 
 func cache_path(level_rel: String) -> String:

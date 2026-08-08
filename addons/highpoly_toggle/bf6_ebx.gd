@@ -216,6 +216,44 @@ func read_instance(idx: int, depth := 0) -> Dictionary:
 	return _read_struct(g, payload + int(instance_offsets[idx]), depth)
 
 
+# A FIELD THE TYPE TABLES CALL AN INTEGER AND THE BYTES CALL A POINTER.
+#
+# The exe's reflection carries the field's category, and for a handful of fields
+# it says int32 where the payload holds an ordinary internal PointerRef — the
+# same signed relative offset every other reference uses (see _pointer_ref).
+# read_instance therefore hands back a plain number, and the edge it encodes is
+# invisible: a light entity's spatial component points at its light this way
+# (0x11F57ECA on dcac04fc-2a7a-e798-1382-328a95b9484a), and without following it
+# there is nothing at all joining the two.
+#
+# Returns the target instance index, or -1 when the field is absent, null, or
+# does not land on an instance. Deliberately separate from read_instance rather
+# than folded into _decode: the type says int, and a reader that silently
+# reinterprets every int as a pointer would resolve garbage on the ones that
+# really are numbers.
+func int_pointer(idx: int, name_hash: int) -> int:
+	if idx < 0 or idx >= instance_offsets.size():
+		return -1
+	var g = _inst_type.get(idx)
+	if g == null:
+		return -1
+	var lay := _layout(g)
+	if lay.is_empty():
+		return -1
+	for fld in lay["fields"]:
+		if int((fld as Dictionary)["nameHash"]) != name_hash:
+			continue
+		var pos: int = payload + int(instance_offsets[idx]) + int((fld as Dictionary)["offset"])
+		if pos < 0 or pos + 4 > data.size():
+			return -1
+		var rel := int(data.decode_s32(pos))
+		if rel == 0:
+			return -1
+		var ii = _inst_map.get((pos + rel) - payload)
+		return int(ii) if ii != null else -1
+	return -1
+
+
 func _layout(guid: PackedByteArray) -> Dictionary:
 	var k := guid.hex_encode()
 	if not _lay_cache.has(k):
