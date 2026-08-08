@@ -79,6 +79,8 @@ var profiler: Node          # performance recorder (highpoly_profiler.gd)
 var perf_btn: Button       # its start/stop button
 var mapctx: Node
 var sync: Node
+var diag_pick: Button        # Pick mode: click-select our own overlay geometry
+var _pick_last := Vector2(-1e9, -1e9)   # where the last pick click landed
 var col_chk: Button          # Show collisions overlay
 var shape_chk: Button        # Godot's own collision outlines (off by default)
 var iso_chk: Button          # Isolate selected: collision only (live w/ selection)
@@ -1346,6 +1348,35 @@ All of it is read from your own Battlefield 6 installation."
 ") + 1
 		lbl.text = "Diagnosed and tinted. %d line(s) in the log — press Save log file." % n)
 	diag_row.add_child(diag)
+
+	# ---- pick mode: click the original map objects ----
+	#
+	# The editor cannot select them. Everything we inject is owner-less so it
+	# never saves into the user's .tscn, and the editor's picker only resolves a
+	# click to a node the edited scene owns. Giving them owners to make them
+	# clickable would write thousands of nodes of read-from-the-install geometry
+	# into their scene file, which is the one thing this plugin must not do. So
+	# while this is on, the plugin does its own ray/triangle pick instead and
+	# consumes the click.
+	#
+	# Tab then drills into what was picked: batch -> one instance -> one surface.
+	# That last rung is the point of the whole thing — a car's windows are not a
+	# node and cannot be clicked apart from its body, they are a surface with
+	# their own shader state, and a surface is the granularity at which glass,
+	# liveries and cutouts actually go wrong.
+	diag_pick = CheckButton.new()
+	diag_pick.text = "Pick mode"
+	diag_pick.tooltip_text = "Click any object in the viewport — including original map geometry, which the editor itself cannot select. Tab drills in (whole batch, one instance, one part); Shift+Tab steps back out; clicking the same spot again also drills in. Alt+click steps out. Press Diagnose Selection to report exactly what is focused."
+	diag_pick.toggled.connect(func(on: bool):
+		_pick_last = Vector2(-1e9, -1e9)
+		if not on:
+			HighpolyDiagnose.clear()
+			lbl.text = "Pick mode off."
+		else:
+			lbl.text = HighpolyDiagnose.focus_label(
+				mapctx.game_source if mapctx != null else null))
+	diag_row.add_child(diag_pick)
+
 	var diag_clear := Button.new()
 	diag_clear.text = "Clear tints"
 	diag_clear.tooltip_text = "Removes the red diagnostic tint. The objects themselves are untouched — the tint is an overlay pass, never a material swap."
@@ -3428,6 +3459,10 @@ func _reoverride_selection() -> void:
 # win when a prop is both. Only consumed when something was actually hit, so
 # normal click/drag selection and camera behavior stay untouched.
 func _forward_3d_gui_input(camera: Camera3D, event: InputEvent) -> int:
+	if diag_pick != null and diag_pick.button_pressed:
+		var v := _pick_input(camera, event)
+		if v != EditorPlugin.AFTER_GUI_INPUT_PASS:
+			return v
 	if event is InputEventMouseButton:
 		var mb := event as InputEventMouseButton
 		if mb.button_index == MOUSE_BUTTON_LEFT and mb.pressed and mb.double_click:
@@ -3445,6 +3480,79 @@ func _forward_3d_gui_input(camera: Camera3D, event: InputEvent) -> int:
 					_fetch_variants_then_cycle(hit.get("node"), need)
 				return EditorPlugin.AFTER_GUI_INPUT_STOP
 	return EditorPlugin.AFTER_GUI_INPUT_PASS
+
+# ---------- pick mode ----------
+#
+# Only ever reached while Pick mode is on, and it consumes only the events it
+# actually acts on, so camera navigation, box-select and the gizmos keep working
+# with it armed.
+#
+# TWO WAYS TO DRILL, deliberately. Tab is the one people expect, coming from
+# Revit, but the 3D viewport is a Control and Tab is the focus-change key, so
+# there is no guarantee it reaches a plugin on every platform and theme. Clicking
+# the same spot again does the same job and cannot be intercepted by anything, so
+# the feature does not depend on which of the two the editor lets us have.
+func _pick_input(camera: Camera3D, event: InputEvent) -> int:
+	var gs = mapctx.game_source if mapctx != null else null
+	var root := EditorInterface.get_edited_scene_root()
+	if root == null:
+		return EditorPlugin.AFTER_GUI_INPUT_PASS
+
+	if event is InputEventKey and (event as InputEventKey).pressed:
+		var k := event as InputEventKey
+		if k.keycode == KEY_TAB and HighpolyDiagnose.has_focus():
+			var moved := HighpolyDiagnose.step(-1 if k.shift_pressed else 1, root)
+			lbl.text = HighpolyDiagnose.focus_label(gs) if moved else \
+				("Already at the outermost level." if k.shift_pressed
+					else "That is the last part of this object.")
+			return EditorPlugin.AFTER_GUI_INPUT_STOP
+		if k.keycode == KEY_ESCAPE and HighpolyDiagnose.has_focus():
+			HighpolyDiagnose.clear()
+			lbl.text = "Pick cleared. Click another object."
+			return EditorPlugin.AFTER_GUI_INPUT_STOP
+		return EditorPlugin.AFTER_GUI_INPUT_PASS
+
+	if not (event is InputEventMouseButton):
+		return EditorPlugin.AFTER_GUI_INPUT_PASS
+	var mb := event as InputEventMouseButton
+	if mb.button_index != MOUSE_BUTTON_LEFT or not mb.pressed:
+		return EditorPlugin.AFTER_GUI_INPUT_PASS
+
+	# alt+click steps back out, the mouse-only counterpart of Shift+Tab
+	if mb.alt_pressed:
+		if HighpolyDiagnose.has_focus() and HighpolyDiagnose.step(-1, root):
+			lbl.text = HighpolyDiagnose.focus_label(gs)
+		else:
+			lbl.text = "Already at the outermost level."
+		return EditorPlugin.AFTER_GUI_INPUT_STOP
+
+	# clicking the same spot again drills instead of re-picking the same thing
+	if HighpolyDiagnose.has_focus() and mb.position.distance_to(_pick_last) <= 6.0:
+		if HighpolyDiagnose.step(1, root):
+			lbl.text = HighpolyDiagnose.focus_label(gs)
+		else:
+			lbl.text = "That is the last part of this object. Alt+click to step out."
+		return EditorPlugin.AFTER_GUI_INPUT_STOP
+
+	var t0 := Time.get_ticks_msec()
+	var hit: Dictionary = HighpolyDiagnose.pick(camera, mb.position, root)
+	_pick_last = mb.position
+	if hit.is_empty():
+		# Nothing there — hand the click back rather than swallowing it, so
+		# clicking empty space still deselects and box-select still starts.
+		HighpolyDiagnose.clear()
+		lbl.text = "Nothing under the cursor."
+		return EditorPlugin.AFTER_GUI_INPUT_PASS
+	HighpolyDiagnose.focus_on(hit, root)
+	# The Inspector is the closest thing to real selection an owner-less node can
+	# have: it shows the actual overlay MeshInstance/MultiMeshInstance, its mesh,
+	# its material and its transform, live.
+	var fn := HighpolyDiagnose.focus_node()
+	if fn != null:
+		EditorInterface.edit_node(fn)
+	lbl.text = HighpolyDiagnose.focus_label(gs)
+	Log.debug("pick: %s in %d ms" % [lbl.text, Time.get_ticks_msec() - t0])
+	return EditorPlugin.AFTER_GUI_INPUT_STOP
 
 # Double-clicked a prop whose variants are published but not downloaded: fetch
 # them, then perform the swap the click asked for, so one double-click is still
