@@ -69,16 +69,12 @@ uniform float gloss_scale : hint_range(0.0, 1.0) = 1.0;
 uniform float wet_fresnel : hint_range(0.0, 1.0) = 0.85;
 uniform vec3 wet_sheen : source_color = vec3(0.52, 0.62, 0.78);
 uniform float normal_scale : hint_range(-4.0, 4.0) = 1.0;
-// OURS. The mesh is 0.00001 m thick and sits ON the surface it marks, so it
-// z-fights it. The engine draws decals with a depth bias; Godot has none to set
-// on a material, so the geometry is lifted along its own normal instead. Along
-// the NORMAL and not along Y, because a facade decal is vertical and lifting
-// that upward would slide it along the wall instead of off it.
-uniform float lift = 0.012;
-
-void vertex() {
-	VERTEX += NORMAL * lift;
-}
+// NO LIFT. An earlier version pushed the mesh 12 mm along its own normal to
+// avoid z-fighting, and that was wrong to do: creators place decals where they
+// want them, and moving the geometry silently puts it somewhere they did not
+// ask for. If a decal z-fights, that is the author's offset to set, not this
+// shader's to invent. Depth writes are already off (depth_draw_never), which is
+// the part that IS ours to decide.
 
 void fragment() {
 	vec4 c = texture(col_tex, UV);

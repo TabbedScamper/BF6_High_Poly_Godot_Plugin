@@ -78,6 +78,13 @@ const SLOT_BACKDROP_ROOF := 0x62dfb21a
 const SLOT_BACKDROP_PALETTE := 0x31ebaba9
 const SLOT_GLASS_VOLUME := 0xbb245590
 const SLOT_CARPAINT_FLAKES := 0xa11011b8
+# THE LIT SHEET. A light fixture's glow is here and NOT in SLOT_EMISSIVE, which
+# is why lamps drew dark: of 1,075 sampled records 53 bind this and only 4 bind
+# the named emissive slot. Its textures are named _ea, _e or _emissive - the same
+# suffix convention the decal sheets use - and RGB is the glow. 30 of the 53 bind
+# t_red, a flat placeholder, so the content test still has to run.
+const SLOT_EMISSIVE_LIT := 0x407055fd
+
 # Placeable mesh decals bind a family of their own and none of the slots above.
 # Only these two ever carry content: on mp_dumbo's 160 decal prefabs the other
 # three are defaulted on every record (0x416b0e23 = t_grid 134/134, 0x4227843b =
@@ -95,6 +102,7 @@ const SLOT_NAME := {
 	SLOT_BACKDROP_PALETTE: "backdrop_palette",
 	SLOT_GLASS_VOLUME: "glass_volume", SLOT_CARPAINT_FLAKES: "carpaint_flakes",
 	SLOT_DECAL_CA: "decal_ca", SLOT_DECAL_NRM: "decal_nrm",
+	SLOT_EMISSIVE_LIT: "emissive_lit",
 }
 
 var error := ""

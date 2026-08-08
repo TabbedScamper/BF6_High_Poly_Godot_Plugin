@@ -3874,6 +3874,8 @@ func material_for(state_key: int, scope: String, var_hash := 0,
 		mat.normal_texture = nrm
 		any = true
 	var emis = _texture_for(slots.get("emissive"))
+	if emis == null:
+		emis = _lit_sheet(slots)      # a light fixture's glow lives in its own slot
 	if emis != null:
 		mat.emission_enabled = true
 		mat.emission_texture = emis
@@ -4826,6 +4828,62 @@ func _smooth_varies(file_guid) -> bool:
 	return varies
 
 
+# THE FIXTURE'S LIT SHEET, or null when the slot holds a placeholder.
+#
+# 30 of the 53 records that bind this slot bind t_red - constant, alpha 0 - so
+# "the slot is bound" means nothing on its own, exactly as with the alpha slot
+# and the decal sheets. Rejected on CONTENT: a glow that is the same everywhere
+# is not a glow, it is a default.
+func _lit_sheet(slots: Dictionary):
+	var guid = slots.get("emissive_lit")
+	if guid == null:
+		return null
+	if not _decal_sheet_varies(guid):
+		return null
+	return _texture_for(guid)
+
+
+# The same flat-or-not question the decal sheets ask, without the decal-specific
+# wrapping, so both can use it.
+func _decal_sheet_varies(file_guid) -> bool:
+	if file_guid == null or str(file_guid) == "":
+		return false
+	var asset = walk.gi.get(str(file_guid))
+	if asset == null:
+		return false
+	var an := str(asset).to_lower()
+	if an.ends_with(".ebx"):
+		an = an.substr(0, an.length() - 4)
+	if _decal_tex_cache.has(an):
+		return bool(_decal_tex_cache[an])
+	var small = _texture_for(file_guid, false, TINT_MASK_PROBE_DIM)
+	_tex_cache.erase("%s@%d" % [an, TINT_MASK_PROBE_DIM])
+	var img: Image = (small as ImageTexture).get_image() if small != null else null
+	if img == null:
+		_decal_tex_cache[an] = false
+		return false
+	var c := img.duplicate() as Image
+	if c.is_compressed() and c.decompress() != OK:
+		_decal_tex_cache[an] = false
+		return false
+	var lo := [2.0, 2.0, 2.0, 2.0]
+	var hi := [-1.0, -1.0, -1.0, -1.0]
+	for y in range(0, c.get_height(), maxi(1, int(c.get_height() / 40))):
+		for x in range(0, c.get_width(), maxi(1, int(c.get_width() / 40))):
+			var p := c.get_pixel(x, y)
+			var v := [p.r, p.g, p.b, p.a]
+			for i in range(4):
+				lo[i] = minf(lo[i], float(v[i]))
+				hi[i] = maxf(hi[i], float(v[i]))
+	var varies := false
+	for i in range(4):
+		if hi[i] - lo[i] > TINT_MASK_MIN_RANGE:
+			varies = true
+			break
+	_decal_tex_cache[an] = varies
+	return varies
+
+
 var _decal_shader = null
 
 # THE DECAL'S OWN GLOSS SCALE, and the only per-decal number in the record worth
@@ -4940,6 +4998,8 @@ func _tint_masked_material(slots: Dictionary, tint: Color):
 	# a second time.
 	m.set_shader_parameter("tint", Vector3(tint.r, tint.g, tint.b))
 	var emis = _texture_for(slots.get("emissive"))
+	if emis == null:
+		emis = _lit_sheet(slots)      # a light fixture's glow lives in its own slot
 	if emis != null:
 		m.set_shader_parameter("emission_tex", emis)
 		m.set_shader_parameter("use_emission", true)
@@ -4969,6 +5029,8 @@ func _smooth_material(slots: Dictionary, tint):
 		m.set_shader_parameter("normal_tex", nrm)
 		m.set_shader_parameter("use_normal", true)
 	var emis = _texture_for(slots.get("emissive"))
+	if emis == null:
+		emis = _lit_sheet(slots)      # a light fixture's glow lives in its own slot
 	if emis != null:
 		m.set_shader_parameter("emission_tex", emis)
 		m.set_shader_parameter("use_emission", true)
