@@ -4389,12 +4389,19 @@ func _look_key(slots: Dictionary, tint = null) -> String:
 	if tint is Color:
 		t = "%.4f,%.4f,%.4f" % [(tint as Color).r, (tint as Color).g,
 			(tint as Color).b]
-	return "%s|%s|%s|%s|%s|%s|%s" % [
+	# AND THE SMOKE AND LIT SHEETS, for the third time and the same reason. A
+	# backdrop plume binds none of the slots below either, so every one of them
+	# keyed alike and the look-key share answered BEFORE _smoke_of was reached -
+	# handing them whatever slotless material was built first, or the null a
+	# procedural record had already cached under that key. The smoke block own
+	# comment says it must come before the share; it did not.
+	return "%s|%s|%s|%s|%s|%s|%s|%s|%s" % [
 		str(slots.get("basecolor_veg", slots.get("basecolor", ""))),
 		str(slots.get("normal", slots.get("normal_vt", ""))),
 		str(slots.get("emissive", "")),
 		str(slots.get("alpha", "")), t,
-		str(slots.get("decal_ca", "")), str(slots.get("decal_nrm", ""))]
+		str(slots.get("decal_ca", "")), str(slots.get("decal_nrm", "")),
+		str(slots.get("smoke_ca", "")), str(slots.get("emissive_lit", ""))]
 
 
 # ---------------------------------------------------------------------------
