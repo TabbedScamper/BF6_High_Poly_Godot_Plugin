@@ -3514,6 +3514,18 @@ func invalidate_materials(only: Array = []) -> Dictionary:
 	_hidden_cache.clear()
 	_tint_mask_cache.clear()
 	_decal_tex_cache.clear()
+	# THE ASSEMBLED-OBJECT CACHE, AND ESPECIALLY ITS FAILURES.
+	#
+	# object_rows caches a NOT-FOUND as an empty array, and nothing was clearing
+	# it - so widening the name rules fixed nothing for anyone whose session had
+	# already asked. The user pressed Check for updates after the _a fallback
+	# shipped and BackroomStorageShe01 was still blank, because the empty answer
+	# from before the fix was still sitting in this dictionary.
+	#
+	# It is derived from OUR name rules, not from the game, so it belongs here
+	# with the other things a code change invalidates.
+	_obj_cache.clear()
+	_obj_lights.clear()
 	_foliage_shader = null
 	_prop_tint_shader = null
 	# HELD SHADERS MUST BE DROPPED HERE OR AN EDIT TO ONE NEVER REACHES THE
