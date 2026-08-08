@@ -34,6 +34,16 @@ class_name BF6Atlas
 const RES_TYPE := 0x957C32B1
 const HEADER_SIZE := 92
 
+# THE GRID IS AUTHORED, NOT IN THE FILENAME. Every AtlasTexture RES has a
+# same-named EBX holding one AtlasTextureAsset instance with these fields
+# (findings/atlastexture-grid-and-sixway-packing). The WxN in the filename is
+# columns by TOTAL FRAMES and is a redundant label on data that is already here
+# - and the names are inconsistently ordered, so parsing them fails on sheets
+# the EBX reads fine.
+const F_COLUMNS := 3460462605      # AnimationColumnCount
+const F_FRAMES := 866427092        # AnimationFrameCount
+const F_LEFTRIGHT := 2836644381    # LeftRightTiles
+
 
 # The header, or an empty dictionary when this payload is not one.
 static func parse(d: PackedByteArray) -> Dictionary:
@@ -103,3 +113,56 @@ static func image(src, hdr: Dictionary, fmt := Image.FORMAT_DXT5) -> Image:
 		return null
 	return Image.create_from_data(int(hdr["width"]), int(hdr["height"]),
 		false, fmt, bytes)
+
+
+# The authored grid: {"cols", "frames", "rows", "lr"}, or empty.
+static func grid(src, types, gi: Dictionary, name: String) -> Dictionary:
+	var raw: PackedByteArray = src.get_ebx(name)
+	if raw.is_empty():
+		return {}
+	var e := BF6Ebx.new(types, gi)
+	if not e.parse(raw) or e.instance_offsets.is_empty():
+		return {}
+	var v = e.read_instance(0)
+	if typeof(v) != TYPE_DICTIONARY or not v.has(F_COLUMNS):
+		return {}
+	var cols := maxi(1, int(v.get(F_COLUMNS, 1)))
+	var frames := maxi(1, int(v.get(F_FRAMES, 1)))
+	return {
+		"cols": cols, "frames": frames,
+		"rows": int(ceil(float(frames) / float(cols))),
+		"lr": bool(v.get(F_LEFTRIGHT, false)),
+	}
+
+
+# The frame rectangle in the DECODED sheet, in pixels.
+#
+# LeftRightTiles doubles the sheet horizontally: the same frames twice, left and
+# right, as the two signs of a six-way lightmap. Only the left half is the
+# lighting base and only the left half's alpha is the density - measured against
+# a sheet whose right alpha is entirely empty while the effect plainly renders.
+# So the usable width is halved before the columns are divided out.
+static func frame_rect(hdr: Dictionary, g: Dictionary, frame: int) -> Rect2i:
+	if hdr.is_empty() or g.is_empty():
+		return Rect2i()
+	var usable := int(hdr["width"]) / (2 if bool(g["lr"]) else 1)
+	var cw := usable / int(g["cols"])
+	var chh := int(hdr["height"]) / maxi(1, int(g["rows"]))
+	var idx := clampi(frame, 0, int(g["frames"]) - 1)
+	@warning_ignore("integer_division")
+	var r := idx / int(g["cols"])
+	var c := idx % int(g["cols"])
+	return Rect2i(c * cw, r * chh, cw, chh)
+
+
+# The lighting base: the whole sheet, cropped to the left half when the atlas
+# sets LeftRightTiles. Alpha is the density.
+static func base_image(src, hdr: Dictionary, g: Dictionary,
+		fmt := Image.FORMAT_DXT5) -> Image:
+	var img := image(src, hdr, fmt)
+	if img == null:
+		return null
+	if g.is_empty() or not bool(g.get("lr", false)):
+		return img
+	img.decompress()
+	return img.get_region(Rect2i(0, 0, img.get_width() / 2, img.get_height()))
