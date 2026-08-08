@@ -36,6 +36,10 @@ const LEGACY_DIR := "res://highpoly"
 # so it doesn't wrongly rescale or reject the overlay. Prefab-assembled models
 # carry the same flag data-driven, via `nofit` in the store index.
 const NOFIT := ["WreckTank_Abra01"]
+# Bump when the fitting RULE changes, so overlays carrying an older fit are
+# rebuilt instead of kept. 1 = measure the object's own geometry only, not the
+# props a builder parented under it.
+const FIT_EPOCH := 1
 
 # The open HighpolyGameSource, or null. Set by the plugin when it opens one, and
 # the reason this library no longer needs a download: an object is assembled
@@ -409,14 +413,23 @@ static func apply_one(node: Node3D, key: String, tier: Tier, textured: bool) -> 
 		if vpath != "":
 			id = "variant://%s" % vpath
 	var hp := node.get_node_or_null(HP_NODE)
-	if hp != null and hp.get_meta("hp_asset", "") != id:
-		node.remove_child(hp); hp.queue_free(); hp = null   # tier/model changed -> rebuild
+	# THE FITTER'S ANSWER IS BAKED INTO THE OVERLAY'S TRANSFORM, so an overlay
+	# built under an older fitting rule keeps that older answer forever: the
+	# asset id still matches, nothing rebuilds it, and the user updates the
+	# plugin to no visible effect at all. That is exactly what happened after the
+	# group-AABB fix - tower1's overlay was still carrying its 4.951 scale.
+	# Bumping FIT_EPOCH retires every overlay fitted under the old rule, the same
+	# way GEOM_EPOCH retires a geometry cache whose rule changed.
+	if hp != null and (hp.get_meta("hp_asset", "") != id
+			or int(hp.get_meta("hp_fit", -1)) != FIT_EPOCH):
+		node.remove_child(hp); hp.queue_free(); hp = null   # tier/model/fit changed -> rebuild
 	if hp == null:
 		var child := _instance_for(key, id)
 		if child == null: return false
 		child.name = HP_NODE
 		child.scene_file_path = ""           # anonymize: SDK level validator ignores us
 		child.set_meta("hp_asset", id)
+		child.set_meta("hp_fit", FIT_EPOCH)
 		if id.ends_with(".obj"):
 			child.rotation_degrees = HP_ROT
 		node.add_child(child)

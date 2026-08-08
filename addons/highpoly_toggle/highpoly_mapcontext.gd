@@ -4534,16 +4534,32 @@ func set_context_shown(root: Node, on: bool, tex_mode := -1) -> bool:
 	if ctx == null: return false
 	if tex_mode >= 0 and _ctx_tex_mode >= 0 and tex_mode != _ctx_tex_mode:
 		return false                   # detail mode changed â†’ needs a rebuild
+	# "IS THE TERRAIN THERE", NOT "IS ANYTHING THERE".
+	#
+	# This set `found` from ANY layer it touched, and the map context node holds
+	# Water, Roads, Scatter and more besides Terrain. So after an apply that built
+	# water and no terrain - terrain=false objects=false backdrop=false water=true,
+	# which the user's log shows happening - switching Extended Terrain on found
+	# the WATER node, reported success, and returned true. The caller takes true
+	# as "done" and never runs the full apply, so the terrain is never built. It
+	# has already hidden the SDK's own terrain slab by then, so the result is no
+	# ground at all and the switch appears to do nothing.
+	#
+	# That is also why it was intermittent, which is what made it hard to catch.
+	# With nothing built, `found` is false and the full apply runs. With terrain
+	# built, showing it really is all that is needed. Only the in-between state -
+	# some other layer built, terrain not - fails, and only in that state.
 	var found := false
 	for c in ctx.get_children():
-		# "Backdrop" is its own toggle now and must not ride this one â€” hiding the
+		# "Backdrop" is its own toggle now and must not ride this one - hiding the
 		# terrain should not take the horizon with it.
 		if c.name == "Props" or c.name == "Backdrop" or not (c is Node3D):
 			continue
-		found = true
+		if c.name == "Terrain":
+			found = true
 		(c as Node3D).visible = on
 	if on and not found:
-		return false                   # terrain/backdrop never built â†’ full apply
+		return false                   # terrain never built -> full apply
 	_active = on
 	return true
 

@@ -3662,11 +3662,6 @@ func _reoverride_selection() -> void:
 # destroyed shells, …) cycles base -> variants -> base instead — doors always
 # win when a prop is both. Only consumed when something was actually hit, so
 # normal click/drag selection and camera behavior stay untouched.
-# Where the current left press started, so a release can tell a click from the
-# end of a drag. See the select-through block below.
-var _press_at := Vector2(-1e9, -1e9)
-
-
 func _forward_3d_gui_input(camera: Camera3D, event: InputEvent) -> int:
 	if diag_pick != null and diag_pick.button_pressed:
 		var v := _pick_input(camera, event)
@@ -3684,31 +3679,32 @@ func _forward_3d_gui_input(camera: Camera3D, event: InputEvent) -> int:
 				return EditorPlugin.AFTER_GUI_INPUT_STOP
 		# SELECT-THROUGH, so a high-poly model can be grabbed like anything else.
 		#
-		# ON RELEASE, AND ONLY WHEN THE MOUSE DID NOT TRAVEL.
-		# _forward_3d_gui_input runs BEFORE the editor's own handling, so
-		# answering the PRESS would take the press away from whatever it was
-		# really for: dragging a gizmo handle that happens to be drawn over a
-		# model, or starting a box select. A release within a few pixels of its
-		# own press is a click and nothing else.
+		# ON THE PRESS. The first version of this answered the RELEASE instead, to
+		# avoid taking a press away from a gizmo drag, and it did not work: the
+		# editor had already started a BOX SELECT on the press it was given, and
+		# a box select finishes on release and sets its own (empty) result. So the
+		# selection was made and then immediately overwritten, and dragging a
+		# model just drew a rubber band. The press is the only event that can stop
+		# a box select from starting.
 		#
-		# Letting the press through first means the editor does its own pick,
-		# finds nothing (the overlay is unowned, the proxy's meshes are hidden)
-		# and clears the selection; this then sets it. That order looks redundant
-		# and is not - it is what keeps every other press behaving as it did.
-		if mb.button_index == MOUSE_BUTTON_LEFT and not mb.double_click:
-			if mb.pressed:
-				_press_at = mb.position
-			elif _press_at.distance_to(mb.position) <= 3.0:
-				var pn = LibScript.proxy_under(camera, mb.position,
-					EditorInterface.get_edited_scene_root())
-				if pn != null:
-					var sel := EditorInterface.get_selection()
-					# Additive with Shift, exactly as the editor's own picking
-					# is, or select-through would break multi-select.
-					if not mb.shift_pressed:
-						sel.clear()
-					sel.add_node(pn)
-					return EditorPlugin.AFTER_GUI_INPUT_STOP
+		# What keeps this off a real gizmo drag is the already-selected test: a
+		# gizmo is only ever drawn on something that is already selected, so a
+		# press on the current selection is passed straight through and the gizmo
+		# behaves exactly as it always did. Any other press is a selection.
+		if mb.button_index == MOUSE_BUTTON_LEFT and mb.pressed and not mb.double_click:
+			var pn = LibScript.proxy_under(camera, mb.position,
+				EditorInterface.get_edited_scene_root())
+			if pn != null:
+				var sel := EditorInterface.get_selection()
+				var cur := sel.get_selected_nodes()
+				if cur.size() == 1 and cur[0] == pn:
+					return EditorPlugin.AFTER_GUI_INPUT_PASS   # its gizmo: hands off
+				# Additive with Shift, exactly as the editor's own picking is,
+				# or select-through would break multi-select.
+				if not mb.shift_pressed:
+					sel.clear()
+				sel.add_node(pn)
+				return EditorPlugin.AFTER_GUI_INPUT_STOP
 	return EditorPlugin.AFTER_GUI_INPUT_PASS
 
 # ---------- pick mode ----------
