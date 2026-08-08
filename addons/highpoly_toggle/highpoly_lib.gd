@@ -151,6 +151,7 @@ static func _match_key(node: Node, ks: Dictionary) -> String:
 		# depend on that scan having run adds a failure mode with no upside:
 		# the key is fixed and we know it.
 		if HighpolySoldier.faction_for(base) != "": return base
+		if HighpolyWeapon.weapon_for(base) != "": return base
 		# AN INSTANCE ANSWERS FOR ITSELF, AND IS NEVER GUESSED AT BY ITS NAME.
 		#
 		# This used to fall through to the node-name rules below when the scene's
@@ -355,6 +356,9 @@ static func _asset_id(key: String) -> String:
 		var fac := HighpolySoldier.faction_for(key)
 		if fac != "":
 			return "soldier://%s" % fac
+		var wep := HighpolyWeapon.weapon_for(key)
+		if wep != "":
+			return "weapon://%s" % wep
 	return ""
 
 static func _instance_for(key: String, id: String) -> Node3D:
@@ -363,6 +367,8 @@ static func _instance_for(key: String, id: String) -> Node3D:
 		return vs.instantiate() as Node3D if vs != null else null
 	if id.begins_with("soldier://"):
 		return HighpolySoldier.build(game_source, id.trim_prefix("soldier://"))
+	if id.begins_with("weapon://"):
+		return HighpolyWeapon.build(game_source, id.trim_prefix("weapon://"))
 	if id.begins_with("game://"):
 		if game_source == null:
 			return null
@@ -412,6 +418,9 @@ static func _nofit_for(key: String) -> bool:
 	# The soldier is not a model OF the marker, it is a figure at its real size
 	# standing where the spawn happens, so the proxy's box has no claim on it.
 	if HighpolySoldier.faction_for(key) != "": return true
+	# and the weapon, for the same reason: a rifle is not the shape of the
+	# pickup marker it stands on, so the fitter's veto has no claim on it
+	if HighpolyWeapon.weapon_for(key) != "": return true
 	if use_legacy:
 		var side := "%s/%s/%s.json" % [LEGACY_DIR, key, key]
 		if FileAccess.file_exists(side):
