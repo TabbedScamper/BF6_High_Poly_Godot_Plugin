@@ -57,12 +57,21 @@ const HDR_MIN := 56
 # sky rendered at a mean of 12,000, ambient comes from the sky, and the whole
 # world went white.
 #
+# SECOND DEPARTURE, same class, also measured. BF6 60 and 61 both mapped to DXGI
+# 78 (BC3_UNORM_SRGB), while the BC7 pair below them is correctly split into
+# linear (66) and sRGB (67). The example names split on the same line: code 60
+# carries `_wo` and `_nmt`, code 61 carries `_cs` and `_c`. Decoded directly,
+# t_gad_mine_m4slam_3p_nmt (BF6 60) reads R mean 0.502, G mean 0.501 - a flat
+# tangent-space normal in LINEAR encoding, where an sRGB-encoded flat normal
+# would store about 0.735. So 60 is the BC3_UNORM (77) twin, and 87 textures on
+# mp_dumbo were being flagged sRGB when they are linear.
+#
 # 65 stays on 96: nothing measured here uses it, and if a signed BC6H exists in
 # this game that is the code for it. Same shape as srgb-dds-decode-fix — two
 # DXGI codes differing only in interpretation, collapsed in a lookup, silent.
 const FMT := {
 	6: 61, 18: 28, 29: 28, 40: 10, 54: 71, 55: 72, 56: 74, 57: 75, 58: 75,
-	59: 77, 60: 78, 61: 78, 62: 80, 63: 83, 64: 95, 65: 96, 66: 98, 67: 99,
+	59: 77, 60: 77, 61: 78, 62: 80, 63: 83, 64: 95, 65: 96, 66: 98, 67: 99,
 }
 
 # DXGI -> Godot. The sRGB codes map to the same format as their UNORM twin

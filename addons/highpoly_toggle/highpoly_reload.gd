@@ -41,13 +41,27 @@ class_name HighpolyReload
 
 const SHADER_EXTS := ["gdshader"]
 
-# What the last reload saw, so the next one can tell what actually moved.
+# What THIS EDITOR currently has loaded, so the next reload can tell what moved.
 #
 # CONTENT HASHES, not modification times. An update that rewrites every file in
 # the addon touches 40 mtimes and changes two files, and a zip extraction sets
 # them all to now; reloading on mtime would replay the whole addon every time
 # anyone pressed the button. A hash says what is genuinely different.
-const STATE := "user://highpoly_reload_state.json"
+#
+# IN MEMORY, NOT ON DISK, and that is a correctness point rather than a
+# performance one. This baseline answers "what code is running inside THIS
+# process". `user://` is shared by every Godot instance that opens the project,
+# so a file there is the wrong shape for the question: with two editors open -
+# yours and a benchmark harness, say - the one that reloads writes the hashes
+# and the other then compares its OWN in-memory code against a baseline it never
+# set, sees no difference, and never reloads. One instance silently disarms the
+# other.
+#
+# Held per process it cannot be wrong: a freshly started editor loaded whatever
+# was on disk at the time, so its baseline IS those files and it correctly has
+# nothing to reload.
+static var _baseline: Dictionary = {}
+static var _armed := false
 
 
 static func plugin_dir() -> String:
@@ -72,18 +86,23 @@ static func _hashes() -> Dictionary:
 	return out
 
 
+# Record what this instance has loaded. Called from the plugin's _enter_tree, so
+# the baseline is the code the editor actually parsed rather than whatever
+# happens to be on disk when the button is first pressed - without it, an edit
+# made between startup and the first press would be silently adopted as
+# "already loaded" and never applied.
+static func arm() -> void:
+	_baseline = _hashes()
+	_armed = true
+
+
 static func _load_state() -> Dictionary:
-	if not FileAccess.file_exists(STATE):
-		return {}
-	var d = JSON.parse_string(FileAccess.get_file_as_string(STATE))
-	return d if d is Dictionary else {}
+	return _baseline
 
 
 static func _save_state(h: Dictionary) -> void:
-	var f := FileAccess.open(STATE, FileAccess.WRITE)
-	if f != null:
-		f.store_string(JSON.stringify(h))
-		f.close()
+	_baseline = h
+	_armed = true
 
 
 # What has changed since the last reload, without touching anything.
@@ -105,7 +124,7 @@ static func pending() -> Dictionary:
 			removed.append(str(k))
 	changed.sort(); added.sort(); removed.sort()
 	return {"changed": changed, "added": added, "removed": removed,
-		"first": was.is_empty()}
+		"first": not _armed}
 
 
 # Replace ONLY the scripts and shaders whose contents differ, in place.
@@ -184,6 +203,14 @@ const GEOMETRY_FILES := ["bf6_meshset.gd", "bf6_walk.gd", "bf6_terrain.gd",
 const COSMETIC_FILES := ["highpoly_toggle.gd", "highpoly_log.gd",
 	"highpoly_theme.gd", "highpoly_tips.gd", "highpoly_splash.gd",
 	"highpoly_updater.gd", "highpoly_reload.gd", "highpoly_jobs.gd"]
+# FILES THAT DO BOTH, which the first version of this table pretended did not
+# exist. highpoly_gamesource.gd resolves materials AND builds geometry - the
+# road ribbons, the terrain drape, the prop meshes - so calling it "materials"
+# meant a road-height change reported "re-dressed 6,431 meshes" and moved
+# nothing. Reported as `mixed`: re-dress, which is free and might be the whole
+# change, and then say a rebuild is needed for the rest.
+const MIXED_FILES := ["highpoly_gamesource.gd", "highpoly_mapcontext.gd",
+	"highpoly_lib.gd", "highpoly_scatter.gd"]
 
 
 static func impact(names: Array) -> String:
@@ -192,6 +219,9 @@ static func impact(names: Array) -> String:
 	for n in names:
 		if GEOMETRY_FILES.has(str(n)):
 			return "geometry"
+	for n in names:
+		if MIXED_FILES.has(str(n)):
+			return "mixed"
 	for n in names:
 		if not COSMETIC_FILES.has(str(n)):
 			return "materials"

@@ -948,7 +948,25 @@ func _write_fallback_layers(pal, by_area: Array, out_dir: String) -> void:
 # and 5% still dipped up to 0.12 m UNDER the ground, because the rendered terrain
 # is flat-shaded triangles between grid points while the drape samples
 # bilinearly — the two disagree mid-triangle, on slopes.
-const ROAD_Y_BIAS := 0.15
+# HOW FAR A ROAD SITS ABOVE THE GROUND, and the game's answer is ZERO.
+#
+# TERRAIN.md 10.4: decals are drawn "blended, depth-write-off pass after opaque,
+# DEPTH-BIASED". A depth bias is a raster-state trick in screen space - the
+# geometry stays AT the terrain surface and only its depth comparison is nudged.
+# There is no authored height anywhere in the data, because the engine never
+# lifts anything.
+#
+# We have no depth bias, so this is a substitute. It was 15 cm, and that was not
+# chosen for comfort either: at 6 cm the median vertex still sat 7 cm proud and
+# 5% dipped UNDER the ground. The cause was a mismatch rather than a need - the
+# drape sampled the height grid bilinearly at full resolution while the rendered
+# terrain is flat triangles spanning `drape_step` texels, so the two surfaces
+# genuinely disagree mid-triangle on slopes.
+#
+# _height_at now evaluates the SAME triangle the terrain mesh draws, so the
+# drape lands ON the rendered surface rather than near it and the lift only has
+# to cover float precision. 15 cm was tall enough to cut through car tyres.
+const ROAD_Y_BIAS := 0.02
 
 # COVERAGE IS A SECOND TEXTURE, not an alpha channel, so this cannot be a
 # StandardMaterial3D. The markings — lane lines, crosswalks, arrows — live ONLY
@@ -1199,6 +1217,26 @@ func _road_material(key: String) -> Material:
 
 
 # Bilinear world height, the same formula the terrain build uses.
+# Metres per terrain vertex, in texels of the height grid. Set by the map
+# context from its own `terrain_step` so the drape and the mesh cannot drift
+# apart; 2 is that context's default.
+var drape_step := 2
+
+
+# THE HEIGHT OF THE TERRAIN AS DRAWN, not as stored.
+#
+# This used to interpolate the full-resolution grid bilinearly, and the rendered
+# terrain is not that surface. The mesh takes every `drape_step`-th texel as a
+# vertex and fills each quad with two FLAT TRIANGLES, so between vertices the
+# two disagree by whatever the height does across a step — on a slope with any
+# relief, easily 10 cm. That gap is the whole reason the road had to be lifted
+# 15 cm to stop it sinking through the ground.
+#
+# So sample the same lattice and evaluate the same triangle. The quad is split
+# on the ANTI-diagonal — indices go (a, a+1, a+nx) then (a+1, a+nx+1, a+nx) —
+# so a point belongs to the first triangle when tx + tz <= 1. Evaluating that
+# triangle's plane puts the drape exactly on the surface being drawn, and the
+# lift then only has to cover float precision.
 func _height_at(x: float, z: float) -> float:
 	var res: int = int(_hm["res"])
 	var wmin: float = float(_hm["min"])
@@ -1206,18 +1244,27 @@ func _height_at(x: float, z: float) -> float:
 	if span <= 0.0 or res < 2:
 		return 0.0
 	var d: PackedByteArray = _hm["data"]
+	var st: int = maxi(1, drape_step)
 	var fx: float = clampf((x - wmin) / span * (res - 1), 0.0, res - 1.001)
 	var fz: float = clampf((z - wmin) / span * (res - 1), 0.0, res - 1.001)
-	var x0 := int(fx)
-	var z0 := int(fz)
-	var tx := fx - x0
-	var tz := fz - z0
+	@warning_ignore("integer_division")
+	var x0: int = clampi((int(fx) / st) * st, 0, res - 1 - st)
+	@warning_ignore("integer_division")
+	var z0: int = clampi((int(fz) / st) * st, 0, res - 1 - st)
+	var x1: int = mini(x0 + st, res - 1)
+	var z1: int = mini(z0 + st, res - 1)
+	var tx: float = clampf((fx - float(x0)) / float(st), 0.0, 1.0)
+	var tz: float = clampf((fz - float(z0)) / float(st), 0.0, 1.0)
 	var h00 := float(d.decode_u16((z0 * res + x0) * 2))
-	var h10 := float(d.decode_u16((z0 * res + x0 + 1) * 2))
-	var h01 := float(d.decode_u16(((z0 + 1) * res + x0) * 2))
-	var h11 := float(d.decode_u16(((z0 + 1) * res + x0 + 1) * 2))
-	var hv := h00 * (1.0 - tx) * (1.0 - tz) + h10 * tx * (1.0 - tz) \
-		+ h01 * (1.0 - tx) * tz + h11 * tx * tz
+	var h10 := float(d.decode_u16((z0 * res + x1) * 2))
+	var h01 := float(d.decode_u16((z1 * res + x0) * 2))
+	var h11 := float(d.decode_u16((z1 * res + x1) * 2))
+	var hv: float
+	if tx + tz <= 1.0:
+		hv = h00 + (h10 - h00) * tx + (h01 - h00) * tz          # (0,0) (1,0) (0,1)
+	else:
+		hv = h10 + (h11 - h10) * (tx + tz - 1.0) \
+			+ (h01 - h10) * (1.0 - tx)                          # (1,0) (1,1) (0,1)
 	return float(_hm["base"]) + hv * float(_hm["scale"]) / 65535.0
 
 
@@ -2137,6 +2184,99 @@ func _hidden_parts(res_name: String, info: Dictionary) -> Dictionary:
 	return out
 
 
+# ---------------------------------------------------------------------------
+# EXPLAIN ONE MESH: everything that decided how it looks.
+#
+# For the Diagnose Selection tool. When a prop looks wrong the useful question
+# is never "is it wrong" - you can see that - it is WHICH LINK in the chain gave
+# the answer: the mesh resolved, the scope found a depot, the depot had a record
+# for the state key, the record bound an albedo, the alpha slot held something
+# that passed the cutout test. Each of those fails differently and they all look
+# the same on screen.
+#
+# -> a Dictionary shaped for printing, never null.
+# ---------------------------------------------------------------------------
+func describe(am: Mesh) -> Dictionary:
+	var out := {"found": false, "mesh": "", "scope": "", "variation": 0,
+		"surfaces": []}
+	for row in _dressed:
+		var r: Array = row
+		if r[0] != am:
+			continue
+		out["found"] = true
+		out["mesh"] = str(r[4]) if r.size() > 4 else ""
+		out["scope"] = str(r[2])
+		out["variation"] = int(r[3])
+		var keys: Array = r[1]
+		for i in range(keys.size()):
+			out["surfaces"].append(describe_state(int(keys[i]), str(r[2]),
+				int(r[3]), i))
+		break
+	return out
+
+
+# One surface's resolution chain, step by step.
+func describe_state(state_key: int, scope: String, var_hash: int,
+		index := -1) -> Dictionary:
+	var d := {"index": index, "state_key": BF6Depot.key_hex(state_key),
+		"depot": "", "key_used": "", "record": false, "slots": {},
+		"masked": false, "cut": 0.0, "mask_shape": {}, "material": "none",
+		"note": ""}
+	if state_key == 0:
+		d["note"] = "section carries no shader state key"
+		return d
+	var pair = _depot_for(scope)
+	if pair == null:
+		d["note"] = "no ShaderBlockDepot for this scope - nothing can resolve"
+		return d
+	var dep: BF6Depot = pair[0]
+	d["depot"] = "ok"
+	var used := state_key
+	if var_hash != 0 and dep.key_to_record.has(state_key + var_hash):
+		used = state_key + var_hash
+		d["key_used"] = "derived (base + variation)"
+	elif var_hash != 0:
+		d["key_used"] = "base (the variation has no record here)"
+	else:
+		d["key_used"] = "base"
+	if not dep.key_to_record.has(used):
+		d["note"] = "the depot has NO RECORD for this key - drawn with Godot's default (white)"
+		return d
+	d["record"] = true
+	var slots: Dictionary = dep.textures_for(used, pair[1])
+	slots.erase("constants")
+	for k in slots.keys():
+		var guid := str(slots[k])
+		var nm = walk.gi.get(guid) if walk != null else null
+		d["slots"][str(k)] = str(nm).get_file() if nm != null else guid
+	if not (slots.has("basecolor") or slots.has("basecolor_veg")):
+		d["note"] = ("record resolves but binds NO albedo - shader-computed "
+			+ "material, nothing to sample (drawn white)")
+	# the cutout chain, which is what foliage questions are about
+	var alpha = slots.get("alpha")
+	if alpha != null:
+		var an = walk.gi.get(str(alpha)) if walk != null else null
+		var akey := str(an).to_lower().trim_suffix(".ebx") if an != null else ""
+		var m = _mask_for(alpha)
+		d["masked"] = m != null
+		d["cut"] = _cut_for(alpha)
+		if akey != "" and _mask_cache.has(akey):
+			d["mask_shape"] = {"accepted": bool(_mask_cache[akey])}
+		if m == null:
+			d["note"] += ("  alpha slot bound but REJECTED as a cutout "
+				+ "(placeholder or wear mask) - surface drawn opaque")
+	var mat = material_for(state_key, scope, var_hash)
+	if mat == null:
+		d["material"] = "none (white)"
+	elif mat is ShaderMaterial:
+		var sh := (mat as ShaderMaterial).shader
+		d["material"] = "shader: %s" % (sh.resource_path.get_file()
+			if sh != null and sh.resource_path != "" else "inline")
+	else:
+		d["material"] = "StandardMaterial3D"
+	return d
+
+
 # A mesh's LOD-0 section state keys, from the resource alone.
 func _section_keys(res_name: String) -> Array:
 	if _sec_keys.has(res_name):
@@ -2855,20 +2995,48 @@ func _mask_for(file_guid):
 		# one looks exactly like the bug this fixes.
 		_mask_cache[an] = true
 		return tex
-	var clear: float = shape["clear"]
-	var is_cut := clear >= CUTOUT_MIN_CLEAR and clear <= CUTOUT_MAX_CLEAR
+	# ACCEPTED ON WHAT IT DOES AT 0.5, not on how much of it is fully clear.
+	#
+	# The clear-fraction floor was mine and it was wrong in the most damaging
+	# place available. t_com_treedestroyed_02_a has only 2.3% of its texels below
+	# 0.1 - it is a dense canopy - so a 10% floor REJECTS it, and that is the
+	# single most-used vegetation mask on this map: 750 states on dumbo, 1,192 on
+	# aftermath. Rejected means drawn opaque, so every one of those trees became
+	# a solid block.
+	#
+	# The pipeline's stricter `opaque > 0.35` rule fails the other way, on the
+	# distance-ramp family: those never exceed 0.9 at all, so it would reject 59
+	# of the map's 168 masks.
+	#
+	# What every real mask does and no placeholder does is SEPARATE AT 0.5 - some
+	# of it below, some above. t_debug_r is 100% above (constant 255) and
+	# t_debug_black 100% below, so the same test that admits both mask families
+	# still excludes both placeholders.
+	var below: float = shape["below_half"]
+	var is_cut := below >= CUTOUT_MIN_CLEAR and below <= CUTOUT_MAX_CLEAR
 	_mask_cache[an] = is_cut
 	if not is_cut:
 		tex_stats["masks_placeholder"] = int(tex_stats.get("masks_placeholder", 0)) + 1
 		return null
-	# THE CUT ADAPTS TO THE MASK, because they do not share a range. Every leaf
-	# atlas measured has 0.0% of its texels above 0.9 — not a sampling artefact,
-	# it survives full-resolution sampling — and t_com_decorations_01_a spans
-	# 0..178 of 255, i.e. it tops out at 0.70. Meanwhile t_com_treedestroyed_02_a
-	# is 53% above 0.9. A fixed 0.5 works for both of those and would erase any
-	# mask that happened to top out below it, which is the failure that looks
-	# like the object was never built.
-	_mask_cut[an] = clampf(shape["max"] * 0.45, 0.12, 0.5)
+	# THE CUT IS 0.5, MEASURED — and the adaptive formula that used to be here is
+	# what people were seeing as "the cutouts look wrong".
+	#
+	# It read `clampf(shape.max * 0.45, 0.12, 0.5)`, reasoning that a mask
+	# topping out at 0.70 must be scaled to. That had the shape of the data
+	# wrong. Across all 168 vegetation mask pairs on this map the alpha-slot R
+	# channel comes in two families and BOTH cross 0.5:
+	#
+	#   109 hard masks            bimodal — t_com_treedestroyed_02_a is 51% in
+	#                             the top bucket against 3% in the bottom
+	#    59 distance-field ramps  max ~0.698, 0% above 0.98, only 17% inside a
+	#                             0.45..0.55 band. A distance ramp around a HARD
+	#                             edge, not a soft-opacity gradient.
+	#
+	# 168 of 168 reach above 0.5 and none vanishes at it. The ramp family is what
+	# the old formula mishandled: 0.698 x 0.45 = 0.31, and thresholding a
+	# distance field at 0.31 instead of 0.5 dilates every leaf into a blob — 59
+	# of the map's 168 masks drawn fat.
+	_mask_cut[an] = 0.5
 	return tex
 
 
@@ -2907,7 +3075,10 @@ func _mask_for(file_guid):
 # are NOT foliage and a permissive test costs them holes.
 #
 # 10% sits in the gap between 3.6 and 20 with margin on both sides.
-const CUTOUT_MIN_CLEAR := 0.10
+# Fractions of the mask BELOW 0.5. A real mask has some of both sides; a
+# placeholder is entirely one. 2% admits t_com_treedestroyed_02_a's dense canopy
+# (22.6% below) and still excludes a constant sheet.
+const CUTOUT_MIN_CLEAR := 0.02
 const CUTOUT_MAX_CLEAR := 0.98
 const CUTOUT_SAMPLES := 128
 # NULL RESULT: mask resolution does not matter here, so a mask takes the same
@@ -2938,6 +3109,7 @@ static func mask_shape(img: Image) -> Dictionary:
 	var sy: int = maxi(1, int(h / CUTOUT_SAMPLES))
 	var clear := 0
 	var opaque := 0
+	var below := 0
 	var n := 0
 	var hi := 0.0
 	for y in range(0, h, sy):
@@ -2945,6 +3117,11 @@ static func mask_shape(img: Image) -> Dictionary:
 			var v := c.get_pixel(x, y).r
 			n += 1
 			hi = maxf(hi, v)
+			# THE SPLIT AT 0.5 is what actually decides whether this is a mask.
+			# `clear` and `opaque` are kept because they describe the shape, but
+			# neither of them admits both mask families on their own.
+			if v < 0.5:
+				below += 1
 			if v < 0.1:
 				clear += 1
 			elif v > 0.9:
@@ -2952,7 +3129,7 @@ static func mask_shape(img: Image) -> Dictionary:
 	if n == 0:
 		return {}
 	return {"clear": float(clear) / float(n), "opaque": float(opaque) / float(n),
-		"max": hi, "samples": n}
+		"below_half": float(below) / float(n), "max": hi, "samples": n}
 
 
 # A masked material: albedo plus the mask, through the same foliage_wind shader
@@ -3079,6 +3256,18 @@ func _texture_for(file_guid, is_normal := false, cap := -1):
 			Image.COMPRESS_SOURCE_NORMAL if is_normal
 				else Image.COMPRESS_SOURCE_GENERIC)
 		tex_stats["compressed"] = int(tex_stats.get("compressed", 0)) + 1
+	# MIPMAPS, which nothing on this path ever generated.
+	#
+	# Every sampler in foliage_wind.gdshader asks for filter_linear_mipmap and
+	# there was never a chain to sample, so it silently fell back to bilinear on
+	# the base level. A hard alpha discard against an unfiltered, minified mask
+	# turns sub-pixel leaf structure into per-frame speckle that crawls with the
+	# camera - the "lacy / moth-eaten" look - and it is INVARIANT to mask
+	# resolution. Which is why the earlier experiment capping masks at 2048 /
+	# 1024 / 512 found no difference and concluded the framing was to blame: all
+	# three renders were missing the same mip chain.
+	if not img.has_mipmaps() and img.get_width() >= 4 and img.get_height() >= 4:
+		img.generate_mipmaps()
 	var t := ImageTexture.create_from_image(img)
 	_tex_cache[an] = t
 	tex_stats["decoded"] = int(tex_stats["decoded"]) + 1

@@ -9321,6 +9321,221 @@
    "force_killed": false,
    "when": "2026-08-08 00:27:07",
    "note": ""
+  },
+  {
+   "apply_status": "driven through the dock",
+   "backdrop_done": 157,
+   "backdrop_ms": 1795,
+   "backdrop_surfaces": 406,
+   "backdrop_total": 157,
+   "boot_ms": 26678,
+   "build_done": 6431,
+   "build_ms": 34773,
+   "build_sampled": false,
+   "build_stalled": false,
+   "build_timed_out": false,
+   "build_total": 6431,
+   "cell": 0,
+   "census": {
+    "Backdrop": {
+     "instances": 185,
+     "nodes": 158,
+     "surfaces": 406,
+     "visible": true,
+     "visible_in_tree": true
+    },
+    "Props": {
+     "instances": 44920,
+     "nodes": 7572,
+     "surfaces": 14858,
+     "visible": true,
+     "visible_in_tree": true
+    },
+    "Roads": {
+     "instances": 1,
+     "nodes": 1,
+     "surfaces": 51,
+     "visible": true,
+     "visible_in_tree": true
+    },
+    "Terrain": {
+     "instances": 256,
+     "nodes": 257,
+     "surfaces": 256,
+     "visible": true,
+     "visible_in_tree": true
+    },
+    "Water": {
+     "instances": 1,
+     "nodes": 2,
+     "surfaces": 1,
+     "visible": true,
+     "visible_in_tree": true
+    },
+    "_MAP_CONTEXT": {
+     "instances": 0,
+     "nodes": 0,
+     "surfaces": 0,
+     "visible": true,
+     "visible_in_tree": true
+    },
+    "_SCATTER": {
+     "instances": 0,
+     "nodes": 45,
+     "surfaces": 44,
+     "visible": true,
+     "visible_in_tree": true
+    }
+   },
+   "census_surfaces": 15616,
+   "dialogs_dismissed": 0,
+   "dialogs_seen": {
+    "High-Poly Tools": 1
+   },
+   "dock_controls": {
+    "mapctx_backdrop": true,
+    "mapctx_gi": true,
+    "mapctx_light": true,
+    "mapctx_maplights": true,
+    "mapctx_objects": true,
+    "mapctx_on": true,
+    "mapctx_shadows": true,
+    "mapctx_water": true,
+    "mode": 2,
+    "range": 3500.0
+   },
+   "dock_sync_ms": 478,
+   "draws_mean": 3923,
+   "draws_peak": 15304,
+   "editor_cam_stuck": 455,
+   "editor_cam_tried": 455,
+   "engine": {
+    "buffer_mb": 996.2,
+    "mem_static_mb": 7325.3,
+    "nodes": 37155,
+    "objects": 265809,
+    "orphans": 294,
+    "prims": 3942652,
+    "resources": 11311,
+    "texture_mb": 5687.6,
+    "vram_mb": 7024.3
+   },
+   "flight_samples": 455,
+   "frames": 1437,
+   "godot": "4.6.3-stable (official)",
+   "headless": false,
+   "hitches33": 326,
+   "hitches50": 169,
+   "import_scan_ms": 33031,
+   "last_crumb": "65.78 main props                  at 4469/6431  common/environment/generic/industrial/props/portabledieselengine_01/ind_portabledieselengine_01_mesh|game/glaciermp/levels/mp_dumbo/sub_art_07_construction|0\n           66.30 main props                  at 4815/6431  common/environment/generic/common/props/barcounter_02/com_barcounter_02_mesh|game/glaciermp/levels/mp_dumbo/sub_art_06_olddistrict|0\n           66.82 main props                  at 5188/6431  common/environment/generic/common/props/tirepile_01/com_tirepile_01_single_indestructible_mesh|game/glaciermp/levels/mp_dumbo/_layers_world/payload_subworld|0\n           67.35 main props                  at 5652/6431  common/environment/northamerica/westusurban/architecture/retailsign_01/wuu_retailsign_01_b_mesh|game/glaciermp/levels/mp_dumbo/sub_art_06_olddistrict|3561756816\n           67.87 main props                  at 6097/6431  common/environment/generic/common/props/carcompact_01/com_carcompact_door_frontleft_mesh|game/glaciermp/levels/mp_dumbo/sub_art_07_construction|2488018673\n           68.27 main props                  build finished, 6431 built",
+   "lighting": "MP_Dumbo game lighting: sun az 125\u00c2\u00b0 el 29\u00c2\u00b0, 120000 lux",
+   "low1_ms": 79.19,
+   "map": "MP_Dumbo",
+   "map_lights": "Map lights: 7878 loaded (nearest 300 m lit)",
+   "mean_ms": 19.77,
+   "median_ms": 9.88,
+   "open_ms": 5787,
+   "p95_ms": 52.93,
+   "p99_ms": 60.42,
+   "phases": {
+    "game source: mount": {
+     "each_ms": 942.0,
+     "n": 1,
+     "s": 0.942
+    },
+    "game source: partition index": {
+     "each_ms": 689.0,
+     "n": 1,
+     "s": 0.689
+    },
+    "game source: placement walk": {
+     "each_ms": 265.0,
+     "n": 1,
+     "s": 0.265
+    },
+    "game source: terrain surface": {
+     "each_ms": 0.0,
+     "n": 1,
+     "s": 0.0
+    },
+    "game source: typeinfo": {
+     "each_ms": 54.0,
+     "n": 1,
+     "s": 0.054
+    },
+    "map lights: build fixtures": {
+     "each_ms": 120.0,
+     "n": 3,
+     "s": 0.36
+    },
+    "map lights: waiting for a frame": {
+     "each_ms": 144.0,
+     "n": 2,
+     "s": 0.288
+    },
+    "panel tick: map-light culling": {
+     "each_ms": 0.67,
+     "n": 15,
+     "s": 0.01
+    },
+    "panel tick: prop cell culling": {
+     "each_ms": 0.2,
+     "n": 15,
+     "s": 0.003
+    },
+    "panel tick: total": {
+     "each_ms": 1.0,
+     "n": 15,
+     "s": 0.015
+    },
+    "props: apply_radius on every yield": {
+     "each_ms": 0.35,
+     "n": 40,
+     "s": 0.014
+    },
+    "props: create multimesh cells": {
+     "each_ms": 0.11,
+     "n": 6431,
+     "s": 0.685
+    },
+    "props: load mesh (GLB parse + cache)": {
+     "each_ms": 2.91,
+     "n": 6431,
+     "s": 18.744
+    },
+    "props: waiting for the yielded frame": {
+     "each_ms": 117.23,
+     "n": 40,
+     "s": 4.689
+    },
+    "skyline: place multimesh": {
+     "each_ms": 0.08,
+     "n": 157,
+     "s": 0.013
+    }
+   },
+   "probe_draws": 14773,
+   "props_built": 6431,
+   "props_per_s": 454.5,
+   "radius": 1000000000.0,
+   "reused_open_scene": true,
+   "scene": "res://Levels/MP_Dumbo.tscn",
+   "scene_nodes": 15966,
+   "scene_nodes_at_open": 48,
+   "screenshot": "user://bf6_autorun_MP_Dumbo.png",
+   "shadow_draws_mean": 150,
+   "shadow_draws_peak": 629,
+   "started_unix": 1786167564.761,
+   "total_ms": 135484,
+   "vram_mode": 1,
+   "worst_ms": 157.5,
+   "wall_s": 139.7,
+   "vram_mb": 7024.3,
+   "texture_mb": 5687.6,
+   "mem_static_mb": 7325.3,
+   "force_killed": false,
+   "when": "2026-08-08 00:41:17",
+   "note": ""
   }
  ]
 }

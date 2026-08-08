@@ -995,6 +995,9 @@ func _load_data(map: String) -> bool:
 		# The cache directory is passed because the terrain builder takes a
 		# FILE: the heightfield is decoded from the install and written there.
 		# That is a file derived from the player's own game, not a download.
+		# The drape must sample the same lattice this context meshes the
+		# terrain on, or the roads sit on a surface nobody draws.
+		game_source.drape_step = terrain_step
 		_data = game_source.map_data("%s/%s" % [CACHE, map])
 		_map = map
 		_world_min = float((_data["world"] as Dictionary).get("min", -2048))

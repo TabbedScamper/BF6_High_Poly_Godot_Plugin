@@ -1322,6 +1322,37 @@ All of it is read from your own Battlefield 6 installation."
 			% [meshes.size(), st["meshes"], st["surfaces"]]))
 	mark_row.add_child(mark_fix)
 
+	# ---- diagnose one object ----
+	#
+	# The note box above is reused: what you type there is what labels the
+	# report, so tagging a prop and dropping a marker read the same way.
+	var diag_row := HBoxContainer.new()
+	host.add_child(diag_row)
+	var diag := Button.new()
+	diag.text = "Diagnose Selection"
+	diag.tooltip_text = "Tints the selected placed prop — or, if nothing of ours is selected, whatever map geometry is in front of the camera — bright red, and writes its full resolution chain into the log: which depot answered, whether the shader state had a record, what textures it bound, and whether its cutout mask was honoured or rejected. Save log file afterwards and send it."
+	diag.pressed.connect(func():
+		var r := EditorInterface.get_edited_scene_root()
+		if r == null:
+			lbl.text = "Open a level scene first."
+			return
+		var gs = mapctx.game_source if mapctx != null else null
+		var note: String = mark_note.text.strip_edges()
+		var text: String = HighpolyDiagnose.run(r, gs, mapctx, note)
+		if text.begins_with("Open a level"):
+			lbl.text = text
+			return
+		var n := text.count("
+") + 1
+		lbl.text = "Diagnosed and tinted. %d line(s) in the log — press Save log file." % n)
+	diag_row.add_child(diag)
+	var diag_clear := Button.new()
+	diag_clear.text = "Clear tints"
+	diag_clear.tooltip_text = "Removes the red diagnostic tint. The objects themselves are untouched — the tint is an overlay pass, never a material swap."
+	diag_clear.pressed.connect(func():
+		lbl.text = "Cleared %d tint(s)." % HighpolyDiagnose.clear())
+	diag_row.add_child(diag_clear)
+
 	# ---- performance recorder ----
 	# Everything about performance in this plugin has been reasoned from triangle
 	# counts, which is guesswork: a scene can be triangle-light and draw-call
@@ -1584,6 +1615,11 @@ All of it is read from your own Battlefield 6 installation."
 	_refresh_gates()
 
 	# auto-overlay for pieces placed while a detail mode is active
+	# ARM THE LIVE RELOAD with the code this editor just parsed. Doing it here
+	# rather than on the first button press matters: an edit made between
+	# startup and that press would otherwise be adopted as "already loaded"
+	# and never applied.
+	HighpolyReload.arm()
 	get_tree().node_added.connect(_on_node_added)
 	# live isolation follows the editor selection
 	EditorInterface.get_selection().selection_changed.connect(_on_selection_changed)
@@ -1891,7 +1927,7 @@ func _hot_reload() -> bool:
 			# Dock and logging only. Nothing already built can look different,
 			# so re-dressing thousands of surfaces would be pure cost.
 			lbl.text = "Reloaded %d file(s)" % names.size()
-		"materials":
+		"materials", "mixed":
 			var gs = mapctx.game_source if mapctx != null else null
 			if gs != null and gs.has_method("invalidate_materials"):
 				var st: Dictionary = gs.invalidate_materials()
@@ -1900,6 +1936,14 @@ func _hot_reload() -> bool:
 				lbl.text = "Reloaded %d file(s), re-dressed %d mesh(es)" 					% [names.size(), st["meshes"]]
 			else:
 				lbl.text = "Reloaded %d file(s)" % names.size()
+			if what == "mixed":
+				# Those files resolve materials AND build geometry, and only the
+				# first half of that is live now. Saying so beats letting a road
+				# height change look like it applied.
+				lbl.text += " — rebuild if you changed geometry"
+				Log.info("Those files also build geometry (roads, terrain drape, "
+					+ "prop meshes). If that is what changed, toggle Map Context "
+					+ "off and on.")
 		"geometry":
 			# Honest rather than convenient: the built meshes came out of the
 			# code that just changed, and no amount of re-dressing fixes a
