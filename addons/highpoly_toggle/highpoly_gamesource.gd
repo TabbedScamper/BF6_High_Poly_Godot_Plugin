@@ -207,7 +207,14 @@ const OPEN_STAGES := [ST_MOUNT, ST_TYPES, ST_INDEX, ST_WALK, ST_GROUND,
 # 5: surfaces now record which palette entries their vertices select, in the
 #    surface name (see the merge loop), so the colour table can be resolved
 #    per surface instead of only when all eight entries agree.
-const GEOM_EPOCH := 5
+# 6: the backdrop plume sheet is read as LIGHTING, not colour - smoke.gdshader
+#    gained lighting_packed and takes the channel average when the sheet carries
+#    chroma a smoke sheet has no business having. That changes the pixels a
+#    cached plume material produces, and a cached one would have gone on drawing
+#    the old answer forever: the plumes are map-context props, so their material
+#    lives behind this epoch. The correction is only visible once it is bumped,
+#    which is the whole reason this number exists.
+const GEOM_EPOCH := 6
 
 # A FUNCTION, not read as a constant from outside, and that is load-bearing.
 # GDScript folds a constant into the caller at parse time, so a caller that read
