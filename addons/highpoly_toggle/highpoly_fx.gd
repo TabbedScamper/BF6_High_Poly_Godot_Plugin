@@ -297,6 +297,8 @@ static var _sizes: Dictionary = {}      # lowercase graph name -> {size, field, 
 # graph looks mesh-less while the 210 debris-pile points on Aftermath actually
 # draw a 158-vertex wood shard. This is the mesh most often substituted per
 # graph, util placeholders and anything over 4k triangles excluded.
+const SPAWN_PATH := "res://addons/highpoly_toggle/fx_spawn.json"
+static var _spawn: Dictionary = {}      # lowercase graph name -> {rate, max_count, spawn_spread}
 const MESHES_PATH := "res://addons/highpoly_toggle/fx_meshes.json"
 static var _meshtbl: Dictionary = {}    # lowercase graph name -> {mesh, verts, tris}
 static var _meshes: Dictionary = {}     # lowercase graph name -> Mesh or null
@@ -430,6 +432,10 @@ static func _load_sheet_table() -> void:
 		var sz: Variant = JSON.parse_string(FileAccess.get_file_as_string(SIZES_PATH))
 		if sz is Dictionary:
 			_sizes = sz
+	if FileAccess.file_exists(SPAWN_PATH):
+		var sp: Variant = JSON.parse_string(FileAccess.get_file_as_string(SPAWN_PATH))
+		if sp is Dictionary:
+			_spawn = sp
 	if FileAccess.file_exists(MESHES_PATH):
 		var mt: Variant = JSON.parse_string(FileAccess.get_file_as_string(MESHES_PATH))
 		if mt is Dictionary:
@@ -606,6 +612,21 @@ static func _emitter(cls: String, effect: String, gp: Variant) -> GPUParticles3D
 			# authored max_count.
 			var rate := float(s.get("rate", 1.0))
 			var cap := int(s.get("max_count", 64))
+			# THE LAYER'S RATE, NOT THE TEMPLATE'S - the same bug as size.
+			# Reading the graph template gave every emitter of a graph one
+			# identical rate, which is why the whole map pulsed together.
+			# Two traps in the source, both resolved in fx_spawn.json: the
+			# BF2042 labels on SpawnModeContinuous are SWAPPED (the field
+			# named InitialParticleCount is the float RATE, the one named
+			# SpawnRate is the int initial count), and MaxSpawnRate is a
+			# clamp ceiling of 10000-65000 rather than a rate.
+			var sr: Variant = _spawn.get(effect.to_lower())
+			if sr is Dictionary:
+				var srd: Dictionary = sr
+				if srd.get("rate") != null:
+					rate = float(srd["rate"])
+				if srd.get("max_count") != null:
+					cap = int(srd["max_count"])
 			amount = clampi(int(round(rate * life)), 1, maxi(cap, 1))
 			if str(s.get("mode", "continuous")) == "burst":
 				g.one_shot = true
@@ -686,13 +707,27 @@ static func _build_mats(cls: String, gp: Variant) -> Array:
 			pm.turbulence_noise_strength = float(d["turbulence_strength"]) * 0.1
 			if d.has("turbulence_frequency"):
 				pm.turbulence_noise_scale = maxf(float(d["turbulence_frequency"]), 0.01)
-		var bb: Variant = d.get("emitter_bbox")
-		if bb is Array and (bb as Array).size() == 2 and bb[0] is Array:
-			var hi: Array = bb[0]
-			if hi.size() >= 3:
+		# EMITTER_BBOX IS NOT AN EMISSION VOLUME and using it as one was the
+		# other half of "everything has the same spread". At template level 67%
+		# of graphs are exactly +/-1, so two thirds of the map emitted from an
+		# identical unit cube. It is a CULLING bound: of 1,189 off-centre boxes
+		# 1,076 are offset upward and only 113 downward, which is a bound
+		# tracking particles that rise, and a handheld repair torch carries a
+		# 6x4x6 m one. Wiring it would have swapped one wrong preview for a
+		# worse one.
+		#
+		# The authored spread is SpawnPosScale, which really does vary per
+		# layer. Ratios are trustworthy - [1,0.1,1] is a flat disc, [0.3,1,0.3]
+		# a vertical stalk - while the absolute metre scale is inferred, so a
+		# graph with none falls back to the small default sphere above rather
+		# than borrowing the bound.
+		var sp2: Variant = _spawn.get(ck.to_lower())
+		if sp2 is Dictionary and (sp2 as Dictionary).get("spawn_spread") != null:
+			var sv: Array = (sp2 as Dictionary)["spawn_spread"]
+			if sv.size() >= 3:
 				pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_BOX
 				pm.emission_box_extents = Vector3(
-					absf(float(hi[0])), absf(float(hi[1])), absf(float(hi[2])))
+					absf(float(sv[0])), absf(float(sv[1])), absf(float(sv[2])))
 
 	# AUTHORED SIZE BEATS BOTH OF THOSE.
 	#

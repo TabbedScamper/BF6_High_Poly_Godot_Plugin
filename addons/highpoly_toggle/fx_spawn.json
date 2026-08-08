@@ -1,0 +1,3825 @@
+{
+ "eg_airburst_predictedpath_line": {
+  "rate": null,
+  "max_count": 10,
+  "initial_count": 5,
+  "burst": true,
+  "bbox": [
+   5.0,
+   5.0,
+   52.5
+  ],
+  "bbox_center": [
+   0.0,
+   0.0,
+   47.5
+  ],
+  "bbox_n": 1,
+  "n": 1,
+  "src": {
+   "rate": "burst_mode_no_rate",
+   "max_count": "override",
+   "initial_count": "template",
+   "bbox": "override"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_airburstimpactpoint_circle": {
+  "rate": null,
+  "max_count": 1,
+  "initial_count": 1,
+  "burst": true,
+  "bbox": [
+   5.0,
+   5.0,
+   5.0
+  ],
+  "bbox_center": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "bbox_n": 1,
+  "n": 1,
+  "src": {
+   "rate": "burst_mode_no_rate",
+   "max_count": "template",
+   "initial_count": "template",
+   "bbox": "override"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_airburstimpactpoint_decal": {
+  "rate": null,
+  "max_count": 1,
+  "initial_count": 1,
+  "burst": true,
+  "bbox": [
+   5.0,
+   5.0,
+   5.0
+  ],
+  "bbox_center": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "bbox_n": 2,
+  "n": 2,
+  "src": {
+   "rate": "burst_mode_no_rate",
+   "max_count": "override",
+   "initial_count": "override",
+   "bbox": "override"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_airburstimpactpoint_groundconnectline": {
+  "rate": null,
+  "max_count": 1,
+  "initial_count": 1,
+  "burst": true,
+  "bbox": [
+   1.0,
+   3.0,
+   1.0
+  ],
+  "bbox_center": [
+   0.0,
+   2.0,
+   0.0
+  ],
+  "bbox_n": 4,
+  "n": 4,
+  "src": {
+   "rate": "burst_mode_no_rate",
+   "max_count": "override",
+   "initial_count": "override",
+   "bbox": "override"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_ambwar_artillarystrike_spawn": {
+  "rate": 2.0,
+  "max_count": 8,
+  "initial_count": 2,
+  "burst": false,
+  "bbox": [
+   100.0,
+   750.0,
+   750.0
+  ],
+  "bbox_center": [
+   0.0,
+   -250.0,
+   250.0
+  ],
+  "bbox_n": 1,
+  "n": 1,
+  "src": {
+   "rate": "override",
+   "max_count": "override",
+   "initial_count": "override",
+   "bbox": "override"
+  },
+  "spawn_spread": [
+   3.0,
+   1.0,
+   3.0
+  ],
+  "spawn_spread_src": "SpawnPosScale",
+  "spawn_spread_n": 1
+ },
+ "eg_ambwar_uav_circling": {
+  "rate": null,
+  "max_count": 1,
+  "initial_count": 2,
+  "burst": true,
+  "bbox": [
+   1000.0,
+   75.0,
+   1500.0
+  ],
+  "bbox_center": [
+   0.0,
+   25.0,
+   500.0
+  ],
+  "bbox_n": 1,
+  "n": 1,
+  "src": {
+   "rate": "burst_mode_no_rate",
+   "max_count": "override",
+   "initial_count": "template",
+   "bbox": "override"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_bird_flocking_es": {
+  "rate": 1.0,
+  "max_count": 20,
+  "initial_count": 20,
+  "burst": false,
+  "bbox": [
+   500.0,
+   500.0,
+   500.0
+  ],
+  "bbox_center": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "bbox_n": 2,
+  "n": 2,
+  "src": {
+   "rate": "template",
+   "max_count": "override",
+   "initial_count": "override",
+   "bbox": "override"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_butterfly_es": {
+  "rate": 5.0,
+  "max_count": 4,
+  "initial_count": 2,
+  "burst": false,
+  "bbox": [
+   0.5,
+   0.5,
+   0.5
+  ],
+  "bbox_center": [
+   0.0,
+   0.25,
+   0.0
+  ],
+  "bbox_n": 1,
+  "n": 1,
+  "src": {
+   "rate": "override",
+   "max_count": "override",
+   "initial_count": "override",
+   "bbox": "override"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_concussion_grenade_screeneffect_occlusioncheck": {
+  "rate": 1.0,
+  "max_count": 1,
+  "initial_count": 1,
+  "burst": false,
+  "bbox": null,
+  "bbox_center": null,
+  "bbox_n": 0,
+  "n": 2,
+  "src": {
+   "rate": "template",
+   "max_count": "template",
+   "initial_count": "template",
+   "bbox": "unit_placeholder_only"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_debris_cont_es_terrain_vortex_1": {
+  "rate": 25.0,
+  "max_count": 76,
+  "initial_count": null,
+  "burst": false,
+  "bbox": [
+   10.0,
+   7.5,
+   10.0
+  ],
+  "bbox_center": [
+   0.0,
+   2.5,
+   0.0
+  ],
+  "bbox_n": 3,
+  "n": 3,
+  "src": {
+   "rate": "override",
+   "max_count": "override",
+   "initial_count": "none",
+   "bbox": "override"
+  },
+  "spawn_spread": [
+   10.0,
+   10.0,
+   10.0
+  ],
+  "spawn_spread_src": "PosRadius",
+  "spawn_spread_n": 3
+ },
+ "eg_debrisclusteroid_many_es_24p": {
+  "rate": null,
+  "max_count": 45,
+  "initial_count": 1,
+  "burst": true,
+  "bbox": [
+   7.0,
+   4.0,
+   7.0
+  ],
+  "bbox_center": [
+   0.0,
+   -1.0,
+   0.0
+  ],
+  "bbox_n": 1,
+  "n": 3,
+  "src": {
+   "rate": "burst_mode_no_rate",
+   "max_count": "override",
+   "initial_count": "template",
+   "bbox": "override"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_debrisclusteroid_many_es_6p": {
+  "rate": null,
+  "max_count": 50,
+  "initial_count": 1,
+  "burst": true,
+  "bbox": [
+   10.0,
+   6.0,
+   10.0
+  ],
+  "bbox_center": [
+   0.0,
+   -1.0,
+   0.0
+  ],
+  "bbox_n": 2,
+  "n": 4,
+  "src": {
+   "rate": "burst_mode_no_rate",
+   "max_count": "override",
+   "initial_count": "template",
+   "bbox": "override"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_debrisclusteroid_many_es_7p": {
+  "rate": null,
+  "max_count": 80,
+  "initial_count": 1,
+  "burst": true,
+  "bbox": null,
+  "bbox_center": null,
+  "bbox_n": 0,
+  "n": 1,
+  "src": {
+   "rate": "burst_mode_no_rate",
+   "max_count": "override",
+   "initial_count": "template",
+   "bbox": "unit_placeholder_only"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_debrisclusteroid_many_es_8p": {
+  "rate": null,
+  "max_count": 200,
+  "initial_count": 1,
+  "burst": true,
+  "bbox": [
+   5.0,
+   4.0,
+   5.0
+  ],
+  "bbox_center": [
+   0.0,
+   -1.0,
+   0.0
+  ],
+  "bbox_n": 28,
+  "n": 31,
+  "src": {
+   "rate": "burst_mode_no_rate",
+   "max_count": "override",
+   "initial_count": "template",
+   "bbox": "override"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_debrisclusteroid_shells_continuous_es": {
+  "rate": 50.0,
+  "max_count": 1,
+  "initial_count": 1,
+  "burst": false,
+  "bbox": [
+   5.0,
+   5.0,
+   5.0
+  ],
+  "bbox_center": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "bbox_n": 2,
+  "n": 2,
+  "src": {
+   "rate": "override",
+   "max_count": "override",
+   "initial_count": "template",
+   "bbox": "override"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_debrisclusteroid_simplecollisionobject_es": {
+  "rate": 10.0,
+  "max_count": 3,
+  "initial_count": 3,
+  "burst": false,
+  "bbox": [
+   3.0,
+   5.0,
+   3.0
+  ],
+  "bbox_center": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "bbox_n": 19,
+  "n": 25,
+  "src": {
+   "rate": "override",
+   "max_count": "override",
+   "initial_count": "override",
+   "bbox": "override"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_decal_lit_firehydrant_es": {
+  "rate": 1.0,
+  "max_count": 15,
+  "initial_count": 1,
+  "burst": false,
+  "bbox": [
+   3.0,
+   3.0,
+   3.0
+  ],
+  "bbox_center": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "bbox_n": 1,
+  "n": 1,
+  "src": {
+   "rate": "override",
+   "max_count": "override",
+   "initial_count": "template",
+   "bbox": "override"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_decal_mortar_target_area": {
+  "rate": null,
+  "max_count": 1,
+  "initial_count": 1,
+  "burst": true,
+  "bbox": [
+   10.0,
+   10.0,
+   10.0
+  ],
+  "bbox_center": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "bbox_n": 1,
+  "n": 1,
+  "src": {
+   "rate": "burst_mode_no_rate",
+   "max_count": "override",
+   "initial_count": "override",
+   "bbox": "override"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_decal_unlit_waterexplosion_ripple": {
+  "rate": null,
+  "max_count": 1,
+  "initial_count": 1,
+  "burst": true,
+  "bbox": null,
+  "bbox_center": null,
+  "bbox_n": 0,
+  "n": 10,
+  "src": {
+   "rate": "burst_mode_no_rate",
+   "max_count": "template",
+   "initial_count": "template",
+   "bbox": "unit_placeholder_only"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_decal_unlit_waterexplosion_ripple_wave": {
+  "rate": null,
+  "max_count": 1,
+  "initial_count": 1,
+  "burst": true,
+  "bbox": null,
+  "bbox_center": null,
+  "bbox_n": 0,
+  "n": 10,
+  "src": {
+   "rate": "burst_mode_no_rate",
+   "max_count": "template",
+   "initial_count": "template",
+   "bbox": "unit_placeholder_only"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_deployablemortar_firevortexring": {
+  "rate": 1.0,
+  "max_count": 1,
+  "initial_count": 1,
+  "burst": false,
+  "bbox": [
+   0.3,
+   0.55,
+   0.3
+  ],
+  "bbox_center": [
+   0.0,
+   0.25,
+   0.0
+  ],
+  "bbox_n": 2,
+  "n": 2,
+  "src": {
+   "rate": "template",
+   "max_count": "template",
+   "initial_count": "template",
+   "bbox": "override"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_dummyemitter": {
+  "rate": null,
+  "max_count": 1,
+  "initial_count": 1,
+  "burst": true,
+  "bbox": [
+   10.0,
+   10.0,
+   10.0
+  ],
+  "bbox_center": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "bbox_n": 3,
+  "n": 3,
+  "src": {
+   "rate": "burst_mode_no_rate",
+   "max_count": "template",
+   "initial_count": "override",
+   "bbox": "override"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_dummyemitter_deletemetracker": {
+  "rate": null,
+  "max_count": 1,
+  "initial_count": 1,
+  "burst": true,
+  "bbox": null,
+  "bbox_center": null,
+  "bbox_n": 0,
+  "n": 12,
+  "src": {
+   "rate": "burst_mode_no_rate",
+   "max_count": "template",
+   "initial_count": "template",
+   "bbox": "unit_placeholder_only"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_electicity_es": {
+  "rate": 10.0,
+  "max_count": 3,
+  "initial_count": 3,
+  "burst": false,
+  "bbox": [
+   1.0,
+   1.25,
+   1.0
+  ],
+  "bbox_center": [
+   0.0,
+   0.75,
+   0.0
+  ],
+  "bbox_n": 4,
+  "n": 11,
+  "src": {
+   "rate": "override",
+   "max_count": "override",
+   "initial_count": "override",
+   "bbox": "override"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_explosion_dust_kickup_decal": {
+  "rate": 1.0,
+  "max_count": 1,
+  "initial_count": 1,
+  "burst": false,
+  "bbox": [
+   120.0,
+   30.0,
+   120.0
+  ],
+  "bbox_center": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "bbox_n": 2,
+  "n": 19,
+  "src": {
+   "rate": "template",
+   "max_count": "template",
+   "initial_count": "template",
+   "bbox": "override"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_explosion_shrapnel_hits": {
+  "rate": null,
+  "max_count": 40,
+  "initial_count": 64,
+  "burst": true,
+  "bbox": [
+   12.0,
+   12.0,
+   12.0
+  ],
+  "bbox_center": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "bbox_n": 34,
+  "n": 34,
+  "src": {
+   "rate": "burst_mode_no_rate",
+   "max_count": "override",
+   "initial_count": "template",
+   "bbox": "override"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_explosion_shrapnel_hits_supersphere": {
+  "rate": null,
+  "max_count": 100,
+  "initial_count": 64,
+  "burst": true,
+  "bbox": [
+   12.0,
+   12.0,
+   12.0
+  ],
+  "bbox_center": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "bbox_n": 2,
+  "n": 2,
+  "src": {
+   "rate": "burst_mode_no_rate",
+   "max_count": "override",
+   "initial_count": "template",
+   "bbox": "override"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_firedistortion_es": {
+  "rate": 3.0,
+  "max_count": 4,
+  "initial_count": 1,
+  "burst": false,
+  "bbox": [
+   5.0,
+   6.0,
+   5.0
+  ],
+  "bbox_center": [
+   0.0,
+   0.75,
+   0.0
+  ],
+  "bbox_n": 79,
+  "n": 79,
+  "src": {
+   "rate": "override",
+   "max_count": "override",
+   "initial_count": "override",
+   "bbox": "override"
+  },
+  "spawn_spread": [
+   1.0,
+   0.01,
+   1.0
+  ],
+  "spawn_spread_src": "SpawnPosScale",
+  "spawn_spread_n": 63
+ },
+ "eg_firedistortion_moving_es": {
+  "rate": 20.0,
+  "max_count": 10,
+  "initial_count": null,
+  "burst": false,
+  "bbox": [
+   0.1,
+   0.3,
+   0.1
+  ],
+  "bbox_center": [
+   0.0,
+   0.25,
+   0.0
+  ],
+  "bbox_n": 3,
+  "n": 6,
+  "src": {
+   "rate": "override",
+   "max_count": "override",
+   "initial_count": "none",
+   "bbox": "override"
+  },
+  "spawn_spread": [
+   0.001,
+   0.001,
+   0.001
+  ],
+  "spawn_spread_src": "SpawnPosScale",
+  "spawn_spread_n": 6
+ },
+ "eg_flashbang_burnin": {
+  "rate": null,
+  "max_count": 1,
+  "initial_count": 1,
+  "burst": true,
+  "bbox": [
+   50.0,
+   50.0,
+   50.0
+  ],
+  "bbox_center": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "bbox_n": 6,
+  "n": 6,
+  "src": {
+   "rate": "burst_mode_no_rate",
+   "max_count": "override",
+   "initial_count": "override",
+   "bbox": "override"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_flashbang_burnin_occlusioncheck": {
+  "rate": 1.0,
+  "max_count": 1,
+  "initial_count": 1,
+  "burst": false,
+  "bbox": null,
+  "bbox_center": null,
+  "bbox_n": 0,
+  "n": 2,
+  "src": {
+   "rate": "template",
+   "max_count": "template",
+   "initial_count": "template",
+   "bbox": "unit_placeholder_only"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_flashbang_concussion_screeneffect": {
+  "rate": 1.0,
+  "max_count": 1,
+  "initial_count": 1,
+  "burst": false,
+  "bbox": [
+   50.0,
+   50.0,
+   50.0
+  ],
+  "bbox_center": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "bbox_n": 1,
+  "n": 1,
+  "src": {
+   "rate": "override",
+   "max_count": "template",
+   "initial_count": "template",
+   "bbox": "override"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_fly_se": {
+  "rate": 7.0,
+  "max_count": 20,
+  "initial_count": null,
+  "burst": false,
+  "bbox": [
+   4.0,
+   4.0,
+   4.0
+  ],
+  "bbox_center": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "bbox_n": 1,
+  "n": 1,
+  "src": {
+   "rate": "override",
+   "max_count": "override",
+   "initial_count": "none",
+   "bbox": "override"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_gadget_adrenalineshot_screeneffect": {
+  "rate": null,
+  "max_count": 1,
+  "initial_count": 1,
+  "burst": true,
+  "bbox": [
+   50.0,
+   50.0,
+   50.0
+  ],
+  "bbox_center": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "bbox_n": 1,
+  "n": 1,
+  "src": {
+   "rate": "burst_mode_no_rate",
+   "max_count": "override",
+   "initial_count": "override",
+   "bbox": "override"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_gadget_breachingdart_projectile_stuck": {
+  "rate": null,
+  "max_count": 1,
+  "initial_count": 1,
+  "burst": true,
+  "bbox": [
+   2.0,
+   2.0,
+   2.0
+  ],
+  "bbox_center": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "bbox_n": 2,
+  "n": 2,
+  "src": {
+   "rate": "burst_mode_no_rate",
+   "max_count": "override",
+   "initial_count": "template",
+   "bbox": "override"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_gadget_claymore_laser_tripwire": {
+  "rate": null,
+  "max_count": 1,
+  "initial_count": 1,
+  "burst": true,
+  "bbox": [
+   0.25,
+   5.05,
+   0.25
+  ],
+  "bbox_center": [
+   0.0,
+   4.95,
+   0.0
+  ],
+  "bbox_n": 2,
+  "n": 2,
+  "src": {
+   "rate": "burst_mode_no_rate",
+   "max_count": "override",
+   "initial_count": "override",
+   "bbox": "override"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_gadget_drone_screeneffect_outofrange_distortion": {
+  "rate": null,
+  "max_count": 1,
+  "initial_count": 1,
+  "burst": true,
+  "bbox": null,
+  "bbox_center": null,
+  "bbox_n": 0,
+  "n": 1,
+  "src": {
+   "rate": "burst_mode_no_rate",
+   "max_count": "template",
+   "initial_count": "template",
+   "bbox": "unit_placeholder_only"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_gadget_screeneffect_remoteturret_healthdamage": {
+  "rate": null,
+  "max_count": 1,
+  "initial_count": 1,
+  "burst": true,
+  "bbox": null,
+  "bbox_center": null,
+  "bbox_n": 0,
+  "n": 1,
+  "src": {
+   "rate": "burst_mode_no_rate",
+   "max_count": "override",
+   "initial_count": "override",
+   "bbox": "unit_placeholder_only"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_grid_sparks": {
+  "rate": null,
+  "max_count": 16,
+  "initial_count": 64,
+  "burst": true,
+  "bbox": [
+   3.0,
+   11.0,
+   3.0
+  ],
+  "bbox_center": [
+   0.0,
+   9.0,
+   0.0
+  ],
+  "bbox_n": 1,
+  "n": 1,
+  "src": {
+   "rate": "burst_mode_no_rate",
+   "max_count": "override",
+   "initial_count": "template",
+   "bbox": "override"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_gs_basicchunks_01": {
+  "rate": 550.0,
+  "max_count": 15,
+  "initial_count": 1,
+  "burst": false,
+  "bbox": [
+   3.0,
+   2.5,
+   3.0
+  ],
+  "bbox_center": [
+   0.0,
+   0.5,
+   0.0
+  ],
+  "bbox_n": 145,
+  "n": 161,
+  "src": {
+   "rate": "override",
+   "max_count": "override",
+   "initial_count": "override",
+   "bbox": "override"
+  },
+  "spawn_spread": [
+   1.0,
+   0.8,
+   0.8
+  ],
+  "spawn_spread_src": "SpawnPosScale",
+  "spawn_spread_n": 136
+ },
+ "eg_gs_basicchunks_fountain": {
+  "rate": 50.0,
+  "max_count": 120,
+  "initial_count": 1,
+  "burst": false,
+  "bbox": [
+   4.0,
+   4.25,
+   4.0
+  ],
+  "bbox_center": [
+   0.0,
+   -3.75,
+   0.0
+  ],
+  "bbox_n": 2,
+  "n": 2,
+  "src": {
+   "rate": "override",
+   "max_count": "override",
+   "initial_count": "override",
+   "bbox": "override"
+  },
+  "spawn_spread": [
+   0.01,
+   0.01,
+   0.01
+  ],
+  "spawn_spread_src": "SpawnPosScale",
+  "spawn_spread_n": 2
+ },
+ "eg_gs_basicchunks_impact_sub": {
+  "rate": 1.0,
+  "max_count": 1,
+  "initial_count": 1,
+  "burst": false,
+  "bbox": null,
+  "bbox_center": null,
+  "bbox_n": 0,
+  "n": 1,
+  "src": {
+   "rate": "template",
+   "max_count": "override",
+   "initial_count": "override",
+   "bbox": "unit_placeholder_only"
+  },
+  "spawn_spread": [
+   0.2,
+   0.2,
+   0.2
+  ],
+  "spawn_spread_src": "SpawnPosScale",
+  "spawn_spread_n": 1
+ },
+ "eg_gs_basicelectric_01": {
+  "rate": 100.0,
+  "max_count": 11,
+  "initial_count": 1,
+  "burst": false,
+  "bbox": null,
+  "bbox_center": null,
+  "bbox_n": 0,
+  "n": 2,
+  "src": {
+   "rate": "override",
+   "max_count": "override",
+   "initial_count": "override",
+   "bbox": "unit_placeholder_only"
+  },
+  "spawn_spread": [
+   0.25,
+   0.25,
+   0.25
+  ],
+  "spawn_spread_src": "SpawnPosScale",
+  "spawn_spread_n": 2
+ },
+ "eg_gs_basicfire_01": {
+  "rate": 3.0,
+  "max_count": 6,
+  "initial_count": 2,
+  "burst": false,
+  "bbox": [
+   2.5,
+   2.0,
+   2.5
+  ],
+  "bbox_center": [
+   0.0,
+   0.5,
+   0.0
+  ],
+  "bbox_n": 187,
+  "n": 203,
+  "src": {
+   "rate": "override",
+   "max_count": "override",
+   "initial_count": "override",
+   "bbox": "override"
+  },
+  "spawn_spread": [
+   0.15,
+   0.1,
+   0.2
+  ],
+  "spawn_spread_src": "SpawnPosScale",
+  "spawn_spread_n": 135
+ },
+ "eg_gs_basicfire_emitterposition_01": {
+  "rate": 5.0,
+  "max_count": 3,
+  "initial_count": 1,
+  "burst": false,
+  "bbox": [
+   0.02,
+   0.065,
+   0.03
+  ],
+  "bbox_center": [
+   0.0,
+   0.055,
+   0.0
+  ],
+  "bbox_n": 2,
+  "n": 2,
+  "src": {
+   "rate": "override",
+   "max_count": "override",
+   "initial_count": "override",
+   "bbox": "override"
+  },
+  "spawn_spread": [
+   0.005,
+   0.005,
+   0.005
+  ],
+  "spawn_spread_src": "SpawnPosScale",
+  "spawn_spread_n": 2
+ },
+ "eg_gs_basicfire_facing_01": {
+  "rate": 1.0,
+  "max_count": 1,
+  "initial_count": 1,
+  "burst": false,
+  "bbox": [
+   0.2,
+   0.6,
+   0.2
+  ],
+  "bbox_center": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "bbox_n": 28,
+  "n": 28,
+  "src": {
+   "rate": "override",
+   "max_count": "override",
+   "initial_count": "override",
+   "bbox": "override"
+  },
+  "spawn_spread": [
+   0.01,
+   0.01,
+   0.01
+  ],
+  "spawn_spread_src": "SpawnPosScale",
+  "spawn_spread_n": 27
+ },
+ "eg_gs_basicfire_mimicchild_01": {
+  "rate": null,
+  "max_count": 15,
+  "initial_count": 1,
+  "burst": true,
+  "bbox": [
+   10.0,
+   10.5,
+   10.0
+  ],
+  "bbox_center": [
+   0.0,
+   9.5,
+   0.0
+  ],
+  "bbox_n": 34,
+  "n": 34,
+  "src": {
+   "rate": "burst_mode_no_rate",
+   "max_count": "override",
+   "initial_count": "override",
+   "bbox": "override"
+  },
+  "spawn_spread": [
+   0.5,
+   0.0,
+   0.7
+  ],
+  "spawn_spread_src": "SpawnPosScale",
+  "spawn_spread_n": 4
+ },
+ "eg_gs_basicfire_mimicpsearch_02": {
+  "rate": null,
+  "max_count": 62,
+  "initial_count": 64,
+  "burst": true,
+  "bbox": [
+   2.75,
+   4.5,
+   3.5
+  ],
+  "bbox_center": [
+   2.25,
+   3.5,
+   0.0
+  ],
+  "bbox_n": 1,
+  "n": 1,
+  "src": {
+   "rate": "burst_mode_no_rate",
+   "max_count": "override",
+   "initial_count": "template",
+   "bbox": "override"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_gs_basicfire_moving_01": {
+  "rate": 40.0,
+  "max_count": 18,
+  "initial_count": 1,
+  "burst": false,
+  "bbox": [
+   2.0,
+   2.0,
+   2.0
+  ],
+  "bbox_center": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "bbox_n": 8,
+  "n": 9,
+  "src": {
+   "rate": "override",
+   "max_count": "override",
+   "initial_count": "override",
+   "bbox": "override"
+  },
+  "spawn_spread": [
+   0.05,
+   0.05,
+   0.05
+  ],
+  "spawn_spread_src": "SpawnPosScale",
+  "spawn_spread_n": 7
+ },
+ "eg_gs_basicfire_secuirtylight_minscreen": {
+  "rate": 10.0,
+  "max_count": 6,
+  "initial_count": null,
+  "burst": false,
+  "bbox": [
+   0.1,
+   0.1,
+   0.1
+  ],
+  "bbox_center": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "bbox_n": 2,
+  "n": 2,
+  "src": {
+   "rate": "override",
+   "max_count": "override",
+   "initial_count": "none",
+   "bbox": "override"
+  },
+  "spawn_spread": [
+   0.002,
+   0.002,
+   0.002
+  ],
+  "spawn_spread_src": "SpawnPosScale",
+  "spawn_spread_n": 2
+ },
+ "eg_gs_basicfire_terrainsnap_01": {
+  "rate": 15.0,
+  "max_count": 28,
+  "initial_count": 1,
+  "burst": false,
+  "bbox": [
+   5.0,
+   2.0,
+   5.0
+  ],
+  "bbox_center": [
+   0.0,
+   0.5,
+   0.0
+  ],
+  "bbox_n": 5,
+  "n": 6,
+  "src": {
+   "rate": "override",
+   "max_count": "override",
+   "initial_count": "override",
+   "bbox": "override"
+  },
+  "spawn_spread": [
+   3.0,
+   0.25,
+   2.0
+  ],
+  "spawn_spread_src": "SpawnPosScale",
+  "spawn_spread_n": 6
+ },
+ "eg_gs_basicfire_terrainsnap_01_snapeveryframe": {
+  "rate": 15.0,
+  "max_count": 30,
+  "initial_count": 30,
+  "burst": false,
+  "bbox": [
+   11.0,
+   3.5,
+   5.0
+  ],
+  "bbox_center": [
+   0.0,
+   -0.5,
+   0.0
+  ],
+  "bbox_n": 1,
+  "n": 1,
+  "src": {
+   "rate": "override",
+   "max_count": "override",
+   "initial_count": "override",
+   "bbox": "override"
+  },
+  "spawn_spread": [
+   7.0,
+   0.0,
+   2.0
+  ],
+  "spawn_spread_src": "SpawnPosScale",
+  "spawn_spread_n": 1
+ },
+ "eg_gs_basicribbon_01": {
+  "rate": 30.0,
+  "max_count": 30,
+  "initial_count": 2,
+  "burst": false,
+  "bbox": [
+   5.0,
+   5.0,
+   10.0
+  ],
+  "bbox_center": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "bbox_n": 26,
+  "n": 30,
+  "src": {
+   "rate": "override",
+   "max_count": "override",
+   "initial_count": "override",
+   "bbox": "override"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_gs_basicribbon_moving_01": {
+  "rate": 15.0,
+  "max_count": 25,
+  "initial_count": 1,
+  "burst": false,
+  "bbox": [
+   2.0,
+   2.0,
+   2.0
+  ],
+  "bbox_center": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "bbox_n": 6,
+  "n": 8,
+  "src": {
+   "rate": "override",
+   "max_count": "override",
+   "initial_count": "override",
+   "bbox": "override"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_gs_basicsmoke_01": {
+  "rate": 10.0,
+  "max_count": 15,
+  "initial_count": 1,
+  "burst": false,
+  "bbox": [
+   5.0,
+   4.0,
+   5.0
+  ],
+  "bbox_center": [
+   0.0,
+   1.5,
+   0.0
+  ],
+  "bbox_n": 482,
+  "n": 518,
+  "src": {
+   "rate": "override",
+   "max_count": "override",
+   "initial_count": "override",
+   "bbox": "override"
+  },
+  "spawn_spread": [
+   1.0,
+   0.3,
+   0.6
+  ],
+  "spawn_spread_src": "SpawnPosScale",
+  "spawn_spread_n": 373,
+  "rate_instant_n": 1
+ },
+ "eg_gs_basicsmoke_camheightfade": {
+  "rate": 3.0,
+  "max_count": 30,
+  "initial_count": 1,
+  "burst": false,
+  "bbox": [
+   100.0,
+   55.0,
+   100.0
+  ],
+  "bbox_center": [
+   0.0,
+   45.0,
+   0.0
+  ],
+  "bbox_n": 1,
+  "n": 1,
+  "src": {
+   "rate": "override",
+   "max_count": "override",
+   "initial_count": "override",
+   "bbox": "override"
+  },
+  "spawn_spread": [
+   3.0,
+   3.0,
+   1.5
+  ],
+  "spawn_spread_src": "SpawnPosScale",
+  "spawn_spread_n": 1
+ },
+ "eg_gs_basicsmoke_mimicparent_01": {
+  "rate": 10.0,
+  "max_count": 12,
+  "initial_count": 6,
+  "burst": false,
+  "bbox": [
+   10.0,
+   11.0,
+   10.0
+  ],
+  "bbox_center": [
+   0.0,
+   8.5,
+   0.0
+  ],
+  "bbox_n": 42,
+  "n": 42,
+  "src": {
+   "rate": "override",
+   "max_count": "override",
+   "initial_count": "override",
+   "bbox": "override"
+  },
+  "spawn_spread": [
+   0.5,
+   0.1,
+   0.3
+  ],
+  "spawn_spread_src": "SpawnPosScale",
+  "spawn_spread_n": 27
+ },
+ "eg_gs_basicsmoke_moving_01": {
+  "rate": 40.0,
+  "max_count": 45,
+  "initial_count": 1,
+  "burst": false,
+  "bbox": [
+   10.0,
+   10.0,
+   10.0
+  ],
+  "bbox_center": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "bbox_n": 13,
+  "n": 14,
+  "src": {
+   "rate": "override",
+   "max_count": "override",
+   "initial_count": "override",
+   "bbox": "override"
+  },
+  "spawn_spread": [
+   0.35,
+   0.15,
+   0.15
+  ],
+  "spawn_spread_src": "SpawnPosScale",
+  "spawn_spread_n": 6
+ },
+ "eg_gs_basicsmoke_moving_turbulence_01": {
+  "rate": 1.0,
+  "max_count": 1500,
+  "initial_count": null,
+  "burst": false,
+  "bbox": [
+   250.0,
+   250.0,
+   250.0
+  ],
+  "bbox_center": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "bbox_n": 2,
+  "n": 2,
+  "src": {
+   "rate": "override",
+   "max_count": "override",
+   "initial_count": "none",
+   "bbox": "override"
+  },
+  "spawn_spread": [
+   0.03,
+   0.25,
+   0.03
+  ],
+  "spawn_spread_src": "SpawnPosScale",
+  "spawn_spread_n": 2
+ },
+ "eg_gs_basicsmoke_portal": {
+  "rate": 24.0,
+  "max_count": 52,
+  "initial_count": 1,
+  "burst": false,
+  "bbox": [
+   1.0,
+   1.75,
+   1.0
+  ],
+  "bbox_center": [
+   0.0,
+   0.325,
+   0.0
+  ],
+  "bbox_n": 4,
+  "n": 4,
+  "src": {
+   "rate": "override",
+   "max_count": "override",
+   "initial_count": "override",
+   "bbox": "override"
+  },
+  "spawn_spread": [
+   1.0,
+   1.0,
+   1.0
+  ],
+  "spawn_spread_src": "SpawnPosScale",
+  "spawn_spread_n": 4
+ },
+ "eg_gs_basicsmoke_preroll_01": {
+  "rate": 2.0,
+  "max_count": 20,
+  "initial_count": 8,
+  "burst": false,
+  "bbox": [
+   10.0,
+   7.5,
+   10.0
+  ],
+  "bbox_center": [
+   0.0,
+   7.5,
+   0.0
+  ],
+  "bbox_n": 5,
+  "n": 7,
+  "src": {
+   "rate": "override",
+   "max_count": "override",
+   "initial_count": "override",
+   "bbox": "override"
+  },
+  "spawn_spread": [
+   0.5,
+   0.1,
+   0.1
+  ],
+  "spawn_spread_src": "SpawnPosScale",
+  "spawn_spread_n": 5
+ },
+ "eg_gs_basicsmoke_terrainsnap_03": {
+  "rate": 12.0,
+  "max_count": 100,
+  "initial_count": 1,
+  "burst": false,
+  "bbox": [
+   50.0,
+   15.0,
+   20.0
+  ],
+  "bbox_center": [
+   0.0,
+   5.0,
+   0.0
+  ],
+  "bbox_n": 11,
+  "n": 11,
+  "src": {
+   "rate": "override",
+   "max_count": "override",
+   "initial_count": "override",
+   "bbox": "override"
+  },
+  "spawn_spread": [
+   20.0,
+   1.0,
+   8.0
+  ],
+  "spawn_spread_src": "SpawnPosScale",
+  "spawn_spread_n": 11
+ },
+ "eg_gs_basicsmoke_terrainsnap_endeffect": {
+  "rate": 100.0,
+  "max_count": 640,
+  "initial_count": null,
+  "burst": false,
+  "bbox": null,
+  "bbox_center": null,
+  "bbox_n": 0,
+  "n": 1,
+  "src": {
+   "rate": "override",
+   "max_count": "override",
+   "initial_count": "none",
+   "bbox": "unit_placeholder_only"
+  },
+  "spawn_spread": [
+   300.0,
+   1.0,
+   100.0
+  ],
+  "spawn_spread_src": "SpawnPosScale",
+  "spawn_spread_n": 1
+ },
+ "eg_gs_basicsmoke_turbulence_moving_02": {
+  "rate": 1.0,
+  "max_count": 1500,
+  "initial_count": null,
+  "burst": false,
+  "bbox": [
+   500.0,
+   500.0,
+   500.0
+  ],
+  "bbox_center": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "bbox_n": 5,
+  "n": 5,
+  "src": {
+   "rate": "override",
+   "max_count": "override",
+   "initial_count": "none",
+   "bbox": "override"
+  },
+  "spawn_spread": [
+   0.03,
+   0.25,
+   0.03
+  ],
+  "spawn_spread_src": "SpawnPosScale",
+  "spawn_spread_n": 5
+ },
+ "eg_gs_basicsmoke_vehicle_exhaust_01": {
+  "rate": 10.0,
+  "max_count": 35,
+  "initial_count": null,
+  "burst": false,
+  "bbox": [
+   10.0,
+   11.0,
+   47.5
+  ],
+  "bbox_center": [
+   0.0,
+   9.0,
+   -42.5
+  ],
+  "bbox_n": 25,
+  "n": 25,
+  "src": {
+   "rate": "override",
+   "max_count": "override",
+   "initial_count": "none",
+   "bbox": "override"
+  },
+  "spawn_spread": [
+   0.5,
+   0.5,
+   0.5
+  ],
+  "spawn_spread_src": "SpawnPosScale",
+  "spawn_spread_n": 10
+ },
+ "eg_gs_basicsmokearm_01": {
+  "rate": 500.0,
+  "max_count": 9,
+  "initial_count": 1,
+  "burst": false,
+  "bbox": [
+   5.0,
+   3.5,
+   5.0
+  ],
+  "bbox_center": [
+   0.0,
+   3.0,
+   0.0
+  ],
+  "bbox_n": 47,
+  "n": 52,
+  "src": {
+   "rate": "override",
+   "max_count": "override",
+   "initial_count": "override",
+   "bbox": "override"
+  },
+  "spawn_spread": [
+   0.8,
+   0.2,
+   0.8
+  ],
+  "spawn_spread_src": "SpawnPosScale",
+  "spawn_spread_n": 30
+ },
+ "eg_gs_cohesivesmoke_preroll_5pt_01": {
+  "rate": 3.0,
+  "max_count": 166,
+  "initial_count": 40,
+  "burst": false,
+  "bbox": [
+   75.0,
+   20.0,
+   60.0
+  ],
+  "bbox_center": [
+   5.0,
+   15.0,
+   -2.5
+  ],
+  "bbox_n": 2,
+  "n": 2,
+  "src": {
+   "rate": "override",
+   "max_count": "override",
+   "initial_count": "override",
+   "bbox": "override"
+  },
+  "spawn_spread": [
+   2.0,
+   0.01,
+   2.0
+  ],
+  "spawn_spread_src": "SpawnPosScale",
+  "spawn_spread_n": 2
+ },
+ "eg_gs_firelinesegments_01": {
+  "rate": 2.0,
+  "max_count": 5,
+  "initial_count": 1,
+  "burst": false,
+  "bbox": [
+   1.5,
+   1.5,
+   1.0
+  ],
+  "bbox_center": [
+   0.0,
+   0.0,
+   0.5
+  ],
+  "bbox_n": 1,
+  "n": 1,
+  "src": {
+   "rate": "override",
+   "max_count": "override",
+   "initial_count": "override",
+   "bbox": "override"
+  },
+  "spawn_spread": [
+   1.0,
+   0.1,
+   1.0
+  ],
+  "spawn_spread_src": "SpawnPosScale",
+  "spawn_spread_n": 1
+ },
+ "eg_gs_gadget_muzzleflash_fire_01": {
+  "rate": 150.0,
+  "max_count": 14,
+  "initial_count": 1,
+  "burst": false,
+  "bbox": null,
+  "bbox_center": null,
+  "bbox_n": 0,
+  "n": 4,
+  "src": {
+   "rate": "override",
+   "max_count": "override",
+   "initial_count": "override",
+   "bbox": "unit_placeholder_only"
+  },
+  "spawn_spread": [
+   0.0001,
+   0.0001,
+   0.0001
+  ],
+  "spawn_spread_src": "SpawnPosScale",
+  "spawn_spread_n": 4
+ },
+ "eg_gs_multiribbondist_01": {
+  "rate": null,
+  "max_count": 256,
+  "initial_count": 64,
+  "burst": true,
+  "bbox": [
+   20.0,
+   40.0,
+   40.0
+  ],
+  "bbox_center": [
+   0.0,
+   7.0,
+   0.0
+  ],
+  "bbox_n": 16,
+  "n": 22,
+  "src": {
+   "rate": "burst_mode_no_rate",
+   "max_count": "override",
+   "initial_count": "template",
+   "bbox": "override"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_gs_muzzleflash_fire_01": {
+  "rate": 20.0,
+  "max_count": 3,
+  "initial_count": 1,
+  "burst": false,
+  "bbox": [
+   0.25,
+   0.5,
+   0.25
+  ],
+  "bbox_center": [
+   0.0,
+   0.0125,
+   0.0
+  ],
+  "bbox_n": 48,
+  "n": 51,
+  "src": {
+   "rate": "override",
+   "max_count": "override",
+   "initial_count": "override",
+   "bbox": "override"
+  },
+  "spawn_spread": [
+   0.01,
+   0.01,
+   0.01
+  ],
+  "spawn_spread_src": "SpawnPosScale",
+  "spawn_spread_n": 36
+ },
+ "eg_gs_muzzleflash_smoke_01": {
+  "rate": 1.0,
+  "max_count": 6,
+  "initial_count": 6,
+  "burst": false,
+  "bbox": [
+   0.15,
+   0.35,
+   0.15
+  ],
+  "bbox_center": [
+   0.0,
+   0.2,
+   0.0
+  ],
+  "bbox_n": 28,
+  "n": 28,
+  "src": {
+   "rate": "override",
+   "max_count": "override",
+   "initial_count": "override",
+   "bbox": "override"
+  },
+  "spawn_spread": [
+   0.01,
+   0.01,
+   0.01
+  ],
+  "spawn_spread_src": "SpawnPosScale",
+  "spawn_spread_n": 23
+ },
+ "eg_gs_screensplats_static_02": {
+  "rate": 50.0,
+  "max_count": 12,
+  "initial_count": 1,
+  "burst": false,
+  "bbox": [
+   15.0,
+   15.0,
+   15.0
+  ],
+  "bbox_center": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "bbox_n": 6,
+  "n": 10,
+  "src": {
+   "rate": "override",
+   "max_count": "override",
+   "initial_count": "override",
+   "bbox": "override"
+  },
+  "spawn_spread": [
+   0.06,
+   0.06,
+   0.06
+  ],
+  "spawn_spread_src": "SpawnPosScale",
+  "spawn_spread_n": 10
+ },
+ "eg_gs_staticemissive_01": {
+  "rate": null,
+  "max_count": 1,
+  "initial_count": 1,
+  "burst": true,
+  "bbox": [
+   3.0,
+   10.0,
+   3.0
+  ],
+  "bbox_center": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "bbox_n": 10,
+  "n": 20,
+  "src": {
+   "rate": "burst_mode_no_rate",
+   "max_count": "override",
+   "initial_count": "override",
+   "bbox": "override"
+  },
+  "spawn_spread": [
+   1.0,
+   1.0,
+   1.0
+  ],
+  "spawn_spread_src": "SpawnPosScale",
+  "spawn_spread_n": 8
+ },
+ "eg_gs_staticemissive_gadgetlight_01": {
+  "rate": 1.0,
+  "max_count": 1,
+  "initial_count": 1,
+  "burst": false,
+  "bbox": [
+   1.5,
+   1.5,
+   1.5
+  ],
+  "bbox_center": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "bbox_n": 14,
+  "n": 22,
+  "src": {
+   "rate": "override",
+   "max_count": "override",
+   "initial_count": "override",
+   "bbox": "override"
+  },
+  "spawn_spread": [
+   0.01,
+   0.01,
+   0.01
+  ],
+  "spawn_spread_src": "SpawnPosScale",
+  "spawn_spread_n": 21
+ },
+ "eg_gs_staticemissive_gadgetlight_tugs_01": {
+  "rate": 1.0,
+  "max_count": 2,
+  "initial_count": 2,
+  "burst": false,
+  "bbox": [
+   1.5,
+   1.5,
+   1.5
+  ],
+  "bbox_center": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "bbox_n": 2,
+  "n": 2,
+  "src": {
+   "rate": "override",
+   "max_count": "override",
+   "initial_count": "override",
+   "bbox": "override"
+  },
+  "spawn_spread": [
+   0.01,
+   0.01,
+   0.01
+  ],
+  "spawn_spread_src": "SpawnPosScale",
+  "spawn_spread_n": 2
+ },
+ "eg_gs_staticemissive_looping_01": {
+  "rate": null,
+  "max_count": 1,
+  "initial_count": 1,
+  "burst": true,
+  "bbox": [
+   4.0,
+   4.0,
+   4.0
+  ],
+  "bbox_center": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "bbox_n": 1,
+  "n": 1,
+  "src": {
+   "rate": "burst_mode_no_rate",
+   "max_count": "override",
+   "initial_count": "override",
+   "bbox": "override"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_gs_staticquads_01": {
+  "rate": null,
+  "max_count": 4,
+  "initial_count": 64,
+  "burst": true,
+  "bbox": null,
+  "bbox_center": null,
+  "bbox_n": 0,
+  "n": 1,
+  "src": {
+   "rate": "burst_mode_no_rate",
+   "max_count": "override",
+   "initial_count": "template",
+   "bbox": "unit_placeholder_only"
+  },
+  "spawn_spread": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "spawn_spread_src": "SpawnPosScale",
+  "spawn_spread_n": 1
+ },
+ "eg_lensflare_looping_x2_child_es": {
+  "rate": null,
+  "max_count": 2,
+  "initial_count": 2,
+  "burst": true,
+  "bbox": [
+   3000.0,
+   1505.0,
+   3000.0
+  ],
+  "bbox_center": [
+   0.0,
+   1495.0,
+   0.0
+  ],
+  "bbox_n": 1,
+  "n": 1,
+  "src": {
+   "rate": "burst_mode_no_rate",
+   "max_count": "override",
+   "initial_count": "template",
+   "bbox": "override"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_lensflare_looping_x2_es": {
+  "rate": null,
+  "max_count": 2,
+  "initial_count": 2,
+  "burst": true,
+  "bbox": [
+   3.0,
+   3.0,
+   3.0
+  ],
+  "bbox_center": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "bbox_n": 5,
+  "n": 6,
+  "src": {
+   "rate": "burst_mode_no_rate",
+   "max_count": "override",
+   "initial_count": "template",
+   "bbox": "override"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_lensflare_looping_x3_es": {
+  "rate": null,
+  "max_count": 3,
+  "initial_count": 2,
+  "burst": true,
+  "bbox": [
+   40.0,
+   40.0,
+   40.0
+  ],
+  "bbox_center": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "bbox_n": 6,
+  "n": 6,
+  "src": {
+   "rate": "burst_mode_no_rate",
+   "max_count": "override",
+   "initial_count": "template",
+   "bbox": "override"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_missile_airstrike_impact": {
+  "rate": 1.0,
+  "max_count": 1,
+  "initial_count": 1,
+  "burst": false,
+  "bbox": [
+   10.0,
+   150.0,
+   400.0
+  ],
+  "bbox_center": [
+   0.0,
+   150.0,
+   400.0
+  ],
+  "bbox_n": 1,
+  "n": 1,
+  "src": {
+   "rate": "override",
+   "max_count": "override",
+   "initial_count": "template",
+   "bbox": "override"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_missile_thruster_shockdiamonds": {
+  "rate": 1.0,
+  "max_count": 5,
+  "initial_count": 5,
+  "burst": false,
+  "bbox": [
+   2.0,
+   2.0,
+   2.5
+  ],
+  "bbox_center": [
+   0.0,
+   0.0,
+   -0.5
+  ],
+  "bbox_n": 2,
+  "n": 2,
+  "src": {
+   "rate": "override",
+   "max_count": "override",
+   "initial_count": "override",
+   "bbox": "override"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_multiribbondist_es": {
+  "rate": null,
+  "max_count": 20,
+  "initial_count": 64,
+  "burst": true,
+  "bbox": [
+   6.0,
+   6.0,
+   6.0
+  ],
+  "bbox_center": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "bbox_n": 3,
+  "n": 3,
+  "src": {
+   "rate": "burst_mode_no_rate",
+   "max_count": "override",
+   "initial_count": "template",
+   "bbox": "override"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_panzerfaust_stabilizer_unfold": {
+  "rate": 1.0,
+  "max_count": 1,
+  "initial_count": 1,
+  "burst": false,
+  "bbox": null,
+  "bbox_center": null,
+  "bbox_n": 0,
+  "n": 12,
+  "src": {
+   "rate": "template",
+   "max_count": "template",
+   "initial_count": "template",
+   "bbox": "unit_placeholder_only"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_pebbles_burst_es": {
+  "rate": null,
+  "max_count": 100,
+  "initial_count": 200,
+  "burst": true,
+  "bbox": [
+   5.0,
+   5.0,
+   5.0
+  ],
+  "bbox_center": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "bbox_n": 11,
+  "n": 33,
+  "src": {
+   "rate": "burst_mode_no_rate",
+   "max_count": "override",
+   "initial_count": "template",
+   "bbox": "override"
+  },
+  "spawn_spread": [
+   0.6,
+   0.6,
+   0.6
+  ],
+  "spawn_spread_src": "PosRadius",
+  "spawn_spread_n": 11
+ },
+ "eg_pebbles_cont_es": {
+  "rate": 20.0,
+  "max_count": 50,
+  "initial_count": 1,
+  "burst": false,
+  "bbox": [
+   3.0,
+   5.5,
+   3.0
+  ],
+  "bbox_center": [
+   -2.0,
+   -4.5,
+   -2.0
+  ],
+  "bbox_n": 3,
+  "n": 4,
+  "src": {
+   "rate": "override",
+   "max_count": "override",
+   "initial_count": "template",
+   "bbox": "override"
+  },
+  "spawn_spread": [
+   1.0,
+   1.0,
+   1.0
+  ],
+  "spawn_spread_src": "PosRadius",
+  "spawn_spread_n": 4
+ },
+ "eg_projectile_mk82_air_animated": {
+  "rate": 1.0,
+  "max_count": 1,
+  "initial_count": 1,
+  "burst": false,
+  "bbox": [
+   2.0,
+   2.0,
+   3.0
+  ],
+  "bbox_center": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "bbox_n": 1,
+  "n": 1,
+  "src": {
+   "rate": "template",
+   "max_count": "template",
+   "initial_count": "override",
+   "bbox": "override"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_projectile_sabot_petal": {
+  "rate": 1.0,
+  "max_count": 1,
+  "initial_count": 1,
+  "burst": false,
+  "bbox": [
+   10.0,
+   15.0,
+   10.0
+  ],
+  "bbox_center": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "bbox_n": 4,
+  "n": 4,
+  "src": {
+   "rate": "template",
+   "max_count": "template",
+   "initial_count": "template",
+   "bbox": "override"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_prop_destroy_static_simple": {
+  "rate": 10.0,
+  "max_count": 1,
+  "initial_count": 1,
+  "burst": false,
+  "bbox": null,
+  "bbox_center": null,
+  "bbox_n": 0,
+  "n": 2,
+  "src": {
+   "rate": "override",
+   "max_count": "override",
+   "initial_count": "override",
+   "bbox": "unit_placeholder_only"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_propdest_shard_meshp_geo_box": {
+  "rate": null,
+  "max_count": 60,
+  "initial_count": 64,
+  "burst": true,
+  "bbox": [
+   5.0,
+   5.0,
+   5.0
+  ],
+  "bbox_center": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "bbox_n": 12,
+  "n": 12,
+  "src": {
+   "rate": "burst_mode_no_rate",
+   "max_count": "override",
+   "initial_count": "template",
+   "bbox": "override"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_propdest_shard_meshp_geo_box_continuous": {
+  "rate": 6.0,
+  "max_count": 12,
+  "initial_count": 3,
+  "burst": false,
+  "bbox": [
+   10.0,
+   17.5,
+   10.0
+  ],
+  "bbox_center": [
+   0.0,
+   -12.5,
+   0.0
+  ],
+  "bbox_n": 8,
+  "n": 8,
+  "src": {
+   "rate": "override",
+   "max_count": "override",
+   "initial_count": "override",
+   "bbox": "override"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_propdest_shard_meshp_geo_box_rotxyz_norollyawpitch": {
+  "rate": null,
+  "max_count": 50,
+  "initial_count": 64,
+  "burst": true,
+  "bbox": [
+   37.5,
+   32.5,
+   37.5
+  ],
+  "bbox_center": [
+   12.5,
+   17.5,
+   12.5
+  ],
+  "bbox_n": 1,
+  "n": 1,
+  "src": {
+   "rate": "burst_mode_no_rate",
+   "max_count": "override",
+   "initial_count": "template",
+   "bbox": "override"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_propdest_shard_meshp_geo_supersphere": {
+  "rate": null,
+  "max_count": 30,
+  "initial_count": 64,
+  "burst": true,
+  "bbox": [
+   5.0,
+   5.0,
+   5.0
+  ],
+  "bbox_center": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "bbox_n": 13,
+  "n": 13,
+  "src": {
+   "rate": "burst_mode_no_rate",
+   "max_count": "override",
+   "initial_count": "template",
+   "bbox": "override"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_propdest_shard_meshp_geo_supersphere_contin": {
+  "rate": 10.0,
+  "max_count": 325,
+  "initial_count": 100,
+  "burst": false,
+  "bbox": [
+   15.0,
+   12.5,
+   15.0
+  ],
+  "bbox_center": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "bbox_n": 10,
+  "n": 10,
+  "src": {
+   "rate": "override",
+   "max_count": "override",
+   "initial_count": "override",
+   "bbox": "override"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_propdest_shard_meshp_geo_supersphere_parentrot": {
+  "rate": null,
+  "max_count": 1,
+  "initial_count": 64,
+  "burst": true,
+  "bbox": [
+   5.0,
+   5.0,
+   5.0
+  ],
+  "bbox_center": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "bbox_n": 34,
+  "n": 34,
+  "src": {
+   "rate": "burst_mode_no_rate",
+   "max_count": "override",
+   "initial_count": "template",
+   "bbox": "override"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_propdest_shard_unitquad_box": {
+  "rate": null,
+  "max_count": 70,
+  "initial_count": 64,
+  "burst": true,
+  "bbox": [
+   0.5,
+   0.5,
+   0.5
+  ],
+  "bbox_center": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "bbox_n": 6,
+  "n": 6,
+  "src": {
+   "rate": "burst_mode_no_rate",
+   "max_count": "override",
+   "initial_count": "template",
+   "bbox": "override"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_propdest_shard_unitquad_front_supersphere": {
+  "rate": null,
+  "max_count": 64,
+  "initial_count": 64,
+  "burst": true,
+  "bbox": [
+   5.0,
+   5.0,
+   5.0
+  ],
+  "bbox_center": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "bbox_n": 11,
+  "n": 11,
+  "src": {
+   "rate": "burst_mode_no_rate",
+   "max_count": "override",
+   "initial_count": "template",
+   "bbox": "override"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_propdest_shard_unitquad_supersphere": {
+  "rate": null,
+  "max_count": 50,
+  "initial_count": 64,
+  "burst": true,
+  "bbox": [
+   5.0,
+   10.0,
+   5.0
+  ],
+  "bbox_center": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "bbox_n": 7,
+  "n": 7,
+  "src": {
+   "rate": "burst_mode_no_rate",
+   "max_count": "override",
+   "initial_count": "template",
+   "bbox": "override"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_propdest_soft_unitquad_box_flag_test": {
+  "rate": null,
+  "max_count": 1,
+  "initial_count": 64,
+  "burst": true,
+  "bbox": [
+   20.0,
+   15.0,
+   20.0
+  ],
+  "bbox_center": [
+   0.0,
+   15.0,
+   0.0
+  ],
+  "bbox_n": 1,
+  "n": 1,
+  "src": {
+   "rate": "burst_mode_no_rate",
+   "max_count": "override",
+   "initial_count": "template",
+   "bbox": "override"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_propdest_softmesh_burst": {
+  "rate": null,
+  "max_count": 10,
+  "initial_count": 64,
+  "burst": true,
+  "bbox": [
+   5.0,
+   5.0,
+   5.0
+  ],
+  "bbox_center": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "bbox_n": 101,
+  "n": 101,
+  "src": {
+   "rate": "burst_mode_no_rate",
+   "max_count": "override",
+   "initial_count": "template",
+   "bbox": "override"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_ptkm_submunition": {
+  "rate": 1.0,
+  "max_count": 1,
+  "initial_count": 1,
+  "burst": false,
+  "bbox": [
+   20.0,
+   20.0,
+   20.0
+  ],
+  "bbox_center": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "bbox_n": 1,
+  "n": 1,
+  "src": {
+   "rate": "template",
+   "max_count": "override",
+   "initial_count": "override",
+   "bbox": "override"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_rats_01": {
+  "rate": 0.1,
+  "max_count": 3,
+  "initial_count": 3,
+  "burst": false,
+  "bbox": [
+   50.0,
+   50.0,
+   50.0
+  ],
+  "bbox_center": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "bbox_n": 1,
+  "n": 1,
+  "src": {
+   "rate": "override",
+   "max_count": "override",
+   "initial_count": "override",
+   "bbox": "override"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_rolltracks_01_es": {
+  "rate": null,
+  "max_count": 208,
+  "initial_count": 208,
+  "burst": true,
+  "bbox": [
+   10000.0,
+   10000.0,
+   10000.0
+  ],
+  "bbox_center": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "bbox_n": 1,
+  "n": 1,
+  "src": {
+   "rate": "burst_mode_no_rate",
+   "max_count": "template",
+   "initial_count": "template",
+   "bbox": "override"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_rotorblade_vortex_ring": {
+  "rate": 600.0,
+  "max_count": 700,
+  "initial_count": null,
+  "burst": false,
+  "bbox": null,
+  "bbox_center": null,
+  "bbox_n": 0,
+  "n": 4,
+  "src": {
+   "rate": "override",
+   "max_count": "override",
+   "initial_count": "none",
+   "bbox": "unit_placeholder_only"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_rpg7_fins": {
+  "rate": 1.0,
+  "max_count": 1,
+  "initial_count": 1,
+  "burst": false,
+  "bbox": [
+   3.0,
+   3.0,
+   3.0
+  ],
+  "bbox_center": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "bbox_n": 1,
+  "n": 2,
+  "src": {
+   "rate": "template",
+   "max_count": "override",
+   "initial_count": "override",
+   "bbox": "override"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_sand_frustrum_quad_es": {
+  "rate": 40.0,
+  "max_count": 320,
+  "initial_count": 500,
+  "burst": false,
+  "bbox": [
+   2.0,
+   2.0,
+   2.0
+  ],
+  "bbox_center": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "bbox_n": 6,
+  "n": 7,
+  "src": {
+   "rate": "override",
+   "max_count": "override",
+   "initial_count": "override",
+   "bbox": "override"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_sand_frustrum_quad_es_maindefault": {
+  "rate": 500.0,
+  "max_count": 1000,
+  "initial_count": 1,
+  "burst": false,
+  "bbox": null,
+  "bbox_center": null,
+  "bbox_n": 0,
+  "n": 5,
+  "src": {
+   "rate": "override",
+   "max_count": "override",
+   "initial_count": "template",
+   "bbox": "unit_placeholder_only"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_sand_spawnvolume_quad_es": {
+  "rate": 50.0,
+  "max_count": 500,
+  "initial_count": 100,
+  "burst": false,
+  "bbox": [
+   2.0,
+   1.0,
+   3.0
+  ],
+  "bbox_center": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "bbox_n": 1,
+  "n": 1,
+  "src": {
+   "rate": "override",
+   "max_count": "override",
+   "initial_count": "override",
+   "bbox": "override"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_sand_spawnvolume_quad_es_bg": {
+  "rate": 100.0,
+  "max_count": 500,
+  "initial_count": 1,
+  "burst": false,
+  "bbox": null,
+  "bbox_center": null,
+  "bbox_n": 0,
+  "n": 1,
+  "src": {
+   "rate": "override",
+   "max_count": "override",
+   "initial_count": "template",
+   "bbox": "unit_placeholder_only"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_soldier_screeneffect_flashbang": {
+  "rate": null,
+  "max_count": 1,
+  "initial_count": 1,
+  "burst": true,
+  "bbox": null,
+  "bbox_center": null,
+  "bbox_n": 0,
+  "n": 1,
+  "src": {
+   "rate": "burst_mode_no_rate",
+   "max_count": "template",
+   "initial_count": "template",
+   "bbox": "unit_placeholder_only"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_soldier_screeneffect_vignette": {
+  "rate": null,
+  "max_count": 1,
+  "initial_count": 1,
+  "burst": true,
+  "bbox": [
+   7.0,
+   7.0,
+   7.0
+  ],
+  "bbox_center": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "bbox_n": 1,
+  "n": 1,
+  "src": {
+   "rate": "burst_mode_no_rate",
+   "max_count": "template",
+   "initial_count": "template",
+   "bbox": "override"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_sparks_burst_es": {
+  "rate": null,
+  "max_count": 200,
+  "initial_count": 200,
+  "burst": true,
+  "bbox": [
+   8.0,
+   6.5,
+   8.0
+  ],
+  "bbox_center": [
+   0.0,
+   1.5,
+   0.0
+  ],
+  "bbox_n": 146,
+  "n": 197,
+  "src": {
+   "rate": "burst_mode_no_rate",
+   "max_count": "override",
+   "initial_count": "template",
+   "bbox": "override"
+  },
+  "spawn_spread": [
+   0.25,
+   0.25,
+   0.25
+  ],
+  "spawn_spread_src": "PosRadius",
+  "spawn_spread_n": 130
+ },
+ "eg_sparks_burst_parent": {
+  "rate": null,
+  "max_count": 100,
+  "initial_count": 200,
+  "burst": true,
+  "bbox": [
+   12.0,
+   9.0,
+   12.0
+  ],
+  "bbox_center": [
+   0.0,
+   7.0,
+   0.0
+  ],
+  "bbox_n": 2,
+  "n": 2,
+  "src": {
+   "rate": "burst_mode_no_rate",
+   "max_count": "override",
+   "initial_count": "template",
+   "bbox": "override"
+  },
+  "spawn_spread": [
+   1.0,
+   1.0,
+   1.0
+  ],
+  "spawn_spread_src": "PosRadius",
+  "spawn_spread_n": 2
+ },
+ "eg_sparks_burst_pop_es": {
+  "rate": null,
+  "max_count": 1000,
+  "initial_count": 200,
+  "burst": true,
+  "bbox": null,
+  "bbox_center": null,
+  "bbox_n": 0,
+  "n": 2,
+  "src": {
+   "rate": "burst_mode_no_rate",
+   "max_count": "override",
+   "initial_count": "template",
+   "bbox": "unit_placeholder_only"
+  },
+  "spawn_spread": [
+   3.0,
+   3.0,
+   3.0
+  ],
+  "spawn_spread_src": "PosRadius",
+  "spawn_spread_n": 2
+ },
+ "eg_sparks_cont_es": {
+  "rate": 300.0,
+  "max_count": 120,
+  "initial_count": 1,
+  "burst": false,
+  "bbox": [
+   4.0,
+   4.0,
+   4.0
+  ],
+  "bbox_center": [
+   0.0,
+   1.5,
+   0.0
+  ],
+  "bbox_n": 79,
+  "n": 95,
+  "src": {
+   "rate": "override",
+   "max_count": "override",
+   "initial_count": "override",
+   "bbox": "override"
+  },
+  "spawn_spread": [
+   0.1,
+   0.1,
+   0.1
+  ],
+  "spawn_spread_src": "PosRadius",
+  "spawn_spread_n": 77
+ },
+ "eg_sparks_cont_es_portal": {
+  "rate": 500.0,
+  "max_count": 2000,
+  "initial_count": null,
+  "burst": false,
+  "bbox": null,
+  "bbox_center": null,
+  "bbox_n": 0,
+  "n": 1,
+  "src": {
+   "rate": "override",
+   "max_count": "override",
+   "initial_count": "none",
+   "bbox": "unit_placeholder_only"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_sparks_cont_moving_es": {
+  "rate": 200.0,
+  "max_count": 100,
+  "initial_count": null,
+  "burst": false,
+  "bbox": [
+   500.0,
+   500.0,
+   500.0
+  ],
+  "bbox_center": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "bbox_n": 1,
+  "n": 1,
+  "src": {
+   "rate": "template",
+   "max_count": "override",
+   "initial_count": "none",
+   "bbox": "override"
+  },
+  "spawn_spread": [
+   0.1,
+   0.1,
+   0.1
+  ],
+  "spawn_spread_src": "PosRadius",
+  "spawn_spread_n": 1
+ },
+ "eg_sparks_cont_pop_es": {
+  "rate": 400.0,
+  "max_count": 200,
+  "initial_count": 200,
+  "burst": false,
+  "bbox": [
+   10.0,
+   12.5,
+   10.0
+  ],
+  "bbox_center": [
+   0.0,
+   7.5,
+   0.0
+  ],
+  "bbox_n": 5,
+  "n": 8,
+  "src": {
+   "rate": "override",
+   "max_count": "override",
+   "initial_count": "override",
+   "bbox": "override"
+  },
+  "spawn_spread": [
+   1.0,
+   1.0,
+   1.0
+  ],
+  "spawn_spread_src": "PosRadius",
+  "spawn_spread_n": 7
+ },
+ "eg_sparks_cont_vortex": {
+  "rate": 35.0,
+  "max_count": 200,
+  "initial_count": 10,
+  "burst": false,
+  "bbox": [
+   3.5,
+   3.5,
+   3.5
+  ],
+  "bbox_center": [
+   -0.5,
+   2.5,
+   -0.5
+  ],
+  "bbox_n": 2,
+  "n": 2,
+  "src": {
+   "rate": "override",
+   "max_count": "override",
+   "initial_count": "override",
+   "bbox": "override"
+  },
+  "spawn_spread": [
+   1.75,
+   1.75,
+   1.75
+  ],
+  "spawn_spread_src": "PosRadius",
+  "spawn_spread_n": 2
+ },
+ "eg_sparktrails_es": {
+  "rate": 2000.0,
+  "max_count": 1200,
+  "initial_count": null,
+  "burst": false,
+  "bbox": null,
+  "bbox_center": null,
+  "bbox_n": 0,
+  "n": 1,
+  "src": {
+   "rate": "override",
+   "max_count": "override",
+   "initial_count": "none",
+   "bbox": "unit_placeholder_only"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_static_meshp": {
+  "rate": null,
+  "max_count": 1,
+  "initial_count": 64,
+  "burst": true,
+  "bbox": null,
+  "bbox_center": null,
+  "bbox_n": 0,
+  "n": 1,
+  "src": {
+   "rate": "burst_mode_no_rate",
+   "max_count": "override",
+   "initial_count": "template",
+   "bbox": "unit_placeholder_only"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_thindebris_burning_cont_es": {
+  "rate": 5.0,
+  "max_count": 40,
+  "initial_count": null,
+  "burst": false,
+  "bbox": [
+   3.0,
+   5.5,
+   3.0
+  ],
+  "bbox_center": [
+   -2.0,
+   -4.5,
+   -2.0
+  ],
+  "bbox_n": 1,
+  "n": 1,
+  "src": {
+   "rate": "override",
+   "max_count": "override",
+   "initial_count": "none",
+   "bbox": "override"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_thindebris_burst_es": {
+  "rate": null,
+  "max_count": 50,
+  "initial_count": 200,
+  "burst": true,
+  "bbox": [
+   3.0,
+   4.5,
+   3.0
+  ],
+  "bbox_center": [
+   0.0,
+   3.5,
+   0.0
+  ],
+  "bbox_n": 24,
+  "n": 30,
+  "src": {
+   "rate": "burst_mode_no_rate",
+   "max_count": "override",
+   "initial_count": "template",
+   "bbox": "override"
+  },
+  "spawn_spread": [
+   0.5,
+   0.5,
+   0.5
+  ],
+  "spawn_spread_src": "PosRadius",
+  "spawn_spread_n": 27
+ },
+ "eg_thindebris_phys_txtr_es": {
+  "rate": 10.0,
+  "max_count": 128,
+  "initial_count": null,
+  "burst": false,
+  "bbox": [
+   10.0,
+   3.0,
+   10.0
+  ],
+  "bbox_center": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "bbox_n": 1,
+  "n": 1,
+  "src": {
+   "rate": "override",
+   "max_count": "override",
+   "initial_count": "none",
+   "bbox": "override"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_thindebris_txtr_burst_es": {
+  "rate": null,
+  "max_count": 50,
+  "initial_count": 200,
+  "burst": true,
+  "bbox": [
+   15.0,
+   7.5,
+   15.0
+  ],
+  "bbox_center": [
+   0.0,
+   7.5,
+   0.0
+  ],
+  "bbox_n": 1,
+  "n": 2,
+  "src": {
+   "rate": "burst_mode_no_rate",
+   "max_count": "override",
+   "initial_count": "template",
+   "bbox": "override"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_thindebris_txtr_cont_es": {
+  "rate": 15.0,
+  "max_count": 64,
+  "initial_count": null,
+  "burst": false,
+  "bbox": [
+   10.0,
+   3.0,
+   10.0
+  ],
+  "bbox_center": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "bbox_n": 1,
+  "n": 1,
+  "src": {
+   "rate": "override",
+   "max_count": "override",
+   "initial_count": "none",
+   "bbox": "override"
+  },
+  "spawn_spread": [
+   2.0,
+   2.0,
+   2.0
+  ],
+  "spawn_spread_src": "PosRadius",
+  "spawn_spread_n": 1
+ },
+ "eg_trash_default_spawnmap": {
+  "rate": 100.0,
+  "max_count": 50,
+  "initial_count": null,
+  "burst": false,
+  "bbox": [
+   300.0,
+   10.0,
+   300.0
+  ],
+  "bbox_center": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "bbox_n": 2,
+  "n": 2,
+  "src": {
+   "rate": "override",
+   "max_count": "override",
+   "initial_count": "none",
+   "bbox": "override"
+  },
+  "spawn_spread": [
+   0.001,
+   0.001,
+   0.001
+  ],
+  "spawn_spread_src": "PosRadius",
+  "spawn_spread_n": 2
+ },
+ "eg_vegdest_shard_unitquad_leaves_burst": {
+  "rate": null,
+  "max_count": 50,
+  "initial_count": 1000,
+  "burst": true,
+  "bbox": [
+   6.0,
+   5.0,
+   6.0
+  ],
+  "bbox_center": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "bbox_n": 2,
+  "n": 2,
+  "src": {
+   "rate": "burst_mode_no_rate",
+   "max_count": "override",
+   "initial_count": "template",
+   "bbox": "override"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_vehicle_screeneffect_damage_distortion_looping": {
+  "rate": null,
+  "max_count": 1,
+  "initial_count": 1,
+  "burst": true,
+  "bbox": null,
+  "bbox_center": null,
+  "bbox_n": 0,
+  "n": 1,
+  "src": {
+   "rate": "burst_mode_no_rate",
+   "max_count": "template",
+   "initial_count": "template",
+   "bbox": "unit_placeholder_only"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_velocitystabilized_projectile_antitank_grenade": {
+  "rate": null,
+  "max_count": 1,
+  "initial_count": 1,
+  "burst": true,
+  "bbox": [
+   10.0,
+   10.0,
+   10.0
+  ],
+  "bbox_center": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "bbox_n": 1,
+  "n": 1,
+  "src": {
+   "rate": "burst_mode_no_rate",
+   "max_count": "template",
+   "initial_count": "template",
+   "bbox": "override"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_vfx_debug_axis": {
+  "rate": 1.0,
+  "max_count": 1,
+  "initial_count": 1,
+  "burst": false,
+  "bbox": null,
+  "bbox_center": null,
+  "bbox_n": 0,
+  "n": 18,
+  "src": {
+   "rate": "template",
+   "max_count": "template",
+   "initial_count": "template",
+   "bbox": "unit_placeholder_only"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_volumedecalos_dirt_3d_es": {
+  "rate": null,
+  "max_count": 1,
+  "initial_count": 1,
+  "burst": true,
+  "bbox": [
+   2.0,
+   2.0,
+   2.0
+  ],
+  "bbox_center": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "bbox_n": 1,
+  "n": 1,
+  "src": {
+   "rate": "burst_mode_no_rate",
+   "max_count": "template",
+   "initial_count": "template",
+   "bbox": "override"
+  },
+  "spawn_spread": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "spawn_spread_src": "SpawnPosScale",
+  "spawn_spread_n": 1
+ },
+ "eg_volumedecalos_dirt_3d_nomask_es": {
+  "rate": null,
+  "max_count": 1,
+  "initial_count": 1,
+  "burst": true,
+  "bbox": [
+   10.0,
+   10.0,
+   10.0
+  ],
+  "bbox_center": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "bbox_n": 1,
+  "n": 1,
+  "src": {
+   "rate": "burst_mode_no_rate",
+   "max_count": "template",
+   "initial_count": "template",
+   "bbox": "override"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_volumedecalos_fire_es_test": {
+  "rate": null,
+  "max_count": 1,
+  "initial_count": 1,
+  "burst": true,
+  "bbox": null,
+  "bbox_center": null,
+  "bbox_n": 0,
+  "n": 3,
+  "src": {
+   "rate": "burst_mode_no_rate",
+   "max_count": "template",
+   "initial_count": "template",
+   "bbox": "unit_placeholder_only"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_volumedecalos_firepatch_es": {
+  "rate": null,
+  "max_count": 1,
+  "initial_count": 1,
+  "burst": true,
+  "bbox": [
+   0.75,
+   0.75,
+   0.75
+  ],
+  "bbox_center": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "bbox_n": 40,
+  "n": 43,
+  "src": {
+   "rate": "burst_mode_no_rate",
+   "max_count": "override",
+   "initial_count": "template",
+   "bbox": "override"
+  },
+  "spawn_spread": [
+   0.1,
+   0.1,
+   0.1
+  ],
+  "spawn_spread_src": "SpawnPosScale",
+  "spawn_spread_n": 2
+ },
+ "eg_volumedecalos_simple_emitterparented_es": {
+  "rate": 1.0,
+  "max_count": 1,
+  "initial_count": 1,
+  "burst": false,
+  "bbox": [
+   7.5,
+   7.5,
+   7.5
+  ],
+  "bbox_center": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "bbox_n": 15,
+  "n": 15,
+  "src": {
+   "rate": "override",
+   "max_count": "override",
+   "initial_count": "template",
+   "bbox": "override"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_volumedecalos_sootpatch_es": {
+  "rate": null,
+  "max_count": 2,
+  "initial_count": 1,
+  "burst": true,
+  "bbox": [
+   0.75,
+   1.0,
+   0.75
+  ],
+  "bbox_center": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "bbox_n": 3,
+  "n": 3,
+  "src": {
+   "rate": "burst_mode_no_rate",
+   "max_count": "override",
+   "initial_count": "template",
+   "bbox": "override"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_volumedecalos_sootpatch_es_nodynmask": {
+  "rate": null,
+  "max_count": 1,
+  "initial_count": 1,
+  "burst": true,
+  "bbox": [
+   3.0,
+   3.0,
+   3.0
+  ],
+  "bbox_center": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "bbox_n": 3,
+  "n": 3,
+  "src": {
+   "rate": "burst_mode_no_rate",
+   "max_count": "override",
+   "initial_count": "template",
+   "bbox": "override"
+  },
+  "spawn_spread": [
+   0.1,
+   0.1,
+   0.1
+  ],
+  "spawn_spread_src": "SpawnPosScale",
+  "spawn_spread_n": 3
+ },
+ "eg_wireguidedmissile_poseventbroadcast": {
+  "rate": null,
+  "max_count": 1,
+  "initial_count": 1,
+  "burst": true,
+  "bbox": null,
+  "bbox_center": null,
+  "bbox_n": 0,
+  "n": 1,
+  "src": {
+   "rate": "burst_mode_no_rate",
+   "max_count": "template",
+   "initial_count": "template",
+   "bbox": "unit_placeholder_only"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_wireguidedmissile_spooledwire": {
+  "rate": null,
+  "max_count": 5,
+  "initial_count": 5,
+  "burst": true,
+  "bbox": [
+   100.0,
+   100.0,
+   100.0
+  ],
+  "bbox_center": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "bbox_n": 1,
+  "n": 1,
+  "src": {
+   "rate": "burst_mode_no_rate",
+   "max_count": "override",
+   "initial_count": "template",
+   "bbox": "override"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ },
+ "eg_yoon_debug_axis": {
+  "rate": 1.0,
+  "max_count": 1,
+  "initial_count": 1,
+  "burst": false,
+  "bbox": null,
+  "bbox_center": null,
+  "bbox_n": 0,
+  "n": 1,
+  "src": {
+   "rate": "override",
+   "max_count": "override",
+   "initial_count": "override",
+   "bbox": "unit_placeholder_only"
+  },
+  "spawn_spread": null,
+  "spawn_spread_src": null,
+  "spawn_spread_n": 0
+ }
+}
