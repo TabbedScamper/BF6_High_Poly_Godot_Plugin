@@ -573,6 +573,17 @@ static func run(host: Node, dock: Node, mapctx: Node) -> void:
 		# averaging them in makes every run look worse than it is.
 		for i in range(int(cfg["settle_frames"])):
 			await _tree.process_frame
+		# A PICTURE, before the flight moves the camera.
+		#
+		# Every number this harness collects is about cost, and a change can be
+		# free and still look completely wrong — a ground blown out to white
+		# costs exactly what a correct one costs, and a whole session reports it
+		# as a 2% frame-time regression. One frame on disk is the only part of
+		# this report that can catch that.
+		var shot := _shoot("user://bf6_autorun_%s.png" % str(cfg["map"]))
+		if shot != "":
+			rep["screenshot"] = shot
+			_say("autorun: wrote %s" % shot)
 		rep.merge(await _fly(_tree, samples))
 
 		# ---- what is each layer costing? ---------------------------------
@@ -1112,6 +1123,26 @@ static func _fly(_tree: SceneTree, samples: Array) -> Dictionary:
 # replay can reproduce the view EXACTLY; going through euler angles here — which
 # is what a naive set_editor_camera call would do — reintroduces the rounding
 # the recorder went out of its way to avoid.
+# One frame of the 3D viewport to a png, or "" if there is nothing to shoot.
+#
+# The editor viewport rather than the SceneTree's root: this runs inside the
+# editor, and the tree's own viewport is the editor's UI, which would produce a
+# screenshot of a dock.
+static func _shoot(path: String) -> String:
+	var vp := EditorInterface.get_editor_viewport_3d(0)
+	if vp == null:
+		return ""
+	var tex := vp.get_texture()
+	if tex == null:
+		return ""
+	var img := tex.get_image()
+	if img == null or img.get_width() < 8:
+		return ""
+	if img.save_png(path) != OK:
+		return ""
+	return path
+
+
 static func _load_path(p: String) -> Array:
 	var txt := FileAccess.get_file_as_string(p)
 	if txt == "" and not p.begins_with("user://"):

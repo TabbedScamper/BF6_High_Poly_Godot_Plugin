@@ -3002,6 +3002,11 @@ func _mapctx_changed() -> void:
 		_gs_opening = true
 		lbl.text = "Reading %s from your Battlefield 6 install…" % map
 		var gs = HighpolyGameSource.new()
+		# Build the ground's appearance on the worker too. It is the one part of
+		# the map that costs about a minute the first time and nothing after, so
+		# it belongs behind this progress bar rather than in the middle of the
+		# build where it would freeze the editor.
+		gs.surface_cache = "%s/%s" % [HighpolyMapContext.CACHE, map]
 		var ok_g: bool = await gs.open_async(dock, map, "",
 			func(stage: String, done: int, total: int):
 				lbl.text = ("%s — %s %d%%" % [map, stage,

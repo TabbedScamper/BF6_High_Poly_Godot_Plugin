@@ -30,6 +30,7 @@ const BLOCK_DENSITY := 2
 
 var error := ""
 var xs := 0                      # NodeSamplesPerSide
+var border := 0                  # NodeBorderWidth — see composite()
 var world_size_y := 0.0          # height scale
 var node_count := 0
 var data_size := 0               # per-node payload stride (== InlineValueBytes)
@@ -88,6 +89,12 @@ func read_block_header(b: PackedByteArray) -> bool:
 		error = "heightfield block shorter than its 72-byte header"
 		return false
 	xs = int(b.decode_s32(0x00))
+	# NOT a constant 4. §4.4 quotes "a 4-sample pad border" and every map
+	# measured does have 4, but the header carries the number at +0x44 and a map
+	# that shipped a different one would silently shift the whole heightfield.
+	border = int(b.decode_s32(0x44))
+	if border < 0 or border * 2 >= xs:
+		border = 0
 	world_size_y = b.decode_float(0x10)
 	var minmax_depth := int(b.decode_s32(0x1C))
 	var occluder_depth := int(b.decode_s32(0x20))
@@ -342,6 +349,21 @@ static func _reverse_guid(g: String) -> String:
 # covering a texel wins — drawing them in depth order gives the finest data
 # available everywhere without needing to know which levels exist.
 #
+# EVERY TILE HAS A PAD BORDER, and it is not the tile's own ground.
+#
+# §4.4 specifies a border of `NodeBorderWidth` samples on all four sides, so a
+# node's AABB is spanned by grid[border .. xs-1-border] and the rest is a copy of
+# whatever is next door. This used to sample 0..xs-1, which did two things at
+# once: it stretched each tile's 257 real samples across 265 destination texels,
+# shrinking every feature by 3.1%, and it painted 4 samples of the NEIGHBOUR's
+# terrain into each tile edge, so tile boundaries carried a doubled ridge.
+#
+# The border is measurable rather than assumed. Over 40 x-adjacent same-depth
+# node pairs on mp_dumbo, the shared-edge prediction A[xs-1-border] == B[border]
+# holds 40/40 while the no-border reading A[xs-1] == B[0] holds 0/40, and all
+# 160 of the pad columns are exactly the neighbour's interior columns. Two
+# unrelated heightfields do not agree on a whole column of u16s.
+#
 # -> {"data": PackedByteArray (u16 LE), "size": int, "min": Vector3,
 #     "max": Vector3} or {} on failure.
 # ---------------------------------------------------------------------------
@@ -380,12 +402,17 @@ func composite(size := 4096) -> Dictionary:
 		z0 = clampi(z0, 0, size); z1 = clampi(z1, 0, size)
 		if x1 <= x0 or z1 <= z0:
 			continue
+		# The node's own samples run from `border` to `xs-1-border` inclusive;
+		# everything outside that is the neighbour's, repeated.
+		var s0 := border
+		var s1 := xs - 1 - border
+		var ssp := float(maxi(1, s1 - s0))
 		for gz in range(z0, z1):
 			var fz: float = float(gz - z0) / float(maxi(1, z1 - z0 - 1)) if z1 - z0 > 1 else 0.0
-			var sy: int = clampi(int(fz * float(xs - 1)), 0, xs - 1)
+			var sy: int = clampi(s0 + int(round(fz * ssp)), 0, xs - 1)
 			for gx in range(x0, x1):
 				var fx: float = float(gx - x0) / float(maxi(1, x1 - x0 - 1)) if x1 - x0 > 1 else 0.0
-				var sx: int = clampi(int(fx * float(xs - 1)), 0, xs - 1)
+				var sx: int = clampi(s0 + int(round(fx * ssp)), 0, xs - 1)
 				var si := (sy * xs + sx) * 2
 				if si + 1 >= v.size():
 					continue

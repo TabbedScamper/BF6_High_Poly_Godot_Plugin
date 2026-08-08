@@ -418,7 +418,8 @@ func _clear(root: Node, keep_backdrop := false, keep_props := false) -> void:
 	_prop_by_src.clear()
 	_layer_cache.clear()
 	_tile_cache.clear()    # re-look-up the maptile (the SDK may have just downloaded one)
-	_splat_cache.clear()   # re-read baked splat data on the next apply
+	_splat_cache.clear()   # re-read the splat on the next apply
+	_cmap_cache.clear()    # and the colour map, which is written beside it
 	# remove the maptile decal (editor-only)
 	_remove_maptile(root)
 
@@ -593,16 +594,29 @@ uniform float detail_strength = 0.5;
 uniform float normal_strength = 0.7;
 uniform float slope_lo = 0.35;
 uniform float slope_hi = 0.70;
-// EXACT splat data (baked from the game's own terrain layer masks â€” see the
-// pipeline's splat_build.py). splat_slices = 0 (default) keeps the legacy
-// slope ground/cliff heuristic, so maps/packages without splat data render
-// exactly as before.
+// EXACT splat data, out of terrain block 1's per-layer weight pages. When the
+// map's cache has none, splat_slices stays 0 and the shader keeps the slope
+// ground/cliff heuristic, so a map without it renders exactly as before.
 uniform int splat_slices = 0;            // layer_alb/layer_nrm slice count
 uniform vec4 splat_bounds;               // xmin, zmin, sizeX, sizeZ (world)
 uniform sampler2D splat_idx : filter_nearest, repeat_disable;  // top-4 table idx (x255)
 uniform sampler2D splat_w : filter_linear, repeat_disable;     // top-4 weights (sum=1)
 uniform sampler2DArray layer_alb : source_color, filter_linear_mipmap, repeat_enable;
 uniform sampler2DArray layer_nrm : filter_linear_mipmap, repeat_enable;
+uniform float layer_scale[32];           // world metres per repeat, per slice
+// THE GAME'S OWN TERRAIN COLOUR MAP (TERRAIN.md 5.3): one BC7 tile per
+// streaming-tree node, read out of the player's install and assembled here. The
+// engine's terrain material shaders all sample it for large-scale hue, with 0.5
+// as the neutral value, so this modulates the detail rather than replacing it.
+//
+// It is NOT the SDK's maptile. That was a jpg shipped with the SDK, which we
+// redistributed and painted over their own decal's job; this is the engine's
+// own input, covers the whole footprint instead of the playable bowl, and never
+// leaves the machine it was read on.
+uniform sampler2D colormap : source_color, filter_linear_mipmap, repeat_disable;
+uniform vec4 cmap_bounds;                // xmin, zmin, sizeX, sizeZ (world)
+uniform bool use_colormap = false;
+uniform float cmap_strength = 1.0;
 varying vec3 wpos;
 varying vec3 wnorm;
 void vertex() {
@@ -635,8 +649,16 @@ void fragment() {
 				if (wi < 0.004) { continue; }
 				int id = int(sid[i] + 0.5);
 				if (id < splat_slices) {
-					acc += wi * texture(layer_alb, vec3(tuv, float(id))).rgb;
-					nacc += wi * texture(layer_nrm, vec3(tuv, float(id))).rgb;
+					// EACH LAYER TILES AT ITS OWN RATE. The layer-graph depot
+					// carries a UV tiling constant per layer (0x5707A992,
+					// repeats per metre) and dumbo's spread from 4 m to 50 m
+					// per repeat. Tiling them all at one rate makes the 50 m
+					// layers look like a pattern and the 4 m ones look like
+					// mud, which is the visible difference between the game's
+					// numbers and an invented one.
+					vec2 luv = wpos.xz / max(layer_scale[id], 0.01);
+					acc += wi * texture(layer_alb, vec3(luv, float(id))).rgb;
+					nacc += wi * texture(layer_nrm, vec3(luv, float(id))).rgb;
 				} else {
 					acc += wi * fb_alb;      // unpackaged layer: slope fallback
 					nacc += wi * fb_nrm;
@@ -649,21 +671,39 @@ void fragment() {
 			}
 		}
 	}
-	float dl = dot(det, vec3(0.3333));
-
 	// THE GROUND IS THE GAME'S OWN MATERIALS, and nothing else.
 	//
-	// This used to blend the aerial photo over the top as a large-scale colour
-	// tint. That photo is the SDK's feature: it ships a plugin whose Apply
-	// Texture button projects it as a decal, saved into the user's scene and
-	// under their control. Painting a second copy of it into our terrain meant
-	// the ground carried the picture whether they wanted it or not, and it read
-	// as a decal we were placing on their level.
+	// Per-layer albedo and normal from the game's own layer-graph palette,
+	// blended by the map's own splat weights where they exist and by slope where
+	// they do not, then modulated by the game's own terrain colour map.
 	//
-	// What is left is the real thing: per-layer albedo and normal from the
-	// game's terrainmaterials palette, blended by the map's own splat weights
-	// where they exist and by slope where they do not. dl is retained because
-	// the detail term is what it always was.
+	// The colour map is not the SDK maptile coming back. That was a jpg we
+	// shipped and painted over the SDK plugin's own job, so the ground carried
+	// their photo whether the user wanted it or not. This is the raster the
+	// engine itself multiplies every terrain material by, read from the player's
+	// install; 0.5 is its neutral, so a texel at 0.5 leaves the detail exactly
+	// as it was. It is also the only thing that gives colour to the 88% of
+	// ground whose layer is shader-computed and has no texture to read.
+	// IT SETS THE LEVEL, IT DOES NOT MULTIPLY IT.
+	//
+	// §5.3 calls the colour map 0.5-centred and §15 says the engine "modulates"
+	// by it, and reading that as `det * cm / 0.5` is wrong in the way that only
+	// shows up on screen: cm reaches 0.94 on this map, so bright ground came out
+	// at 1.9x its own albedo, clamped, and the whole world went white.
+	//
+	// The photograph is a correctly exposed picture of THIS ground, so it is the
+	// level; the detail texture varies around it. At a mid-grey detail (0.5) the
+	// result is exactly the colour map, and the term is bounded either side so
+	// no combination can blow out.
+	if (use_colormap) {
+		vec2 cuv = vec2((wpos.x - cmap_bounds.x) / cmap_bounds.z,
+		                (wpos.z - cmap_bounds.y) / cmap_bounds.w);
+		if (cuv.x >= 0.0 && cuv.x <= 1.0 && cuv.y >= 0.0 && cuv.y <= 1.0) {
+			vec3 cm = texture(colormap, cuv).rgb;
+			float dl = dot(det, vec3(0.3333));
+			det = mix(det, cm * clamp(0.75 + 0.5 * dl, 0.5, 1.2), cmap_strength);
+		}
+	}
 	ALBEDO = clamp(det, 0.0, 1.0);
 	ROUGHNESS = 0.92;
 	vec2 nxy = (nrm.rg * 2.0 - 1.0) * normal_strength;
@@ -678,10 +718,10 @@ void fragment() {
 static var _tshader: Shader = null
 static var _layer_cache: Dictionary = {}   # "<map>/<name>" -> Texture2D (or null)
 static var _tile_cache: Dictionary = {}    # tile name -> Texture2D (null = no tile anywhere)
-# ---------- exact splat data (baked from the game's terrain layer masks) ----------
-# user://mapcontext/<map>/splat/{idx.png, w.png, layers.json, lNN_alb/_nrm.png,
-# grass_mask.png} â€” produced by the pipeline's splat_build.py. Maps without the
-# files (older packages, graph-layer city maps) keep the legacy heuristic path.
+# ---------- exact splat data, from the game's own terrain layer masks ----------
+# user://mapcontext/<map>/splat/{idx.png, w.png, layers.json, lNN_alb/_nrm.png}
+# — written by HighpolyGameSource.terrain_surface out of terrain block 1. A map
+# whose cache has not been built keeps the slope heuristic.
 static var _splat_cache: Dictionary = {}   # map -> Dictionary ({} = none)
 var _splat_active := false                 # last _terrain_shader_mat had splat data
 var _splat_n := 0                          # its texture-array slice count
@@ -762,20 +802,92 @@ func _splat_set(map: String) -> Dictionary:
 						+ "layers instead") % [map, ea, en])
 					_splat_cache[map] = {}
 					return {}
+				# PER-SLICE TILING RATE, out of the layer's own shading constant
+				# (§9.1's 0x5707A992, repeats per metre). Dumbo's layers run from
+				# 4 m to 50 m per repeat, so one shared rate is wrong for most of
+				# them. A slice whose layer set no rate keeps the shader default.
+				var scales := PackedFloat32Array()
+				scales.resize(32)
+				scales.fill(4.0)
+				var rows: Array = (meta as Dictionary).get("layers", [])
+				for i in range(mini(32, rows.size())):
+					var mpr := float((rows[i] as Dictionary).get("metres_per_repeat", 0.0))
+					if mpr > 0.01:
+						scales[i] = mpr
 				out = {
 					"idx": ImageTexture.create_from_image(idx_img),
 					"w": ImageTexture.create_from_image(w_img),
-					"alb": ta, "nrm": tn, "slices": slices,
+					"alb": ta, "nrm": tn, "slices": slices, "scales": scales,
 					"bounds": Vector4(float(wj.get("x0", 0.0)), float(wj.get("z0", 0.0)),
 						float(wj.get("size", 1.0)), float(wj.get("size", 1.0))),
 				}
 	_splat_cache[map] = out
 	return out
 
+# The game's terrain colour map for this map, or {} when it has not been built.
+#
+# Written by HighpolyGameSource.terrain_surface as user://mapcontext/<map>/
+# colormap.png, with its world box recorded in the splat set's layers.json —
+# the same file, because the two come out of the same block-1 walk and a second
+# metadata file is a second thing to keep in step.
+#
+# Compressed on load. A 4096x4096 RGBA8 is 67 MB resident and this is the
+# largest single texture the map context uploads; S3TC takes it to about 11 MB,
+# and the earlier VRAM work (15.5 GB -> 6.2 GB) is not worth spending back here.
+static var _cmap_cache: Dictionary = {}    # map -> {tex, bounds} or {}
+
+# Whether the ground carries the game's aerial photograph. See the comment at
+# the point of use in _terrain_shader_mat for why the default is off.
+static var colormap_enabled := false
+
+
+func _colormap_set(map: String) -> Dictionary:
+	if _cmap_cache.has(map):
+		return _cmap_cache[map]
+	var out: Dictionary = {}
+	var png := "%s/%s/colormap.png" % [CACHE, map]
+	var meta_path := "%s/%s/splat/layers.json" % [CACHE, map]
+	if FileAccess.file_exists(png) and FileAccess.file_exists(meta_path):
+		var meta: Variant = JSON.parse_string(FileAccess.get_file_as_string(meta_path))
+		var box: Variant = (meta as Dictionary).get("colormap", null) \
+			if meta is Dictionary else null
+		if box is Dictionary:
+			var img := Image.load_from_file(ProjectSettings.globalize_path(png))
+			if img != null and img.get_width() >= 4:
+				img.generate_mipmaps()
+				if not img.is_compressed():
+					img.compress(Image.COMPRESS_S3TC, Image.COMPRESS_SOURCE_SRGB)
+				var bd: Dictionary = box
+				var sz := float(bd.get("size", 8192.0))
+				out = {
+					"tex": ImageTexture.create_from_image(img),
+					"bounds": Vector4(float(bd.get("x0", -4096.0)),
+						float(bd.get("z0", -4096.0)), sz, sz),
+				}
+	_cmap_cache[map] = out
+	return out
+
+
 # Detail-layer texture for a map: prefer the PER-MAP layer shipped in the map
 # package (user://mapcontext/<map>/terrain_layers/<name>.png â€” the real ground/
 # cliff set that map streams in game), falling back per file to the plugin's
 # bundled default set.
+static var _flat_cache: Dictionary = {}
+
+
+# A 1x1 stand-in, shared, so an absent detail texture is a neutral sample rather
+# than an undefined sampler.
+static func _flat_tex(c: Color) -> Texture2D:
+	var k := c.to_html(false)
+	if _flat_cache.has(k):
+		return _flat_cache[k]
+	var img := Image.create_empty(1, 1, false, Image.FORMAT_RGB8)
+	img.set_pixel(0, 0, c)
+	var t := ImageTexture.create_from_image(img)
+	_flat_cache[k] = t
+	return t
+
+
 func _layer_tex(map: String, nm: String) -> Texture2D:
 	var key := "%s/%s" % [map, nm]
 	if _layer_cache.has(key): return _layer_cache[key]
@@ -803,15 +915,50 @@ func _layer_tex(map: String, nm: String) -> Texture2D:
 func _terrain_shader_mat(map: String) -> ShaderMaterial:
 	var ga := _layer_tex(map, "ground_alb"); var gn := _layer_tex(map, "ground_nrm")
 	var ca := _layer_tex(map, "cliff_alb"); var cn := _layer_tex(map, "cliff_nrm")
-	if ga == null or gn == null or ca == null or cn == null: return null
+	# A MISSING SLOPE TEXTURE NO LONGER COSTS THE WHOLE MATERIAL.
+	#
+	# These four used to be a hard requirement, so a map with the game's colour
+	# map and its full splat set would still fall back to flat vertex colour
+	# because one fallback png had not been written. They are the fallback; the
+	# splat and the colour map are the content. A neutral stand-in keeps the
+	# sampler defined and lets the parts that did build do their job.
+	if ga == null: ga = _flat_tex(Color(0.5, 0.5, 0.5))
+	if ca == null: ca = _flat_tex(Color(0.5, 0.5, 0.5))
+	if gn == null: gn = _flat_tex(Color(0.5, 0.5, 1.0))
+	if cn == null: cn = _flat_tex(Color(0.5, 0.5, 1.0))
 	if _tshader == null:
 		_tshader = Shader.new(); _tshader.code = TERRAIN_SHADER
 	var m := ShaderMaterial.new()
 	m.shader = _tshader
 	m.set_shader_parameter("ground_alb", ga); m.set_shader_parameter("ground_nrm", gn)
 	m.set_shader_parameter("cliff_alb", ca); m.set_shader_parameter("cliff_nrm", cn)
-	# exact splat blend where the map package ships baked splat data; without it
-	# splat_slices stays 0 and the shader keeps the legacy slope heuristic
+	# THE COLOUR MAP, if the map's cache has one AND the user asked for it.
+	#
+	# OFF BY DEFAULT, and that is a decision rather than caution. Painting the
+	# game's aerial photograph onto the ground reads as a decal being placed on
+	# the user's level — it is what the SDK's own Apply Texture button does, it
+	# is under their control there, and the first time this plugin did it
+	# uninvited the reaction was to have it taken out. It came back the moment
+	# the ground got a colour map and drew exactly the same reaction, which is
+	# twice the same answer to the same question.
+	#
+	# So it is a switch. What is not optional is everything the same block-1 walk
+	# produces underneath it: the splat, the layer palette and the base field are
+	# the game's materials, not a picture of them, and those stay on.
+	#
+	# Deliberately independent of the splat: a map whose splat did not build
+	# still gets the colour map if it is asked for. Tying the two together would
+	# mean one failure costing both.
+	var cm := _colormap_set(map) if colormap_enabled else {}
+	if not cm.is_empty():
+		m.set_shader_parameter("colormap", cm["tex"])
+		m.set_shader_parameter("cmap_bounds", cm["bounds"])
+		m.set_shader_parameter("use_colormap", true)
+	else:
+		m.set_shader_parameter("use_colormap", false)
+
+	# exact splat blend where the map cache holds the game's own weight pages;
+	# without it splat_slices stays 0 and the shader keeps the slope heuristic
 	_splat_active = false
 	_splat_n = 0
 	var sp := _splat_set(map)
@@ -822,6 +969,8 @@ func _terrain_shader_mat(map: String) -> ShaderMaterial:
 		m.set_shader_parameter("layer_nrm", sp["nrm"])
 		m.set_shader_parameter("splat_bounds", sp["bounds"])
 		m.set_shader_parameter("splat_slices", int(sp["slices"]))
+		if sp.has("scales"):
+			m.set_shader_parameter("layer_scale", sp["scales"])
 		_splat_active = true
 		_splat_n = int(sp["slices"])
 	return m
@@ -2870,10 +3019,12 @@ func apply(root: Node, enabled: bool, show_objects: bool, tex = true,
 	# background builder's very first progress report already carries it) ---
 	var mt := ""
 	if textured:
+		var cm_on := colormap_enabled and not _colormap_set(map).is_empty()
 		if tmat != null and _splat_active:
-			mt = ", SPLAT terrain (%d layer slices, no decal)" % _splat_n
+			mt = ", SPLAT terrain (%d layer slices%s)" % [_splat_n,
+				", colour map" if cm_on else ""]
 		elif tmat != null:
-			mt = ", detail terrain"
+			mt = ", detail terrain%s" % (" + colour map" if cm_on else "")
 		else:
 			mt = " (no ground layer set)"
 	var tex_lbl := "textured" if textured else ("clay" if tex_mode == 1 else "flat colour")

@@ -61,6 +61,10 @@ var walk: BF6Walk = null
 var level := ""
 var error := ""
 
+# Where terrain_surface writes, when the caller wants the ground built as part of
+# the open rather than in the middle of the build. Empty = do not build it here.
+var surface_cache := ""
+
 # blueprint path (lowercased, no .ebx) -> res name, or "" for "known to have none"
 var _res_for := {}
 var _ms := BF6MeshSet.new()
@@ -214,6 +218,24 @@ func open_map(map: String, game_dir := "", progress := Callable()) -> bool:
 		return false
 	timings["placement walk"] = Time.get_ticks_msec() - t
 	_geom_open()
+
+	# THE GROUND'S APPEARANCE IS BUILT HERE, not in map_data, and the reason is
+	# which thread each runs on. map_data is called from the middle of the build,
+	# on the main thread; terrain_surface is about a minute of BC7 decoding and
+	# page compositing the first time a map is seen. Doing it there would freeze
+	# the editor for a minute with a dead UI and no way to say why.
+	#
+	# Here it is on the open_async worker, behind the progress bar that already
+	# exists for the 85 s cold open, and it is pure Image and file work — no
+	# Node, no ImageTexture, no RenderingServer — which is what makes it safe off
+	# the main thread. map_data's own call then finds the cache and costs
+	# nothing.
+	if surface_cache != "":
+		t = Time.get_ticks_msec()
+		if progress.is_valid():
+			progress.call("reading the ground", 0, 0)
+		terrain_surface(surface_cache)
+		timings["terrain surface"] = Time.get_ticks_msec() - t
 	timings["_total"] = Time.get_ticks_msec() - t_all
 	timings["_cached"] = 1 if walk.stats.get("from_cache", false) else 0
 	_say("game source: %s — %d placements%s" % [map, walk.rows.size(),
@@ -427,6 +449,13 @@ func _build_map_data(cache_dir: String) -> Dictionary:
 			out["heightmap"] = hm
 		timings["terrain"] = Time.get_ticks_msec() - t
 		t = Time.get_ticks_msec()
+		# The ground's appearance — colour map, layer palette, splat. The
+		# expensive one, and skipped outright once the map's cache holds it.
+		var sf := terrain_surface(cache_dir)
+		if not sf.is_empty():
+			out["surface"] = sf
+		timings["terrain surface"] = Time.get_ticks_msec() - t
+		t = Time.get_ticks_msec()
 		# ORDER MATTERS: the roads are draped on the heightfield terrain() just
 		# composited, so they cannot be built before it.
 		var rd := roads()
@@ -519,6 +548,382 @@ func terrain(cache_dir: String) -> Dictionary:
 		"base": 0.0,
 		"scale": float(g["world_size_y"]),
 	}
+
+
+# ---------------------------------------------------------------------------
+# WHAT THE GROUND LOOKS LIKE — the colour map, the layer palette and the splat,
+# all out of terrain block 1 and the level's layer-graph chain.
+#
+# Until now the ground was four bundled PNGs blended by slope, and since the
+# maptile came out it had no large-scale colour at all. The game ships all three
+# missing pieces:
+#
+#   THE COLOUR MAP (§5.3). One BC7 tile per streaming-tree node, trailing the
+#   weight pages in the node's CAS chunk. It is the aerial photograph the engine
+#   modulates every terrain material by, it covers the whole ±4096 m footprint
+#   rather than the playable bowl, and 1,109 tiles assemble into a seamless
+#   image of Brooklyn with no visible seam and no shuffled quadrant.
+#
+#   THE PALETTE (§9). 47 layers on Dumbo, of which 16 bind textures — cobblestone,
+#   concrete tile, broken asphalt, fairway grass, sand, gravel, cracked concrete
+#   — with the layer's own UV tiling rate beside each. Every one resolves.
+#
+#   THE SPLAT (§5.2). Per-layer 66x66 coverage pages saying which layer covers
+#   which ground. 10,425 pages on Dumbo, and the street grid comes out of them
+#   as a picture.
+#
+# THE OTHER 31 LAYERS BIND NOTHING, and that is not a resolution failure. They
+# are shader-computed materials (see the research's
+# `material-with-no-albedo-is-shader-computed`): their surface exists only inside
+# the compiled shader program. On Dumbo those cover 88% of the map — the ground
+# outside the playable area, which in game is only ever seen at a distance and
+# whose appearance the engine takes from the colour map. Using the colour map
+# there is not a shortcut around a missing texture; it is the same data path the
+# engine uses.
+#
+# ALL OF IT IS CACHED. The composite is ~40 s of GDScript, once per map, into
+# the same per-map cache directory the heightfield goes to, in exactly the
+# layout the terrain shader's splat path already reads.
+const SURFACE_RES := 2048              # splat raster side
+const COLOR_RES := 4096                # colour map side (~2 m per texel on a 8 km map)
+const LAYER_TEX_DIM := 512             # per-slice detail textures; all slices must match
+
+
+func terrain_surface(cache_dir: String, force := false) -> Dictionary:
+	if src == null or cache_dir == "":
+		return {}
+	var dir_splat := "%s/splat" % cache_dir
+	var meta_path := "%s/layers.json" % dir_splat
+	if not force and FileAccess.file_exists(meta_path) \
+			and FileAccess.file_exists("%s/colormap.png" % cache_dir):
+		var got: Variant = JSON.parse_string(FileAccess.get_file_as_string(meta_path))
+		if got is Dictionary:
+			return got as Dictionary
+
+	var pick := ""
+	for rn in src.res.keys():
+		var n := str(rn)
+		if n.contains("streamingtree") and n.to_lower().contains(level):
+			pick = n
+			break
+	if pick == "":
+		return {}
+	var res := src.get_res(pick)
+	if res.is_empty():
+		return {}
+
+	var t := BF6Terrain.new()
+	var b1 := t.find_block(res, 1)
+	if b1.is_empty():
+		_say("game source: terrain surface — %s" % t.error)
+		return {}
+	var sp := BF6Splat.new()
+	if not sp.parse(b1):
+		_say("game source: terrain surface — %s" % sp.error)
+		return {}
+	var chunks := t.read_chunk_directory(res)
+	if chunks.is_empty() or not sp.detect_layout(chunks):
+		_say("game source: terrain surface — %s" % (sp.error if sp.error != "" else t.error))
+		return {}
+	var fetch := func(g): return src.get_chunk(str(g))
+
+	DirAccess.make_dir_recursive_absolute(dir_splat)
+	DirAccess.make_dir_recursive_absolute("%s/terrain_layers" % cache_dir)
+	# STALE SLICES GO FIRST. A rebuild that produces fewer layers than the last
+	# one leaves the old lNN_*.png behind, and those are the exact hazard the
+	# loader warns about — a leftover slice at a different resolution makes
+	# Texture2DArray refuse the whole set and hand back a zero-layer texture,
+	# which is not null, so nothing downstream notices. (mp_dumbo's cache still
+	# held a 256px l05 from the download pipeline.)
+	var old := DirAccess.get_files_at(dir_splat)
+	for f in old:
+		var fn := str(f)
+		if fn.begins_with("l") and fn.ends_with(".png"):
+			DirAccess.remove_absolute("%s/%s" % [dir_splat, fn])
+
+	# ---- the colour map ------------------------------------------------------
+	var t0 := Time.get_ticks_msec()
+	var tiles := sp.color_tiles(chunks, fetch)
+	var t_read := Time.get_ticks_msec() - t0
+	t0 = Time.get_ticks_msec()
+	var cmap := sp.assemble_colors(tiles, COLOR_RES)
+	var t_asm := Time.get_ticks_msec() - t0
+	t0 = Time.get_ticks_msec()
+	if cmap != null:
+		cmap.save_png("%s/colormap.png" % cache_dir)
+	_say("game source: terrain colour map — %d tiles, %dx%d (read %.1fs, assemble %.1fs, write %.1fs)"
+		% [tiles.size(), COLOR_RES, COLOR_RES, t_read / 1000.0, t_asm / 1000.0,
+		   (Time.get_ticks_msec() - t0) / 1000.0])
+
+	# ---- the palette ---------------------------------------------------------
+	var pidx: Dictionary = walk.gi if walk != null and walk.gi is Dictionary \
+		else src.partition_index()
+	var pal := BF6TerrainLayers.new()
+	if not pal.load(src, level, pidx):
+		_say("game source: terrain layers — %s" % pal.error)
+		return {}
+
+	# ---- the splat -----------------------------------------------------------
+	t0 = Time.get_ticks_msec()
+	var comp := sp.composite(chunks, fetch, SURFACE_RES)
+	_say("game source: terrain splat composite — %.1fs"
+		% ((Time.get_ticks_msec() - t0) / 1000.0))
+	if comp.is_empty():
+		_say("game source: terrain splat — %s" % sp.error)
+		return {}
+
+	# ---- the base field, which is where the materials actually are ----------
+	#
+	# The weight pages alone give a two-texture ground, and that is not a bug in
+	# them. On mp_dumbo 30 layers are PAINTED and 2 of those have a texture,
+	# while 16 layers are BASE (no page, full coverage) and 11 of those do. The
+	# palette's cobblestone, concrete tile, broken asphalt and gravel are all on
+	# the base side, and block 7 is what says which one covers which texel.
+	#
+	# Decoded, dumbo's base field is the Brooklyn block grid: 16% cobblestone
+	# pavement in exactly the shape of the city blocks, everything else on a
+	# shader-computed layer. Which matches §8's claim that the resolved base
+	# field reproduces the real street grids.
+	var base := PackedByteArray()
+	var b7 := t.find_block(res, 7)
+	if not b7.is_empty():
+		var mt := BF6MaterialTree.new()
+		t0 = Time.get_ticks_msec()
+		if mt.parse(b7):
+			var linked: Array = []
+			for l in pal.layers:
+				if int((l as Dictionary)["link"]) >= 0:
+					linked.append(int((l as Dictionary)["index"]))
+			linked.sort()
+			base = mt.rasterize(SURFACE_RES, func(k): return sp.base_list(k),
+				sp.full_list(), linked)
+			_say("game source: terrain base field — %d pairs, %d nodes, %.1fs"
+				% [mt.pairs.size(), mt.nodes.size(),
+				   (Time.get_ticks_msec() - t0) / 1000.0])
+		else:
+			_say("game source: terrain base field — %s" % mt.error)
+
+	# WHAT IS LEFT AFTER THE LAYERS WE CAN DRAW.
+	#
+	# A painted layer with no texture is shader-computed: its appearance lives
+	# inside a compiled shader program and there is nothing to sample. So the
+	# share of a texel those layers hold is not something we can paint, and
+	# handing it to the base material — the ground underneath, which usually DOES
+	# have a texture — is the closest honest approximation. Where the base has no
+	# texture either, the weight stays unclaimed and the shader's slope fallback
+	# takes it, modulated by the colour map.
+	var textured := {}
+	for l in pal.layers:
+		var li := int((l as Dictionary)["index"])
+		if pal.albedo_of(li) != "":
+			textured[li] = true
+	if base.size() == SURFACE_RES * SURFACE_RES:
+		var idx0: PackedByteArray = comp["idx"]
+		var wgt0: PackedByteArray = comp["w"]
+		var placed := 0
+		for i in range(base.size()):
+			var bl := int(base[i])
+			if bl == 255 or not textured.has(bl):
+				continue
+			var o := i * 4
+			var s_tex := 0
+			for k in range(4):
+				if wgt0[o + k] == 0:
+					break
+				if textured.has(int(idx0[o + k])):
+					s_tex += int(wgt0[o + k])
+			if s_tex >= 255:
+				continue
+			BF6Splat._insert(idx0, wgt0, o, bl, 255 - s_tex)
+			placed += 1
+		_say("game source: terrain base field placed on %.0f%% of texels"
+			% (100.0 * float(placed) / float(maxi(1, base.size()))))
+
+	var per_layer := {}
+	var idx_c: PackedByteArray = comp["idx"]
+	var wgt_c: PackedByteArray = comp["w"]
+	for i in range(SURFACE_RES * SURFACE_RES):
+		var o := i * 4
+		for s in range(4):
+			if wgt_c[o + s] == 0:
+				break
+			var l := int(idx_c[o + s])
+			per_layer[l] = int(per_layer.get(l, 0)) + 1
+
+	# SLICES ARE THE TEXTURED LAYERS THAT ACTUALLY APPEAR, ordered by how much
+	# ground they cover. The shader indexes a Texture2DArray, so the indices have
+	# to be compact 0..N-1 — the raw layer index is not, and 47 slices of which
+	# 31 would be blank is 31 textures uploaded to draw nothing.
+	var slice_of := {}
+	var picked: Array = []
+	var by_area: Array = per_layer.keys()
+	by_area.sort_custom(func(x, y): return int(per_layer[x]) > int(per_layer[y]))
+	for l in by_area:
+		var li := int(l)
+		if pal.albedo_of(li) == "":
+			continue
+		slice_of[li] = picked.size()
+		picked.append(li)
+		if picked.size() >= 32:
+			break
+
+	var slice_meta: Array = []
+	var written := 0
+	for s in range(picked.size()):
+		var li: int = picked[s]
+		var alb := _layer_image(pal.albedo_of(li), false)
+		var nrm := _layer_image(pal.normal_of(li), true)
+		if alb == null:
+			continue
+		if nrm == null:
+			# A flat normal rather than dropping the slice: the albedo is the
+			# part that carries the look, and Texture2DArray refuses a set with
+			# a hole in it.
+			nrm = Image.create_empty(LAYER_TEX_DIM, LAYER_TEX_DIM, false,
+				Image.FORMAT_RGB8)
+			nrm.fill(Color(0.5, 0.5, 1.0))
+		alb.save_png("%s/l%02d_alb.png" % [dir_splat, s])
+		nrm.save_png("%s/l%02d_nrm.png" % [dir_splat, s])
+		written += 1
+		slice_meta.append({
+			"layer": li,
+			"albedo": pal.albedo_of(li).get_file(),
+			"metres_per_repeat": pal.metres_per_repeat(li),
+			"texels": int(per_layer.get(li, 0)),
+		})
+
+	# Remap the composited layer indices to slice indices. A texel whose layer
+	# has no texture is left pointing past the end of the array on purpose: the
+	# shader's `id < splat_slices` test then falls back for it, which is the
+	# right answer for a shader-computed layer we cannot reproduce.
+	#
+	# Through a 256-entry lookup rather than a dictionary. This runs over 16.7
+	# million bytes; a Dictionary.get per byte is about a minute of GDScript, and
+	# a PackedByteArray index is the same answer for free.
+	var lut := PackedByteArray()
+	lut.resize(256)
+	lut.fill(255)
+	for l in slice_of.keys():
+		lut[int(l)] = int(slice_of[l])
+	var idx: PackedByteArray = comp["idx"]
+	var wgt: PackedByteArray = comp["w"]
+	var out_of_slice := 0
+	for i in range(idx.size()):
+		if wgt[i] == 0:
+			idx[i] = 255
+		else:
+			var s := int(lut[idx[i]])
+			idx[i] = s
+			if s == 255 and (i & 3) == 0:
+				out_of_slice += 1
+
+	var img_idx := Image.create_from_data(SURFACE_RES, SURFACE_RES, false,
+		Image.FORMAT_RGBA8, idx)
+	var img_w := Image.create_from_data(SURFACE_RES, SURFACE_RES, false,
+		Image.FORMAT_RGBA8, wgt)
+	img_idx.save_png("%s/idx.png" % dir_splat)
+	img_w.save_png("%s/w.png" % dir_splat)
+
+	# ---- the slope fallback, also from the game ------------------------------
+	_write_fallback_layers(pal, picked, "%s/terrain_layers" % cache_dir)
+
+	var meta := {
+		"slices": written,
+		"world": {"x0": sp.root_min.x, "z0": sp.root_min.y,
+			"size": sp.root_max.x - sp.root_min.x},
+		"colormap": {"file": "colormap.png", "res": COLOR_RES,
+			"x0": sp.root_min.x, "z0": sp.root_min.y,
+			"size": sp.root_max.x - sp.root_min.x},
+		"layers": slice_meta,
+	}
+	var f := FileAccess.open(meta_path, FileAccess.WRITE)
+	if f == null:
+		_say("game source: terrain surface — cannot write %s" % meta_path)
+		return {}
+	f.store_string(JSON.stringify(meta, "  "))
+	f.close()
+	_say(("game source: terrain splat — %d pages over %d layers, %d textured "
+		+ "slices, %.0f%% of ground on a shader-computed layer")
+		% [int(comp["pages"]), per_layer.size(), written,
+		   100.0 * float(out_of_slice) / float(maxi(1, SURFACE_RES * SURFACE_RES))])
+	return meta
+
+
+# One layer texture, decoded from the game and squared off to LAYER_TEX_DIM.
+#
+# Every slice has to be the same size or Texture2DArray rejects the whole set
+# and leaves a 0-layer texture behind, which is not null — so every check
+# downstream passes and the shader samples an empty array across the map. That
+# is the speckled-black ground the download path shipped once; sizing here
+# rather than at load is what stops it recurring.
+func _layer_image(res_name: String, _is_normal: bool) -> Image:
+	if res_name == "":
+		return null
+	var raw := src.get_res(res_name)
+	if raw.is_empty():
+		return null
+	var got := _tex.decode(raw, func(form): return src.get_chunk(str(form)),
+		LAYER_TEX_DIM)
+	if got.is_empty() or not (got.get("image") is Image):
+		return null
+	var img := got["image"] as Image
+	if img.is_compressed():
+		if img.decompress() != OK:
+			return null
+	img.convert(Image.FORMAT_RGB8)
+	if img.get_width() != LAYER_TEX_DIM or img.get_height() != LAYER_TEX_DIM:
+		img.resize(LAYER_TEX_DIM, LAYER_TEX_DIM, Image.INTERPOLATE_LANCZOS)
+	return img
+
+
+# The ground/cliff pair the shader falls back to, taken from the game's palette
+# instead of the four PNGs that used to ship beside this plugin.
+#
+# BOTH ARE HEURISTICS and are named as such, because nothing in the data says
+# which layer is the flat one and which is the steep one — that is a fact about
+# the slope blend, which is ours, not about the terrain.
+#
+# GROUND is the textured layer covering the most ground, which is the best
+# available answer to "what does this map's dirt look like". It deliberately
+# skips `t_ter_defaulttexture`: that is the engine's own default terrain
+# material and it is a FLAT NEUTRAL PLATE — using it because it sounds
+# authoritative gives a fallback with no detail in it at all, which is worse
+# than the bundled png it replaced. Checked by looking at the decoded image.
+#
+# CLIFF is the highest-covering rock/gravel/stone layer, or the second-placed
+# layer when the map has none.
+func _write_fallback_layers(pal, by_area: Array, out_dir: String) -> void:
+	var ground := -1
+	var cliff := -1
+	for l in by_area:
+		var i := int(l)
+		var nm: String = pal.albedo_of(i)
+		if nm == "" or nm.contains("defaulttexture") or nm.contains("debug"):
+			continue
+		if ground < 0:
+			ground = i
+			continue
+		if cliff < 0 and (nm.contains("rock") or nm.contains("gravel")
+				or nm.contains("stone") or nm.contains("cliff")):
+			cliff = i
+	if cliff < 0:
+		for l in by_area:
+			if int(l) != ground and pal.albedo_of(int(l)) != "":
+				cliff = int(l)
+				break
+	if ground < 0:
+		return
+	if cliff < 0:
+		cliff = ground
+	for pair in [[ground, "ground"], [cliff, "cliff"]]:
+		var li: int = pair[0]
+		var tag: String = pair[1]
+		var a := _layer_image(pal.albedo_of(li), false)
+		if a != null:
+			a.save_png("%s/%s_alb.png" % [out_dir, tag])
+		var n := _layer_image(pal.normal_of(li), true)
+		if n != null:
+			n.save_png("%s/%s_nrm.png" % [out_dir, tag])
 
 
 # ---------------------------------------------------------------------------

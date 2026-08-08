@@ -42,9 +42,27 @@ const HDR_MIN := 56
 
 # BF6 texture format -> DXGI. The reference implementation's table, not a second
 # opinion: a second opinion is how two decoders drift apart.
+#
+# ONE DEPARTURE, MEASURED. BC6H has two flavours — DXGI 95 BC6H_UF16 (unsigned)
+# and 96 BC6H_SF16 (signed) — and the reference maps BOTH BF6 codes 64 and 65 to
+# 96. Reading an unsigned BC6H as signed makes the leading magnitude bit a sign,
+# and the same block bytes of mp_dumbo's sky panorama (BF6 format 64) come out:
+#
+#   as signed     min -65379   mean 8328   max 64557   14.0% negative pixels
+#   as unsigned   min   0.129  mean  0.69  max 10.17    0.0% negative
+#
+# A sky panorama has no negative radiance, and 0.69 is exactly the "panoramas
+# ship normalised, mean 0.057-1.345" figure the lighting rig is calibrated
+# against — so 64 is UF16 and this table said otherwise. Left as it was, the
+# sky rendered at a mean of 12,000, ambient comes from the sky, and the whole
+# world went white.
+#
+# 65 stays on 96: nothing measured here uses it, and if a signed BC6H exists in
+# this game that is the code for it. Same shape as srgb-dds-decode-fix — two
+# DXGI codes differing only in interpretation, collapsed in a lookup, silent.
 const FMT := {
 	6: 61, 18: 28, 29: 28, 40: 10, 54: 71, 55: 72, 56: 74, 57: 75, 58: 75,
-	59: 77, 60: 78, 61: 78, 62: 80, 63: 83, 64: 96, 65: 96, 66: 98, 67: 99,
+	59: 77, 60: 78, 61: 78, 62: 80, 63: 83, 64: 95, 65: 96, 66: 98, 67: 99,
 }
 
 # DXGI -> Godot. The sRGB codes map to the same format as their UNORM twin
@@ -59,7 +77,8 @@ const DXGI_GODOT := {
 	77: Image.FORMAT_DXT5, 78: Image.FORMAT_DXT5,
 	80: Image.FORMAT_RGTC_R,
 	83: Image.FORMAT_RGTC_RG,
-	96: Image.FORMAT_BPTC_RGBF,
+	95: Image.FORMAT_BPTC_RGBFU,     # BC6H unsigned
+	96: Image.FORMAT_BPTC_RGBF,      # BC6H signed
 	98: Image.FORMAT_BPTC_RGBA, 99: Image.FORMAT_BPTC_RGBA,
 }
 

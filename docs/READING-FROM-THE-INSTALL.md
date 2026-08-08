@@ -116,7 +116,30 @@ godot --headless --path native/_testproj --script test_decals.gd    -- mp_dumbo 
 godot --headless --path native/_testproj --script test_scenery.gd   -- mp_dumbo
 godot --headless --path native/_testproj --script test_meshshare.gd -- mp_dumbo
 godot --headless --path native/_testproj --script test_geomcache.gd -- mp_dumbo 0
+godot --headless --path native/_testproj --script test_terrainsurface.gd -- mp_dumbo 2048
+godot --headless --path native/_testproj --script test_surfacecache.gd   -- mp_dumbo
 godot          --path native/_testproj --script vis_roads.gd      -- out.png mp_dumbo
+```
+
+The two terrain-surface harnesses check different things and both are worth
+running after touching block 1. `test_terrainsurface` decodes the colour map,
+the layer palette and the splat and then asks whether they AGREE: the splat's
+grass layer has to land on green pixels in the colour map, which is an
+independent raster of the same ground, and a shuffled control has to destroy
+the effect. Self-consistency alone proves nothing here — a splat read at the
+wrong offset is still self-consistent. `test_surfacecache` runs the path the
+plugin runs and checks what lands in the map cache, in particular that every
+slice image is the same size: `Texture2DArray.create_from_images` rejects a
+mismatched set and leaves a ZERO-layer texture behind, which is not null, so
+every check downstream passes and the shader samples an empty array across the
+whole map.
+
+The probes beside them answer questions rather than assert invariants:
+
+```
+godot --headless --path native/_testproj --script probe_terrain.gd    -- mp_dumbo
+godot --headless --path native/_testproj --script probe_layers.gd     -- mp_dumbo
+godot --headless --path native/_testproj --script probe_childorder.gd -- mp_dumbo
 ```
 
 and the end-to-end session, which boots the real editor, builds the map through
