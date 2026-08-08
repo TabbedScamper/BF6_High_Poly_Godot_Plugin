@@ -2261,6 +2261,7 @@ func mesh_for(group_key: String, lod := 0) -> Mesh:
 	# parked car carries its own wreck inside it, which is what the overlapping
 	# geometry was.
 	var hidden: Dictionary = _hidden_parts(res_name, info)
+	_dress_name = res_name
 
 	var by_mat := {}                # merge key -> [verts, normals, uvs, indices]
 	var order: Array = []           # insertion order, so the result is stable
@@ -2467,15 +2468,102 @@ func _keys_of(am: ArrayMesh) -> Array:
 
 
 # Put this scope's materials on a mesh whose surfaces are already built.
+# EVERY MESH THIS READER HAS DRESSED, so it can dress them again.
+#
+# The meshes are already in the scene, held by MultiMeshInstance3Ds. Changing a
+# material rule and re-running _dress over this list updates what is on screen
+# with no node touched, no geometry re-parsed and no rebuild - which is the
+# difference between a live iteration loop and restarting the editor.
+#
+# Weak by nature: entries whose ArrayMesh has been freed are skipped and dropped
+# on the next pass, so a scene change does not leak them.
+var _dressed: Array = []
+# The mesh currently being built, so _dress can record what it dressed without
+# every caller having to pass it.
+var _dress_name := ""
+
+
 func _dress(am: ArrayMesh, keys: Array, scope: String, var_hash := 0) -> void:
 	if not build_materials:
 		return
+	_dressed.append([am, keys, scope, var_hash, _dress_name])
 	var _t := Time.get_ticks_usec()
 	for i in range(mini(keys.size(), am.get_surface_count())):
 		var mat = material_for(int(keys[i]), scope, var_hash)
 		if mat != null:
 			am.surface_set_material(i, mat)
 	t_mat += Time.get_ticks_usec() - _t
+
+
+# ---------------------------------------------------------------------------
+# THROW AWAY EVERY DERIVED MATERIAL AND BUILD THEM AGAIN, in place.
+#
+# What gets dropped is only what OUR CODE decided: the material per state key,
+# the share-by-look table, the cutout verdicts, the decoded textures. What does
+# NOT get dropped is anything derived from the game - the placement walk, the
+# partition index, the parsed geometry - because that is unchanged by a code
+# edit and re-reading it costs 85 seconds to learn nothing.
+#
+# -> {"meshes": n, "surfaces": n, "gone": n, "ms": n}
+# ---------------------------------------------------------------------------
+# `only` restricts the pass to meshes whose RES name contains one of the given
+# strings - the marker loop's "I am pointing at this tree, fix that one". Empty
+# means everything, which is what an update the user did not author wants.
+func invalidate_materials(only: Array = []) -> Dictionary:
+	var t0 := Time.get_ticks_msec()
+	# A FILTERED pass still clears the shared caches, because the point is to
+	# recompute with new code and a cached answer is the old code's. It costs
+	# the unfiltered meshes a lazy re-resolve on their next dress, not a wrong
+	# material: nothing is written to them here.
+	_mat_cache.clear()
+	_mat_by_look.clear()
+	_mask_cache.clear()
+	_mask_cut.clear()
+	_tex_cache.clear()
+	_hidden_cache.clear()
+	_foliage_shader = null
+	_road_shader = null
+	_road_pal = null
+	_road_pal_tried = false
+	# Zeroed in place rather than replaced: `tex_stats` is an inferred typed
+	# Dictionary, and assigning an untyped literal to it is a runtime error the
+	# editor reports at load with no line of ours attached to it.
+	for k in tex_stats.keys():
+		tex_stats[k] = 0
+	var live: Array = []
+	var meshes := 0
+	var surfaces := 0
+	var gone := 0
+	for e in _dressed:
+		var row: Array = e
+		var am = row[0]
+		if not is_instance_valid(am):
+			gone += 1
+			continue
+		live.append(row)
+		if not only.is_empty():
+			var nm := str(row[4]) if row.size() > 4 else ""
+			var want := false
+			for pat in only:
+				if nm.contains(str(pat).to_lower()):
+					want = true
+					break
+			if not want:
+				continue
+		meshes += 1
+		surfaces += (am as ArrayMesh).get_surface_count()
+		_dress_only(am as ArrayMesh, row[1] as Array, str(row[2]), int(row[3]))
+	_dressed = live
+	return {"meshes": meshes, "surfaces": surfaces, "gone": gone,
+		"ms": Time.get_ticks_msec() - t0}
+
+
+# _dress without the bookkeeping, so re-dressing does not grow the list it is
+# iterating.
+func _dress_only(am: ArrayMesh, keys: Array, scope: String, var_hash: int) -> void:
+	for i in range(mini(keys.size(), am.get_surface_count())):
+		var mat = material_for(int(keys[i]), scope, var_hash)
+		am.surface_set_material(i, mat)
 
 
 # What this mesh WOULD look like under `scope`, as a string: the identity of the

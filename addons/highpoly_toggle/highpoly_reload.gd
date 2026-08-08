@@ -1,0 +1,213 @@
+@tool
+extends RefCounted
+class_name HighpolyReload
+
+# LIVE RELOAD: new plugin code over an already-built scene, no editor restart.
+#
+# The loop this exists for: point at a prop that looks wrong, change the code
+# that dresses it, press one button, look again. Closing and reopening the
+# editor between iterations costs a 20 s boot and a 28 s rebuild, which is the
+# difference between trying six things and trying one.
+#
+# It also has to work for someone ELSE running this plugin. "Check for updates"
+# already downloads a zip and extracts it over the install; what it then said
+# was "Restart the editor to finish". That restart is the part this removes, so
+# a fix to one prop's material reaches a user who has that prop on screen
+# without them rebuilding anything.
+#
+# WHY THIS IS POSSIBLE AT ALL, measured rather than hoped:
+#
+#   ResourceLoader.load(path, "", CACHE_MODE_REPLACE) updates the SAME Script
+#   object in place — the returned reference is identical to the one already
+#   held — and objects that were ALREADY INSTANCED from it start running the new
+#   code immediately. Verified in this engine version: an instance created
+#   before the file changed returned the new function's value after the replace.
+#
+# That last part is the whole trick. Without it, every long-lived object (the
+# game source, the map context, the dock) would keep the old code until it was
+# recreated, and recreating them is the restart we are trying to avoid.
+#
+# WHAT THIS CANNOT DO, said plainly rather than discovered later:
+#
+#   * GEOMETRY does not re-dress. A change to how a mesh is BUILT — the
+#     destruction cull, the section merge — needs the mesh parsed again, and the
+#     on-disk geometry cache will happily serve the old one. Those changes ship
+#     with a cache epoch (see `geom_epoch`) and cost a rebuild.
+#   * A change to a script's STATIC state or to a `const` that another script
+#     baked in at parse time may need that other script reloaded too, which is
+#     why this reloads all of them rather than the ones that look relevant.
+#   * If the editor ends up confused, the fallback is the thing that always
+#     worked: restart. The button says so when a reload reports errors.
+
+const SHADER_EXTS := ["gdshader"]
+
+# What the last reload saw, so the next one can tell what actually moved.
+#
+# CONTENT HASHES, not modification times. An update that rewrites every file in
+# the addon touches 40 mtimes and changes two files, and a zip extraction sets
+# them all to now; reloading on mtime would replay the whole addon every time
+# anyone pressed the button. A hash says what is genuinely different.
+const STATE := "user://highpoly_reload_state.json"
+
+
+static func plugin_dir() -> String:
+	return (HighpolyReload as Script).resource_path.get_base_dir()
+
+
+static func _hashes() -> Dictionary:
+	var dir := plugin_dir()
+	var out := {}
+	for f in DirAccess.get_files_at(dir):
+		var fn := str(f)
+		var ext := fn.get_extension().to_lower()
+		if ext != "gd" and not SHADER_EXTS.has(ext):
+			continue
+		var p := "%s/%s" % [dir, fn]
+		# FileAccess.get_md5 rather than hashing the bytes ourselves:
+		# PackedByteArray has no md5_text, and reading the file twice to get one
+		# would be the slower way to the same answer.
+		var h := FileAccess.get_md5(p)
+		if h != "":
+			out[fn] = h
+	return out
+
+
+static func _load_state() -> Dictionary:
+	if not FileAccess.file_exists(STATE):
+		return {}
+	var d = JSON.parse_string(FileAccess.get_file_as_string(STATE))
+	return d if d is Dictionary else {}
+
+
+static func _save_state(h: Dictionary) -> void:
+	var f := FileAccess.open(STATE, FileAccess.WRITE)
+	if f != null:
+		f.store_string(JSON.stringify(h))
+		f.close()
+
+
+# What has changed since the last reload, without touching anything.
+#
+# -> {"changed": [names], "added": [names], "removed": [names], "first": bool}
+static func pending() -> Dictionary:
+	var now := _hashes()
+	var was := _load_state()
+	var changed: Array = []
+	var added: Array = []
+	var removed: Array = []
+	for k in now.keys():
+		if not was.has(k):
+			added.append(str(k))
+		elif str(was[k]) != str(now[k]):
+			changed.append(str(k))
+	for k in was.keys():
+		if not now.has(k):
+			removed.append(str(k))
+	changed.sort(); added.sort(); removed.sort()
+	return {"changed": changed, "added": added, "removed": removed,
+		"first": was.is_empty()}
+
+
+# Replace ONLY the scripts and shaders whose contents differ, in place.
+#
+# The first ever call records the baseline and reloads nothing: there is no
+# "before" to compare against, and replaying the whole addon on first press
+# would be the one case guaranteed to have changed nothing.
+#
+# Order: shaders first, because a ShaderMaterial holding a Shader object picks
+# up new code the moment that object is replaced, so a script that rebuilds
+# materials afterwards sees the new one.
+#
+# -> {"scripts": n, "shaders": n, "failed": [paths], "names": [names],
+#     "first": bool}
+static func reload_code(force := false) -> Dictionary:
+	var now := _hashes()
+	var p := pending()
+	var out := {"scripts": 0, "shaders": 0, "failed": [], "names": [],
+		"first": bool(p["first"])}
+	if bool(p["first"]) and not force:
+		_save_state(now)
+		return out
+
+	var todo: Array = []
+	if force:
+		todo = now.keys()
+	else:
+		todo = (p["changed"] as Array) + (p["added"] as Array)
+	var dir := plugin_dir()
+	for pass_ext in [true, false]:              # shaders, then scripts
+		for f in todo:
+			var fn := str(f)
+			var is_shader: bool = SHADER_EXTS.has(fn.get_extension().to_lower())
+			if is_shader != pass_ext:
+				continue
+			var path := "%s/%s" % [dir, fn]
+			var r := ResourceLoader.load(path, "", ResourceLoader.CACHE_MODE_REPLACE)
+			if r == null:
+				(out["failed"] as Array).append(path)
+				continue
+			(out["names"] as Array).append(fn)
+			if is_shader:
+				out["shaders"] = int(out["shaders"]) + 1
+			else:
+				out["scripts"] = int(out["scripts"]) + 1
+	# Only files that actually took are recorded as current, so a file that
+	# failed to parse is retried on the next press rather than being marked done.
+	if not (out["failed"] as Array).is_empty():
+		var partial := _load_state()
+		for fn in out["names"]:
+			partial[str(fn)] = str(now[str(fn)])
+		_save_state(partial)
+	else:
+		_save_state(now)
+	return out
+
+
+# WHICH FILES CAN CHANGE WHAT IS ALREADY ON SCREEN.
+#
+# A reload should do the cheapest thing that is still correct, and the cheapest
+# correct thing depends on what moved:
+#
+#   nothing            -> say so and stop
+#   dock / UI / log    -> the code is live, nothing built needs touching
+#   anything else      -> re-dress the materials, which is seconds
+#   geometry readers   -> the built meshes are stale and only a rebuild fixes
+#                         them, so say that rather than pretending
+#
+# The geometry list is deliberately short and explicit. It is the modules that
+# decide what VERTICES exist; everything else can only change how they look.
+const GEOMETRY_FILES := ["bf6_meshset.gd", "bf6_walk.gd", "bf6_terrain.gd",
+	"bf6_splat.gd", "bf6_materialtree.gd", "bf6_decals.gd", "bf6_ebx.gd",
+	"bf6_types.gd", "bf6_source.gd", "bf6_toc.gd", "bf6_cas.gd",
+	"bf6_bundle.gd", "bf6_container.gd"]
+# Files that cannot reach anything already built.
+const COSMETIC_FILES := ["highpoly_toggle.gd", "highpoly_log.gd",
+	"highpoly_theme.gd", "highpoly_tips.gd", "highpoly_splash.gd",
+	"highpoly_updater.gd", "highpoly_reload.gd", "highpoly_jobs.gd"]
+
+
+static func impact(names: Array) -> String:
+	if names.is_empty():
+		return "none"
+	for n in names:
+		if GEOMETRY_FILES.has(str(n)):
+			return "geometry"
+	for n in names:
+		if not COSMETIC_FILES.has(str(n)):
+			return "materials"
+	return "code"
+
+
+# Everything the plugin holds that was DERIVED from the code, dropped so the
+# next look at it is computed by the new code.
+#
+# Deliberately not a blanket "clear all caches": the walk cache, the partition
+# index and the parsed geometry are derived from the GAME, not from us, and
+# throwing them away turns a 2-second reload into an 85-second one for nothing.
+static func drop_derived(game_source, mapctx) -> Dictionary:
+	var out := {}
+	if game_source != null:
+		out = game_source.invalidate_materials()
+	if mapctx != null and mapctx.has_method("drop_material_caches"):
+		mapctx.drop_material_caches()
+	return out

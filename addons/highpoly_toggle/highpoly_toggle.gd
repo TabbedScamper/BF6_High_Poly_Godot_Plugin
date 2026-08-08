@@ -1783,11 +1783,69 @@ func _on_manifest_refreshed() -> void:
 	if mapctx.last_verify_updates > 0 and mapctx_objects.button_pressed:
 		lbl.text = mapctx.apply(r, mapctx_on.button_pressed, true, _mapctx_tex_mode(), mapctx_backdrop != null and mapctx_backdrop.button_pressed, mapctx_water != null and mapctx_water.button_pressed)
 
+# Reload changed plugin code and do the cheapest thing that makes it visible.
+#
+# -> false when the reload failed in a way the user must act on.
+func _hot_reload() -> bool:
+	var r: Dictionary = HighpolyReload.reload_code()
+	var names: Array = r["names"]
+	if bool(r["first"]):
+		Log.info("Live reload armed: this install is now the baseline, so the "
+			+ "next press picks up whatever has changed since.")
+		return true
+	if not (r["failed"] as Array).is_empty():
+		lbl.text = "Some plugin files would not reload — restart the editor"
+		Log.error("Live reload could not replace: %s" % str(r["failed"]))
+		return false
+	if names.is_empty():
+		Log.info("Plugin code unchanged — nothing to reload.")
+		return true
+
+	var what := HighpolyReload.impact(names)
+	Log.info("Reloaded %d file(s) in place: %s" % [names.size(), ", ".join(names)])
+	match what:
+		"code":
+			# Dock and logging only. Nothing already built can look different,
+			# so re-dressing thousands of surfaces would be pure cost.
+			lbl.text = "Reloaded %d file(s)" % names.size()
+		"materials":
+			var gs = mapctx.game_source if mapctx != null else null
+			if gs != null and gs.has_method("invalidate_materials"):
+				var st: Dictionary = gs.invalidate_materials()
+				Log.info("Re-dressed %d mesh(es), %d surface(s) in %d ms"
+					% [st["meshes"], st["surfaces"], st["ms"]])
+				lbl.text = "Reloaded %d file(s), re-dressed %d mesh(es)" 					% [names.size(), st["meshes"]]
+			else:
+				lbl.text = "Reloaded %d file(s)" % names.size()
+		"geometry":
+			# Honest rather than convenient: the built meshes came out of the
+			# code that just changed, and no amount of re-dressing fixes a
+			# vertex. Say what it needs instead of half-doing it.
+			lbl.text = "Reloaded %d file(s) — rebuild the map to apply" 				% names.size()
+			Log.warn("Those files decide what geometry is BUILT, so the meshes "
+				+ "already in the scene are stale. Toggle Map Context off and "
+				+ "on to rebuild.")
+	return true
+
+
 func _check_updates_now() -> void:
 	if HighpolyLib.use_legacy:
 		lbl.text = "Run the storage reorganization first (restart the editor)"
 		return
 	check_btn.disabled = true
+	# CODE FIRST, and only what actually moved.
+	#
+	# This button used to be about models. It now also picks up plugin code
+	# without an editor restart, which is the whole point of pressing it after a
+	# fix: the scripts and shaders whose CONTENT differs are replaced in place,
+	# and objects already holding them run the new code immediately.
+	#
+	# Hash-compared rather than mtime-compared on purpose. A zip extraction
+	# stamps every file with the same "now", so an mtime test would replay the
+	# entire addon on every press and re-dress a map for nothing.
+	if not _hot_reload():
+		check_btn.disabled = false
+		return
 	lbl.text = "Checking for updated models…"
 	await sync.check_now()
 	# whatever the open scene needs jumps the queue, same as startup — and
