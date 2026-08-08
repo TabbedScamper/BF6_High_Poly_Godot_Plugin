@@ -4679,8 +4679,16 @@ var _decal_shader = null
 func _decal_of(slots: Dictionary):
 	if not (slots.has("decal_ca") or slots.has("decal_nrm")):
 		return null
+	# THE NORMAL SHEET IS LOADED AS A COLOUR TEXTURE, DELIBERATELY.
+	#
+	# is_normal makes _texture_for compress with COMPRESS_SOURCE_NORMAL, which
+	# keeps two channels and throws B and A away - and on this family B and A are
+	# the smoothness and the COVERAGE. Asking for the normal-map format therefore
+	# deleted the puddle's transparency and its shine in one go, and it drew as
+	# flat opaque grey. The shader reconstructs Z from RG anyway, so the
+	# normal-map format buys nothing here and costs the two channels that matter.
 	var ca = _decal_sheet(slots.get("decal_ca"), false)
-	var nrm = _decal_sheet(slots.get("decal_nrm"), true)
+	var nrm = _decal_sheet(slots.get("decal_nrm"), false)
 	if ca == null and nrm == null:
 		# Every sheet defaulted. Nothing to draw, and drawing the placeholders
 		# would put a debug grid or a red field on the map.

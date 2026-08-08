@@ -33,9 +33,36 @@ uniform sampler2D col_tex : source_color, hint_default_white, filter_linear_mipm
 uniform bool has_col = false;
 uniform sampler2D nrm_tex : hint_default_transparent, filter_linear_mipmap;
 uniform bool has_nrm = false;
-// What a colourless decal tints the ground by. Wet ground is darker and shinier
-// than dry, and this is the darkening; the shine comes from the sheet.
-uniform vec3 wet_col = vec3(0.30, 0.30, 0.31);
+// WHAT A COLOURLESS DECAL DOES TO THE GROUND. Ours, and it is the difference
+// between a puddle and a grey patch.
+//
+// Water is not grey paint. It is nearly black in its own right, it lets what is
+// underneath show through, and everything it reads as comes from the SHINE. So
+// the albedo is dark rather than mid-grey, and the coverage is scaled down so
+// the ground stays visible through it: at full coverage a mid-grey at alpha 1
+// simply paints over the surface, which is what it was doing.
+uniform vec3 wet_col : source_color = vec3(0.045, 0.050, 0.055);
+// How much of the ground a fully-covered puddle hides. Not from the game.
+uniform float wet_opacity : hint_range(0.0, 1.0) = 0.62;
+// Water is smoother than any authored sheet says, because the sheet describes
+// the WETNESS pattern and not a water surface. Floors it so a puddle always
+// reflects, without flattening the variation the sheet does carry.
+uniform float wet_min_smooth : hint_range(0.0, 1.0) = 0.82;
+// WATER IS ITS REFLECTION, AND THE REFLECTION HAS TO BE DRAWN RATHER THAN
+// HOPED FOR.
+//
+// A dark albedo at low roughness is physically a puddle and rendered as one it
+// is a dark hole: non-metal F0 is about 0.05, so the sky contributes almost
+// nothing, and at roughness 0.12 the sun's highlight collapses to a point too
+// small to see. Both renders showed exactly that - the first a single hotspot,
+// the second nothing at all.
+//
+// Godot gives a spatial shader no way to sample the sky, and this plugin cannot
+// assume a scene has reflection probes, so the grazing-angle sheen is mixed in
+// directly from a colour. It is a cheat, it is ours, and it is the difference
+// between water and a stain. Face-on stays dark and see-through.
+uniform float wet_fresnel : hint_range(0.0, 1.0) = 0.85;
+uniform vec3 wet_sheen : source_color = vec3(0.52, 0.62, 0.78);
 uniform float normal_scale : hint_range(-4.0, 4.0) = 1.0;
 // OURS. The mesh is 0.00001 m thick and sits ON the surface it marks, so it
 // z-fights it. The engine draws decals with a depth bias; Godot has none to set
@@ -53,14 +80,31 @@ void fragment() {
 	vec4 n = texture(nrm_tex, UV);
 	float cover;
 	float smooth_v;
+	float spec = 0.5;
 	if (has_col) {
 		ALBEDO = c.rgb;
 		cover = c.a;
 		smooth_v = has_nrm ? n.a : 0.5;
 	} else {
 		ALBEDO = wet_col;
-		cover = has_nrm ? n.a : 1.0;
-		smooth_v = has_nrm ? n.b : 0.9;
+		float wet_mask = has_nrm ? n.a : 1.0;
+		cover = wet_mask * wet_opacity;
+		smooth_v = max(has_nrm ? n.b : 0.9, wet_min_smooth);
+		// Water's reflectance is the whole look of it. Left at the default a
+		// dark albedo just reads as a dark hole in the ground.
+		spec = 0.85;
+		// Grazing angles go bright and opaque, face-on stays dark and
+		// see-through. Applied to the COVERAGE as well as the colour, because a
+		// puddle seen edge-on hides the ground under it: it is mirroring the sky
+		// instead of showing what it sits on.
+		//
+		// THE SHEEN IS MULTIPLIED BY THE MASK, NOT ADDED TO IT. Added, it
+		// brightened the whole quad including the texels where the puddle is not
+		// - and since the mesh is a rectangle, that drew a faint rectangle
+		// around every puddle. Visible in the render before this line changed.
+		float f = pow(1.0 - clamp(dot(NORMAL, VIEW), 0.0, 1.0), 4.0) * wet_fresnel;
+		ALBEDO = mix(wet_col, wet_sheen, f);
+		cover = clamp(wet_mask * (wet_opacity + f), 0.0, 1.0);
 	}
 	if (has_nrm) {
 		// Z IS RECONSTRUCTED, NOT READ. B is smoothness or metallic on this
@@ -73,4 +117,5 @@ void fragment() {
 	ALPHA = cover;
 	ROUGHNESS = clamp(1.0 - smooth_v, 0.02, 1.0);
 	METALLIC = 0.0;
+	SPECULAR = spec;
 }
