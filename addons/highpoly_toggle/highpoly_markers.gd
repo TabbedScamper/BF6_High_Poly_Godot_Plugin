@@ -137,6 +137,10 @@ static func list(root: Node) -> Array:
 				"pos": _world_of(c as Node3D),
 				"note": str(c.get_meta(META, String(c.name).replace("MARK_", "")
 					.replace("_", " "))),
+				# WHICH OBJECT the note was pinned to, when it was pinned to one.
+				# Enter in the note box records this; Drop marker leaves it empty
+				# because that note is about a PLACE.
+				"target": str(c.get_meta("hp_note_target", "")),
 			})
 	return out
 
@@ -276,6 +280,10 @@ static func report(root: Node, map: String) -> String:
 		var missing: Array = ex["missing"]
 		out.append("")
 		out.append("· %s" % m["note"])
+		# The object the note is ABOUT, which is the first thing anyone reading
+		# this wants and was being collected and then thrown away.
+		if str(m.get("target", "")) != "":
+			out.append("    on        %s" % str(m["target"]))
 		out.append("    at        (%.2f, %.2f, %.2f)" % [pt.x, pt.y, pt.z])
 		out.append("    expected  %d mesh(es), %d instance(s) within %.0f m"
 			% [meshes.size(), int(ex["instances"]), RADIUS])
