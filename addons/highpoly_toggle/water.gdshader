@@ -76,7 +76,7 @@ uniform float foam_strength = 0.30;   // shoreline brightening (0 = off)
 // ratio is ours. All four slots are always filled: when a level declares no
 // simulation, HighpolyWater fills them with a neutral spread so there is one
 // code path here and not two.
-uniform vec4 waves[4];
+uniform vec4 waves[8];
 uniform float wave_gain = 0.55;       // from WindSpeed, normalised (0.07 = 1.0)
 uniform float wave_chop = 0.05;       // from Choppiness, clamped for stability
 uniform float foam_cut = 0.62;        // from FoamThreshold, normalised
@@ -119,23 +119,73 @@ const float W_G = 9.81;               // gravity, for the deep-water dispersion
 //
 // Amplitude is carried as STEEPNESS (a * k) rather than metres, so a component's
 // contribution to the normal does not change when `ripple_scale` does.
+// WHY EIGHT AND NOT FOUR, AND WHY THE LENGTHS ARE NOT ROUND NUMBERS.
+//
+// Four components at ratios 1 / 0.63 / 0.41 / 0.27 read as corduroy, and where
+// the map's own curve put two lobes half a turn apart (mp_dumbo does) the two
+// opposed trains stood still against each other and produced a regular
+// egg-crate lattice. Both are artefacts of OUR reconstruction, not of the
+// game's data: the component count and the length ladder were always ours.
+//
+// A sum of sines repeats on the least common multiple of its wavelengths, so
+// near-rational ratios repeat SOON and visibly. The ladder is now powers of
+// 1/phi (0.618...), whose continued fraction is all ones - the hardest number
+// to approximate with a rational, which is exactly the property wanted here.
+// The pattern still repeats, but not inside any water a level contains.
+const int WAVE_N = 8;
+
+// THE FOAM SHEET, TWICE, THE SECOND COPY TURNED.
+//
+// One tap at one scale repeats every foam_tiling metres, and because the crest
+// term is non-zero nearly everywhere that repeat is drawn over the WHOLE
+// surface: it reads as a regular grid of identical flecks, which is exactly
+// what it was doing at 26 m. Two taps at different scales and orientations
+// break it for one extra fetch. The scales are deliberately not a ratio of
+// small integers, or the two grids would come back into step periodically.
+//
+// Combined by max rather than by average: foam is a coverage, and averaging two
+// coverages halves the contrast and turns crisp streaks into grey haze.
+vec4 foam_sample(vec2 p) {
+	vec2 uv = p / max(foam_tiling, 0.01);
+	const float FCA = 0.7986;   // cos 37
+	const float FSA = 0.6018;   // sin 37
+	vec2 rot = vec2(uv.x * FCA - uv.y * FSA, uv.x * FSA + uv.y * FCA);
+	vec4 a = texture(foam_tex, uv + vec2(0.006, 0.004) * TIME);
+	vec4 b = texture(foam_tex, rot * 0.63 + vec2(-0.005, 0.007) * TIME);
+	return max(a, b);
+}
+
 vec4 wave_field(vec2 p, float t) {
 	float h = 0.0;
 	float amp = 0.0;
 	vec2 g = vec2(0.0);
-	for (int i = 0; i < 4; i++) {
+	for (int i = 0; i < WAVE_N; i++) {
 		vec4 w = waves[i];
 		if (w.z <= 0.0001) { continue; }
 		float len = max(ripple_scale * w.w, 0.05);
 		float k = W_TAU / len;
+		// EVERY COMPONENT USED TO START IN PHASE AT THE WORLD ORIGIN, and that
+		// is most of why this read as a repeating lattice rather than as water.
+		// With no offset all eight sines cross zero together on the line through
+		// p = 0, so their crests keep re-aligning on a regular grid and the eye
+		// locks onto it immediately. A real spectrum's components have unrelated
+		// phases. Offsetting by the golden angle per component decorrelates them
+		// for the cost of one add, and being deterministic it stays identical
+		// between sessions and between machines.
+		float ph0 = float(i) * 2.39996323;
 		// deep-water dispersion: long waves outrun short ones, as they do at sea
-		float ph = dot(w.xy * k, p) + t * sqrt(W_G * k) * ripple_speed;
+		float ph = ph0 + dot(w.xy * k, p) + t * sqrt(W_G * k) * ripple_speed;
 		float s = sin(ph);
 		float warped = ph + wave_chop * s;
 		float slope = ripple_strength * w.z * wave_gain;
 		float a = slope / k;
 		h += a * sin(warped);
-		amp += a;
+		// TOTAL SLOPE, not total amplitude. The only consumer is the foam test,
+		// which is now a steepness test, and steepness has to be normalised
+		// against a steepness: `a` is in metres and grows with ripple_scale, so
+		// dividing a slope by it would have made foam coverage depend on how
+		// long the swell was set to be.
+		amp += slope;
 		g += slope * cos(warped) * (1.0 + wave_chop * cos(ph)) * w.xy;
 	}
 	return vec4(h, g.x, g.y, amp);
@@ -152,25 +202,56 @@ void fragment() {
 	water_depth = (d <= 0.00001) ? depth_fade : max(water_depth, 0.0);
 	float df = clamp(water_depth / max(depth_fade, 0.01), 0.0, 1.0);
 
-	// --- swell: the map's own wind, four components, analytic normal ---
+	// --- swell: the map's own wind, eight components, analytic normal ---
 	float t = TIME;
 	vec4 wf = wave_field(wpos.xz, t);
-	float h0 = wf.x;
 	vec3 wn = normalize(vec3(-wf.y, 1.0, -wf.z));
-	// crest height normalised over this map's own wave amplitude, so the foam
-	// cutoff below means the same thing on a glassy river and on an open sea
-	float crest_h = clamp(h0 / max(wf.w, 0.001) * 0.5 + 0.5, 0.0, 1.0);
+	// WHITECAPS BREAK ON STEEP WATER, NOT ON TALL WATER, and using height was
+	// the last thing keeping this looking manufactured.
+	//
+	// The height of a sum of sines is dominated by its LONGEST component - that
+	// is what "longest" means - so a foam cutoff on normalised height fired in
+	// clean regular bands wherever that one component crested, and the eight
+	// components underneath it made no difference to where the foam went. Rows
+	// of identical flecks, on a map whose waves are otherwise gentle.
+	//
+	// Slope is the opposite: each component contributes a*k, so the SHORT ones
+	// dominate it, and the sum is broadband and irregular. It is also the
+	// physical criterion - a crest whitecaps when it gets too steep to hold, not
+	// when it gets too high - so this is closer to the game as well as calmer to
+	// look at. Height is still what the surface normal comes from; only the foam
+	// test changes.
+	float steep = length(vec2(wf.y, wf.z));
+	// normalised over this field's own mean steepness, so the cutoff means the
+	// same thing on a glassy river and on an open sea
+	float crest_h = clamp(steep / max(wf.w * 0.55, 0.001), 0.0, 1.0);
 
 	// --- the game's ripple normal on top of the swell ---
 	// Two samples at different scales scrolling in different directions, which
 	// is how a single tiling normal is made to read as moving water. RG is the
 	// normal, B the smoothness, A the height (per the _nsh channel packing).
+	//
+	// THE SECOND SAMPLE IS ROTATED, and that is the whole point of it. Scaling a
+	// tile by 0.47 and leaving it axis-aligned does not hide the tile: both
+	// copies keep the same grid orientation, so their seams stay parallel and
+	// REINFORCE instead of cancelling. At 5.5 m per tile that reads as a regular
+	// speckle grid over the whole surface, which is what it was doing. A
+	// rotation by an angle that is not a multiple of 90 degrees breaks the
+	// alignment, and 37 degrees is far from every one of them. Same two fetches.
 	float detail_smooth = 0.0;
 	if (has_detail) {
 		vec2 duv = wpos.xz / max(detail_tiling, 0.01);
+		const float CA = 0.7986;   // cos 37
+		const float SA = 0.6018;   // sin 37
+		vec2 rot = vec2(duv.x * CA - duv.y * SA, duv.x * SA + duv.y * CA);
 		vec4 n1 = texture(detail_tex, duv + vec2(0.021, 0.013) * TIME);
-		vec4 n2 = texture(detail_tex, duv * 0.47 + vec2(-0.009, 0.017) * TIME);
-		vec2 dxz = ((n1.rg - 0.5) + (n2.rg - 0.5)) * 2.0 * detail_strength;
+		vec4 n2 = texture(detail_tex, rot * 0.47 + vec2(-0.009, 0.017) * TIME);
+		// The rotated sample's normal has to be rotated BACK, or its ripples run
+		// 37 degrees off the ones they are being added to and the surface picks
+		// up a permanent diagonal bias.
+		vec2 r2 = (n2.rg - 0.5) * 2.0;
+		r2 = vec2(r2.x * CA + r2.y * SA, -r2.x * SA + r2.y * CA);
+		vec2 dxz = ((n1.rg - 0.5) * 2.0 + r2) * detail_strength;
 		wn = normalize(wn + vec3(dxz.x, 0.0, dxz.y));
 		detail_smooth = 0.5 * (n1.b + n2.b);
 	}
@@ -199,13 +280,11 @@ void fragment() {
 	float foam = 0.0;
 	vec3 foam_col = vec3(1.0);
 	if (foam_mode == 1) {
-		vec2 fuv = wpos.xz / max(foam_tiling, 0.01) + vec2(0.006, 0.004) * TIME;
-		vec3 f = texture(foam_tex, fuv).rgb;
+		vec4 f = foam_sample(wpos.xz);
 		foam = f.r * shore + f.b * crest;      // R patches at the shore, B streaks on crests
 		foam_col = vec3(clamp(f.g * 1.6, 0.0, 1.0));
 	} else if (foam_mode == 2) {
-		vec2 fuv = wpos.xz / max(foam_tiling, 0.01) + vec2(0.006, 0.004) * TIME;
-		vec4 f = texture(foam_tex, fuv);
+		vec4 f = foam_sample(wpos.xz);
 		foam = f.a * (shore + crest);          // A is the foam height on the _nsh packing
 		foam_col = vec3(clamp(0.6 + f.b * 0.6, 0.0, 1.0));
 	} else {

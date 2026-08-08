@@ -93,9 +93,21 @@ static func material(cfg: Dictionary, gs = null) -> ShaderMaterial:
 #              convention for WindAngle, and every normalisation constant below
 #              (the game's scalars are not in physical units).
 
-# Relative wavelengths, strongest lobe first. Not from the game: the FFT band
+# HOW MANY COMPONENTS, AND HOW LONG EACH ONE IS. Both ours; the FFT band
 # lengths are a property of a simulation that is not written down.
-const WAVE_LENGTH_RATIO := [1.0, 0.63, 0.41, 0.27]
+#
+# This was four components at 1 / 0.63 / 0.41 / 0.27 and it read as corduroy.
+# A sum of sines repeats on the least common multiple of its wavelengths, and
+# those ratios are close enough to 1 : 2/3 : 2/5 : 1/4 that the whole field
+# repeated within a few tens of metres.
+#
+# The ladder is now powers of 1/phi. phi's continued fraction is all ones, which
+# makes it the hardest number to approximate with a rational, so the sum's
+# repeat period is pushed far past anything a level holds. Eight components
+# rather than four because four is simply too few to read as a sea however they
+# are spaced - real water has a continuous spectrum and we are sampling it.
+const WAVE_COUNT := 8
+const WAVE_LENGTH_RATIO := [1.0, 0.618, 0.382, 0.236, 0.146, 0.090, 0.056, 0.034]
 # WindSpeed is 0.01 on every calm multiplayer water and 0.07 on the windy ones,
 # so 0.07 is taken as neutral and the D-Day sea (0.30-0.75) comes out rough.
 const WIND_SPEED_NEUTRAL := 0.07
@@ -106,6 +118,11 @@ const FOAM_THRESHOLD_SPAN := 80.0
 # did before any of this was mined.
 const DEFAULT_WAVE_DIR_DEG := [0.0, 40.0, -65.0, 110.0]
 const DEFAULT_WAVE_AMP := [1.0, 0.62, 0.42, 0.28]
+# How wide a lobe's fan opens, in degrees, total. Ours. Wide enough that the
+# components cannot beat against each other into a regular pattern, narrow
+# enough that a map which authored a tight directional sea still looks
+# directional rather than like chop from everywhere at once.
+const SPREAD_DEG := 46.0
 
 
 static func _apply_wave_sim(m: ShaderMaterial, sim_v: Variant) -> void:
@@ -165,34 +182,61 @@ static func _waves_from(sim: Dictionary) -> Array:
 			break
 	if picked.is_empty():
 		return _default_waves()
+
+	# A LOBE IS A SPREAD, NOT A RAY. This used to emit one component per lobe and
+	# then pad from the dominant one, and on any map whose curve is a mirrored
+	# pair that produced two trains half a turn apart at similar amplitude. Two
+	# opposed trains of the same wavelength are a STANDING wave: it does not
+	# travel, and it draws a regular egg-crate lattice. mp_dumbo is exactly that
+	# case (lobes at x = 0.25 and x = 0.75), and the lattice was plainly visible.
+	#
+	# Handing every lobe a fan of components fixes it without reinterpreting the
+	# curve, which matters because the direction reading is marked probable
+	# rather than verified. Opposed lobes stay opposed, they simply stop being
+	# single rays that can cancel into a grid. The spread and the count are ours
+	# and were always ours; the bearings and the relative amplitudes are still
+	# the map's.
 	var top := float(picked[0][1])
 	var out: Array = []
-	for i in range(picked.size()):
-		var a: float = angle + (float(picked[i][0]) - 0.5) * TAU
-		out.append(Vector4(cos(a), sin(a), float(picked[i][1]) / top,
-			float(WAVE_LENGTH_RATIO[i])))
-	# PADDING, ours. A curve with one narrow lobe (mp_granite is a single spike)
-	# would otherwise be one pure sine, which reads as corrugated iron rather
-	# than water. The extra components fan off the dominant bearing and fall
-	# away in amplitude - the sea's own small-scale spread, not the map's.
-	var n := out.size()
-	var tail: float = float((out[n - 1] as Vector4).z)
-	for i in range(n, 4):
-		var a: float = angle + (float(picked[0][0]) - 0.5) * TAU \
-			+ deg_to_rad(14.0 + 17.0 * float(i)) * (1.0 if i % 2 == 0 else -1.0)
-		# decays from the WEAKEST authored lobe, not from the strongest: padding
-		# that outweighs a real lobe would be our invention drowning the map's
-		out.append(Vector4(cos(a), sin(a), tail * pow(0.55, float(i - n + 1)),
-			float(WAVE_LENGTH_RATIO[i])))
+	var per := maxi(1, int(WAVE_COUNT / picked.size()))
+	for li in range(picked.size()):
+		var base: float = angle + (float(picked[li][0]) - 0.5) * TAU
+		var amp: float = float(picked[li][1]) / top
+		for j in range(per):
+			if out.size() >= WAVE_COUNT:
+				break
+			# Fanned by an irrational multiple of a turn so no two components of
+			# any lobe are parallel, and none of one lobe is exactly opposed to
+			# one of another. A round step (say 15 degrees) reintroduces the same
+			# coincidences one level down.
+			var k := float(out.size())
+			var off: float = SPREAD_DEG * (fmod(k * 0.61803399, 1.0) - 0.5)
+			out.append(Vector4(cos(base + deg_to_rad(off)),
+				sin(base + deg_to_rad(off)),
+				amp * pow(0.72, float(j)),
+				float(WAVE_LENGTH_RATIO[out.size()])))
+	# Any slots the division left over go to the dominant lobe, weakest first.
+	var tail: float = float((out[out.size() - 1] as Vector4).z)
+	while out.size() < WAVE_COUNT:
+		var k2 := float(out.size())
+		var off2: float = SPREAD_DEG * (fmod(k2 * 0.61803399, 1.0) - 0.5)
+		var a2: float = angle + (float(picked[0][0]) - 0.5) * TAU + deg_to_rad(off2)
+		tail *= 0.72
+		out.append(Vector4(cos(a2), sin(a2), tail,
+			float(WAVE_LENGTH_RATIO[out.size()])))
 	return out
 
 
 static func _default_waves() -> Array:
 	var out: Array = []
-	for i in range(4):
-		var a := deg_to_rad(float(DEFAULT_WAVE_DIR_DEG[i]))
-		out.append(Vector4(cos(a), sin(a), float(DEFAULT_WAVE_AMP[i]),
-			float(WAVE_LENGTH_RATIO[i])))
+	for i in range(WAVE_COUNT):
+		# The authored four, then a continuing fan for the rest.
+		var deg: float = float(DEFAULT_WAVE_DIR_DEG[i]) if i < DEFAULT_WAVE_DIR_DEG.size() \
+			else float(DEFAULT_WAVE_DIR_DEG[0]) + SPREAD_DEG * (fmod(float(i) * 0.61803399, 1.0) - 0.5)
+		var amp: float = float(DEFAULT_WAVE_AMP[i]) if i < DEFAULT_WAVE_AMP.size() \
+			else float(DEFAULT_WAVE_AMP[DEFAULT_WAVE_AMP.size() - 1]) * pow(0.72, float(i - DEFAULT_WAVE_AMP.size() + 1))
+		var a := deg_to_rad(deg)
+		out.append(Vector4(cos(a), sin(a), amp, float(WAVE_LENGTH_RATIO[i])))
 	return out
 
 
