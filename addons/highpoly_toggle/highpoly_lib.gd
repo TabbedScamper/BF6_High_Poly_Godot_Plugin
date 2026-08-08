@@ -644,17 +644,44 @@ static func proxy_under(camera: Camera3D, pos: Vector2, root: Node) -> Node3D:
 
 # ---------- conservative auto-fit (identity-first) ----------
 
+# AN OBJECT'S OWN GEOMETRY, NOT ITS GROUP'S.
+#
+# THE BUG THIS FIXES. Builders parent props under other props so they move
+# together - a lift platform with five floor pieces on it - and _push_user_children
+# has always known that. This did not: it merged EVERY descendant, so a node
+# used as a group measured as the whole group. The fitter then compared six
+# spread-out floor pieces against the one model this node actually is, decided
+# the identity fit was hopeless, and picked whichever axis permutation made the
+# numbers agree - standing the model on its edge and scaling it up 44% to fill
+# the group's bounds. Measured live on the user's Elevator2NotDamaged, whose
+# overlay carried basis X (-1.436, 0, 0), Y (0, 0, 1.436), Z (0, 1.436, 0):
+# a Y/Z swap with X negated, which is _perm_bases() entry 1 times 1.436.
+#
+# It looks correct in Low-Poly for the same reason it is hard to spot: nothing
+# touches the proxy, so only the overlay is wrong, and only on the minority of
+# props a builder happens to have parented things under.
+#
+# User content is identified exactly as _set_proxy_visible identifies it, by
+# being owned by the edited scene. Instance-internal geometry (the object's own
+# Mesh, owned by the instance) is kept, which is the whole point.
 static func _merged_aabb(root: Node, skip_name: String) -> AABB:
 	var out := AABB()
 	var first := true
 	var inv: Transform3D = (root as Node3D).global_transform.affine_inverse()
+	var scene_root: Node = EditorInterface.get_edited_scene_root()
 	var stack: Array = []
 	for c in root.get_children():
 		if c.name != skip_name and c.name != COL_NODE: stack.append(c)
 	while not stack.is_empty():
 		var n: Node = stack.pop_back()
-		if n.name == COL_NODE:
+		if n.name == COL_NODE or n.name == skip_name:
 			continue                       # collision overlay must not skew the fit
+		# A prop a builder parented under this one is a separate object that
+		# happens to ride along. It is not part of what this node IS, and
+		# measuring it is what stood the model on its edge. Its own subtree goes
+		# with it.
+		if scene_root != null and n.owner == scene_root:
+			continue
 		if n is GeometryInstance3D:
 			var g := n as GeometryInstance3D
 			var ab: AABB = (inv * g.global_transform) * g.get_aabb()
