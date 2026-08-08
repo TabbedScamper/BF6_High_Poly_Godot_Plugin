@@ -1985,16 +1985,24 @@ func _hot_reload() -> bool:
 		return true
 
 	var what := HighpolyReload.impact(names, geom_changed)
-	# DROP WHAT THE OLD CODE WORKED OUT, not just the materials it built.
+	# REFRESH WHAT IS CHEAP TO RE-ASK, and nothing else.
 	#
-	# map_data holds ANSWERS derived from the install: where the water is, where
-	# the roads are, which lights exist. Replacing the code that produces them
-	# does not replace answers already given, so a reader fix stays invisible
-	# until this is dropped. Anything past "code" can have changed one of them.
+	# map_data holds answers derived from the install, and a reader fix cannot
+	# reach an answer already given. The first version of this dropped the whole
+	# summary, which was far too blunt: apply() clears the scene BEFORE it reloads
+	# the data, so a rebuild that then failed on a missing key left the level torn
+	# down with every later toggle hitting the same error. It also put a minute of
+	# terrain work on the main thread inside a toggle handler.
+	#
+	# Water is re-asked instead, on its own, because it is one small partition
+	# parse and because its staleness is invisible by construction: map_data only
+	# writes a "water" key when water is FOUND, so a level read before the fix
+	# carries an ABSENT key, which every consumer reads as "this level has no
+	# water" rather than "not looked up yet".
 	if what != "code" and what != "none":
 		var _gs = mapctx.game_source if mapctx != null else null
-		if _gs != null and _gs.has_method("drop_map_data"):
-			_gs.drop_map_data()
+		if _gs != null and _gs.has_method("refresh_water"):
+			_gs.refresh_water()
 	Log.info("Reloaded %d file(s) in place: %s" % [names.size(), ", ".join(names)])
 	match what:
 		"code":

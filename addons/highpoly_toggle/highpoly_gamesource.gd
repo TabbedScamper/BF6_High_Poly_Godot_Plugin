@@ -435,6 +435,28 @@ func drop_map_data() -> void:
 	_water_part = "￿"
 
 
+# Re-ask ONE question and patch the answer in place, leaving the rest of the
+# summary alone.
+#
+# The whole-summary drop above is correct and unusable on a live map: apply()
+# clears the scene before it reloads the data, so anything that goes wrong in the
+# rebuild leaves the level torn down, and the rebuild itself is terrain work on
+# the main thread inside a toggle handler. This costs one partition parse.
+#
+# Erasing on empty matters as much as setting on found. map_data only writes the
+# key when there IS water, so leaving a stale entry behind would be a level
+# showing water it does not have.
+func refresh_water() -> void:
+	_water_part = "￿"
+	if _map_data.is_empty():
+		return
+	var w := water()
+	if w.is_empty():
+		_map_data.erase("water")
+	else:
+		_map_data["water"] = w
+
+
 func map_data(cache_dir := "") -> Dictionary:
 	if _map_data_key == cache_dir and not _map_data.is_empty():
 		return _map_data
@@ -2453,14 +2475,31 @@ func describe_state(state_key: int, scope: String, var_hash: int,
 		return d
 	d["record"] = true
 	var slots: Dictionary = dep.textures_for(used, pair[1])
+	var dconsts: Dictionary = slots.get("constants", {})
 	slots.erase("constants")
+	# WHY THIS PROP IS THE COLOUR IT IS. Most painted props ship a neutral grey
+	# texture and take their colour from a constant, so "which textures resolved"
+	# on its own answers half the question people actually ask here.
+	var dtint = _albedo_tint(dconsts)
+	d["tint"] = "identity (neutral, as authored)" if dtint == null \
+		else "linear (%.4f, %.4f, %.4f)" % [(dtint as Color).r,
+			(dtint as Color).g, (dtint as Color).b]
+	var dcp = _carpaint_of(slots, dconsts)
+	if dcp != null:
+		var bc: Color = (dcp as Array)[0]
+		d["carpaint"] = "body linear (%.4f, %.4f, %.4f), smoothness %.3f" \
+			% [bc.r, bc.g, bc.b, float((dcp as Array)[1])]
 	for k in slots.keys():
 		var guid := str(slots[k])
 		var nm = walk.gi.get(guid) if walk != null else null
 		d["slots"][str(k)] = str(nm).get_file() if nm != null else guid
 	if not (slots.has("basecolor") or slots.has("basecolor_veg")):
-		d["note"] = ("record resolves but binds NO albedo - shader-computed "
-			+ "material, nothing to sample (drawn white)")
+		if dcp != null:
+			d["note"] = ("carpaint: no albedo sheet by design, the shell's colour "
+				+ "is the body constant above")
+		else:
+			d["note"] = ("record resolves but binds NO albedo - shader-computed "
+				+ "material, nothing to sample (drawn white)")
 	# the cutout chain, which is what foliage questions are about
 	var alpha = slots.get("alpha")
 	if alpha != null:
@@ -3086,6 +3125,19 @@ func material_for(state_key: int, scope: String, var_hash := 0):
 		mat.emission_enabled = true
 		mat.emission_texture = emis
 		any = true
+	if tint is Color:
+		# Applied UNIFORMLY, which is the honest approximation and not the whole
+		# rule: DESTRUCTION.md §9.5 says the albedo tint is masked per texel by
+		# the _nmt normal map's alpha, so a part-painted prop gets its paint over
+		# its whole surface here. The alternative on the table was to skip the
+		# tint entirely, which draws every painted prop in primer grey.
+		#
+		# Deliberately NOT counted as "something resolved": a record that binds no
+		# texture at all is procedural (material-with-no-albedo-is-shader-computed)
+		# and a tint alone is not enough to draw it. Letting the tint stand in for
+		# an albedo would turn every procedural blockout into a flat coloured slab.
+		mat.albedo_color = _srgb_of(tint as Color)
+		tex_stats["tinted"] = int(tex_stats.get("tinted", 0)) + 1
 	if not any:
 		# A state with no albedo is NOT necessarily a failure: some materials are
 		# procedural and bind only noise and weathering sheets. Cached as null so
@@ -3541,7 +3593,7 @@ func _cut_for(file_guid) -> float:
 	return float(_mask_cut.get(an, 0.5))
 
 
-func _foliage_material(slots: Dictionary, mask, cut: float):
+func _foliage_material(slots: Dictionary, mask, cut: float, tint = null):
 	if _foliage_shader == null:
 		var dir := (get_script() as Script).resource_path.get_base_dir()
 		var s = load("%s/foliage_wind.gdshader" % dir)
@@ -3554,6 +3606,10 @@ func _foliage_material(slots: Dictionary, mask, cut: float):
 	var m := ShaderMaterial.new()
 	m.shader = _foliage_shader
 	m.set_shader_parameter("albedo_tex", albedo)
+	# `albedo_mul` is declared source_color, so it takes the sRGB encoding of the
+	# depot's linear tint exactly like a StandardMaterial3D albedo does.
+	if tint is Color:
+		m.set_shader_parameter("albedo_mul", Color(_srgb_of(tint as Color), 1.0))
 	m.set_shader_parameter("mask_tex", mask)
 	m.set_shader_parameter("use_mask", true)
 	m.set_shader_parameter("alpha_cut", cut)
