@@ -3721,6 +3721,12 @@ func _set_prop_lighting(on: bool) -> void:
 	# labelled Prop Lighting that leaves the bulbs on is just wrong.
 	var r := EditorInterface.get_edited_scene_root()
 	var n: int = LightingScript.set_prop_lights_shown(r, on)
+	# The cull pass early-outs while the camera is still, so without this a
+	# toggle made standing in one place would not be re-decided until the user
+	# moved. It is also what applies the RANGE to fixtures just switched on:
+	# set_prop_lights_shown shows all of them, and the next tick trims them back
+	# to the slider.
+	LightingScript.invalidate_light_cull()
 	# ONE NUMBER ON A FEW DOZEN MATERIALS, not a rebuild.
 	#
 	# This used to call invalidate_materials and then re-apply every placed

@@ -1302,7 +1302,8 @@ static func invalidate_light_cull() -> void:
 static func tick_lights(root: Node, cam_pos: Vector3) -> void:
 	if root == null: return
 	var holder := root.get_node_or_null(LIGHTS_NODE)
-	if holder == null: return
+	var props := root.get_node_or_null(PROP_LIGHT_HOLDER)
+	if holder == null and props == null: return
 	# 1 m of slack: below that, no light can cross the boundary in a way anyone
 	# could see, and the editor camera jitters slightly even when "still"
 	if not _cull_dirty and cam_pos.distance_squared_to(_last_cull_pos) < 1.0:
@@ -1310,7 +1311,27 @@ static func tick_lights(root: Node, cam_pos: Vector3) -> void:
 	_last_cull_pos = cam_pos
 	_cull_dirty = false
 	var r2 := lights_range * lights_range
-	for c in holder.get_children():
-		if c is Light3D:
-			var l := c as Light3D
-			l.visible = l.position.distance_squared_to(cam_pos) <= r2
+	if holder != null:
+		for c in holder.get_children():
+			if c is Light3D:
+				var l := c as Light3D
+				l.visible = l.position.distance_squared_to(cam_pos) <= r2
+	# THE FIXTURES THE BUILDER PLACED FOLLOW THE SAME SLIDER.
+	#
+	# They did not, and nothing was culling them at all: one scene carried 2,534
+	# prop fixtures lit at once, against a Forward+ budget that stops clustering
+	# at 512 in view. The level's own lights have been distance-culled since the
+	# range slider was unified; these were never added to it, because they used
+	# to hang inside each prop rather than in a holder a pass like this could
+	# walk.
+	#
+	# This is the ONE authority on their visibility now. set_prop_lights_shown
+	# still gives the instant answer when the switch is flipped, but the next
+	# tick decides again from the switch AND the distance, so the two cannot
+	# drift apart.
+	if props != null:
+		for c in props.get_children():
+			if c is Light3D:
+				var l2 := c as Light3D
+				l2.visible = prop_lighting \
+					and l2.global_position.distance_squared_to(cam_pos) <= r2
