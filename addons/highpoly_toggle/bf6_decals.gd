@@ -281,6 +281,25 @@ func vertices(rec: Dictionary) -> PackedFloat32Array:
 	return out
 
 
+# The record's 2D ribbon TANGENT — the direction the road runs.
+#
+# §10.4 puts it at +0x08 / +0x0C of the vertex as a pair of halves and calls it
+# a per-record constant, so the first vertex is the whole answer. It is what the
+# engine reconstructs the along-ribbon u from, and without it a tiled fill can
+# only be tiled along world X and Z — which is right for a road that happens to
+# run along an axis and wrong for every other one.
+#
+# -> a normalised Vector2, or (1, 0) when the record stores nothing usable.
+func direction(rec: Dictionary) -> Vector2:
+	var base := vb_start + int(rec["vb_off"])
+	if base + VTX_STRIDE > data.size():
+		return Vector2(1, 0)
+	var d := Vector2(data.decode_half(base + 0x08), data.decode_half(base + 0x0C))
+	if d.length() < 0.001:
+		return Vector2(1, 0)
+	return d.normalized()
+
+
 # The decal asset GUID for a record, or an empty array.
 #
 # Prop-less records are POSITIONAL rather than broken: AssetSlot is the terrain

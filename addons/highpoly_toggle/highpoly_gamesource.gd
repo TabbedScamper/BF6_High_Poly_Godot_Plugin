@@ -374,14 +374,21 @@ func _build_map_data(cache_dir: String) -> Dictionary:
 		# two subworlds looks its textures up in two different depots, so folding
 		# those placements together would dress half of them from the wrong one.
 		var scope := str(row.get("scope", ""))
-		var gkey := "%s|%s" % [res_name, scope]
+		# AND BY VARIATION. Two placements of one crate under two different
+		# ObjectVariations are two different materials — that is the whole point
+		# of a variation — so folding them into one group would dress both from
+		# whichever was seen first. The geometry is NOT split by this: the
+		# geometry cache is keyed on the mesh alone, so a second variation costs
+		# a material lookup and not a re-parse.
+		var vh := _variation_live(scope, _var_hash(row.get("var")), res_name)
+		var gkey := "%s|%s|%d" % [res_name, scope, vh]
 		var is_bd: bool = root_ref != "" \
 			and str(row.get("src", "")).to_lower() == root_ref \
 			and str(row.get("kind", "")).begins_with("smg")
 		var into: Dictionary = by_bd if is_bd else by_mesh
 		if not into.has(gkey):
 			into[gkey] = PackedFloat32Array()
-			_group_meta[gkey] = [res_name, scope, str(row.get("src", ""))]
+			_group_meta[gkey] = [res_name, scope, str(row.get("src", "")), vh]
 		var a: PackedFloat32Array = into[gkey]
 		# TRANSPOSED ON THE WAY OUT, and this is the whole of the 12-float
 		# convention rather than a detail of it.
@@ -1031,6 +1038,22 @@ func roads() -> Mesh:
 			var t0 := float(rec["tiling0"])
 			if absf(t0) < 1e-3:
 				t0 = 8.0
+			var t1 := float(rec["tiling1"])
+			if absf(t1) < 1e-3:
+				t1 = t0
+			# ALONG THE RIBBON, NOT ALONG WORLD X AND Z.
+			#
+			# The fallback used to tile a fill as (x/t0, z/t0), which is
+			# axis-aligned world tiling. That is correct only for a road that
+			# happens to run north-south or east-west, and Dumbo's street grid is
+			# rotated — so some roads looked perfect and the rest carried lane
+			# markings and asphalt grain running across them at an angle.
+			#
+			# §10.4 says the engine reconstructs u in-shader from world position
+			# and the record's DIRECTION, which the vertex format carries as a
+			# per-record constant tangent. Projecting onto that tangent and its
+			# perpendicular is that reconstruction.
+			var dir := td.direction(rec)
 			for i in range(n):
 				var x := vs[i * 4]
 				var z := vs[i * 4 + 1]
@@ -1038,7 +1061,8 @@ func roads() -> Mesh:
 				if stamp:
 					uvs.push_back(Vector2(vs[i * 4 + 3], vs[i * 4 + 2]))
 				else:
-					uvs.push_back(Vector2(x / t0, z / t0))
+					uvs.push_back(Vector2((x * dir.x + z * dir.y) / t0,
+						(-x * dir.y + z * dir.x) / t1))
 		if verts.is_empty():
 			continue
 		var idx := PackedInt32Array()
@@ -1804,10 +1828,14 @@ func object_rows(portal_name: String) -> Array:
 		var t := Transform3D(
 			Basis((b[0] as Vector3), (b[1] as Vector3), (b[2] as Vector3)),
 			b[3] as Vector3)
-		out.append({"group": "%s|%s" % [res_name, scope], "xf": t})
-		if not _group_meta.has("%s|%s" % [res_name, scope]):
-			_group_meta["%s|%s" % [res_name, scope]] = [res_name, scope,
-				str(row.get("src", ""))]
+		# Variations count here too: a Portal object placed with a livery is
+		# the same case as one placed on the map, and reading only the base
+		# key gives it the unvaried paint or nothing at all.
+		var vh := _variation_live(scope, _var_hash(row.get("var")), res_name)
+		var gk := "%s|%s|%d" % [res_name, scope, vh]
+		out.append({"group": gk, "xf": t})
+		if not _group_meta.has(gk):
+			_group_meta[gk] = [res_name, scope, str(row.get("src", "")), vh]
 	_obj_cache[key] = out
 	return out
 
@@ -1895,18 +1923,97 @@ var n_sections := 0
 var n_surfaces := 0
 
 
+# djb2-lower of an ObjectVariation asset path, `.ebx` dropped, or 0 for none.
+#
+# Inlined rather than taken from BF6MVDB: this is the only thing the game path
+# wants from that module, and importing it for four lines would make every
+# harness that touches materials depend on the whole variation database.
+static func _var_hash(ov) -> int:
+	if ov == null:
+		return 0
+	var p := str(ov).trim_suffix(".ebx")
+	if p == "":
+		return 0
+	var h := 5381
+	for b in p.to_lower().to_utf8_buffer():
+		h = ((h * 33) ^ int(b)) & 0xFFFFFFFF
+	return h
+
+
+# DOES THIS VARIATION CHANGE ANYTHING FOR THIS MESH? -> the hash, or 0.
+#
+# Splitting the placement groups by variation is what lets a livery be drawn,
+# and it is not free: every extra group is another MultiMesh and another draw
+# call. Splitting on the raw hash took mp_dumbo from 5,498 groups to 6,431 and,
+# in a renderer that is draw-call bound, the frame mean from 13.3 ms to 17.3.
+#
+# So the split is earned rather than assumed: a variation counts only if THIS
+# mesh's own section keys have derived entries in THIS scope's depot.
+#
+# The per-DEPOT version of this test was tried first — "does the depot hold any
+# key that is another key plus this hash" — and recovered 4 groups of 933. It
+# is true as soon as any mesh in the bundle uses the variation, which is nearly
+# always, so it answers a question no one asked.
+#
+# Reading the section keys costs no geometry: MeshSet.parse returns the section
+# table straight out of the resource, with no CAS chunk and no vertex decode.
+var _var_live := {}
+var _sec_keys := {}
+
+
+func _variation_live(scope: String, vh: int, res_name: String) -> int:
+	if vh == 0 or res_name == "":
+		return 0
+	var ck := "%s|%s|%d" % [res_name, scope, vh]
+	if _var_live.has(ck):
+		return int(_var_live[ck])
+	var pair = _depot_for(scope)
+	if pair == null:
+		_var_live[ck] = 0
+		return 0
+	var dep: BF6Depot = pair[0]
+	var live := 0
+	for k in _section_keys(res_name):
+		if int(k) != 0 and dep.key_to_record.has(int(k) + vh):
+			live = vh
+			break
+	_var_live[ck] = live
+	return live
+
+
+# A mesh's LOD-0 section state keys, from the resource alone.
+func _section_keys(res_name: String) -> Array:
+	if _sec_keys.has(res_name):
+		return _sec_keys[res_name]
+	var out: Array = []
+	var d := src.get_res(res_name)
+	if not d.is_empty():
+		var info := _ms.parse(d)
+		var lods: Array = info.get("lods", [])
+		if not lods.is_empty():
+			for s in (lods[0] as Dictionary).get("sections", []):
+				out.append(int((s as Dictionary).get("state_key", 0)))
+	_sec_keys[res_name] = out
+	return out
+
+
 func mesh_for(group_key: String, lod := 0) -> Mesh:
 	var _t0 := Time.get_ticks_usec()
 	var res_name := group_key
 	var scope := ""
+	var var_hash := 0
 	if _group_meta.has(group_key):
 		var m: Array = _group_meta[group_key]
 		res_name = str(m[0])
 		scope = str(m[1])
+		if m.size() > 3:
+			var_hash = int(m[3])
 	elif group_key.contains("|"):
 		var parts := group_key.split("|")
 		res_name = str(parts[0])
 		scope = str(parts[1])
+		if parts.size() > 2:
+			var_hash = int(str(parts[2]))
 	if res_name == "":
 		return null
 	# HAS THIS MESH ALREADY BEEN BUILT WITH THESE MATERIALS?
@@ -1918,7 +2025,7 @@ func mesh_for(group_key: String, lod := 0) -> Mesh:
 	var kc := "%s#%d" % [res_name, lod]
 	var known = _keys_for.get(kc)
 	if known is Array:
-		var sig := _sig_for(kc, known as Array, scope)
+		var sig := _sig_for(kc, known as Array, scope, var_hash)
 		if _mesh_by_sig.has(sig):
 			n_mesh_shared += 1
 			return _mesh_by_sig[sig]
@@ -1935,8 +2042,8 @@ func mesh_for(group_key: String, lod := 0) -> Mesh:
 	if cached is ArrayMesh:
 		var ckeys := _keys_of(cached as ArrayMesh)
 		_keys_for[kc] = ckeys
-		_dress(cached as ArrayMesh, ckeys, scope)
-		_mesh_by_sig[_sig_for(kc, ckeys, scope)] = cached
+		_dress(cached as ArrayMesh, ckeys, scope, var_hash)
+		_mesh_by_sig[_sig_for(kc, ckeys, scope, var_hash)] = cached
 		return cached as ArrayMesh
 
 	var d := src.get_res(res_name)
@@ -2090,10 +2197,10 @@ func mesh_for(group_key: String, lod := 0) -> Mesh:
 	# dedup across the map, and saving them would embed the same textures behind
 	# thousands of separate files.
 	_geom_save(kc, kept, am)
-	_dress(am, kept, scope)
+	_dress(am, kept, scope, var_hash)
 	# Recorded so the NEXT scope to want this mesh can decide without parsing.
 	_keys_for[kc] = kept
-	_mesh_by_sig[_sig_for(kc, kept, scope)] = am
+	_mesh_by_sig[_sig_for(kc, kept, scope, var_hash)] = am
 	return am
 
 
@@ -2174,12 +2281,12 @@ func _keys_of(am: ArrayMesh) -> Array:
 
 
 # Put this scope's materials on a mesh whose surfaces are already built.
-func _dress(am: ArrayMesh, keys: Array, scope: String) -> void:
+func _dress(am: ArrayMesh, keys: Array, scope: String, var_hash := 0) -> void:
 	if not build_materials:
 		return
 	var _t := Time.get_ticks_usec()
 	for i in range(mini(keys.size(), am.get_surface_count())):
-		var mat = material_for(int(keys[i]), scope)
+		var mat = material_for(int(keys[i]), scope, var_hash)
 		if mat != null:
 			am.surface_set_material(i, mat)
 	t_mat += Time.get_ticks_usec() - _t
@@ -2189,12 +2296,12 @@ func _dress(am: ArrayMesh, keys: Array, scope: String) -> void:
 # Material each merge key resolves to. Material objects are shared by content
 # (see _look_key), so two scopes that dress a mesh the same way produce the same
 # signature — which is the whole point, since object identity alone never would.
-func _sig_for(kc: String, keys: Array, scope: String) -> String:
+func _sig_for(kc: String, keys: Array, scope: String, var_hash := 0) -> String:
 	if not build_materials:
 		return kc
-	var parts: Array = [kc]
+	var parts: Array = [kc, str(var_hash)]
 	for k in keys:
-		var m = material_for(int(k), scope)
+		var m = material_for(int(k), scope, var_hash)
 		parts.append("0" if m == null else str((m as Material).get_instance_id()))
 	return "#".join(PackedStringArray(parts))
 
@@ -2206,11 +2313,11 @@ func _sig_for(kc: String, keys: Array, scope: String) -> String:
 # onto 6,319 records — so building one material per SECTION would make thousands
 # of identical StandardMaterial3Ds and upload the same pixels behind each.
 # ---------------------------------------------------------------------------
-func material_for(state_key: int, scope: String):
+func material_for(state_key: int, scope: String, var_hash := 0):
 	if state_key == 0:
 		tex_stats["no_key"] = int(tex_stats["no_key"]) + 1
 		return null
-	var ck := "%s|%s" % [scope, BF6Depot.key_hex(state_key)]
+	var ck := "%s|%s|%d" % [scope, BF6Depot.key_hex(state_key), var_hash]
 	if _mat_cache.has(ck):
 		return _mat_cache[ck]
 
@@ -2220,12 +2327,67 @@ func material_for(state_key: int, scope: String):
 		_mat_cache[ck] = null
 		return null
 	var dep: BF6Depot = pair[0]
-	if not dep.key_to_record.has(state_key):
+
+	# THE VARIATION KEY FIRST, THE BASE KEY AS FALLBACK (SHADERS.md §5.2).
+	#
+	# A placement carrying an ObjectVariation — a livery, a paint, a poster —
+	# resolves its material through a DERIVED key:
+	#
+	#     variationStateKey = sectionStateKey + djb2_lower(ov asset path)
+	#
+	# It is a genuine 64-bit add, carry included. GDScript's int is signed
+	# two's-complement, so `+` produces exactly the bit pattern the depot is
+	# keyed on; splitting it into dwords and adding them independently would not.
+	#
+	# Reading only the base key cost two different things at once, and the second
+	# is invisible. 10.6% of this map's placements carry a variation. For 235 of
+	# 1,442 distinct (mesh, variation, scope) groups the base key is not in the
+	# depot AT ALL — banners, crates, ammo boxes — so those drew with Godot's
+	# default material, which is white. The other 1,207 resolved something, so
+	# they LOOKED fine, and were being dressed in the unvaried material: the base
+	# paint instead of the livery.
+	#
+	# The hash is over the asset path with `.ebx` DROPPED. Measured against four
+	# other spellings over the 235 groups that only a derived key can dress:
+	# path-minus-`.ebx` resolved 235/235, every alternative 0/235.
+	var used := state_key
+	if var_hash != 0:
+		if dep.key_to_record.has(state_key + var_hash):
+			used = state_key + var_hash
+			tex_stats["var_key"] = int(tex_stats.get("var_key", 0)) + 1
+		else:
+			tex_stats["var_fallback"] = int(tex_stats.get("var_fallback", 0)) + 1
+	if not dep.key_to_record.has(used):
 		tex_stats["no_key"] = int(tex_stats["no_key"]) + 1
 		_mat_cache[ck] = null
 		return null
-	var slots: Dictionary = dep.textures_for(state_key, pair[1])
+	var slots: Dictionary = dep.textures_for(used, pair[1])
+	var consts: Dictionary = slots.get("constants", {})
 	slots.erase("constants")
+
+	# ---- GLASS, BY WHAT IT BINDS RATHER THAN WHAT IT IS CALLED ----------
+	#
+	# BF6 collapsed its surface shaders into one uber-shader, so shader identity
+	# cannot tell a window from a wall (SHADERS.md §5, TERRAIN.md §12). The
+	# fingerprint is in the parameters:
+	#
+	#   architecture / prop glass  binds the destruction glass-volume slot
+	#                              0xBB245590, or the arch glass tint 0x6BB97444
+	#   vehicle glass              binds the glass tint palette 0xA0106346
+	#
+	# Without this every window in the level draws as an opaque pane in whatever
+	# its base colour happens to be — which on this map is near-white, so the
+	# buildings read as blank white panels where the glass should be.
+	#
+	# Checked BEFORE the look-key share, because two states that differ only in
+	# being glass must not collapse onto one material.
+	var glass_tint = _glass_tint(slots, consts)
+	if glass_tint != null:
+		var gm := _glass_material(slots, glass_tint as Color)
+		_mat_cache[ck] = gm
+		tex_stats["glass"] = int(tex_stats.get("glass", 0)) + 1
+		tex_stats["materials"] = int(tex_stats["materials"]) + 1
+		return gm
 
 	# KEYED ON WHAT IT LOOKS LIKE, not on where it was found.
 	#
@@ -2296,6 +2458,69 @@ func material_for(state_key: int, scope: String):
 	_mat_by_look[look] = mat
 	tex_stats["materials"] = int(tex_stats["materials"]) + 1
 	return mat
+
+
+# ---------------------------------------------------------------------------
+# GLASS: the tint colour if this shader state is glass, else null.
+#
+# SHADERS.md §5's parameter table:
+#   0xBB245590  destruction glass volume slot — the arch/prop glass fingerprint
+#   0xA0106346  glass tint palette, float3 x 8; slot 0 is the pane tint and
+#               lives at bytes 4..16 of the payload
+#   0x6BB97444  architecture glass colour, a linear vec3
+#
+# Returning a COLOUR rather than a bool because the tint is the difference
+# between a window and a windscreen, and both exist on this map.
+const C_GLASS_PALETTE := 0xA0106346
+const C_GLASS_ARCH := 0x6BB97444
+
+
+func _glass_tint(slots: Dictionary, consts: Dictionary):
+	var tint := Color(0.62, 0.70, 0.72)      # unbound: cool neutral pane
+	var is_glass := slots.has("glass_volume")
+	# The palette is float3[8] and the pane tint is slot 0, which the spec
+	# locates at bytes 4..16 — NOT at 0. Reading from 0 gives the array's
+	# leading element count and a black pane.
+	var pal = consts.get(C_GLASS_PALETTE)
+	if pal is PackedByteArray and (pal as PackedByteArray).size() >= 16:
+		var b: PackedByteArray = pal
+		tint = Color(b.decode_float(4), b.decode_float(8), b.decode_float(12))
+		is_glass = true
+	else:
+		var arch = consts.get(C_GLASS_ARCH)
+		if arch is PackedByteArray and (arch as PackedByteArray).size() >= 12:
+			var b2: PackedByteArray = arch
+			tint = Color(b2.decode_float(0), b2.decode_float(4), b2.decode_float(8))
+			is_glass = true
+	if not is_glass:
+		return null
+	# A tint of zero is a bound-but-unset parameter, not black glass.
+	if tint.r + tint.g + tint.b < 0.01:
+		tint = Color(0.62, 0.70, 0.72)
+	return tint
+
+
+# Blended, depth-write off, drawn after opaque — the pass TERRAIN.md §12 says
+# these belong in. Godot's DEPTH_DRAW_OPAQUE_ONLY is that: the material still
+# tests depth, it just does not write it, so panes behind panes stay visible.
+func _glass_material(slots: Dictionary, tint: Color) -> Material:
+	var m := StandardMaterial3D.new()
+	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	m.depth_draw_mode = BaseMaterial3D.DEPTH_DRAW_OPAQUE_ONLY
+	m.cull_mode = BaseMaterial3D.CULL_DISABLED
+	m.albedo_color = Color(clampf(tint.r, 0.0, 1.0), clampf(tint.g, 0.0, 1.0),
+		clampf(tint.b, 0.0, 1.0), 0.22)
+	var alb = _texture_for(slots.get("basecolor"))
+	if alb != null:
+		m.albedo_texture = alb
+	var nrm = _texture_for(slots.get("normal", slots.get("normal_vt")), true)
+	if nrm != null:
+		m.normal_enabled = true
+		m.normal_texture = nrm
+	m.roughness = 0.05
+	m.metallic = 0.0
+	m.metallic_specular = 0.85
+	return m
 
 
 # The three slots the material actually reads, in a fixed order. Deliberately
@@ -2402,7 +2627,17 @@ func _mask_for(file_guid):
 # bilinear averaged every antialiased edge into mid-grey and reported an ivy
 # sheet as 0.0% opaque — which is not a property of the ivy, it is a property
 # of the resize. A stride over the real texels has no such artefact.
-const CUTOUT_MIN_CLEAR := 0.01
+# THE LOWER BOUND WAS TOO GENEROUS, and the evidence for that is in the table
+# above rather than anywhere new. The measured placeholders sit at 0.0%, 1.3%
+# and 3.6% clear; the measured real cutouts start at 20%. A 1% floor accepts all
+# three placeholders as cutouts, and dfanz0r's warning is exactly what that
+# looks like on screen — "wear/blend masks stored in alpha channels punch holes
+# in solid surfaces". 13,796 of this map's state keys bind an alpha slot against
+# 708 that bind vegetation, so the great majority of the things this test sees
+# are NOT foliage and a permissive test costs them holes.
+#
+# 10% sits in the gap between 3.6 and 20 with margin on both sides.
+const CUTOUT_MIN_CLEAR := 0.10
 const CUTOUT_MAX_CLEAR := 0.98
 const CUTOUT_SAMPLES := 128
 # NULL RESULT: mask resolution does not matter here, so a mask takes the same
