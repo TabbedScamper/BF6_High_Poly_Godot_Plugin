@@ -1289,6 +1289,39 @@ All of it is read from your own Battlefield 6 installation."
 		lbl.text = "Removed %d marker(s)." % HighpolyMarkers.clear(r))
 	mark_row.add_child(mark_clear)
 
+	# ---- refresh just what you are pointing at ----
+	#
+	# The iteration loop this closes: drop a marker on a prop that looks wrong,
+	# get the code that dresses it changed, press this. Re-dressing the whole map
+	# works and takes seconds; re-dressing ONE prop is instant, and instant is
+	# what makes it worth trying six variations of a leaf cutout instead of one.
+	#
+	# Deliberately marker-driven rather than selection-driven: what is selected
+	# in the editor is usually the SDK proxy, while the thing that looks wrong is
+	# the overlay geometry underneath it, and a marker names a PLACE - which is
+	# all that is needed to find the meshes there.
+	var mark_fix := Button.new()
+	mark_fix.text = "Refresh marked props"
+	mark_fix.tooltip_text = "Rebuilds the materials of the map-context meshes nearest your markers, using the currently loaded plugin code. Press Check for updates first if the code changed."
+	mark_fix.pressed.connect(func():
+		var r := EditorInterface.get_edited_scene_root()
+		if r == null:
+			lbl.text = "Open a level scene first."
+			return
+		var gs = mapctx.game_source if mapctx != null else null
+		if gs == null or not gs.has_method("invalidate_materials"):
+			lbl.text = "Nothing is read from the install yet — build the map context once."
+			return
+		var meshes := _marked_meshes(r)
+		if meshes.is_empty():
+			lbl.text = "No markers, or nothing of ours near them. Drop a marker on the prop first."
+			return
+		var st: Dictionary = gs.invalidate_materials(meshes)
+		lbl.text = "Refreshed %d mesh(es) near %d marker(s) in %d ms" 			% [st["meshes"], HighpolyMarkers.list(r).size(), st["ms"]]
+		Log.info("Marker refresh: %d mesh(es) found, %d re-dressed, %d surface(s)"
+			% [meshes.size(), st["meshes"], st["surfaces"]]))
+	mark_row.add_child(mark_fix)
+
 	# ---- performance recorder ----
 	# Everything about performance in this plugin has been reasoned from triangle
 	# counts, which is guesswork: a scene can be triangle-light and draw-call
@@ -1786,6 +1819,56 @@ func _on_manifest_refreshed() -> void:
 # Reload changed plugin code and do the cheapest thing that makes it visible.
 #
 # -> false when the reload failed in a way the user must act on.
+# Every mesh of ours drawn within a marker's radius.
+#
+# Walks the map-context overlay and tests the INSTANCE transforms rather than
+# get_aabb(): the visual AABB belongs to the rendering server and comes back
+# empty for a node it has not drawn yet, which reports "nothing here" for a
+# scene that is fully built. The same trap the marker report already documents.
+func _marked_meshes(root: Node) -> Array:
+	var pts: Array = []
+	for m in HighpolyMarkers.list(root):
+		var md: Dictionary = m
+		if md.has("pos"):
+			pts.append(md["pos"])
+		elif md.has("node") and md["node"] is Node3D:
+			pts.append((md["node"] as Node3D).global_transform.origin)
+	if pts.is_empty():
+		return []
+	var ctx := root.get_node_or_null(HighpolyMapContext.NODE)
+	if ctx == null:
+		return []
+	var out: Array = []
+	var stack: Array = [ctx]
+	while not stack.is_empty():
+		var n: Node = stack.pop_back()
+		for c in n.get_children():
+			stack.append(c)
+		var mesh: Mesh = null
+		var xforms: Array = []
+		if n is MultiMeshInstance3D and (n as MultiMeshInstance3D).multimesh != null:
+			var mm := (n as MultiMeshInstance3D).multimesh
+			mesh = mm.mesh
+			var gx: Transform3D = (n as Node3D).global_transform 				if (n as Node3D).is_inside_tree() else (n as Node3D).transform
+			for i in range(mm.instance_count):
+				xforms.append(gx * mm.get_instance_transform(i))
+		elif n is MeshInstance3D and (n as MeshInstance3D).mesh != null:
+			mesh = (n as MeshInstance3D).mesh
+			xforms.append((n as Node3D).global_transform)
+		if mesh == null or out.has(mesh):
+			continue
+		for x in xforms:
+			var hit := false
+			for p in pts:
+				if (x as Transform3D).origin.distance_to(p as Vector3) 						<= HighpolyMarkers.RADIUS:
+					hit = true
+					break
+			if hit:
+				out.append(mesh)
+				break
+	return out
+
+
 func _hot_reload() -> bool:
 	var r: Dictionary = HighpolyReload.reload_code()
 	var names: Array = r["names"]
@@ -3005,6 +3088,68 @@ func _restore_mapctx_state() -> void:
 	else:
 		_mapctx_changed()
 
+# OPEN THE GAME SOURCE, wherever the need arises.
+#
+# This used to live inside _mapctx_changed, which made "have we read the
+# install" a side effect of toggling Map Context. That was survivable while a
+# download could supply models; with the download path gone the install is the
+# ONLY source, so a user who switched to High-Poly without ever touching Map
+# Context got a null game source, no asset id, and their props stayed the SDK's
+# white proxies with nothing in the log to say why. Dropping a new prop in the
+# same state did the same thing for the same reason.
+#
+# Returns true when a source for `map` is available afterwards.
+#
+# The one-open-at-a-time guard moved here with it, and now covers more callers
+# than before: the mode dropdown and a dragged-in prop can both arrive while a
+# Map Context toggle is still awaiting.
+func _ensure_game_source(map: String, gen: int = -1) -> bool:
+	if map == "":
+		return false
+	if mapctx == null:
+		return false
+	if mapctx.game_source != null and mapctx.game_source.level == map.to_lower():
+		return true
+	if not HighpolyGameSource.available():
+		return false
+	while _gs_opening:
+		await get_tree().process_frame
+		if gen >= 0 and gen != _mapctx_gen:
+			return false
+		if mapctx.game_source != null and mapctx.game_source.level == map.to_lower():
+			return true
+	if mapctx.game_source != null and mapctx.game_source.level == map.to_lower():
+		return true
+	_gs_opening = true
+	lbl.text = "Reading %s from your Battlefield 6 install…" % map
+	var gs = HighpolyGameSource.new()
+	gs.surface_cache = "%s/%s" % [HighpolyMapContext.CACHE, map]
+	var ok_g: bool = await gs.open_async(dock, map, "",
+		func(stage: String, done: int, total: int):
+			lbl.text = ("%s — %s %d%%" % [map, stage,
+				int(100.0 * done / maxf(1.0, float(total)))]) if total > 0 				else ("%s — %s…" % [map, stage]))
+	_gs_opening = false
+	if gen >= 0 and gen != _mapctx_gen:
+		return false
+	for k in gs.timings:
+		if str(k).begins_with("_"):
+			continue
+		HighpolyProfiler.span("game source: %s" % k, int(gs.timings[k]))
+	HighpolyProfiler.crumb("game source", "%s in %d ms%s"
+		% [map, int(gs.timings.get("_total", 0)),
+		   "  (walk cached)" if int(gs.timings.get("_cached", 0)) == 1 else ""])
+	if not ok_g:
+		HighpolyLog.warn("map context: could not read %s from the install (%s)"
+			% [map, gs.error])
+		return false
+	mapctx.game_source = gs
+	# The object library reads from the same source: a placed object is
+	# assembled from the game's own prefab instead of a fetched GLB.
+	HighpolyLib.game_source = gs
+	LightingScript.game_source = gs   # the level's own sky panorama
+	return true
+
+
 func _mapctx_changed() -> void:
 	_save_mapctx_state()
 	_mapctx_gen += 1
@@ -3052,54 +3197,9 @@ func _mapctx_changed() -> void:
 	# each paying the full 85 s, because none of them has written the cache yet.
 	#
 	# A later arrival waits for the one in flight rather than starting its own.
-	while _gs_opening:
-		await get_tree().process_frame
-		if gen != _mapctx_gen:
-			return
-	if mapctx.game_source == null and HighpolyGameSource.available():
-		_gs_opening = true
-		lbl.text = "Reading %s from your Battlefield 6 install…" % map
-		var gs = HighpolyGameSource.new()
-		# Build the ground's appearance on the worker too. It is the one part of
-		# the map that costs about a minute the first time and nothing after, so
-		# it belongs behind this progress bar rather than in the middle of the
-		# build where it would freeze the editor.
-		gs.surface_cache = "%s/%s" % [HighpolyMapContext.CACHE, map]
-		var ok_g: bool = await gs.open_async(dock, map, "",
-			func(stage: String, done: int, total: int):
-				lbl.text = ("%s — %s %d%%" % [map, stage,
-					int(100.0 * done / maxf(1.0, float(total)))]) if total > 0 \
-					else ("%s — %s…" % [map, stage]))
-		# CLEARED BEFORE THE GENERATION CHECK, not after. Returning with the flag
-		# still set leaves every later toggle spinning on `while _gs_opening`
-		# forever, and a superseded generation is the normal way out of here.
-		_gs_opening = false
-		if gen != _mapctx_gen:
-			return
-		# INTO THE PHASE TABLE, per phase rather than as one total. A session
-		# report with an 85 s hole in it labelled "reading the install" is not a
-		# measurement — the mount, the partition index and the walk have nothing
-		# in common and want opposite fixes, and only the split says which one is
-		# costing the user their minute.
-		for k in gs.timings:
-			if str(k).begins_with("_"):
-				continue
-			HighpolyProfiler.span("game source: %s" % k, int(gs.timings[k]))
-		HighpolyProfiler.crumb("game source", "%s in %d ms%s"
-			% [map, int(gs.timings.get("_total", 0)),
-			   "  (walk cached)" if int(gs.timings.get("_cached", 0)) == 1 else ""])
-		if ok_g:
-			mapctx.game_source = gs
-			# The object library reads from the same source: a placed object is
-			# assembled from the game's own prefab instead of a fetched GLB.
-			HighpolyLib.game_source = gs
-			LightingScript.game_source = gs   # the level's own sky panorama
-		else:
-			# NOT fatal and NOT silent. A machine without BF6, or a map the
-			# mount cannot resolve, still has the download — but saying nothing
-			# would make "why did it download anyway" unanswerable.
-			HighpolyLog.warn("map context: could not read %s from the install "
-				% map + "(%s)" % gs.error)
+	await _ensure_game_source(map, gen)
+	if gen != _mapctx_gen:
+		return
 
 	# THE INSTALL IS THE ONLY SOURCE. There used to be a fallback here: a cached
 	# map went through download_map to self-heal, and an unseen one raised a
@@ -3116,6 +3216,20 @@ func _mapctx_changed() -> void:
 	mapctx_on.set_pressed_no_signal(false)
 	mapctx_objects.set_pressed_no_signal(false)
 	lbl.text = "Could not read %s from your Battlefield 6 install. Check the game folder at the top of this panel." % map
+# The models a rung needs come from the install, so make sure it is open before
+# applying one that draws our geometry. Without this, switching to High-Poly in a
+# session that never touched Map Context applied a rung with nothing to apply.
+func _ensure_source_for_mode() -> void:
+	if _mode() == HighpolyLib.Tier.LOW:
+		return                       # the SDK's own proxies need nothing from us
+	if HighpolyLib.game_source != null:
+		return
+	var r := EditorInterface.get_edited_scene_root()
+	if r == null or mapctx == null:
+		return
+	await _ensure_game_source(mapctx.map_of(r))
+
+
 func _mode_changed() -> void:
 	# The gate follows the rung: grey the download-backed controls on the rung
 	# that fetches nothing, un-grey them on every other. Dropping onto that rung
@@ -3132,6 +3246,11 @@ func _mode_changed() -> void:
 		ovr_chk.text = _override_label()
 	previews.tier = _mode()
 	previews.textured = _textured()
+	# BEFORE _apply_scene, not after: the apply is what asks the library for a
+	# model per prop, and with no game source open every one of those asks
+	# returns nothing. Awaiting here means the first switch to High-Poly in a
+	# session pays the read once and then actually swaps.
+	await _ensure_source_for_mode()
 	# The SDK's merged _Assets mesh is NOT this dropdown's business. Detail Mode
 	# governs the pieces YOU placed; the thing that actually stands in for the
 	# level's own shipped assets is "Original map objects", which brings in the
@@ -3511,6 +3630,14 @@ func _swap_deferred(node: Node) -> void:
 	if node.get_node_or_null(HighpolyLib.HP_NODE) != null: return
 	var k := HighpolyLib.match_key_public(node)
 	if k == "": return
+	# A PROP DROPPED BEFORE ANYTHING OPENED THE INSTALL still has to become the
+	# real thing. This is the common first action in a session - drag a crate in,
+	# switch to High-Poly - and it used to leave the SDK proxy behind because the
+	# only code that opened a game source was the Map Context toggle.
+	if HighpolyLib.game_source == null and _mode() != HighpolyLib.Tier.LOW:
+		await _ensure_source_for_mode()
+		if not is_instance_valid(node):
+			return
 	var drew := HighpolyLib.apply_one(node as Node3D, k, _mode(), _textured())
 	if not HighpolyLib.use_legacy and sync != null:
 		# A just-placed prop goes to the VERY front of the queue -- and "drew

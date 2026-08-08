@@ -2506,9 +2506,12 @@ func _dress(am: ArrayMesh, keys: Array, scope: String, var_hash := 0) -> void:
 #
 # -> {"meshes": n, "surfaces": n, "gone": n, "ms": n}
 # ---------------------------------------------------------------------------
-# `only` restricts the pass to meshes whose RES name contains one of the given
-# strings - the marker loop's "I am pointing at this tree, fix that one". Empty
-# means everything, which is what an update the user did not author wants.
+# `only` restricts the pass to specific Mesh OBJECTS - the marker loop's "I am
+# pointing at this tree, fix that one". Identity rather than name: the meshes are
+# reached through the MultiMeshInstance3Ds in the scene, those nodes are not
+# named after the resource they draw, and matching a name we would have to invent
+# is a guess where an object reference is a fact. Empty means everything, which
+# is what an update the user did not author wants.
 func invalidate_materials(only: Array = []) -> Dictionary:
 	var t0 := Time.get_ticks_msec()
 	# A FILTERED pass still clears the shared caches, because the point is to
@@ -2541,15 +2544,8 @@ func invalidate_materials(only: Array = []) -> Dictionary:
 			gone += 1
 			continue
 		live.append(row)
-		if not only.is_empty():
-			var nm := str(row[4]) if row.size() > 4 else ""
-			var want := false
-			for pat in only:
-				if nm.contains(str(pat).to_lower()):
-					want = true
-					break
-			if not want:
-				continue
+		if not only.is_empty() and not only.has(am):
+			continue
 		meshes += 1
 		surfaces += (am as ArrayMesh).get_surface_count()
 		_dress_only(am as ArrayMesh, row[1] as Array, str(row[2]), int(row[3]))
