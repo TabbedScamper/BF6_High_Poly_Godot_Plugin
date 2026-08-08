@@ -615,6 +615,18 @@ static func _summarise(ms: Array, dr: Array, sh: Array, of: Array,
 		"shadow_draws_peak": smax,
 		"frame_ms": ms,
 		"frame_sample": of,
+		# PER-FRAME DRAW CALLS, kept rather than only summarised.
+		#
+		# Only the mean and the peak used to survive, and with a 5,662 mean
+		# against a 26,008 peak the summary cannot answer the one question that
+		# matters: is a slow stretch slow because it is DRAWING MORE, or because
+		# something else is happening in it. Four runs were spent hypothesising
+		# about a first quarter that costs 60 ms a frame while the array that
+		# settles it was being computed and thrown away.
+		#
+		# Costs one int per frame, alongside frame_ms which is already kept.
+		"frame_draws": dr,
+		"frame_shadow_draws": sh,
 	}
 
 
