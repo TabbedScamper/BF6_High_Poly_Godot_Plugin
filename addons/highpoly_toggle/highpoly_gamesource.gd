@@ -2051,10 +2051,9 @@ func object_rows(portal_name: String) -> Array:
 		if scope == "":
 			# A prefab opened on its own has no mounting subworld to inherit a
 			# depot scope from — that is a property of being placed in a level,
-			# and this one is not. Fall back to directory ancestry, which the
-			# scope research measured as recovering a further 7.5% of sections
-			# on top of the graph rule.
-			scope = _scope_by_path(res_name)
+			# and this one is not. Its own bundle is the answer; directory
+			# ancestry is the fallback behind it.
+			scope = _scope_of(res_name)
 		var b: Array = xf as Array
 		var t := Transform3D(
 			Basis((b[0] as Vector3), (b[1] as Vector3), (b[2] as Vector3)),
@@ -2069,6 +2068,35 @@ func object_rows(portal_name: String) -> Array:
 			_group_meta[gk] = [res_name, scope, str(row.get("src", "")), vh]
 	_obj_cache[key] = out
 	return out
+
+
+# THE BUNDLE THAT SHIPPED THIS RESOURCE, which is what a depot is keyed on.
+#
+# Asked first, because it is the answer rather than an approximation of it. A
+# ShaderBlockDepot is named <bundle>_win32_shaderstate/shaderblockdepot_<id>, so
+# the scope of a mesh opened on its own is simply the bundle it came in.
+#
+# This is what was missing from every object a player places. Such an object is
+# not read as part of a level, so there is no walk above it to inherit a scope
+# from, and the directory guess below finds nothing because directories are not
+# what depots are keyed on. Measured before this existed: every surface of every
+# placed object reported "no ShaderBlockDepot for this scope", and the models
+# came out untextured. It was hidden for as long as most placed props were served
+# by the downloaded model library, which had its materials baked in.
+func _scope_of(res_name: String) -> String:
+	if src == null:
+		return ""
+	var b := str(src.res_bundle.get(res_name, ""))
+	if b != "":
+		# THE TOC SPELLS A BUNDLE "win32/game/..." AND THE DEPOT SPELLS IT
+		# "game/...". Depot resources are named <bundle asset path>_win32_
+		# shaderstate/shaderblockdepot_<n> (findings/sbd-scope-is-graph-ancestry),
+		# and the asset path has no platform prefix. One token apart, and the
+		# lookup misses every time without saying so.
+		for cand in [b, b.trim_prefix("win32/")]:
+			if _depot_bundles.has(cand):
+				return str(cand)
+	return _scope_by_path(res_name)
 
 
 # The nearest bundle that owns a depot, walking UP this asset's directories.
@@ -3369,7 +3397,14 @@ func _texture_for(file_guid, is_normal := false, cap := -1):
 	# resolution. Which is why the earlier experiment capping masks at 2048 /
 	# 1024 / 512 found no difference and concluded the framing was to blame: all
 	# three renders were missing the same mip chain.
-	if not img.has_mipmaps() and img.get_width() >= 4 and img.get_height() >= 4:
+	#
+	# NOT ON A COMPRESSED IMAGE, which is most of them: the game ships BCn and
+	# Godot cannot build a mip chain for a block format. It refuses per call, by
+	# name, so a prop with twelve textures printed twelve engine errors and drew
+	# correctly anyway - noise that reads like a decode failure while the decode
+	# was fine.
+	if not img.has_mipmaps() and not img.is_compressed() \
+			and img.get_width() >= 4 and img.get_height() >= 4:
 		img.generate_mipmaps()
 	var t := ImageTexture.create_from_image(img)
 	_tex_cache[an] = t

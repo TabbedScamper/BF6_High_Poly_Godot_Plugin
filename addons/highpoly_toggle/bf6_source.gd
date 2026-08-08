@@ -40,6 +40,10 @@ var chunks := {}                     # guid -> [chunk_id, cas_ix, off, size]
 var ebx := {}                        # name -> [chunk_id, cas_ix, off, size, declared]
 var res := {}                        # name -> [..., declared, type, rid]
 var chunk_seg := {}                  # guid -> [chunk_id, cas_ix, off, size]
+# res name -> the bundle that shipped it. A ShaderBlockDepot belongs to a bundle,
+# so this is what lets a mesh opened on its own find its materials. Built in the
+# mount sweep and cached with the rest of the index.
+var res_bundle := {}
 var stats := {}
 
 var _cas: BF6Cas = null
@@ -157,7 +161,7 @@ func _find_tocs(level: String, all_levels := false) -> Array:
 # into the resolved-coordinate version and every lookup silently returned zero
 # bytes, which the benchmark showed as a 97% speed-up. Data versioning without
 # code versioning is a way to make a bug look like a win.
-const CACHE_VERSION := 2
+const CACHE_VERSION := 4
 
 
 func _signature(paths: Array) -> String:
@@ -205,6 +209,7 @@ func _load_cache(p: String) -> bool:
 	res = d["res"]
 	chunks = d["chunks"]
 	chunk_seg = d["chunk_seg"]
+	res_bundle = d.get("res_bundle", {})
 	stats = d["stats"]
 	stats["from_cache"] = true
 	return true
@@ -215,7 +220,7 @@ func _save_cache(p: String) -> void:
 	if f == null:
 		return                      # a cache that cannot be written is not an error
 	f.store_var({"ebx": ebx, "res": res, "chunks": chunks,
-			"chunk_seg": chunk_seg, "stats": stats})
+			"chunk_seg": chunk_seg, "res_bundle": res_bundle, "stats": stats})
 	f.close()
 
 
@@ -304,6 +309,12 @@ func mount(level := "", progress := Callable(), use_cache := true,
 							continue
 						res[rn] = [seg[0], seg[1], seg[2], seg[3],
 								rec["size"], rec["type"], rec["rid"]]
+						# WHICH BUNDLE SHIPPED IT, which is the only thing that can
+						# answer "where are this mesh's materials". A ShaderBlockDepot
+						# is named <bundle>_win32_shaderstate/shaderblockdepot_<id>, so
+						# a depot belongs to a BUNDLE. Known right here, once, while
+						# the sweep is already holding it.
+						res_bundle[rn] = str(b["name"])
 					_:
 						if not chunk_seg.has(rec["id"]):
 							chunk_seg[rec["id"]] = seg
