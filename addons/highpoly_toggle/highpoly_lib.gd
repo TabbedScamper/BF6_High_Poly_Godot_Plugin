@@ -400,6 +400,18 @@ static func _instance_for(key: String, id: String) -> Node3D:
 
 static func _nofit_for(key: String) -> bool:
 	if key in NOFIT: return true
+	# THE SOLDIERS MUST NOT BE FITTED, and this is what was actually stopping
+	# them. The fitter scales an overlay onto its proxy's box and VETOES the
+	# pairing when the shapes disagree - "wrong-shaped asset: keep the proxy" -
+	# which is right for a prop standing in for a prop. A spawner's proxy is a
+	# small marker and the soldier is a 1.86 m figure, so the veto fired every
+	# time: the soldier was built correctly, measured against a marker, and
+	# thrown away. Nothing in the resolution chain was wrong, which is why
+	# checking that chain twice found nothing.
+	#
+	# The soldier is not a model OF the marker, it is a figure at its real size
+	# standing where the spawn happens, so the proxy's box has no claim on it.
+	if HighpolySoldier.faction_for(key) != "": return true
 	if use_legacy:
 		var side := "%s/%s/%s.json" % [LEGACY_DIR, key, key]
 		if FileAccess.file_exists(side):
