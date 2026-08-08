@@ -365,6 +365,24 @@ static func _account(n: Node, r: Dictionary, mats: Dictionary,
 			"name": String(m.resource_name)}
 	mergeable[mk]["refs"] += 1
 
+	# CAN THIS MESH'S OWN SURFACES BE MERGED WITH EACH OTHER?
+	#
+	# Meshes are built one surface per SHADER STATE, and every surface is its own
+	# draw call. If two of a mesh's shader states resolve to materials with
+	# identical CONTENT, those two draws are doing the same thing and could be
+	# one. Unlike merging geometry across objects, this costs no culling: the
+	# mesh keeps its bounds, its node and its identity, so nothing that picks or
+	# streams notices. Counted here so the idea is sized before it is built,
+	# rather than after.
+	if surf > 1:
+		var per_mesh: Dictionary = {}
+		for s in range(surf):
+			var sm := _eff_material(gi, m, s)
+			var f: int = 0 if sm == null else _mat_fp(sm)
+			per_mesh[f] = int(per_mesh.get(f, 0)) + 1
+		r["surf_merge_from"] = int(r.get("surf_merge_from", 0)) + surf
+		r["surf_merge_to"] = int(r.get("surf_merge_to", 0)) + per_mesh.size()
+
 	# materials, per surface, with the real precedence Godot uses
 	for s in range(surf):
 		var mat := _eff_material(gi, m, s)

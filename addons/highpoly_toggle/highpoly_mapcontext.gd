@@ -3217,15 +3217,27 @@ func apply(root: Node, enabled: bool, show_objects: bool, tex = true,
 	#
 	# The on-disk geometry cache is untouched, so switching back on is the
 	# ~10.7 s cached path rather than a 63 s cold read.
-	if not need_data and game_source != null \
+	# A MAP SWITCH IS THE OTHER TIME TO LET GO, and it is the one that actually
+	# kills people. A user log shows the editor dying after
+	#   MP_Aftermath -> (none) -> Capital Supremacy Prefab -> MP_Abbasid
+	# having reached 16 GB. Releasing only when every layer goes off never fires
+	# on that path: nothing is switched off, a second map is simply built on top
+	# of the first, so the old map's meshes, materials and textures stay cached
+	# forever alongside the new one's. Three maps in a session is three full sets
+	# of geometry in memory, and the VRAM guard was already warning at 6,146 MB
+	# in the same logs.
+	var switched_map: bool = map != prev_map and prev_map != ""
+	if (not need_data or switched_map) and game_source != null \
 			and game_source.has_method("release_caches"):
 		var freed: Dictionary = game_source.release_caches()
 		if int(freed.get("textures", 0)) > 0:
 			Log.info(("[High-Poly] released %d textures, %d materials and %d "
-				+ "meshes held for the map context. Turning a layer back on "
-				+ "rebuilds from the on-disk cache.")
+				+ "meshes held for %s. %s")
 				% [freed.get("textures", 0), freed.get("materials", 0),
-				   freed.get("meshes", 0)])
+				   freed.get("meshes", 0),
+				   prev_map if switched_map else "the map context",
+				   "Building the new map from the on-disk cache." if switched_map
+				   else "Turning a layer back on rebuilds from the on-disk cache."])
 	var have_data := false
 	if need_data:
 		# ASKED BEFORE THE CALL, not after: the call is what fills the cache, so

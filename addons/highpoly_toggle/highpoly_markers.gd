@@ -297,8 +297,27 @@ static func report(root: Node, map: String) -> String:
 				   int(live["hidden"]),
 				   ("   hidden under %s" % str(br)) if not br.is_empty() else ""])
 		if meshes.is_empty():
-			out.append("    VERDICT   the package places NOTHING here: the level")
-			out.append("              traversal never reached this content")
+			# AN EMPTY LOOKUP IS NOT EVIDENCE OF AN EMPTY PACKAGE.
+			#
+			# This used to state flatly that the traversal never reached the
+			# content whenever `meshes` came back empty - including when there
+			# was no placements.json for the map at all, or the map-context
+			# layer was simply switched off. A real user report came back with
+			# ten markers all carrying that verdict on a map whose header said
+			# "no placements.json cached for this map", so the report asserted
+			# something false about their data ten times over, and each one
+			# would have sent someone looking for a traversal bug that is not
+			# there. Say which of the three it is.
+			if props.is_empty():
+				out.append("    VERDICT   UNKNOWN: no placements are cached for this")
+				out.append("              map, so there is nothing to compare against.")
+				out.append("              Build the map context once, then re-mark.")
+			elif live.is_empty():
+				out.append("    VERDICT   UNKNOWN: the map-context layer is off, so")
+				out.append("              nothing was built here to inspect.")
+			else:
+				out.append("    VERDICT   the package places NOTHING here: the level")
+				out.append("              traversal never reached this content")
 		elif not missing.is_empty():
 			out.append("    VERDICT   %d of those have NO file in the prop cache:"
 				% missing.size())

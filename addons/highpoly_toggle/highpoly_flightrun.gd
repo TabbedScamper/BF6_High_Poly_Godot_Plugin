@@ -487,6 +487,26 @@ static func run(host: Node, dock: Node, mapctx: Node) -> bool:
 		var gs = mapctx.game_source
 		if gs.has_method("cache_stats"):
 			_rep["cache_stats"] = gs.cache_stats()
+	# IS BAKING CELLS AFFORDABLE? Measured, not argued. Props have 7,053 distinct
+	# meshes against a 5,266-draw budget, so nothing that regroups existing
+	# meshes can reach 60 fps - the only way under the floor is merging vertex
+	# data. This bakes a handful of the furthest cells and reports what it cost
+	# and what it would have saved, WITHOUT changing the scene, so the pipeline
+	# is sized before any of it is built.
+	if mapctx != null and "_cells" in mapctx:
+		var cam := vp.get_camera_3d() if vp != null else null
+		if cam != null:
+			_phase_begin("hlod probe")
+			# Two weld sizes plus the full-detail control, because the whole
+			# question is what the coarse step buys. 0.5 m and 1.0 m are the
+			# range worth considering for something seen from hundreds of
+			# metres; the control says what it was before welding.
+			var hp: Dictionary = {}
+			for w in [0.0, 0.5, 1.0]:
+				hp["weld_%s" % str(w)] = HighpolyHlod.probe(
+					mapctx._cells, cam.global_position, 4, w)
+			_rep["hlod_probe"] = hp
+			_phase_end()
 	_phase_end()
 
 	_rep["valid"] = true
