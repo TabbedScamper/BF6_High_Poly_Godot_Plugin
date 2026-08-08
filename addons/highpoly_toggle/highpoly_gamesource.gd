@@ -2530,9 +2530,24 @@ func object_rows(portal_name: String) -> Array:
 		return _obj_cache[key]
 
 	# pf_portal_<name> first, then the bare name: a few placeables are their own
-	# prefab rather than a wrapped one.
+	# prefab rather than a wrapped one. Then <name>_a, because some objects the
+	# SDK offers under one name exist in the game ONLY as lettered variants.
+	#
+	# Surveyed over 4,620 SDK objects: 4,290 resolve directly, 109 have no game
+	# asset at all (AI_Spawner, CombatArea, CapturePoint - gameplay logic with no
+	# geometry, correctly absent), and 221 resolve only with a suffix. All 221
+	# are "_a"; no other suffix fixes anything.
+	#
+	# TAKING _a IS SAFE BECAUSE THE LETTERS ARE VARIANTS, NOT PARTS. That was the
+	# risk worth checking - picking one half of a split prop is worse than
+	# drawing the proxy - and the user's own BackroomStorageShe01 settles it:
+	# _a and _b have identical size (3.21, 3.13, 0.82) AND identical centre
+	# (1.60, 1.56, 0.40). They occupy the same space, so they are two dressings
+	# of one object and either is the whole thing.
+	#
+	# Last in the list, so it can never override a direct hit.
 	var ref = null
-	for cand in [PORTAL_PREFIX + key, key]:
+	for cand in [PORTAL_PREFIX + key, key, PORTAL_PREFIX + key + "_a"]:
 		ref = walk.resolve_name(cand)
 		if ref != null:
 			break
