@@ -85,6 +85,12 @@ const SLOT_CARPAINT_FLAKES := 0xa11011b8
 # t_red, a flat placeholder, so the content test still has to run.
 const SLOT_EMISSIVE_LIT := 0x407055fd
 
+# BACKDROP SMOKE PLUMES bind their own pair and no named basecolor, which is why
+# 23 placed plumes on mp_aftermath drew white. RGB+A is the smoke, and the noise
+# sheet beside it is where the motion comes from. See smoke.gdshader.
+const SLOT_SMOKE_CA := 0x48b69b15
+const SLOT_SMOKE_NOISE := 0xba5b7844
+
 # Placeable mesh decals bind a family of their own and none of the slots above.
 # Only these two ever carry content: on mp_dumbo's 160 decal prefabs the other
 # three are defaulted on every record (0x416b0e23 = t_grid 134/134, 0x4227843b =
@@ -103,6 +109,7 @@ const SLOT_NAME := {
 	SLOT_GLASS_VOLUME: "glass_volume", SLOT_CARPAINT_FLAKES: "carpaint_flakes",
 	SLOT_DECAL_CA: "decal_ca", SLOT_DECAL_NRM: "decal_nrm",
 	SLOT_EMISSIVE_LIT: "emissive_lit",
+	SLOT_SMOKE_CA: "smoke_ca", SLOT_SMOKE_NOISE: "smoke_noise",
 }
 
 var error := ""

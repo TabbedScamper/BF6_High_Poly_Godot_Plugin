@@ -3575,6 +3575,7 @@ func invalidate_materials(only: Array = []) -> Dictionary:
 	# and the user sees their update do nothing. Missing this line is why the
 	# decals did not change when decal.gdshader did.
 	_decal_shader = null
+	_smoke_shader = null
 	_road_shader = null
 	_road_pal = null
 	_road_pal_tried = false
@@ -3782,6 +3783,17 @@ func material_for(state_key: int, scope: String, var_hash := 0,
 		var shared = _mat_by_look[look]
 		_mat_cache[ck] = shared
 		return shared
+
+	# ---- BACKDROP SMOKE ------------------------------------------------
+	# Before the look-key share, like glass and carpaint: a smoke record binds
+	# no basecolor, so every one of them keys alike and they would collapse onto
+	# whichever material was built first.
+	var smk = _smoke_of(slots, consts)
+	if smk != null:
+		_mat_cache[ck] = smk
+		tex_stats["smoke"] = int(tex_stats.get("smoke", 0)) + 1
+		tex_stats["materials"] = int(tex_stats["materials"]) + 1
+		return smk
 
 	# ---- DECALS --------------------------------------------------------
 	# Placeable puddles, dirt, road lines and wall staining. They bind their own
@@ -4915,6 +4927,62 @@ func _decal_sheet_varies(file_guid) -> bool:
 			break
 	_decal_tex_cache[an] = varies
 	return varies
+
+
+var _smoke_shader = null
+
+# BACKDROP SMOKE, or null when this record is not one.
+#
+# Exclusive in the same way the decal family is: a record that binds a real
+# basecolor is a surface that happens to sit near smoke, not the smoke itself.
+const C_SMOKE_TINT := 0xD021807F      # the only non-neutral float3 in the record
+const C_SMOKE_SCROLL_A := 0xC4C39A0C  # (0.000, 0.100)
+const C_SMOKE_SCROLL_B := 0xC4C39A0D  # (0.000, 0.500), the sibling hash
+
+
+func _vec2_const(consts: Dictionary, hash_id: int, fallback: Vector2) -> Vector2:
+	var raw = consts.get(hash_id)
+	if not (raw is PackedByteArray) or (raw as PackedByteArray).size() < 8:
+		return fallback
+	return Vector2((raw as PackedByteArray).decode_float(0),
+		(raw as PackedByteArray).decode_float(4))
+
+
+func _smoke_of(slots: Dictionary, consts: Dictionary):
+	if not slots.has("smoke_ca"):
+		return null
+	if slots.has("basecolor") or slots.has("basecolor_veg"):
+		return null
+	var sheet = _texture_for(slots.get("smoke_ca"))
+	if sheet == null:
+		return null
+	if _smoke_shader == null:
+		var dir2 := (get_script() as Script).resource_path.get_base_dir()
+		var sh = load("%s/smoke.gdshader" % dir2)
+		if not (sh is Shader):
+			return null
+		_smoke_shader = sh
+	var m := ShaderMaterial.new()
+	m.shader = _smoke_shader
+	m.set_shader_parameter("smoke_tex", sheet)
+	var nz = _texture_for(slots.get("smoke_noise"))
+	m.set_shader_parameter("has_noise", nz != null)
+	if nz != null:
+		m.set_shader_parameter("noise_tex", nz)
+	var t = _albedo_tint({C_SMOKE_TINT: consts.get(C_SMOKE_TINT)}) \
+		if consts.has(C_SMOKE_TINT) else null
+	var raw = consts.get(C_SMOKE_TINT)
+	if raw is PackedByteArray and (raw as PackedByteArray).size() >= 12:
+		m.set_shader_parameter("tint", Color(
+			(raw as PackedByteArray).decode_float(0),
+			(raw as PackedByteArray).decode_float(4),
+			(raw as PackedByteArray).decode_float(8)))
+	m.set_shader_parameter("scroll_a",
+		_vec2_const(consts, C_SMOKE_SCROLL_A, Vector2(0.0, 0.10)))
+	m.set_shader_parameter("scroll_b",
+		_vec2_const(consts, C_SMOKE_SCROLL_B, Vector2(0.0, 0.50)))
+	m.render_priority = 2      # transparent, and it sits over the skyline
+	return m
 
 
 var _decal_shader = null
