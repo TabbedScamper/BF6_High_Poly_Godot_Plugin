@@ -1330,11 +1330,20 @@ static func tick_lights(root: Node, cam_pos: Vector3) -> void:
 	_last_cull_pos = cam_pos
 	_cull_dirty = false
 	var r2 := lights_range * lights_range
+	# SPLIT SO THE 80 ms CAN BE ATTRIBUTED. The profiler puts this whole function
+	# at 547.6 ms over 135 calls with a worst call of 80.63 ms - the largest
+	# single stall left on the heartbeat. The two loops are NOT equivalent: this
+	# one reads `position` (local, free) while the prop loop reads
+	# `global_position`, which walks up the tree to rebuild a global transform
+	# per light, on what a previous note measured as 2,534 fixtures. Timed apart
+	# so the fix aims at whichever one is actually the cost.
+	HighpolyProfile.begin("lights: map light distance loop")
 	if holder != null:
 		for c in holder.get_children():
 			if c is Light3D:
 				var l := c as Light3D
 				l.visible = l.position.distance_squared_to(cam_pos) <= r2
+	HighpolyProfile.end("lights: map light distance loop")
 	# THE FIXTURES THE BUILDER PLACED FOLLOW THE SAME SLIDER.
 	#
 	# They did not, and nothing was culling them at all: one scene carried 2,534
@@ -1348,9 +1357,11 @@ static func tick_lights(root: Node, cam_pos: Vector3) -> void:
 	# still gives the instant answer when the switch is flipped, but the next
 	# tick decides again from the switch AND the distance, so the two cannot
 	# drift apart.
+	HighpolyProfile.begin("lights: prop fixture distance loop (global_position)")
 	if props != null:
 		for c in props.get_children():
 			if c is Light3D:
 				var l2 := c as Light3D
 				l2.visible = prop_lighting \
 					and l2.global_position.distance_squared_to(cam_pos) <= r2
+	HighpolyProfile.end("lights: prop fixture distance loop (global_position)")
