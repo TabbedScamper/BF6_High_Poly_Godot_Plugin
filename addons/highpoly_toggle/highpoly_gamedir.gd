@@ -33,15 +33,41 @@ const CANDIDATES := [
 ]
 
 
+# The saved path, or "" outside the editor.
+#
+# EditorInterface.get_editor_settings() does not exist in a plain `--script`
+# run, and calling it there throws rather than returning null. This module is
+# reached from the headless harnesses through autodetect(), so the guard is not
+# defensive padding: without it every harness run printed a script error and
+# silently lost whatever folder the user had chosen, falling through to the
+# hardcoded candidate paths instead.
+static func _settings():
+	# Three probes were needed to land this, which is worth recording:
+	#   EditorInterface.has_method(...)   throws — outside the editor the
+	#                                     identifier is a bare class, no instance
+	#   Engine.has_singleton(...)         returns TRUE headlessly anyway
+	#   Engine.get_singleton(...)         returns a NULL instance
+	# So the only reliable test is the instance itself.
+	if not Engine.has_singleton("EditorInterface"):
+		return null
+	var ei = Engine.get_singleton("EditorInterface")
+	if ei == null:
+		return null
+	return ei.get_editor_settings()
+
+
 static func saved() -> String:
-	var v: Variant = EditorInterface.get_editor_settings().get_project_metadata(
-			"highpoly_mapctx", SETTING, "")
-	return str(v)
+	var es = _settings()
+	if es == null:
+		return ""
+	return str(es.get_project_metadata("highpoly_mapctx", SETTING, ""))
 
 
 static func save(path: String) -> void:
-	EditorInterface.get_editor_settings().set_project_metadata(
-			"highpoly_mapctx", SETTING, path)
+	var es = _settings()
+	if es == null:
+		return
+	es.set_project_metadata("highpoly_mapctx", SETTING, path)
 
 
 # -> {ok: bool, layout: bool, oodle: bool, path: String, why: String}

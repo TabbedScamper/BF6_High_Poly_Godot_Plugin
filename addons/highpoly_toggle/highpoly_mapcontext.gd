@@ -611,7 +611,7 @@ func download_map(host: Node, map: String, status: Callable, force := false) -> 
 	# was not enough: half a dozen other places reach for the download — a layer
 	# switch, a variant change, the props verifier — and each of them found the
 	# network. A recorded session built Dumbo from the game in 203 s and then sat
-	# in "Downloading the level's scenery (1/3)" failing against a server it did
+	# in "Loading the level's scenery (1/3)" failing against a server it did
 	# not need, which on a machine with no connection is a long wait for an error
 	# about data that is already on screen.
 	#
@@ -660,11 +660,11 @@ func download_map(host: Node, map: String, status: Callable, force := false) -> 
 	var tmp := "%s/mapdata.zip" % dir
 	var got_ok := await _download_with_progress(host,
 		await _ver_url(host, map, "mapdata", b + "mapdata.zip"), tmp, status,
-		"Downloading %s map data:" % map, total_mb)
+		"Loading %s map data:" % map, total_mb)
 	if not got_ok:
 		status.call("Map data download failed. The server is busy, try Reload again.")
 		return false
-	status.call("Extracting %sâ€¦" % map)
+	status.call("Loading %sâ€¦" % map)
 	var zr := ZIPReader.new()
 	var zerr := zr.open(ProjectSettings.globalize_path(tmp))
 	if zerr != OK:
@@ -877,7 +877,7 @@ func ensure_maptile(host: Node, map: String, status: Callable = Callable()) -> b
 	var dest := "%s/%s.jpg" % [TILE_CACHE, nm]
 	var ok := await _download_with_progress(host, "%smaptiles/%s.jpg" % [root, nm], dest,
 		status if status.is_valid() else func(_s: String): pass,
-		"Downloading %s map texture:" % nm)
+		"Loading %s map texture:" % nm)
 	# the CDN answers 200 with a short text body for a request it doesn't like,
 	# so only a real JPEG counts â€” never leave a poisoned file in the cache
 	if ok:
@@ -2585,8 +2585,8 @@ func props_ready(map: String) -> bool:
 	return _props_missing().is_empty()
 
 
-const RANGED_JOB := "Downloading the level's scenery (1/2)"
-const ARCHIVE_JOB := "Downloading the level's scenery (1/3)"
+const RANGED_JOB := "Loading the level's scenery (1/2)"
+const ARCHIVE_JOB := "Loading the level's scenery (1/3)"
 
 
 # Fetch ONLY the missing props out of the published archive, using Range
@@ -2683,7 +2683,7 @@ func _ensure_props_ranged(host: Node, map: String, url: String, miss: Array,
 				job_queue.report(done, bytes)
 			download_progress.emit(RANGED_JOB, done, bytes)
 			if status.is_valid():
-				status.call("Downloading %s scenery: %d of %d pieces (%.0f of %.0f MB)"
+				status.call("Loading %s scenery: %d of %d pieces (%.0f of %.0f MB)"
 					% [map, files, want.size(), done / 1048576.0, bytes / 1048576.0]))
 	var ms: int = maxi(1, Time.get_ticks_msec() - t0)
 	HighpolyProfiler.mapctx_transfer(bytes, ms, "scenery")
@@ -2738,7 +2738,7 @@ func ensure_props(host: Node, map: String, status: Callable) -> bool:
 	if refresh:
 		status.call("Prop meshes were updated, refreshingâ€¦")
 	else:
-		status.call("Downloading %d prop meshesâ€¦" % miss.size())
+		status.call("Loading %d prop meshesâ€¦" % miss.size())
 	var b := base_url() + "maps/%s/" % map
 	var tmp := "%s/%s/_props.zip" % [CACHE, map]
 	HighpolyStore.ensure_dir("%s/%s" % [CACHE, map])
@@ -2755,7 +2755,7 @@ func ensure_props(host: Node, map: String, status: Callable) -> bool:
 			var key: String = "props_hq_bytes" if HighpolyStore.quality() == "full" else "props_bytes"
 			props_mb = int(int(pmeta.get(key, 0)) / 1048576.0)
 	if props_mb > 0:
-		status.call("Downloading %s prop meshes (~%d MB, %s quality)â€¦"
+		status.call("Loading %s prop meshes (~%d MB, %s quality)â€¦"
 			% [map, props_mb, "in-game" if HighpolyStore.quality() == "full" else "web"])
 	# Try to take only what is missing, straight out of the published archive,
 	# before falling back to downloading the whole thing. See highpoly_zipfetch.

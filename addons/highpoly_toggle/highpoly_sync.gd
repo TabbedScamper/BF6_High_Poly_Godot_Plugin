@@ -658,7 +658,7 @@ func _bootstrap_bundle() -> void:
 					if got > last:
 						last = got
 						idle = 0.0
-						bootstrap_note = "Downloading library… %d / %d MB" % [got / 1048576, total_mb]
+						bootstrap_note = "Loading library… %d / %d MB" % [got / 1048576, total_mb]
 						progress_changed.emit()
 					else:
 						idle += 1.0

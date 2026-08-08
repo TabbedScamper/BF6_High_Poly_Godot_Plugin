@@ -104,6 +104,28 @@ var mapctx_optimize: Button  # distance-cull the user's PLACED objects (their cu
 var mapctx_variant_row: HBoxContainer  # "Variant" gamemode dropdown (visible with objects)
 var mapctx_variant: OptionButton
 var mapctx_timer: Timer
+
+# ---------------------------------------------------------------------------
+# THE BATTLEFIELD 6 GATE.
+#
+# Everything this plugin shows is read out of the player's own installed copy of
+# Battlefield 6 — placements, geometry, textures, terrain, lights. Without it
+# there is nothing to show, so the panel says so at the top in one line and
+# turns everything else off until a real install is pointed at.
+#
+# Greyed out rather than hidden: a panel whose controls have vanished reads as a
+# broken plugin, while a panel that is visibly disabled with a red line above it
+# reads as a plugin waiting for something. Only the game-folder row stays live.
+#
+# `_bf6_disabled_was` remembers what each control's `disabled` was BEFORE the
+# gate touched it, so re-enabling puts back what the panel wanted rather than
+# switching on things that were disabled for their own reasons.
+var bf6_row: VBoxContainer
+var bf6_status: Label
+var bf6_path: LineEdit
+var bf6_browse: Button
+var _bf6_ok := false
+var _bf6_disabled_was := {}
 # generation counter for Map Context toggles: every click supersedes the
 # in-flight handler (which may be awaiting a long download). A superseded
 # handler must NEVER apply its captured — now stale — checkbox state.
@@ -257,6 +279,117 @@ func _refresh_gates() -> void:
 		if is_instance_valid(c):
 			(c as Control).modulate.a = 1.0 if ok else 0.4
 
+# ---------------------------------------------------------------------------
+# The Battlefield 6 gate: one status line, the folder, and a Browse button.
+# ---------------------------------------------------------------------------
+func _build_bf6_gate() -> void:
+	bf6_row = VBoxContainer.new()
+	bf6_row.name = "BF6Gate"
+	dock.add_child(bf6_row)
+
+	bf6_status = Label.new()
+	bf6_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	bf6_status.add_theme_font_size_override("font_size", Theme_.fs(13))
+	bf6_row.add_child(bf6_status)
+
+	var row := HBoxContainer.new()
+	bf6_row.add_child(row)
+	bf6_path = LineEdit.new()
+	bf6_path.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	bf6_path.placeholder_text = "…/steamapps/common/Battlefield 6"
+	bf6_path.tooltip_text = "The folder your Battlefield 6 installation lives in — the one that CONTAINS Data, not Data itself."
+	row.add_child(bf6_path)
+	bf6_browse = Button.new()
+	bf6_browse.text = "Locate…"
+	row.add_child(bf6_browse)
+
+	bf6_path.text_submitted.connect(func(t: String): _set_game_dir(t))
+	bf6_path.focus_exited.connect(func(): _set_game_dir(bf6_path.text))
+	bf6_browse.pressed.connect(func():
+		var fd := FileDialog.new()
+		fd.file_mode = FileDialog.FILE_MODE_OPEN_DIR
+		fd.access = FileDialog.ACCESS_FILESYSTEM
+		fd.title = "Select your Battlefield 6 install folder"
+		if bf6_path.text != "":
+			fd.current_dir = bf6_path.text
+		fd.dir_selected.connect(func(d: String): _set_game_dir(d))
+		EditorInterface.get_base_control().add_child(fd)
+		fd.popup_centered_ratio(0.6)
+		fd.close_requested.connect(func(): fd.queue_free()))
+
+	# Autodetect covers Steam and EA's usual folders plus every library in
+	# libraryfolders.vdf, so most people never touch this row.
+	var found: String = GameDir.autodetect()
+	bf6_path.text = found if found != "" else GameDir.saved()
+	_set_game_dir(bf6_path.text, found != "")
+
+
+# Verify a folder, remember it when good, and re-gate the panel.
+func _set_game_dir(path: String, remember := true) -> void:
+	var r: Dictionary = GameDir.verify(path)
+	_bf6_ok = bool(r["ok"])
+	if _bf6_ok and remember:
+		GameDir.save(path)
+	if _bf6_ok:
+		bf6_status.text = "Battlefield 6 detected"
+		bf6_status.add_theme_color_override("font_color", Color(0.42, 0.86, 0.45))
+		bf6_path.tooltip_text = str(r["why"])
+	else:
+		bf6_status.text = "Battlefield 6 not detected — %s" % (
+			"locate your installation to use this plugin" if path == ""
+			else str(r["why"]))
+		bf6_status.add_theme_color_override("font_color", Color(0.95, 0.35, 0.35))
+	_apply_bf6_gate()
+
+
+# Grey out and disable everything except the gate row itself.
+func _apply_bf6_gate() -> void:
+	if dock == null or not is_instance_valid(dock):
+		return
+	for c in dock.get_children():
+		if c == bf6_row or not (c is CanvasItem):
+			continue
+		(c as CanvasItem).modulate.a = 1.0 if _bf6_ok else 0.35
+		gate_interactive(c, _bf6_ok, _bf6_disabled_was)
+
+
+# Recursively disable (or restore) every control a user can act on.
+#
+# The prior value is recorded in `was` on the way down and put back on the way
+# up, so a control the panel had disabled for its own reasons - a button that
+# needs an open scene, say - is not switched on when the gate lifts.
+#
+# STATIC so it can be tested. EditorPlugin cannot be instantiated outside the
+# editor ("Class 'EditorPlugin' can only be instantiated by editor"), so
+# anything reachable only through the plugin instance needs a full editor run
+# to exercise - and this is the piece with a failure mode worth pinning down.
+static func gate_interactive(n: Node, enable: bool, was: Dictionary) -> void:
+	var stack: Array = [n]
+	while not stack.is_empty():
+		var cur: Node = stack.pop_back()
+		for ch in cur.get_children():
+			stack.append(ch)
+		if not (cur is BaseButton or cur is Range or cur is LineEdit
+				or cur is OptionButton or cur is TextEdit):
+			continue
+		var id := cur.get_instance_id()
+		if enable:
+			if was.has(id):
+				cur.set("disabled", was[id] == true)
+				cur.set("editable", true)
+				was.erase(id)
+		else:
+			if not was.has(id):
+				# `== true`, NOT bool(): Node.get() returns NULL for a property
+				# the node does not have — a LineEdit has no `disabled` — and
+				# bool(null) is not a constructor in GDScript, it throws. That
+				# threw mid-walk, so the loop died on the first text box it met
+				# and every control after it stayed live behind a greyed panel.
+				was[id] = cur.get("disabled") == true
+			cur.set("disabled", true)
+			cur.set("editable", false)
+
+
 # True when the caller must stop. The click has already flipped the control by
 # the time a handler runs, so refusing it means putting the control back first.
 func _locked(c: Control) -> bool:
@@ -374,6 +507,11 @@ func _range_label(v: float) -> String:
 func _enter_tree() -> void:
 	dock = VBoxContainer.new()
 	dock.name = "HighPolyContent"   # tab title comes from the scroll wrapper
+
+	# ---- is Battlefield 6 here? --------------------------------------------
+	# First thing built and first thing seen, because it is the precondition for
+	# everything below it.
+	_build_bf6_gate()
 
 	# plugin self-update: hidden unless the registry advertises a newer version
 	update_btn = Button.new()
@@ -1042,61 +1180,9 @@ func _enter_tree() -> void:
 					else "Nothing recorded — the camera never moved.")
 	storage_chips.add_child(flight_chk)
 
-	# --- Game folder --------------------------------------------------------
-	# The one setting that must be right before anything else works, now that
-	# scenery is read from the install rather than downloaded. It gets a live
-	# verdict instead of a silent text box, because a wrong path here produces
-	# no useful error anywhere else in the plugin — every switch stays live and
-	# simply shows nothing.
-	var game_row := HBoxContainer.new()
-	host.add_child(game_row)
-	var game_lbl := Label.new()
-	game_lbl.text = "Game folder"
-	game_row.add_child(game_lbl)
-	var game_edit := LineEdit.new()
-	game_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	game_edit.placeholder_text = "…/steamapps/common/Battlefield 6"
-	game_row.add_child(game_edit)
-	var game_browse := Button.new()
-	game_browse.text = "Browse…"
-	game_row.add_child(game_browse)
-	var game_status := Label.new()
-	game_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	host.add_child(game_status)
-
-	var game_check := func(p: String, remember: bool) -> bool:
-		var r: Dictionary = GameDir.verify(p)
-		game_status.text = str(r["why"])
-		game_status.modulate = (Color(0.55, 0.85, 0.55) if bool(r["ok"])
-				else Color(0.95, 0.65, 0.45))
-		if bool(r["ok"]) and remember:
-			GameDir.save(p)
-		return bool(r["ok"])
-
-	var found: String = GameDir.autodetect()
-	game_edit.text = found if found != "" else GameDir.saved()
-	if game_edit.text != "":
-		game_check.call(game_edit.text, found != "")
-	else:
-		game_status.text = "Choose the folder Battlefield 6 is installed in — the one that contains Data."
-		game_status.modulate = Color(0.95, 0.65, 0.45)
-
-	game_edit.text_submitted.connect(func(t: String): game_check.call(t, true))
-	game_edit.focus_exited.connect(func(): game_check.call(game_edit.text, true))
-	game_browse.pressed.connect(func():
-		var fd := FileDialog.new()
-		fd.file_mode = FileDialog.FILE_MODE_OPEN_DIR
-		fd.access = FileDialog.ACCESS_FILESYSTEM
-		fd.title = "Select your Battlefield 6 install folder"
-		if game_edit.text != "":
-			fd.current_dir = game_edit.text
-		fd.dir_selected.connect(func(d: String):
-			game_edit.text = d
-			game_check.call(d, true)
-			fd.queue_free())
-		fd.canceled.connect(func(): fd.queue_free())
-		EditorInterface.get_base_control().add_child(fd)
-		fd.popup_centered_ratio(0.6))
+	# The game folder moved to the TOP of the panel. It is the precondition
+	# for everything the plugin does, not a storage setting, and two places to
+	# set one path is one place to set it wrong. See _build_bf6_gate.
 
 	var purge_row := HBoxContainer.new(); host.add_child(purge_row)
 	purge_maps = OptionButton.new()
@@ -1257,6 +1343,11 @@ func _enter_tree() -> void:
 	lbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	dock.add_child(lbl)
 	dock.move_child(lbl, 0)
+	# The gate outranks even the status line: it is the precondition for
+	# everything, the status line included. And now that every control exists,
+	# re-apply it — it was built first, when there was nothing yet to grey out.
+	dock.move_child(bf6_row, 0)
+	_apply_bf6_gate()
 
 	var ver_lbl := Label.new()
 	ver_lbl.text = "v%s  ·  TabbedScamper & dfanz0r" % HighpolyUpdater.plugin_version()
@@ -2120,10 +2211,10 @@ func _update_progress() -> void:
 	# One bar for everything. A real download outranks this, so a transfer in
 	# progress is never hidden behind the background model sync.
 	if busy:
-		jobs.set_activity("Downloading models for this level",
+		jobs.set_activity("Loading models for this level",
 			int(sync.progress_ratio() * 1000.0), 1000)
 	else:
-		jobs.clear_activity("Downloading models for this level")
+		jobs.clear_activity("Loading models for this level")
 	sync_lbl.text = sync.status_text() if not HighpolyLib.use_legacy else ""
 
 # ---------- storage (usage + per-map purge) ----------
@@ -2987,7 +3078,7 @@ func _mapctx_changed() -> void:
 	dlg.confirmed.connect(func():
 		_mapctx_gen += 1
 		var gen2 := _mapctx_gen        # confirming the dialog is a fresh user action
-		lbl.text = "Downloading map data…"
+		lbl.text = "Loading map data…"
 		var ok: bool = await mapctx.download_map(dock, map, func(s: String): lbl.text = s)
 		if gen2 != _mapctx_gen:
 			return                     # toggled again while the map downloaded
