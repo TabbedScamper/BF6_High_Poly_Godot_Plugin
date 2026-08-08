@@ -41,6 +41,20 @@ const NOFIT := ["WreckTank_Abra01"]
 # props a builder parented under it.
 const FIT_EPOCH := 1
 
+# RAISED BY A LIVE CODE RELOAD, so overlays already in the scene are rebuilt
+# instead of kept.
+#
+# invalidate_materials() re-dresses the meshes the MAP CONTEXT built, because
+# those are the ones it recorded. A placed object's overlay is not one of them:
+# it is a separate _HIPOLY_PREVIEW node holding its own mesh, and nothing was
+# re-dressing it. So a material fix reached every prop on the map and every
+# object placed AFTER the reload, and left the objects already in the scene
+# exactly as they were - which is precisely how the user saw it.
+#
+# A counter rather than a version constant, because materials change on any code
+# edit and there is no number to bump by hand for it.
+static var build_epoch := 0
+
 # The open HighpolyGameSource, or null. Set by the plugin when it opens one, and
 # the reason this library no longer needs a download: an object is assembled
 # from the game's own prefab rather than fetched as a pre-baked GLB.
@@ -421,8 +435,9 @@ static func apply_one(node: Node3D, key: String, tier: Tier, textured: bool) -> 
 	# Bumping FIT_EPOCH retires every overlay fitted under the old rule, the same
 	# way GEOM_EPOCH retires a geometry cache whose rule changed.
 	if hp != null and (hp.get_meta("hp_asset", "") != id
-			or int(hp.get_meta("hp_fit", -1)) != FIT_EPOCH):
-		node.remove_child(hp); hp.queue_free(); hp = null   # tier/model/fit changed -> rebuild
+			or int(hp.get_meta("hp_fit", -1)) != FIT_EPOCH
+			or int(hp.get_meta("hp_build", -1)) != build_epoch):
+		node.remove_child(hp); hp.queue_free(); hp = null   # tier/model/fit/code changed -> rebuild
 	if hp == null:
 		var child := _instance_for(key, id)
 		if child == null: return false
@@ -430,6 +445,7 @@ static func apply_one(node: Node3D, key: String, tier: Tier, textured: bool) -> 
 		child.scene_file_path = ""           # anonymize: SDK level validator ignores us
 		child.set_meta("hp_asset", id)
 		child.set_meta("hp_fit", FIT_EPOCH)
+		child.set_meta("hp_build", build_epoch)
 		if id.ends_with(".obj"):
 			child.rotation_degrees = HP_ROT
 		node.add_child(child)

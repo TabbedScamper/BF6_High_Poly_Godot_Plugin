@@ -2032,6 +2032,19 @@ func _hot_reload() -> bool:
 				lbl.text = "Reloaded %d file(s), re-dressed %d mesh(es)" 					% [names.size(), st["meshes"]]
 			else:
 				lbl.text = "Reloaded %d file(s)" % names.size()
+			# AND THE OBJECTS THE USER PLACED, which the re-dress above does not
+			# reach: it re-dresses the meshes the MAP CONTEXT recorded, and a
+			# placed object's overlay is a separate node holding its own mesh.
+			# Without this a material fix landed on every prop on the map and on
+			# anything placed after the reload, and left the objects already in
+			# the scene untouched.
+			#
+			# Guarded and paced by _swap_placed_after_build rather than calling
+			# the apply straight: it refuses in Low-Poly, where the SDK's own
+			# proxies are what the user asked to see, and it restores the
+			# distance cull afterwards.
+			LibScript.build_epoch += 1
+			_swap_placed_after_build()
 			if what == "mixed":
 				# Those files resolve materials AND build geometry, and only the
 				# first half of that is live now. Saying so beats letting a road
