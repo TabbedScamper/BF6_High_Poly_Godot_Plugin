@@ -79,6 +79,7 @@ var profiler: Node          # performance recorder (highpoly_profiler.gd)
 var perf_btn: Button       # its start/stop button
 var mapctx: Node
 var sync: Node
+var reopen_btn: Button       # shown when a reload changed the panel layout
 var diag_pick: Button        # Pick mode: click-select our own overlay geometry
 # The note box. A member rather than a local because two different paths label
 # their reports with it: dropping a marker, and picking an object.
@@ -588,6 +589,16 @@ func _enter_tree() -> void:
 	check_btn.tooltip_text = "Checks for newly fixed models straight away. This happens by itself every hour, so you rarely need to press it."
 	check_btn.pressed.connect(_check_updates_now)
 	dock.add_child(_centred(check_btn))
+
+	# Shown only after a reload that changed the panel layout. See _reopen_panel:
+	# that is the one kind of change live reload cannot apply by itself.
+	reopen_btn = Button.new()
+	reopen_btn.text = "Reopen panel"
+	reopen_btn.visible = false
+	reopen_btn.tooltip_text = "The controls on this panel were built when the editor opened, so a change to the panel itself needs it built again. This switches the plugin off and straight back on: quicker than restarting the editor, and everything else you have open stays open. The level scenery is built again afterwards."
+	reopen_btn.pressed.connect(_reopen_panel)
+	dock.add_child(_centred(reopen_btn))
+
 	dock.add_child(job_row)      # takes the button's place while anything downloads
 
 	# ---- what the read of the install is actually doing ----------------------
@@ -1912,6 +1923,34 @@ func _unstock_after_save() -> void:
 	_reapply_placed_cull()
 
 
+# ---------- reopening the panel ----------
+#
+# WHAT LIVE RELOAD CANNOT DO, and the one case where that is confusing rather
+# than obvious. Replacing a script updates the code every existing object runs,
+# which is why a material fix reaches a prop that is already on screen. It cannot
+# un-create an object. This whole panel is built inline in _enter_tree, so every
+# control on it was constructed when the editor opened: a change that ADDS,
+# REMOVES or RELABELS a control changes the function that would build it and not
+# the buttons already sitting there.
+#
+# From the outside that is indistinguishable from "the reload did nothing", and
+# the reasonable conclusion is that the feature is broken. So when a reload
+# touches this file, say so and offer the button that actually applies it.
+#
+# Off and on again through the editor's own plugin switch, rather than anything
+# clever: that runs the real _exit_tree and _enter_tree, so the panel is rebuilt
+# by exactly the path that builds it at startup and there is no second, subtly
+# different construction to keep in step. Both calls are deferred because the
+# first one frees this object, and freeing it while one of its own methods is
+# on the stack is the crash that would follow.
+const PLUGIN_NAME := "highpoly_toggle"
+
+func _reopen_panel() -> void:
+	Log.info("Reopening the panel to apply a layout change.")
+	EditorInterface.call_deferred("set_plugin_enabled", PLUGIN_NAME, false)
+	EditorInterface.call_deferred("set_plugin_enabled", PLUGIN_NAME, true)
+
+
 func _hot_reload() -> bool:
 	# Asked on BOTH sides of the reload, because the answer is the difference.
 	# See HighpolyGameSource.geom_epoch for why it has to be a call and not a
@@ -1964,6 +2003,15 @@ func _hot_reload() -> bool:
 			Log.warn("Those files decide what geometry is BUILT, so the meshes "
 				+ "already in the scene are stale. Toggle Map Context off and "
 				+ "on to rebuild.")
+	# The panel is built once, at startup. A change to the file that builds it
+	# cannot move a control that already exists, so say so and put the button
+	# that applies it where the message is.
+	if names.has("highpoly_toggle.gd") and reopen_btn != null:
+		reopen_btn.visible = true
+		lbl.text += "  The panel layout changed: press Reopen panel."
+		Log.info("The panel itself changed. Its controls were built when the "
+			+ "editor opened, so reopening the plugin is what applies a layout "
+			+ "change. Nothing else needs it.")
 	return true
 
 
