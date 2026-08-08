@@ -1147,10 +1147,32 @@ func _road_material(key: String) -> Material:
 		_road_shader.code = ROAD_SHADER
 	var mat := ShaderMaterial.new()
 	mat.shader = _road_shader
+	# THE SURFACE GOES UNDER THE MARKINGS, and nothing in the file says so.
+	#
+	# These draw blended with depth writes off, so depth cannot separate two
+	# coplanar ribbons - whichever is submitted last wins. And they DO overlap:
+	# 3,189 record pairs intersect in XZ on this map, by design.
+	#
+	# The authored sequence does not help. Record order, vertex-buffer order and
+	# index-buffer order are all the SAME single sequence (checked), and in it
+	# the plain fills sit LATER than the detail - mean rank 275 against 189, with
+	# 976 pairs where a fill follows a marking. Emitting in file order, which is
+	# what we did, is therefore exactly what buries the road under a plain plane.
+	#
+	# The split is structural rather than a guess about size. A prop-less record
+	# takes a TERRAIN LAYER's material: that is a road surface. A record with its
+	# own property stream names a decal texture, and 238 of those 298 carry an
+	# `op` coverage mask, which is what a marking needs and a surface does not.
+	# The footprints agree - fills median 1,756 m2 against detail's 518 - but the
+	# binding is the reason, not the area.
+	#
+	# So: fills at priority 0, detail at 1. Godot draws higher priority later.
+	mat.render_priority = 1
 	# The terrain-layer route. The palette is the same one the ground reads, so
 	# a pavement decal and the pavement under it are painted from one source
 	# rather than two that can disagree.
 	if key.begins_with("layer:"):
+		mat.render_priority = 0
 		var li := int(key.substr(6))
 		var alb = _road_layer_albedo(li)
 		if alb != null:
