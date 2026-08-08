@@ -3735,34 +3735,11 @@ func _forward_3d_gui_input(camera: Camera3D, event: InputEvent) -> int:
 			if not hit.is_empty():
 				lbl.text = str(hit.get("msg", ""))
 				return EditorPlugin.AFTER_GUI_INPUT_STOP
-		# SELECT-THROUGH, so a high-poly model can be grabbed like anything else.
-		#
-		# ON THE PRESS. The first version of this answered the RELEASE instead, to
-		# avoid taking a press away from a gizmo drag, and it did not work: the
-		# editor had already started a BOX SELECT on the press it was given, and
-		# a box select finishes on release and sets its own (empty) result. So the
-		# selection was made and then immediately overwritten, and dragging a
-		# model just drew a rubber band. The press is the only event that can stop
-		# a box select from starting.
-		#
-		# What keeps this off a real gizmo drag is the already-selected test: a
-		# gizmo is only ever drawn on something that is already selected, so a
-		# press on the current selection is passed straight through and the gizmo
-		# behaves exactly as it always did. Any other press is a selection.
-		if mb.button_index == MOUSE_BUTTON_LEFT and mb.pressed and not mb.double_click:
-			var pn = LibScript.proxy_under(camera, mb.position,
-				EditorInterface.get_edited_scene_root())
-			if pn != null:
-				var sel := EditorInterface.get_selection()
-				var cur := sel.get_selected_nodes()
-				if cur.size() == 1 and cur[0] == pn:
-					return EditorPlugin.AFTER_GUI_INPUT_PASS   # its gizmo: hands off
-				# Additive with Shift, exactly as the editor's own picking is,
-				# or select-through would break multi-select.
-				if not mb.shift_pressed:
-					sel.clear()
-				sel.add_node(pn)
-				return EditorPlugin.AFTER_GUI_INPUT_STOP
+		# NO SELECTION HANDLING HERE ANY MORE. The proxy is left visible and
+		# drawing nothing (highpoly_lib.invisible_material), so the editor picks it
+		# natively and the gizmo is the ordinary gizmo. The hand-rolled version this
+		# replaces guessed from bounding boxes, stole presses meant for gizmo
+		# handles, and selected neighbours - all of which the engine gets right.
 	return EditorPlugin.AFTER_GUI_INPUT_PASS
 
 # ---------- pick mode ----------

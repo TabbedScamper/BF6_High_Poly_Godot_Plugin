@@ -491,6 +491,37 @@ static func _set_textured(hp: Node, textured: bool) -> void:
 		for c in n.get_children():
 			stack.append(c)
 
+# A PROXY THAT CANNOT BE SEEN BUT CAN STILL BE CLICKED.
+#
+# Godot's viewport picking only ever returns VISIBLE instances, so hiding the
+# proxy outright - which is what this used to do - made the object unclickable
+# and forced a hand-rolled ray test that guessed from bounding boxes, stole
+# clicks meant for gizmos, and grabbed neighbours. That was the jank.
+#
+# The proxy stays visible and draws NOTHING instead. Alpha scissor at a threshold
+# no texel can reach discards every fragment, which is cheaper than blending: it
+# stays in the opaque pass, writes no colour and no depth, and sorts against
+# nothing. Picking is unaffected because the editor ray-tests the MESH on the CPU
+# and never looks at what was rasterised.
+#
+# So the editor selects it natively, the gizmo is the ordinary gizmo, and the
+# overlay follows because it is a child. Nothing in the plugin touches selection
+# any more.
+static var _invisible_mat: StandardMaterial3D = null
+
+
+static func invisible_material() -> StandardMaterial3D:
+	if _invisible_mat == null:
+		var m := StandardMaterial3D.new()
+		m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR
+		m.alpha_scissor_threshold = 1.0
+		m.albedo_color = Color(1, 1, 1, 0)
+		m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		m.no_depth_test = false
+		_invisible_mat = m
+	return _invisible_mat
+
+
 static func _set_proxy_visible(node: Node3D, vis: bool) -> void:
 	# When HIDING (overlay active), user-placed nodes nested under this proxy
 	# are never touched — hiding a building's proxy must not vanish the props a
@@ -508,7 +539,26 @@ static func _set_proxy_visible(node: Node3D, vis: bool) -> void:
 		if scene_root != null and n.owner == scene_root:
 			continue                       # user content under the proxy: leave it alone
 		if n is GeometryInstance3D:
-			(n as GeometryInstance3D).visible = vis
+			var gi := n as GeometryInstance3D
+			if vis:
+				# Restore. visible is set as well as the override because older
+				# versions of this plugin hid the mesh outright, and a scene built
+				# under one of those would stay invisible forever otherwise.
+				gi.visible = true
+				if gi.has_meta("hp_prev_override"):
+					gi.material_override = gi.get_meta("hp_prev_override")
+					gi.remove_meta("hp_prev_override")
+				if gi.has_meta("hp_prev_shadow"):
+					gi.cast_shadow = int(gi.get_meta("hp_prev_shadow"))
+					gi.remove_meta("hp_prev_shadow")
+			else:
+				# Draw nothing, stay pickable.
+				gi.visible = true
+				if not gi.has_meta("hp_prev_override"):
+					gi.set_meta("hp_prev_override", gi.material_override)
+					gi.set_meta("hp_prev_shadow", gi.cast_shadow)
+				gi.material_override = invisible_material()
+				gi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		for c in n.get_children():
 			stack.append(c)
 
