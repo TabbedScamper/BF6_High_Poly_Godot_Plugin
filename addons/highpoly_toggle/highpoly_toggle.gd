@@ -1184,8 +1184,53 @@ All of it is read from your own Battlefield 6 installation."
 	host.add_child(mark_lbl)
 	mark_note = LineEdit.new()
 	mark_note.placeholder_text = "What is wrong here? e.g. wall missing"
-	mark_note.tooltip_text = "Describe the problem, then press Drop marker. The marker lands in front of the viewport camera and you can drag it onto the exact spot."
+	mark_note.tooltip_text = "Describe the problem, then press Enter to pin it to the selected object, or Drop marker to place it in front of the camera. Either way the note floats in the viewport, so a screenshot carries it."
 	host.add_child(mark_note)
+	# ENTER PINS THE NOTE TO WHAT IS SELECTED.
+	#
+	# Reviewing a build is a loop of "that one is wrong" -> say why -> move on,
+	# and having to aim a sphere at the thing you have already selected is the
+	# slow part of it. The note lands above the object's own bounds, so it reads
+	# as belonging to that prop rather than floating near it.
+	#
+	# With nothing selected it behaves exactly like Drop marker, which is the
+	# useful fallback rather than an error: the complaint is sometimes about a
+	# place rather than an object.
+	mark_note.text_submitted.connect(func(_t: String):
+		var r := EditorInterface.get_edited_scene_root()
+		if r == null:
+			lbl.text = "Open a level scene first."
+			return
+		var note: String = mark_note.text.strip_edges()
+		if note == "":
+			return
+		var sel := EditorInterface.get_selection().get_selected_nodes()
+		var target: Node3D = null
+		for n in sel:
+			if n is Node3D:
+				target = n as Node3D
+				break
+		var pos := HighpolyMarkers.camera_point()
+		var what := "in front of the camera"
+		if target != null:
+			# Above the object's own bounds. An empty box (a node with no
+			# geometry of its own) falls back to its origin plus a little, which
+			# is still on the thing rather than metres away from it.
+			var ab: AABB = LibScript._global_aabb(target)
+			if ab.size.length() > 0.001:
+				pos = ab.get_center() + Vector3(0, ab.size.y * 0.5 + 0.6, 0)
+			else:
+				pos = target.global_position + Vector3(0, 0.6, 0)
+			what = "on %s" % target.name
+		var m := HighpolyMarkers.add(r, note, pos)
+		if m == null:
+			lbl.text = "Could not place the note."
+			return
+		if target != null:
+			# Which object was being complained about, for the saved log.
+			m.set_meta("hp_note_target", str(r.get_path_to(target)))
+		mark_note.text = ""
+		lbl.text = "Note %s: %s" % [what, note])
 	var mark_row := HBoxContainer.new()
 	mark_row.alignment = BoxContainer.ALIGNMENT_CENTER
 	host.add_child(mark_row)
@@ -1212,12 +1257,17 @@ All of it is read from your own Battlefield 6 installation."
 	mark_row.add_child(mark_add)
 	var mark_clear := Button.new()
 	mark_clear.text = "Clear markers"
-	mark_clear.tooltip_text = "Removes every marker this panel created. Nothing else in the scene is touched."
+	# Clears the pick-mode tint as well. They were two buttons doing one thing -
+	# "put the scene back the way it looked" - and having them apart meant
+	# leaving a red prop behind after clearing the notes about it.
+	mark_clear.tooltip_text = "Removes every marker and note this panel created, and clears the red pick-mode tint. Nothing else in the scene is touched: the tint is an overlay pass, never a material swap."
 	mark_clear.pressed.connect(func():
 		var r := EditorInterface.get_edited_scene_root()
 		if r == null:
 			return
-		lbl.text = "Removed %d marker(s)." % HighpolyMarkers.clear(r))
+		var tints: int = HighpolyDiagnose.clear()
+		var marks: int = HighpolyMarkers.clear(r)
+		lbl.text = "Removed %d marker(s), cleared %d tint(s)." % [marks, tints])
 	mark_row.add_child(mark_clear)
 
 	# ---- refresh just what you are pointing at ----
@@ -1279,8 +1329,9 @@ All of it is read from your own Battlefield 6 installation."
 	# node and cannot be clicked apart from its body, they are a surface with
 	# their own shader state, and a surface is the granularity at which glass,
 	# liveries and cutouts actually go wrong.
-	diag_pick = CheckButton.new()
-	diag_pick.text = "Pick mode"
+	# A chip, like every other switch in this panel. It was the one CheckButton
+	# left, which made the panel look like two different tools stitched together.
+	diag_pick = Theme_.chip("Pick mode")
 	diag_pick.tooltip_text = "Click any object in the viewport, including the original map geometry the editor itself cannot select. Every click writes what that object is made of into the log: which depot answered, whether the shader state had a record, what textures it bound, and whether its cutout was honoured. Tab drills in (whole batch, one instance, one part), Shift+Tab steps back out, and clicking the same spot again also drills in. Alt+click steps out. Anything typed in the note box above labels the report."
 	diag_pick.toggled.connect(func(on: bool):
 		_pick_last = Vector2(-1e9, -1e9)
@@ -1292,12 +1343,6 @@ All of it is read from your own Battlefield 6 installation."
 				mapctx.game_source if mapctx != null else null))
 	diag_row.add_child(diag_pick)
 
-	var diag_clear := Button.new()
-	diag_clear.text = "Clear tints"
-	diag_clear.tooltip_text = "Removes the red diagnostic tint. The objects themselves are untouched: the tint is an overlay pass, never a material swap."
-	diag_clear.pressed.connect(func():
-		lbl.text = "Cleared %d tint(s)." % HighpolyDiagnose.clear())
-	diag_row.add_child(diag_clear)
 
 	# ---- performance recorder ----
 	# Everything about performance in this plugin has been reasoned from triangle
