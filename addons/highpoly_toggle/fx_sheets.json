@@ -1,0 +1,620 @@
+{
+ "eg_airburstimpactpoint_groundconnectline": {
+  "distinct": 1,
+  "n": 4,
+  "sheet": "common/fx/textures/sparks/sparks_square",
+  "total": 4
+ },
+ "eg_airplane_leading_edge_vapor": {
+  "distinct": 1,
+  "n": 14,
+  "sheet": "common/fx/textures/smoke/t_clasticsmoke_tg1_8x64_01_d",
+  "total": 14
+ },
+ "eg_dustmotes_flashlight_quad_es": {
+  "distinct": 1,
+  "n": 4,
+  "sheet": "common/fx/textures/debris/t_metalshrapnel_4x16_01_d",
+  "total": 4
+ },
+ "eg_explosion_shrapnel_hits": {
+  "distinct": 1,
+  "n": 25,
+  "sheet": "common/fx/textures/smoke/t_clasticsmoke_tg1_8x64_01_d",
+  "total": 25
+ },
+ "eg_explosion_shrapnel_hits_supersphere": {
+  "distinct": 1,
+  "n": 1,
+  "sheet": "common/fx/textures/smoke/t_clasticsmoke_tg1_8x64_01_d",
+  "total": 1
+ },
+ "eg_firedistortion_es": {
+  "distinct": 1,
+  "n": 8,
+  "sheet": "common/fx/textures/smoke/t_clasticsmoke_tg1_8x64_01_d",
+  "total": 8
+ },
+ "eg_gs_afterburner_fire_01": {
+  "distinct": 2,
+  "n": 5,
+  "sheet": "common/fx/textures/trails/t_missile_shockdiamond_flame_vertical",
+  "total": 10
+ },
+ "eg_gs_basicchunks_01": {
+  "distinct": 20,
+  "n": 915,
+  "sheet": "common/fx/textures/debris/t_debris_finedetail_01_d",
+  "total": 1672
+ },
+ "eg_gs_basicchunks_01_destructiondamage": {
+  "distinct": 9,
+  "n": 91,
+  "sheet": "common/fx/textures/debris/t_debris_finedetail_01_d",
+  "total": 122
+ },
+ "eg_gs_basicchunks_altstate": {
+  "distinct": 2,
+  "n": 7,
+  "sheet": "common/fx/textures/debris/t_debris_finedetail_01_d",
+  "total": 10
+ },
+ "eg_gs_basicchunks_facing_01": {
+  "distinct": 1,
+  "n": 1,
+  "sheet": "common/fx/textures/debris/t_debris_finedetail_01_d",
+  "total": 1
+ },
+ "eg_gs_basicchunks_footstep_01": {
+  "distinct": 6,
+  "n": 3,
+  "sheet": "common/fx/textures/debris/t_debris_finedetail_01_d",
+  "total": 12
+ },
+ "eg_gs_basicchunks_fountain": {
+  "distinct": 1,
+  "n": 7,
+  "sheet": "common/fx/textures/water/t_waterbubbles_2x4_d",
+  "total": 7
+ },
+ "eg_gs_basicchunks_moving_01": {
+  "distinct": 1,
+  "n": 1,
+  "sheet": "common/fx/textures/water/t_waterfoam_d",
+  "total": 1
+ },
+ "eg_gs_basicchunks_terrain_mimicparent_01": {
+  "distinct": 2,
+  "n": 2,
+  "sheet": "common/fx/textures/smoke/t_powdersmoke_5x25_01_d",
+  "total": 3
+ },
+ "eg_gs_basicelectric_01": {
+  "distinct": 1,
+  "n": 85,
+  "sheet": "common/fx/textures/electric/t_electric_2x2_d",
+  "total": 85
+ },
+ "eg_gs_basicfire_01": {
+  "distinct": 20,
+  "n": 126,
+  "sheet": "common/fx/textures/fire/t_anim_fireturbulent_01_6x36_d",
+  "total": 521
+ },
+ "eg_gs_basicfire_01_inheritvelocity_do_not_use": {
+  "distinct": 3,
+  "n": 3,
+  "sheet": "common/fx/textures/smoke/t_smokepuff_tg1_6x36_d",
+  "total": 6
+ },
+ "eg_gs_basicfire_closecam": {
+  "distinct": 1,
+  "n": 1,
+  "sheet": "common/fx/textures/fire/t_anim_fireturbulent_01_6x36_d",
+  "total": 1
+ },
+ "eg_gs_basicfire_emitterposition_01": {
+  "distinct": 1,
+  "n": 3,
+  "sheet": "common/fx/textures/glow/t_lightscatter_1024_d",
+  "total": 3
+ },
+ "eg_gs_basicfire_facing_01": {
+  "distinct": 5,
+  "n": 27,
+  "sheet": "common/fx/textures/sparks/sparks_square",
+  "total": 62
+ },
+ "eg_gs_basicfire_fullring_hs": {
+  "distinct": 1,
+  "n": 1,
+  "sheet": "common/fx/textures/fire/t_anim_fireturbulent_01_6x36_d",
+  "total": 1
+ },
+ "eg_gs_basicfire_mimicchild_01": {
+  "distinct": 6,
+  "n": 248,
+  "sheet": "common/fx/textures/smoke/t_clasticsmoke_tg1_8x64_01_d",
+  "total": 275
+ },
+ "eg_gs_basicfire_mimicpsearch_02": {
+  "distinct": 3,
+  "n": 3,
+  "sheet": "common/fx/textures/smoke/t_powdersmoke_5x25_01_d",
+  "total": 5
+ },
+ "eg_gs_basicfire_moving_01": {
+  "distinct": 12,
+  "n": 42,
+  "sheet": "common/fx/textures/fire/t_anim_fireturbulent_01_6x36_d",
+  "total": 106
+ },
+ "eg_gs_basicfire_moving_opacityparam_01": {
+  "distinct": 2,
+  "n": 2,
+  "sheet": "common/fx/textures/smoke/t_smokepuff_tg1_6x36_d",
+  "total": 4
+ },
+ "eg_gs_basicfire_ringmimicchild_01": {
+  "distinct": 1,
+  "n": 1,
+  "sheet": "common/fx/textures/smoke/t_clasticsmoke_tg1_8x64_01_d",
+  "total": 1
+ },
+ "eg_gs_basicfire_secuirtylight_minscreen": {
+  "distinct": 1,
+  "n": 2,
+  "sheet": "common/fx/textures/glow/t_glowstreak_01_d",
+  "total": 2
+ },
+ "eg_gs_basicfire_terrainsnap_01": {
+  "distinct": 3,
+  "n": 31,
+  "sheet": "common/fx/textures/fire/t_anim_fireturbulent_01_6x36_d",
+  "total": 54
+ },
+ "eg_gs_basicfiresmoke_ringmimicchild_hs": {
+  "distinct": 1,
+  "n": 5,
+  "sheet": "common/fx/textures/smoke/t_clasticsmoke_tg1_8x64_01_d",
+  "total": 5
+ },
+ "eg_gs_basicribbon_01": {
+  "distinct": 6,
+  "n": 32,
+  "sheet": "common/fx/textures/trails/t_smokewispythick_trail_01_d",
+  "total": 73
+ },
+ "eg_gs_basicribbon_01_fg": {
+  "distinct": 1,
+  "n": 8,
+  "sheet": "common/fx/textures/trails/t_smokethick_trail_01_d",
+  "total": 8
+ },
+ "eg_gs_basicribbon_moving_01": {
+  "distinct": 1,
+  "n": 5,
+  "sheet": "common/fx/textures/trails/t_light_trail_01_d",
+  "total": 5
+ },
+ "eg_gs_basicsmoke_01": {
+  "distinct": 31,
+  "n": 1283,
+  "sheet": "common/fx/textures/smoke/t_seq_thinsmoke_turb_8x64_d",
+  "total": 3544
+ },
+ "eg_gs_basicsmoke_01_destructiondamage": {
+  "distinct": 6,
+  "n": 159,
+  "sheet": "common/fx/textures/smoke/t_anim_smokeloop_thick_8x48",
+  "total": 335
+ },
+ "eg_gs_basicsmoke_11_re": {
+  "distinct": 1,
+  "n": 2,
+  "sheet": "common/fx/textures/smoke/t_smoke_wispy_light_7x144_d",
+  "total": 2
+ },
+ "eg_gs_basicsmoke_altstate": {
+  "distinct": 5,
+  "n": 7,
+  "sheet": "common/fx/textures/smoke/t_clasticsmoke_tg1_8x64_01_d",
+  "total": 20
+ },
+ "eg_gs_basicsmoke_dist_mimicparent_01": {
+  "distinct": 4,
+  "n": 8,
+  "sheet": "common/fx/textures/fire/t_anim_fireturbulent_01_6x36_d",
+  "total": 20
+ },
+ "eg_gs_basicsmoke_downwash_01": {
+  "distinct": 2,
+  "n": 11,
+  "sheet": "common/fx/textures/smoke/t_smokepuff_tg1_6x36_d",
+  "total": 18
+ },
+ "eg_gs_basicsmoke_footstep_01": {
+  "distinct": 5,
+  "n": 19,
+  "sheet": "common/fx/textures/smoke/t_smokepuff_tg1_6x36_d",
+  "total": 25
+ },
+ "eg_gs_basicsmoke_fullring_hs": {
+  "distinct": 3,
+  "n": 5,
+  "sheet": "common/fx/textures/smoke/t_clasticsmoke_tg1_8x64_01_d",
+  "total": 7
+ },
+ "eg_gs_basicsmoke_meshemitter_01": {
+  "distinct": 1,
+  "n": 4,
+  "sheet": "common/fx/textures/smoke/t_smokepuff_tg1_6x36_d",
+  "total": 4
+ },
+ "eg_gs_basicsmoke_mimicparent_01": {
+  "distinct": 6,
+  "n": 199,
+  "sheet": "common/fx/textures/smoke/t_clasticsmoke_tg1_8x64_01_d",
+  "total": 213
+ },
+ "eg_gs_basicsmoke_moving_01": {
+  "distinct": 12,
+  "n": 87,
+  "sheet": "common/fx/textures/smoke/t_smokepuff_tg1_6x36_d",
+  "total": 207
+ },
+ "eg_gs_basicsmoke_moving_killonstop": {
+  "distinct": 4,
+  "n": 9,
+  "sheet": "common/fx/textures/water/t_water_splash_2x4_d",
+  "total": 18
+ },
+ "eg_gs_basicsmoke_moving_mimicparent_01": {
+  "distinct": 2,
+  "n": 34,
+  "sheet": "common/fx/textures/smoke/t_clasticsmoke_tg1_8x64_01_d",
+  "total": 40
+ },
+ "eg_gs_basicsmoke_moving_opacityparam_01": {
+  "distinct": 4,
+  "n": 10,
+  "sheet": "common/fx/textures/smoke/t_smokepuff_tg1_6x36_d",
+  "total": 21
+ },
+ "eg_gs_basicsmoke_moving_turbulence_01": {
+  "distinct": 2,
+  "n": 2,
+  "sheet": "common/fx/textures/smoke/t_smokepuff_tg1_6x36_d",
+  "total": 4
+ },
+ "eg_gs_basicsmoke_moving_velocityopacityparam_01": {
+  "distinct": 4,
+  "n": 24,
+  "sheet": "common/fx/textures/smoke/t_powdersmoke_5x25_01_d",
+  "total": 46
+ },
+ "eg_gs_basicsmoke_movingem_03": {
+  "distinct": 3,
+  "n": 6,
+  "sheet": "common/fx/textures/smoke/t_smokepuff_tg1_6x36_d",
+  "total": 10
+ },
+ "eg_gs_basicsmoke_portal": {
+  "distinct": 3,
+  "n": 2,
+  "sheet": "common/fx/textures/smoke/t_clasticsmoke_tg1_8x64_01_d",
+  "total": 4
+ },
+ "eg_gs_basicsmoke_preroll_01": {
+  "distinct": 4,
+  "n": 4,
+  "sheet": "common/fx/textures/smoke/t_seq_thinsmoke_turb_8x64_d",
+  "total": 14
+ },
+ "eg_gs_basicsmoke_preroll_mimicparent_01": {
+  "distinct": 1,
+  "n": 1,
+  "sheet": "common/fx/textures/smoke/t_clasticsmoke_tg1_8x64_01_d",
+  "total": 1
+ },
+ "eg_gs_basicsmoke_preroll_schematic": {
+  "distinct": 1,
+  "n": 3,
+  "sheet": "common/fx/textures/smoke/t_smokepuff_tg1_6x36_d",
+  "total": 3
+ },
+ "eg_gs_basicsmoke_terrainsnap_03": {
+  "distinct": 5,
+  "n": 33,
+  "sheet": "common/fx/textures/smoke/t_smokepuff_tg1_6x36_d",
+  "total": 51
+ },
+ "eg_gs_basicsmoke_terrainsnap_03_exclusionenabled": {
+  "distinct": 1,
+  "n": 1,
+  "sheet": "common/fx/textures/smoke/t_smokepuff_tg1_6x36_d",
+  "total": 1
+ },
+ "eg_gs_basicsmoke_terrainsnap_schematic": {
+  "distinct": 1,
+  "n": 5,
+  "sheet": "common/fx/textures/smoke/t_smokepuff_tg1_6x36_d",
+  "total": 5
+ },
+ "eg_gs_basicsmoke_trailchild": {
+  "distinct": 1,
+  "n": 2,
+  "sheet": "common/fx/textures/fire/t_firedirectional_6x48_1.5y",
+  "total": 2
+ },
+ "eg_gs_basicsmoke_turbulence_moving_02": {
+  "distinct": 2,
+  "n": 16,
+  "sheet": "common/fx/textures/smoke/t_smokepuff_tg1_6x36_d",
+  "total": 21
+ },
+ "eg_gs_basicsmoke_vec3param_03": {
+  "distinct": 1,
+  "n": 7,
+  "sheet": "common/fx/textures/smoke/t_smokepuff_tg1_6x36_d",
+  "total": 7
+ },
+ "eg_gs_basicsmoke_vehicle_exhaust_01": {
+  "distinct": 4,
+  "n": 15,
+  "sheet": "common/fx/textures/smoke/t_smokepuff_tg1_6x36_d",
+  "total": 36
+ },
+ "eg_gs_basicsmokearm_01": {
+  "distinct": 11,
+  "n": 269,
+  "sheet": "common/fx/textures/smoke/t_smokearm_02_4x4_d",
+  "total": 731
+ },
+ "eg_gs_basicsmokearm_01_destructiondamage": {
+  "distinct": 4,
+  "n": 31,
+  "sheet": "common/fx/textures/smoke/t_smokespikes_diff_01_8x32_d",
+  "total": 61
+ },
+ "eg_gs_basicsmokearm_01_moving": {
+  "distinct": 1,
+  "n": 16,
+  "sheet": "common/fx/textures/smoke/t_smokespikes_diff_01_8x32_d",
+  "total": 16
+ },
+ "eg_gs_basicsmokearm_altstate": {
+  "distinct": 6,
+  "n": 5,
+  "sheet": "common/fx/textures/smoke/t_smokespikes_diff_01_8x32_d",
+  "total": 15
+ },
+ "eg_gs_basicsmokearm_boat_wake_01_moving": {
+  "distinct": 2,
+  "n": 14,
+  "sheet": "common/fx/textures/water/t_waterpillar_4x2_d",
+  "total": 22
+ },
+ "eg_gs_basicsmokearm_footstep_01": {
+  "distinct": 1,
+  "n": 3,
+  "sheet": "common/fx/textures/water/t_waterspray_arm_01_2x2_d",
+  "total": 3
+ },
+ "eg_gs_basicsmokearm_jetwash_01": {
+  "distinct": 2,
+  "n": 3,
+  "sheet": "common/fx/textures/smoke/t_smokearmsup_8x64_lr1_0.9y_tr",
+  "total": 5
+ },
+ "eg_gs_basicsmokearm_mimicparent_01": {
+  "distinct": 2,
+  "n": 15,
+  "sheet": "common/fx/textures/smoke/t_clasticsmoke_tg1_8x64_01_d",
+  "total": 19
+ },
+ "eg_gs_basicwaterchunks_colevent_01": {
+  "distinct": 1,
+  "n": 2,
+  "sheet": "common/fx/textures/smoke/t_powdersmoke_5x25_01_d",
+  "total": 2
+ },
+ "eg_gs_breath_smoke_01": {
+  "distinct": 1,
+  "n": 3,
+  "sheet": "common/fx/textures/smoke/t_clasticsmoke_tg1_8x64_01_d",
+  "total": 3
+ },
+ "eg_gs_clouds_static_me_01": {
+  "distinct": 1,
+  "n": 3,
+  "sheet": "common/fx/textures/smoke/t_smokepuff_tg1_6x36_d",
+  "total": 3
+ },
+ "eg_gs_dust_excl_hrztrpz_02": {
+  "distinct": 4,
+  "n": 3,
+  "sheet": "common/fx/textures/smoke/t_smokethick_02_tg1_4x32f",
+  "total": 10
+ },
+ "eg_gs_dust_excl_hrztrpzmulti_04": {
+  "distinct": 1,
+  "n": 3,
+  "sheet": "common/fx/textures/smoke/t_smoke_wispy_light_7x144_d",
+  "total": 3
+ },
+ "eg_gs_fire_zsnapring_hs": {
+  "distinct": 1,
+  "n": 1,
+  "sheet": "common/fx/textures/fire/t_firedirectional_6x48_1.5y",
+  "total": 1
+ },
+ "eg_gs_firelinesegments_01": {
+  "distinct": 1,
+  "n": 2,
+  "sheet": "common/fx/textures/fire/t_anim_fireturbulent_01_6x36_d",
+  "total": 2
+ },
+ "eg_gs_gadget_muzzleflash_fire_01": {
+  "distinct": 4,
+  "n": 2,
+  "sheet": "common/fx/textures/fire/t_anim_fireturbulent_01_6x36_d",
+  "total": 8
+ },
+ "eg_gs_impactdot_01": {
+  "distinct": 1,
+  "n": 72,
+  "sheet": "common/fx/textures/smoke/smoke_thin_01_4x2",
+  "total": 72
+ },
+ "eg_gs_impactdot_01_destructiondamage": {
+  "distinct": 1,
+  "n": 9,
+  "sheet": "common/fx/textures/smoke/smoke_thin_01_4x2",
+  "total": 9
+ },
+ "eg_gs_multiribbondist_01": {
+  "distinct": 6,
+  "n": 58,
+  "sheet": "common/fx/textures/trails/t_smokethick_trail_01_d",
+  "total": 84
+ },
+ "eg_gs_muzzleflash_fire_01": {
+  "distinct": 15,
+  "n": 72,
+  "sheet": "common/fx/textures/sparks/sparks_square",
+  "total": 360
+ },
+ "eg_gs_muzzleflash_smoke_01": {
+  "distinct": 4,
+  "n": 161,
+  "sheet": "common/fx/textures/smoke/t_smokepuff_tg1_6x36_d",
+  "total": 427
+ },
+ "eg_gs_oneofftexturesmoke_01": {
+  "distinct": 1,
+  "n": 25,
+  "sheet": "common/fx/textures/smoke/t_smokearmsup_8x64_lr1_0.9y_tr",
+  "total": 25
+ },
+ "eg_gs_ring_terrain_aligned": {
+  "distinct": 1,
+  "n": 1,
+  "sheet": "common/fx/textures/smoke/t_seq_thinsmoke_turb_8x64_d",
+  "total": 1
+ },
+ "eg_gs_screensplats_static_02": {
+  "distinct": 5,
+  "n": 30,
+  "sheet": "common/fx/textures/onscreen/onscreen_blobs_02_4x1",
+  "total": 56
+ },
+ "eg_gs_screensplats_static_02_killonstop": {
+  "distinct": 1,
+  "n": 1,
+  "sheet": "common/fx/textures/blood/t_bloodsplats_8x4",
+  "total": 1
+ },
+ "eg_gs_screensplats_static_spawn_emitterparam1": {
+  "distinct": 2,
+  "n": 1,
+  "sheet": "common/fx/textures/onscreen/onscreen_blobs_02_4x1",
+  "total": 2
+ },
+ "eg_gs_smoke_closesectionring_01": {
+  "distinct": 2,
+  "n": 1,
+  "sheet": "common/fx/textures/smoke/t_clasticsmoke_tg1_8x64_01_d",
+  "total": 2
+ },
+ "eg_gs_smoke_closesectionring_hs": {
+  "distinct": 3,
+  "n": 2,
+  "sheet": "common/fx/textures/smoke/t_clasticsmoke_tg1_8x64_01_d",
+  "total": 4
+ },
+ "eg_gs_smokegrenade_04": {
+  "distinct": 2,
+  "n": 3,
+  "sheet": "common/fx/textures/smoke/t_smokepuff_tg1_6x36_d",
+  "total": 6
+ },
+ "eg_gs_smokegrenade_child": {
+  "distinct": 1,
+  "n": 1,
+  "sheet": "common/fx/textures/smoke/t_smokepuff_tg1_6x36_d",
+  "total": 1
+ },
+ "eg_gs_smokegrenade_insidecamprox_01": {
+  "distinct": 1,
+  "n": 3,
+  "sheet": "common/fx/textures/smoke/t_anim_turbulentthicksmoke01_8x32_d",
+  "total": 3
+ },
+ "eg_gs_soldier_underwater_godrays_01": {
+  "distinct": 1,
+  "n": 1,
+  "sheet": "common/fx/textures/smoke/t_smoke_puff_4x8_d",
+  "total": 1
+ },
+ "eg_gs_staticemissive_01": {
+  "distinct": 5,
+  "n": 14,
+  "sheet": "common/fx/textures/sparks/t_sparks_round_01_d",
+  "total": 27
+ },
+ "eg_gs_staticemissive_gadgetlight_01": {
+  "distinct": 2,
+  "n": 13,
+  "sheet": "common/fx/textures/glow/t_glow_01_d",
+  "total": 20
+ },
+ "eg_gs_staticemissive_gadgetlight_tugs_01": {
+  "distinct": 1,
+  "n": 7,
+  "sheet": "common/fx/textures/glow/t_glow_01_d",
+  "total": 7
+ },
+ "eg_gs_staticemissive_looping_01": {
+  "distinct": 1,
+  "n": 3,
+  "sheet": "common/fx/textures/glow/t_glow_01_d",
+  "total": 3
+ },
+ "eg_gs_staticquads_01": {
+  "distinct": 1,
+  "n": 34,
+  "sheet": "common/fx/textures/sparks/impact_sparks_02_4x2",
+  "total": 34
+ },
+ "eg_gs_vehicle_waterwakes": {
+  "distinct": 4,
+  "n": 10,
+  "sheet": "common/fx/textures/smoke/t_powdersmoke_5x25_01_d",
+  "total": 29
+ },
+ "eg_ring_gs_screensplats_ext_param": {
+  "distinct": 2,
+  "n": 4,
+  "sheet": "common/fx/textures/blood/t_bloodsplats_8x4",
+  "total": 8
+ },
+ "eg_soldier_sliding_feet_01": {
+  "distinct": 3,
+  "n": 16,
+  "sheet": "common/fx/textures/smoke/t_powdersmoke_5x25_01_d",
+  "total": 20
+ },
+ "eg_vehicle_treads_01": {
+  "distinct": 6,
+  "n": 40,
+  "sheet": "common/fx/textures/smoke/t_powdersmoke_5x25_01_d",
+  "total": 105
+ },
+ "eg_vehicle_wheels_01": {
+  "distinct": 5,
+  "n": 69,
+  "sheet": "common/fx/textures/smoke/t_powdersmoke_5x25_01_d",
+  "total": 94
+ }
+}

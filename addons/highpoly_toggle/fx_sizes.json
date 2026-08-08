@@ -1,0 +1,740 @@
+{
+ "eg_airburstimpactpoint_decal": {
+  "size": 1.0,
+  "field": "SpawnSize",
+  "n": 1,
+  "p25": 1.0,
+  "p75": 1.0,
+  "min": 1.0,
+  "max": 1.0
+ },
+ "eg_airburstimpactpoint_groundconnectline": {
+  "size": 1.0,
+  "field": "BaseSize",
+  "n": 4,
+  "p25": 0.6,
+  "p75": 1.0,
+  "min": 0.6,
+  "max": 1.0
+ },
+ "eg_debris_cont_es_terrain_vortex_1": {
+  "size": 0.065,
+  "field": "QuadSize",
+  "n": 3,
+  "p25": 0.065,
+  "p75": 0.065,
+  "min": 0.065,
+  "max": 0.065
+ },
+ "eg_debrisclusteroid_many_es_24p": {
+  "size": 0.6,
+  "field": "SpawnSize",
+  "n": 3,
+  "p25": 0.6,
+  "p75": 1.3,
+  "min": 0.6,
+  "max": 1.3
+ },
+ "eg_debrisclusteroid_many_es_6p": {
+  "size": 1.5,
+  "field": "SpawnSize",
+  "n": 4,
+  "p25": 1.5,
+  "p75": 1.5,
+  "min": 0.7,
+  "max": 1.5
+ },
+ "eg_debrisclusteroid_many_es_7p": {
+  "size": 1.2,
+  "field": "SpawnSize",
+  "n": 1,
+  "p25": 1.2,
+  "p75": 1.2,
+  "min": 1.2,
+  "max": 1.2
+ },
+ "eg_debrisclusteroid_many_es_8p": {
+  "size": 0.2,
+  "field": "SpawnSize",
+  "n": 28,
+  "p25": 0.1,
+  "p75": 0.2,
+  "min": 0.055,
+  "max": 0.5
+ },
+ "eg_explosion_shrapnel_hits": {
+  "size": 2.6,
+  "field": "BaseSize",
+  "n": 34,
+  "p25": 2.6,
+  "p75": 2.6,
+  "min": 2.6,
+  "max": 6.0
+ },
+ "eg_explosion_shrapnel_hits_supersphere": {
+  "size": 0.7,
+  "field": "BaseSize",
+  "n": 2,
+  "p25": 0.7,
+  "p75": 0.7,
+  "min": 0.7,
+  "max": 0.7
+ },
+ "eg_firedistortion_es": {
+  "size": 6.0,
+  "field": "BaseSize",
+  "n": 79,
+  "p25": 2.0,
+  "p75": 15.0,
+  "min": 0.4,
+  "max": 500.0
+ },
+ "eg_firedistortion_moving_es": {
+  "size": 0.1,
+  "field": "BaseSize",
+  "n": 6,
+  "p25": 0.05,
+  "p75": 0.1,
+  "min": 0.05,
+  "max": 0.1
+ },
+ "eg_grid_sparks": {
+  "size": 0.02,
+  "field": "QuadSize",
+  "n": 1,
+  "p25": 0.02,
+  "p75": 0.02,
+  "min": 0.02,
+  "max": 0.02
+ },
+ "eg_gs_basicchunks_01": {
+  "size": 3.48,
+  "field": "BaseSize",
+  "n": 161,
+  "p25": 2.0,
+  "p75": 5.0,
+  "min": 0.2,
+  "max": 15.0
+ },
+ "eg_gs_basicchunks_fountain": {
+  "size": 0.04,
+  "field": "BaseSize",
+  "n": 2,
+  "p25": 0.04,
+  "p75": 0.04,
+  "min": 0.04,
+  "max": 0.04
+ },
+ "eg_gs_basicelectric_01": {
+  "size": 0.24,
+  "field": "BaseSize",
+  "n": 2,
+  "p25": 0.24,
+  "p75": 0.24,
+  "min": 0.24,
+  "max": 0.24
+ },
+ "eg_gs_basicfire_01": {
+  "size": 1.25,
+  "field": "BaseSize",
+  "n": 202,
+  "p25": 0.613333,
+  "p75": 2.25,
+  "min": 0.1,
+  "max": 40.0
+ },
+ "eg_gs_basicfire_emitterposition_01": {
+  "size": 0.05,
+  "field": "BaseSize",
+  "n": 2,
+  "p25": 0.05,
+  "p75": 0.05,
+  "min": 0.05,
+  "max": 0.05
+ },
+ "eg_gs_basicfire_facing_01": {
+  "size": 0.3,
+  "field": "BaseSize",
+  "n": 28,
+  "p25": 0.2,
+  "p75": 1.2,
+  "min": 0.08,
+  "max": 12.0
+ },
+ "eg_gs_basicfire_mimicchild_01": {
+  "size": 1.0,
+  "field": "BaseSize",
+  "n": 7,
+  "p25": 0.95,
+  "p75": 1.1,
+  "min": 0.95,
+  "max": 1.5
+ },
+ "eg_gs_basicfire_moving_01": {
+  "size": 0.25,
+  "field": "BaseSize",
+  "n": 9,
+  "p25": 0.12,
+  "p75": 0.6,
+  "min": 0.05,
+  "max": 0.75
+ },
+ "eg_gs_basicfire_secuirtylight_minscreen": {
+  "size": 0.3,
+  "field": "BaseSize",
+  "n": 2,
+  "p25": 0.2,
+  "p75": 0.3,
+  "min": 0.2,
+  "max": 0.3
+ },
+ "eg_gs_basicfire_terrainsnap_01": {
+  "size": 1.5,
+  "field": "BaseSize",
+  "n": 6,
+  "p25": 1.0,
+  "p75": 2.0,
+  "min": 0.490666,
+  "max": 3.0
+ },
+ "eg_gs_basicfire_terrainsnap_01_snapeveryframe": {
+  "size": 2.0,
+  "field": "BaseSize",
+  "n": 1,
+  "p25": 2.0,
+  "p75": 2.0,
+  "min": 2.0,
+  "max": 2.0
+ },
+ "eg_gs_basicribbon_01": {
+  "size": 0.05,
+  "field": "WidthMult",
+  "n": 30,
+  "p25": 0.03,
+  "p75": 0.15,
+  "min": 0.03,
+  "max": 1.0
+ },
+ "eg_gs_basicribbon_moving_01": {
+  "size": 0.05,
+  "field": "WidthMult",
+  "n": 8,
+  "p25": 0.04,
+  "p75": 0.1,
+  "min": 0.03,
+  "max": 0.2
+ },
+ "eg_gs_basicsmoke_01": {
+  "size": 3.0,
+  "field": "BaseSize",
+  "n": 517,
+  "p25": 1.25,
+  "p75": 5.0,
+  "min": 0.04,
+  "max": 500.0
+ },
+ "eg_gs_basicsmoke_camheightfade": {
+  "size": 25.0,
+  "field": "BaseSize",
+  "n": 1,
+  "p25": 25.0,
+  "p75": 25.0,
+  "min": 25.0,
+  "max": 25.0
+ },
+ "eg_gs_basicsmoke_mimicparent_01": {
+  "size": 4.0,
+  "field": "BaseSize",
+  "n": 42,
+  "p25": 2.014988,
+  "p75": 6.0,
+  "min": 1.0,
+  "max": 130.0
+ },
+ "eg_gs_basicsmoke_moving_01": {
+  "size": 0.75,
+  "field": "BaseSize",
+  "n": 14,
+  "p25": 0.7,
+  "p75": 1.0,
+  "min": 0.25,
+  "max": 1.2
+ },
+ "eg_gs_basicsmoke_moving_turbulence_01": {
+  "size": 0.7,
+  "field": "BaseSize",
+  "n": 2,
+  "p25": 0.7,
+  "p75": 0.7,
+  "min": 0.7,
+  "max": 0.7
+ },
+ "eg_gs_basicsmoke_portal": {
+  "size": 0.9,
+  "field": "BaseSize",
+  "n": 4,
+  "p25": 0.3,
+  "p75": 3.5,
+  "min": 0.1,
+  "max": 3.5
+ },
+ "eg_gs_basicsmoke_preroll_01": {
+  "size": 6.6,
+  "field": "BaseSize",
+  "n": 7,
+  "p25": 5.331982,
+  "p75": 8.0,
+  "min": 2.75,
+  "max": 31.200001
+ },
+ "eg_gs_basicsmoke_terrainsnap_03": {
+  "size": 4.6,
+  "field": "BaseSize",
+  "n": 11,
+  "p25": 2.0,
+  "p75": 8.0,
+  "min": 1.25,
+  "max": 14.0
+ },
+ "eg_gs_basicsmoke_turbulence_moving_02": {
+  "size": 2.0,
+  "field": "BaseSize",
+  "n": 5,
+  "p25": 1.0,
+  "p75": 3.5,
+  "min": 0.55,
+  "max": 3.5
+ },
+ "eg_gs_basicsmoke_vehicle_exhaust_01": {
+  "size": 10.0,
+  "field": "BaseSize",
+  "n": 25,
+  "p25": 10.0,
+  "p75": 14.0,
+  "min": 7.0,
+  "max": 16.0
+ },
+ "eg_gs_basicsmokearm_01": {
+  "size": 5.0,
+  "field": "BaseSize",
+  "n": 50,
+  "p25": 3.0,
+  "p75": 8.0,
+  "min": 0.5,
+  "max": 45.0
+ },
+ "eg_gs_cohesivesmoke_preroll_5pt_01": {
+  "size": 15.0,
+  "field": "BaseSize",
+  "n": 2,
+  "p25": 9.78,
+  "p75": 15.0,
+  "min": 9.78,
+  "max": 15.0
+ },
+ "eg_gs_firelinesegments_01": {
+  "size": 0.75,
+  "field": "BaseSize",
+  "n": 1,
+  "p25": 0.75,
+  "p75": 0.75,
+  "min": 0.75,
+  "max": 0.75
+ },
+ "eg_gs_gadget_muzzleflash_fire_01": {
+  "size": 0.02,
+  "field": "BaseSize",
+  "n": 4,
+  "p25": 0.02,
+  "p75": 0.04,
+  "min": 0.015,
+  "max": 0.04
+ },
+ "eg_gs_multiribbondist_01": {
+  "size": 0.1,
+  "field": "WidthMult",
+  "n": 22,
+  "p25": 0.01,
+  "p75": 0.3,
+  "min": 0.01,
+  "max": 4.0
+ },
+ "eg_gs_muzzleflash_fire_01": {
+  "size": 0.15,
+  "field": "BaseSize",
+  "n": 51,
+  "p25": 0.04,
+  "p75": 0.5,
+  "min": 0.015,
+  "max": 2.5
+ },
+ "eg_gs_muzzleflash_smoke_01": {
+  "size": 0.25,
+  "field": "BaseSize",
+  "n": 28,
+  "p25": 0.2,
+  "p75": 0.25,
+  "min": 0.2,
+  "max": 1.25
+ },
+ "eg_gs_screensplats_static_02": {
+  "size": 0.07,
+  "field": "BaseSize",
+  "n": 10,
+  "p25": 0.012,
+  "p75": 0.168,
+  "min": 0.012,
+  "max": 0.2
+ },
+ "eg_gs_staticemissive_01": {
+  "size": 0.5,
+  "field": "BaseSize",
+  "n": 20,
+  "p25": 0.02,
+  "p75": 1.0,
+  "min": 0.0025,
+  "max": 50.0
+ },
+ "eg_gs_staticemissive_gadgetlight_01": {
+  "size": 0.4,
+  "field": "BaseSize",
+  "n": 22,
+  "p25": 0.4,
+  "p75": 0.4,
+  "min": 0.02,
+  "max": 0.6
+ },
+ "eg_gs_staticemissive_gadgetlight_tugs_01": {
+  "size": 0.75,
+  "field": "BaseSize",
+  "n": 2,
+  "p25": 0.5,
+  "p75": 0.75,
+  "min": 0.5,
+  "max": 0.75
+ },
+ "eg_gs_staticemissive_looping_01": {
+  "size": 1.0,
+  "field": "BaseSize",
+  "n": 1,
+  "p25": 1.0,
+  "p75": 1.0,
+  "min": 1.0,
+  "max": 1.0
+ },
+ "eg_gs_staticquads_01": {
+  "size": 1.5,
+  "field": "BaseSize",
+  "n": 1,
+  "p25": 1.5,
+  "p75": 1.5,
+  "min": 1.5,
+  "max": 1.5
+ },
+ "eg_multiribbondist_es": {
+  "size": 0.1,
+  "field": "WidthMult",
+  "n": 3,
+  "p25": 0.05,
+  "p75": 0.1,
+  "min": 0.05,
+  "max": 0.1
+ },
+ "eg_pebbles_burst_es": {
+  "size": 0.09,
+  "field": "QuadSize",
+  "n": 33,
+  "p25": 0.07,
+  "p75": 0.09,
+  "min": 0.0267,
+  "max": 0.16
+ },
+ "eg_pebbles_cont_es": {
+  "size": 0.2,
+  "field": "QuadSize",
+  "n": 4,
+  "p25": 0.12,
+  "p75": 0.3,
+  "min": 0.1,
+  "max": 0.3
+ },
+ "eg_propdest_shard_meshp_geo_box": {
+  "size": 0.3,
+  "field": "SpawnSize",
+  "n": 12,
+  "p25": 0.1,
+  "p75": 0.6,
+  "min": 0.1,
+  "max": 4.0
+ },
+ "eg_propdest_shard_meshp_geo_box_continuous": {
+  "size": 1.0,
+  "field": "SpawnSize",
+  "n": 8,
+  "p25": 0.5,
+  "p75": 1.5,
+  "min": 0.4,
+  "max": 1.5
+ },
+ "eg_propdest_shard_meshp_geo_box_rotxyz_norollyawpitch": {
+  "size": 2.0,
+  "field": "SpawnSize",
+  "n": 1,
+  "p25": 2.0,
+  "p75": 2.0,
+  "min": 2.0,
+  "max": 2.0
+ },
+ "eg_propdest_shard_meshp_geo_supersphere": {
+  "size": 0.3,
+  "field": "SpawnSize",
+  "n": 13,
+  "p25": 0.2,
+  "p75": 0.5,
+  "min": 0.03,
+  "max": 2.0
+ },
+ "eg_propdest_shard_meshp_geo_supersphere_contin": {
+  "size": 0.2,
+  "field": "SpawnSize",
+  "n": 10,
+  "p25": 0.08,
+  "p75": 4.0,
+  "min": 0.08,
+  "max": 10.0
+ },
+ "eg_propdest_shard_meshp_geo_supersphere_parentrot": {
+  "size": 2.5,
+  "field": "SpawnSize",
+  "n": 34,
+  "p25": 2.5,
+  "p75": 4.0,
+  "min": 0.2,
+  "max": 4.0
+ },
+ "eg_propdest_shard_unitquad_box": {
+  "size": 0.12,
+  "field": "QuadSize",
+  "n": 1,
+  "p25": 0.12,
+  "p75": 0.12,
+  "min": 0.12,
+  "max": 0.12
+ },
+ "eg_propdest_shard_unitquad_front_supersphere": {
+  "size": 0.02,
+  "field": "SpawnSize",
+  "n": 11,
+  "p25": 0.02,
+  "p75": 0.02,
+  "min": 0.01,
+  "max": 0.03
+ },
+ "eg_propdest_shard_unitquad_supersphere": {
+  "size": 0.75,
+  "field": "SpawnSize",
+  "n": 7,
+  "p25": 0.1,
+  "p75": 0.75,
+  "min": 0.08,
+  "max": 1.0
+ },
+ "eg_propdest_soft_unitquad_box_flag_test": {
+  "size": 1.7,
+  "field": "SpawnSize",
+  "n": 1,
+  "p25": 1.7,
+  "p75": 1.7,
+  "min": 1.7,
+  "max": 1.7
+ },
+ "eg_propdest_softmesh_burst": {
+  "size": 0.3,
+  "field": "SpawnSize",
+  "n": 101,
+  "p25": 0.1,
+  "p75": 0.6,
+  "min": 0.05,
+  "max": 9.0
+ },
+ "eg_sand_frustrum_quad_es": {
+  "size": 0.0055,
+  "field": "QuadSize",
+  "n": 7,
+  "p25": 0.003,
+  "p75": 0.02,
+  "min": 0.003,
+  "max": 0.05
+ },
+ "eg_sand_frustrum_quad_es_maindefault": {
+  "size": 0.025,
+  "field": "QuadSize",
+  "n": 5,
+  "p25": 0.022,
+  "p75": 0.025,
+  "min": 0.022,
+  "max": 0.025
+ },
+ "eg_sand_spawnvolume_quad_es": {
+  "size": 0.015,
+  "field": "QuadSize",
+  "n": 1,
+  "p25": 0.015,
+  "p75": 0.015,
+  "min": 0.015,
+  "max": 0.015
+ },
+ "eg_sand_spawnvolume_quad_es_bg": {
+  "size": 0.014,
+  "field": "QuadSize",
+  "n": 1,
+  "p25": 0.014,
+  "p75": 0.014,
+  "min": 0.014,
+  "max": 0.014
+ },
+ "eg_sparks_burst_es": {
+  "size": 0.03,
+  "field": "QuadSize",
+  "n": 189,
+  "p25": 0.015,
+  "p75": 0.035,
+  "min": 0.00075,
+  "max": 2.0
+ },
+ "eg_sparks_burst_parent": {
+  "size": 0.02,
+  "field": "QuadSize",
+  "n": 2,
+  "p25": 0.02,
+  "p75": 0.02,
+  "min": 0.02,
+  "max": 0.02
+ },
+ "eg_sparks_burst_pop_es": {
+  "size": 0.02,
+  "field": "QuadSize",
+  "n": 2,
+  "p25": 0.02,
+  "p75": 0.02,
+  "min": 0.02,
+  "max": 0.02
+ },
+ "eg_sparks_cont_es": {
+  "size": 0.02,
+  "field": "QuadSize",
+  "n": 95,
+  "p25": 0.012,
+  "p75": 0.025,
+  "min": 0.005,
+  "max": 0.045
+ },
+ "eg_sparks_cont_es_portal": {
+  "size": 0.04,
+  "field": "QuadSize",
+  "n": 1,
+  "p25": 0.04,
+  "p75": 0.04,
+  "min": 0.04,
+  "max": 0.04
+ },
+ "eg_sparks_cont_moving_es": {
+  "size": 0.015,
+  "field": "QuadSize",
+  "n": 1,
+  "p25": 0.015,
+  "p75": 0.015,
+  "min": 0.015,
+  "max": 0.015
+ },
+ "eg_sparks_cont_pop_es": {
+  "size": 0.015,
+  "field": "QuadSize",
+  "n": 8,
+  "p25": 0.01,
+  "p75": 0.04,
+  "min": 0.01,
+  "max": 0.04
+ },
+ "eg_sparks_cont_vortex": {
+  "size": 0.05,
+  "field": "QuadSize",
+  "n": 2,
+  "p25": 0.05,
+  "p75": 0.05,
+  "min": 0.05,
+  "max": 0.05
+ },
+ "eg_sparktrails_es": {
+  "size": 0.03,
+  "field": "QuadSize",
+  "n": 1,
+  "p25": 0.03,
+  "p75": 0.03,
+  "min": 0.03,
+  "max": 0.03
+ },
+ "eg_static_meshp": {
+  "size": 0.5,
+  "field": "SpawnSize",
+  "n": 1,
+  "p25": 0.5,
+  "p75": 0.5,
+  "min": 0.5,
+  "max": 0.5
+ },
+ "eg_thindebris_burst_es": {
+  "size": 0.08,
+  "field": "QuadSize",
+  "n": 30,
+  "p25": 0.05,
+  "p75": 0.2,
+  "min": 0.015,
+  "max": 0.5
+ },
+ "eg_thindebris_txtr_burst_es": {
+  "size": 0.15,
+  "field": "QuadSize",
+  "n": 2,
+  "p25": 0.1,
+  "p75": 0.15,
+  "min": 0.1,
+  "max": 0.15
+ },
+ "eg_thindebris_txtr_cont_es": {
+  "size": 0.1,
+  "field": "QuadSize",
+  "n": 1,
+  "p25": 0.1,
+  "p75": 0.1,
+  "min": 0.1,
+  "max": 0.1
+ },
+ "eg_trash_default_spawnmap": {
+  "size": 0.125,
+  "field": "QuadSize",
+  "n": 2,
+  "p25": 0.125,
+  "p75": 0.125,
+  "min": 0.125,
+  "max": 0.125
+ },
+ "eg_vegdest_shard_unitquad_leaves_burst": {
+  "size": 0.05,
+  "field": "SpawnSize",
+  "n": 2,
+  "p25": 0.035,
+  "p75": 0.05,
+  "min": 0.035,
+  "max": 0.05
+ },
+ "eg_volumedecalos_simple_emitterparented_es": {
+  "size": 7.0,
+  "field": "SpawnSize",
+  "n": 15,
+  "p25": 3.5,
+  "p75": 7.5,
+  "min": 3.5,
+  "max": 16.0
+ }
+}

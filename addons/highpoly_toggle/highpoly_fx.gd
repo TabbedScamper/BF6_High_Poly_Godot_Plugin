@@ -128,14 +128,7 @@ static func apply(root: Node, map: String, on: bool, progress := Callable(),
 	# Sheets first, so no material is baked untextured and then cached (see
 	# _prime_sheets). Cheap after the first run: they are cached as PNG.
 	var n_sheets := _prime_sheets(gs)
-	var n_want := 0
-	var seen_sheets := {}
-	for k in _params.keys():
-		if _params[k] is Dictionary:
-			var sh := str((_params[k] as Dictionary).get("sheet", ""))
-			if sh != "" and not seen_sheets.has(sh):
-				seen_sheets[sh] = true
-				n_want += 1
+	var n_want := _sheet_tbl.size()
 	var p := "user://mapcontext/%s/fx.json" % map
 	if not FileAccess.file_exists(p):
 		return "No FX data for %s" % map
@@ -202,8 +195,7 @@ static func apply(root: Node, map: String, on: bool, progress := Callable(),
 		# So draw what can be drawn correctly and COUNT the rest into the status
 		# line. A coloured square that reads as a solid lit cube is a wrong
 		# answer; nothing, said out loud, is an honest one.
-		var sh := str((gp as Dictionary).get("sheet", "")) if gp is Dictionary else ""
-		if sh == "" or _sheets.get(sh) == null:
+		if not _drawable(effect, gp):
 			nonsprite += 1
 			continue
 
@@ -259,7 +251,23 @@ static func _colour_of(gp: Variant, fb: Dictionary) -> Color:
 #
 # They now come out of the player's own installation, decoded from the
 # AtlasTexture the graph names. Nothing is bundled and nothing is downloaded.
-static var _sheets: Dictionary = {}     # graph `sheet` value -> Texture2D or null
+static var _sheets: Dictionary = {}     # lowercase graph name -> sheet dict or null
+static var _sheet_tbl: Dictionary = {}  # lowercase graph name -> {sheet, n, total, distinct}
+static var _sheet_tbl_loaded := false
+# THE SHEET IS A PER-EFFECT PROPERTY, NOT A PER-GRAPH ONE. Measured over 17,643
+# emitter rows from the effect blueprints: 68 distinct atlases are actually
+# bound, and 58 graphs bind more than one. eg_gs_basicsmoke_01 alone uses 31
+# different sheets across the effects that instance it. fx_params.json records
+# a single sheet per graph, which is why 44 graphs got one and the rest got
+# nothing.
+#
+# fx.json identifies a spawn point by its GRAPH, so a per-effect sheet is not
+# reachable from what the map walk records. This table is the honest middle: the
+# sheet MOST OFTEN bound for each graph, with the sample counts kept so the
+# status line can admit how firm the pick is. It covers 103 graphs against 44.
+const SHEETS_PATH := "res://addons/highpoly_toggle/fx_sheets.json"
+const SIZES_PATH := "res://addons/highpoly_toggle/fx_sizes.json"
+static var _sizes: Dictionary = {}      # lowercase graph name -> {size, field, n, ...}
 const SHEET_CACHE := "user://fxsheets"
 # Cap on the usable width AFTER the LeftRightTiles crop. The mip chain is right
 # there in the header, so a smaller sheet is a smaller mip of the game's own
@@ -336,25 +344,91 @@ static func _sweep_stale_cache() -> void:
 			d.remove(f)
 
 
-static func _decode_sheet(gs, sheet: String) -> Texture2D:
+# Families that are not billboards at all, so nothing we draw could be right.
+# volumedecals are unit-cube PROJECTION volumes (all 34 measure exactly +/-1),
+# lights are lens flares and volumetric cones, and the game itself names two
+# graphs `dummy`. A Decal node is the right primitive for the first of those and
+# is not built yet.
+const NO_DRAW_FAMILIES := {
+	"volumedecals": true, "dummy": true, "debug": true, "lights": true,
+}
+
+
+# Is this graph something a camera-facing quad can honestly stand in for?
+#
+# The earlier rule was "has a flipbook", which was too blunt in both directions.
+# Sparks, thindebris, pebbles and sand ARE billboards - every one is the same
+# 4-vertex unit quad with clean 0..1 UVs - they just carry no sheet because they
+# are driven by curl noise in the compute shader rather than by a flipbook.
+# Exhaustive pointer walk over 592 graph partitions: no ribbon, distortion,
+# normal-map, gobo or decal texture field exists on an emitter graph, so those
+# families are not missing art that we failed to find. They have none.
+#
+# What made them look wrong was never the texture, it was the SIZE: drawn at the
+# 2.4-3.0 m class fallback when the game authors 2 to 100 cm. With the authored
+# size wired they are specks, which is what they are, so draw them.
+static func _drawable(effect: String, gp: Variant) -> bool:
+	var key := effect.to_lower()
+	if gp is Dictionary and NO_DRAW_FAMILIES.has(str((gp as Dictionary).get("family", ""))):
+		return false
+	var sd: Variant = _sheets.get(key)
+	if sd is Dictionary and not (sd as Dictionary).is_empty():
+		return true
+	# no sheet: a quad is still right if the game authored a quad size for it
+	var sz: Variant = _sizes.get(key)
+	if sz is Dictionary:
+		var f := str((sz as Dictionary).get("field", ""))
+		return f == "QuadSize" or f == "BaseSize"
+	return false
+
+
+static func _load_sheet_table() -> void:
+	if _sheet_tbl_loaded:
+		return
+	_sheet_tbl_loaded = true
+	if not FileAccess.file_exists(SHEETS_PATH):
+		return
+	var raw: Variant = JSON.parse_string(FileAccess.get_file_as_string(SHEETS_PATH))
+	if raw is Dictionary:
+		_sheet_tbl = raw
+	if FileAccess.file_exists(SIZES_PATH):
+		var sz: Variant = JSON.parse_string(FileAccess.get_file_as_string(SIZES_PATH))
+		if sz is Dictionary:
+			_sizes = sz
+
+
+# {"tex", "cols", "rows", "frames"} for one graph's sheet, or an empty dict.
+#
+# The grid comes from the ATLAS's own EBX, never from fx_params: this picks the
+# sheet the effects actually bind, which is frequently NOT the one fx_params
+# recorded, and a 6x36 grid on an 8x64 sheet samples the wrong frames entirely.
+static func _decode_sheet(gs, sheet: String) -> Dictionary:
 	var stem := BF6Atlas.norm_stem(sheet)
 	if stem == "":
-		return null
+		return {}
 	var png := "%s/%s.e%d.png" % [SHEET_CACHE, stem, FOLD_EPOCH]
-	if FileAccess.file_exists(png):
+	var meta := "%s/%s.e%d.json" % [SHEET_CACHE, stem, FOLD_EPOCH]
+	if FileAccess.file_exists(png) and FileAccess.file_exists(meta):
 		var ci := Image.new()
-		if ci.load_png_from_buffer(FileAccess.get_file_as_bytes(png)) == OK:
-			return ImageTexture.create_from_image(ci)
+		var mj: Variant = JSON.parse_string(FileAccess.get_file_as_string(meta))
+		if ci.load_png_from_buffer(FileAccess.get_file_as_bytes(png)) == OK \
+				and mj is Dictionary:
+			var d: Dictionary = mj
+			d["tex"] = ImageTexture.create_from_image(ci)
+			return d
 	if gs == null or gs.src == null:
-		return null
-	var rn := BF6Atlas.find_res(gs.src, sheet)
+		return {}
+	# the table stores the RES name, so try it directly before normalising
+	var rn := sheet if gs.src.res.has(sheet) else BF6Atlas.find_res(gs.src, sheet)
 	if rn == "":
-		return null
+		return {}
 	var hdr := BF6Atlas.parse(gs.src.get_res(rn))
 	if hdr.is_empty():
-		return null
+		return {}
 	var g := BF6Atlas.grid(gs.src, gs.types,
 		gs.walk.gi if gs.walk != null else {}, rn)
+	if g.is_empty():
+		return {}
 	var lr := bool(g.get("lr", false))
 	var level := 0
 	var sizes: Array = hdr["sizes"]
@@ -366,14 +440,21 @@ static func _decode_sheet(gs, sheet: String) -> Texture2D:
 		level += 1
 	var img := BF6Atlas.mip_image(gs.src, hdr, level)
 	if img == null:
-		return null
+		return {}
 	img.decompress()
 	img.convert(Image.FORMAT_RGBA8)
 	if lr:
 		img = _fold_sixway(img)
 	DirAccess.make_dir_recursive_absolute(SHEET_CACHE)
 	img.save_png(png)
-	return ImageTexture.create_from_image(img)
+	var out := {"cols": int(g["cols"]), "rows": int(g["rows"]),
+				"frames": int(g["frames"])}
+	var fh := FileAccess.open(meta, FileAccess.WRITE)
+	if fh != null:
+		fh.store_string(JSON.stringify(out))
+		fh.close()
+	out["tex"] = ImageTexture.create_from_image(img)
+	return out
 
 
 # Resolve every sheet the graph table names, BEFORE any emitter is built.
@@ -384,30 +465,33 @@ static func _decode_sheet(gs, sheet: String) -> Texture2D:
 # appears. Returns how many resolved.
 static func _prime_sheets(gs) -> int:
 	_sweep_stale_cache()
-	var seen := {}
+	_load_sheet_table()
 	var added := false
-	for k in _params.keys():
-		var d: Variant = _params[k]
-		if not (d is Dictionary):
+	var by_res := {}        # decode each distinct atlas once, not once per graph
+	for g in _sheet_tbl.keys():
+		if _sheets.has(g):
 			continue
-		var sh := str((d as Dictionary).get("sheet", ""))
-		# graphs share sheets - count the DISTINCT ones, not the references
-		if sh == "" or seen.has(sh):
+		var rec: Variant = _sheet_tbl[g]
+		if not (rec is Dictionary):
 			continue
-		seen[sh] = true
-		if not _sheets.has(sh):
-			var t := _decode_sheet(gs, sh)
-			# DO NOT MEMOISE A MISS THAT ONLY HAPPENED FOR WANT OF A SOURCE.
-			# FX can be switched on before the map has been read, and caching
-			# the null then means the sheet never appears for the rest of the
-			# session even once the source is open - the same shape of bug as
-			# _obj_cache remembering NOT-FOUND.
-			if t != null or (gs != null and gs.src != null):
-				_sheets[sh] = t
-				added = true
+		var res := str((rec as Dictionary).get("sheet", ""))
+		if res == "":
+			continue
+		if not by_res.has(res):
+			by_res[res] = _decode_sheet(gs, res)
+		var d: Dictionary = by_res[res]
+		# DO NOT MEMOISE A MISS THAT ONLY HAPPENED FOR WANT OF A SOURCE. FX can
+		# be switched on before the map has been read, and caching the empty
+		# result then means the sheet never appears for the rest of the session
+		# even once the source is open - the same shape of bug as _obj_cache
+		# remembering NOT-FOUND.
+		if not d.is_empty() or (gs != null and gs.src != null):
+			_sheets[g] = d
+			added = true
 	var found := 0
-	for sh in seen.keys():
-		if _sheets.get(sh) != null:
+	for g in _sheets.keys():
+		var d: Variant = _sheets[g]
+		if d is Dictionary and not (d as Dictionary).is_empty():
 			found += 1
 	if added:
 		_mats.clear()       # materials built before this would have no texture
@@ -522,6 +606,29 @@ static func _build_mats(cls: String, gp: Variant) -> Array:
 				pm.emission_box_extents = Vector3(
 					absf(float(hi[0])), absf(float(hi[1])), absf(float(hi[2])))
 
+	# AUTHORED SIZE BEATS BOTH OF THOSE.
+	#
+	# fx_params ships base_size 1.0 for everything, because it reads the GRAPH
+	# TEMPLATE table where BaseSize is exactly 1.0 on all 45 templates that carry
+	# one. The authored size lives on the per-emitter LAYER instead, so it was
+	# never visible and every emitter fell back to the hand-tuned class table.
+	# Measured against the real values, that table had smoke about 2x too small
+	# and the debris and spark families up to 100x too LARGE - a 2 cm spark drawn
+	# as a 3 m square is what "hundreds of cubes everywhere" was.
+	#
+	# fx_sizes.json is the per-graph median of the layer values. `field` is not a
+	# unit: BaseSize is a sprite quad, QuadSize a spark/pebble quad, SpawnSize a
+	# mesh particle and WidthMult a ribbon width, so only the first two are a
+	# billboard edge length and the others are left alone.
+	#
+	# Half-extent versus full-extent is UNRESOLVED in the data. If everything
+	# comes out uniformly 2x or 0.5x, that is this reading, not the numbers.
+	var sz: Variant = _sizes.get(ck.to_lower())
+	if sz is Dictionary:
+		var f := str((sz as Dictionary).get("field", ""))
+		if f == "BaseSize" or f == "QuadSize":
+			size = float((sz as Dictionary).get("size", size))
+
 	pm.color = _colour_of(gp, fb)
 
 	# `render` carries what the compiled shader's blend state does not expose:
@@ -529,20 +636,22 @@ static func _build_mats(cls: String, gp: Variant) -> Array:
 	dm.blend_mode = BaseMaterial3D.BLEND_MODE_ADD if render == "emissive" \
 		else BaseMaterial3D.BLEND_MODE_MIX
 
-	var sheet := str((gp as Dictionary).get("sheet", "")) if gp is Dictionary else ""
-	var tex: Texture2D = _sheets.get(sheet)
+	# THE GRID COMES WITH THE SHEET. This picks the atlas the effects actually
+	# bind, which is often not the one fx_params recorded, so taking cols/rows
+	# from fx_params would sample a 6x36 grid off an 8x64 sheet - right texture,
+	# wrong frames, and it reads as the animation stuttering rather than as a
+	# mismatch. Only fps stays authored per graph.
+	var sd: Variant = _sheets.get(ck.to_lower())
+	var tex: Texture2D = (sd as Dictionary).get("tex") if sd is Dictionary else null
 	if tex != null:
+		var sdd: Dictionary = sd
 		dm.albedo_texture = tex
-		var cols := 6
-		var rows := 6
-		var frames := 36
+		var cols := int(sdd.get("cols", 1))
+		var rows := int(sdd.get("rows", 1))
+		var frames := int(sdd.get("frames", cols * rows))
 		var fps := 12.0
 		if gp is Dictionary:
-			var d2: Dictionary = gp
-			cols = int(d2.get("cols", cols))
-			rows = int(d2.get("rows", rows))
-			frames = int(d2.get("frames", cols * rows))
-			fps = float(d2.get("fps", fps))
+			fps = float((gp as Dictionary).get("fps", fps))
 		dm.particles_anim_h_frames = maxi(cols, 1)
 		dm.particles_anim_v_frames = maxi(rows, 1)
 		dm.particles_anim_loop = true
