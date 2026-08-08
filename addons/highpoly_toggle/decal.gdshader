@@ -47,7 +47,12 @@ uniform float wet_opacity : hint_range(0.0, 1.0) = 0.62;
 // Water is smoother than any authored sheet says, because the sheet describes
 // the WETNESS pattern and not a water surface. Floors it so a puddle always
 // reflects, without flattening the variation the sheet does carry.
-uniform float wet_min_smooth : hint_range(0.0, 1.0) = 0.82;
+// THE GAME'S OWN GLOSS SCALE for this decal, constant 0x47A7C17C. Surveyed over
+// all 134 of mp_dumbo's resolvable decals: 1.000 on 20 of 20 that bind no colour
+// sheet, and 0.500 dominant on the 100 that do. It multiplies the sheet's own
+// per-texel smoothness, so 0.5 on dirt means "half as glossy as painted", which
+// is what dirt should be. This REPLACED a wet_min_smooth floor that was mine.
+uniform float gloss_scale : hint_range(0.0, 1.0) = 1.0;
 // WATER IS ITS REFLECTION, AND THE REFLECTION HAS TO BE DRAWN RATHER THAN
 // HOPED FOR.
 //
@@ -84,12 +89,12 @@ void fragment() {
 	if (has_col) {
 		ALBEDO = c.rgb;
 		cover = c.a;
-		smooth_v = has_nrm ? n.a : 0.5;
+		smooth_v = (has_nrm ? n.a : 0.5) * gloss_scale;
 	} else {
 		ALBEDO = wet_col;
 		float wet_mask = has_nrm ? n.a : 1.0;
 		cover = wet_mask * wet_opacity;
-		smooth_v = max(has_nrm ? n.b : 0.9, wet_min_smooth);
+		smooth_v = (has_nrm ? n.b : 0.9) * gloss_scale;
 		// Water's reflectance is the whole look of it. Left at the default a
 		// dark albedo just reads as a dark hole in the ground.
 		spec = 0.85;

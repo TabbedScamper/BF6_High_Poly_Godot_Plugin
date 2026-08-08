@@ -3498,8 +3498,15 @@ func invalidate_materials(only: Array = []) -> Dictionary:
 	_tex_cache.clear()
 	_hidden_cache.clear()
 	_tint_mask_cache.clear()
+	_decal_tex_cache.clear()
 	_foliage_shader = null
 	_prop_tint_shader = null
+	# HELD SHADERS MUST BE DROPPED HERE OR AN EDIT TO ONE NEVER REACHES THE
+	# SCREEN. Every shader this file loads is cached in a member and reused, so
+	# after a live reload the material is rebuilt around the OLD compiled shader
+	# and the user sees their update do nothing. Missing this line is why the
+	# decals did not change when decal.gdshader did.
+	_decal_shader = null
 	_road_shader = null
 	_road_pal = null
 	_road_pal_tried = false
@@ -3715,10 +3722,19 @@ func material_for(state_key: int, scope: String, var_hash := 0,
 	# off as procedural: they drew nothing at all. Shared by look like everything
 	# below, because a decal binds real distinct sheets and its look key already
 	# separates it from anything else.
-	var dm = _decal_of(slots)
+	# THE AUTHORED GLOSS IS PART OF THE LOOK. Two decals that bind the same
+	# sheets and differ only in it are different materials, and this is the third
+	# place in this file where leaving a per-record value out of the key would
+	# have handed one record another record's material.
+	var dlook := "%s|g%.4f" % [look, _decal_gloss(consts)]
+	var dhit = _mat_by_look.get(dlook)
+	if dhit != null:
+		_mat_cache[ck] = dhit
+		return dhit
+	var dm = _decal_of(slots, consts)
 	if dm != null:
 		_mat_cache[ck] = dm
-		_mat_by_look[look] = dm
+		_mat_by_look[dlook] = dm
 		tex_stats["decals"] = int(tex_stats.get("decals", 0)) + 1
 		tex_stats["materials"] = int(tex_stats["materials"]) + 1
 		return dm
@@ -4674,9 +4690,35 @@ func _decal_sheet(file_guid, is_normal: bool):
 
 var _decal_shader = null
 
+# THE DECAL'S OWN GLOSS SCALE, and the only per-decal number in the record worth
+# reading. Surveyed over all 134 of mp_dumbo's resolvable decals: of ~40
+# constants in the block, exactly THREE take more than one value map-wide, and
+# only this one separates the families:
+#
+#   0x47A7C17C   wet (binds no real colour sheet)  1.000 on 20 of 20
+#                dry                               0.500 dominant, avg 0.538
+#   0xE0C2F8EC   wet 1.000 on 20 of 20, dry avg 0.970 - varies, but does not
+#                split wet from dry, so it is not this and is left unread
+#   0x33FC54D3   0.500 on effectively everything - a neutral, carries nothing
+#
+# Read as a MULTIPLIER on the sheet's own smoothness rather than as a floor: the
+# sheet already carries per-texel smoothness, and 0.5 on dirt then means "half as
+# glossy as painted", which is what dirt should be. It is not in the research
+# corpus under any name, so this reading is ours and is marked probable, not
+# verified. PROBABLE is why there is a fallback: a decal with no such constant
+# keeps the sheet unscaled rather than being forced to a guess.
+const C_DECAL_GLOSS := 0x47A7C17C
+
+
+func _decal_gloss(consts: Dictionary) -> float:
+	var raw = consts.get(C_DECAL_GLOSS)
+	if not (raw is PackedByteArray) or (raw as PackedByteArray).size() < 4:
+		return 1.0
+	return clampf((raw as PackedByteArray).decode_float(0), 0.0, 1.0)
+
 
 # The decal material, or null when this record is not one.
-func _decal_of(slots: Dictionary):
+func _decal_of(slots: Dictionary, consts: Dictionary = {}):
 	if not (slots.has("decal_ca") or slots.has("decal_nrm")):
 		return null
 	# THE NORMAL SHEET IS LOADED AS A COLOUR TEXTURE, DELIBERATELY.
@@ -4701,6 +4743,7 @@ func _decal_of(slots: Dictionary):
 		_decal_shader = s
 	var m := ShaderMaterial.new()
 	m.shader = _decal_shader
+	m.set_shader_parameter("gloss_scale", _decal_gloss(consts))
 	m.set_shader_parameter("has_col", ca != null)
 	m.set_shader_parameter("has_nrm", nrm != null)
 	if ca != null:
