@@ -128,6 +128,19 @@ static func _match_key(node: Node, ks: Dictionary) -> String:
 			return ""
 		var base := sfp.get_file().get_basename()
 		if ks.has(base): return base
+		# AN INSTANCE ANSWERS FOR ITSELF, AND IS NEVER GUESSED AT BY ITS NAME.
+		#
+		# This used to fall through to the node-name rules below when the scene's
+		# own basename was not in known(). A node carrying scene_file_path IS a
+		# placed instance of a known object; if we do not have that object, the
+		# answer is "nothing", not "something with a similar name". Builders
+		# rename constantly - a FiringRange_Floor_A called Elevator2NotDamaged is
+		# the normal case, not an odd one - and the fall-through would dress it as
+		# whatever asset its NEW name happened to look like, including after the
+		# trailing-digit stripping below. That is a wrong model on the right
+		# object: it flips, it is the wrong size, and the proxy underneath it
+		# stays perfectly correct, which is exactly how it presents.
+		return ""
 	var n := String(node.name).split("@")[0]
 	if ks.has(n): return n
 	var m := n
