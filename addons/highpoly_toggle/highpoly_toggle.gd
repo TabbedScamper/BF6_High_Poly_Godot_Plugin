@@ -1553,6 +1553,17 @@ All of it is read from your own Battlefield 6 installation."
 	# edited/selected
 	set_input_event_forwarding_always_enabled()
 
+	# THE SNAPSHOT GOES ON NOW, not deferred, and the order is the point.
+	# _enter_tree leaves the dropdown on Low-Poly by design (every session starts
+	# safe), and _startup applies whatever the dropdown says to every placed prop.
+	# Correcting the dropdown one frame later would mean the scene is stripped
+	# back to SDK proxies first and put back afterwards - visibly, and for nothing.
+	if _kept.has("ui"):
+		var _ui: Dictionary = _kept["ui"]
+		_kept.erase("ui")
+		_soft_restore = false
+		_soft_applied = true
+		_apply_ui(_ui)
 	_startup.call_deferred()
 
 func _exit_tree() -> void:
@@ -1570,6 +1581,7 @@ func _exit_tree() -> void:
 	# change cost a full rebuild. Hand the long-lived services across and stop.
 	if _soft_reopen:
 		_soft_reopen = false     # one reopen, not every disable from here on
+		_kept["ui"] = _capture_ui()
 		_keep_service("mapctx", mapctx)
 		_keep_service("previews", previews)
 		_keep_service("profiler", profiler)
@@ -1776,6 +1788,102 @@ func _swap_placed_after_build() -> void:
 	_reapply_placed_cull()
 
 
+# THE PANEL COMES BACK THE WAY IT WAS, which is a separate question from the
+# scene coming back.
+#
+# The scene survives a soft reopen because nothing tears it down. The CONTROLS do
+# not: they are built fresh, so they come up on their shipped defaults - Low-Poly,
+# every chip off - while the scene still has the scenery on and the props swapped.
+# The panel then disagrees with the level it is describing, and the first toggle
+# you touch acts on the panel's idea rather than the scene's.
+#
+# Reading the saved per-map state back is the wrong repair: that is what was on
+# disk, and what matters is what was on SCREEN a moment ago, which may be neither
+# saved nor savable yet. So the live values are carried across with the services.
+#
+# Applied with no signals: every one of these already describes something the
+# scene is doing, so firing the handlers would rebuild what is already built.
+func _capture_ui() -> Dictionary:
+	var chips := {}
+	for e in _ui_chips():
+		var c: Button = e[1]
+		if c != null and is_instance_valid(c):
+			chips[str(e[0])] = c.button_pressed
+	return {
+		"chips": chips,
+		"mode": mode_btn.get_selected_id() if mode_btn != null else -1,
+		"range": mapctx_range.value if mapctx_range != null else -1.0,
+		"fill": mapctx_fill.value if mapctx_fill != null else -1.0,
+		"variant": mapctx_variant.selected if mapctx_variant != null else -1,
+		"scroll": dock_scroll.scroll_vertical if dock_scroll != null else 0,
+		"open": win != null and win.visible,
+		"rect": Rect2i(win.position, win.size) if (win != null and win.visible) else Rect2i(),
+	}
+
+
+func _apply_ui(d: Dictionary) -> void:
+	var chips: Dictionary = d.get("chips", {})
+	for e in _ui_chips():
+		var c: Button = e[1]
+		if c != null and is_instance_valid(c) and chips.has(str(e[0])):
+			c.set_pressed_no_signal(bool(chips[str(e[0])]))
+	var m := int(d.get("mode", -1))
+	if mode_btn != null and m >= 0:
+		mode_btn.select(mode_btn.get_item_index(m))
+		if previews != null:
+			previews.tier = _mode()
+			previews.textured = _textured()
+	var rg := float(d.get("range", -1.0))
+	if mapctx_range != null and rg >= 0.0:
+		mapctx_range.set_value_no_signal(rg)
+		if mapctx_range_val: mapctx_range_val.text = _range_label(rg)
+	var fl := float(d.get("fill", -1.0))
+	if mapctx_fill != null and fl >= 0.0:
+		mapctx_fill.set_value_no_signal(fl)
+		if mapctx_fill_val: mapctx_fill_val.text = "%d%%" % int(fl)
+	var vi := int(d.get("variant", -1))
+	if mapctx_variant != null and vi >= 0 and vi < mapctx_variant.item_count:
+		mapctx_variant.select(vi)
+	# The statics the chips only MIRROR have to be told too, because nothing
+	# fired a handler to tell them.
+	if mapctx_fx != null:
+		HighpolyMapContext.show_fx_cards = mapctx_fx.button_pressed
+	_refresh_gates()
+	_lighting_subs_enabled(mapctx_light != null and mapctx_light.button_pressed)
+	# The window is a child of the editor, not of the dock, so a reopen closes it
+	# and the launcher button comes back untoggled. Put it back where it was.
+	if bool(d.get("open", false)) and win != null:
+		var rc: Rect2i = d.get("rect", Rect2i())
+		if rc.size.x > 0:
+			_win_rect = rc
+		if tools_btn != null:
+			tools_btn.set_pressed_no_signal(true)
+		_set_tools_visible(true)
+	var sc := int(d.get("scroll", 0))
+	if dock_scroll != null and sc > 0:
+		# after the layout settles, or the scroller clamps it to a height the
+		# content has not reached yet
+		_restore_scroll.call_deferred(sc)
+
+
+func _restore_scroll(v: int) -> void:
+	if dock_scroll != null and is_instance_valid(dock_scroll):
+		dock_scroll.scroll_vertical = v
+
+
+# Every control whose position is part of "how the panel was". Named, because a
+# reopen rebuilds them and only the name survives.
+func _ui_chips() -> Array:
+	return [
+		["on", mapctx_on], ["objects", mapctx_objects],
+		["backdrop", mapctx_backdrop], ["water", mapctx_water],
+		["fx", mapctx_fx], ["light", mapctx_light], ["gi", mapctx_gi],
+		["shadows", mapctx_shadows], ["maplights", mapctx_maplights],
+		["optimize", mapctx_optimize], ["col", col_chk], ["shape", shape_chk],
+		["iso", iso_chk], ["ovr", ovr_chk], ["pick", diag_pick],
+	]
+
+
 # ---------- reopening the panel ----------
 #
 # WHAT LIVE RELOAD CANNOT DO. Replacing a script updates the code every existing
@@ -1812,6 +1920,10 @@ static var _soft_reopen := false      # set by _reopen_panel, read by _exit_tree
 # The other half of the same fact, read by the startup restore: it must adopt the
 # scenery that is standing rather than sweep it and build a fresh copy.
 static var _soft_restore := false
+# Set for the life of this instance when it came back from a soft reopen, so the
+# scene-change path does not run the disk restore over a panel that already
+# describes the scene correctly.
+var _soft_applied := false
 var _needs_reopen := false
 
 func _reopen_panel() -> void:
@@ -2751,7 +2863,7 @@ func _check_scene_change() -> void:
 	if lbl and old != null: lbl.text = "Different map opened, so everything is back to Low-Poly"
 	# fresh dock instance (editor start / plugin re-enable) — not a scene
 	# switch: bring the overlay back the way this map had it
-	if old == null and r != null:
+	if old == null and r != null and not _soft_applied:
 		_restore_mapctx_state.call_deferred()
 
 # ensure the map's prop meshes are in the shared cache (only when objects are
