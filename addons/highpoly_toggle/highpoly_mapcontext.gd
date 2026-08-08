@@ -3199,6 +3199,33 @@ func apply(root: Node, enabled: bool, show_objects: bool, tex = true,
 
 	# Load map data whenever we need geometry: terrain context OR objects.
 	var need_data := enabled or show_objects or backdrop or water
+
+	# EVERYTHING OFF MEANS GIVE THE MEMORY BACK.
+	#
+	# A user watched the editor reach 16 GB with everything on and sit at 14 GB
+	# with everything off. _clear() frees the overlay's NODES and releases the
+	# BcTex pool, but every mesh, material and texture the reader built is still
+	# referenced by a cache in highpoly_gamesource, so Godot cannot free any of
+	# it. Measured at full build: 2,402 textures, 16,125 materials, 7,222
+	# meshes, none of which evicts.
+	#
+	# GATED ON need_data, NOT on _clear's keep flags. _clear also runs at the
+	# start of every rebuild, and a rebuild that happens to keep nothing would
+	# otherwise drop the caches and force a full re-read - turning a layer
+	# toggle into a much slower operation. This fires only when no layer wants
+	# geometry at all, which is the user saying they are done with it.
+	#
+	# The on-disk geometry cache is untouched, so switching back on is the
+	# ~10.7 s cached path rather than a 63 s cold read.
+	if not need_data and game_source != null \
+			and game_source.has_method("release_caches"):
+		var freed: Dictionary = game_source.release_caches()
+		if int(freed.get("textures", 0)) > 0:
+			Log.info(("[High-Poly] released %d textures, %d materials and %d "
+				+ "meshes held for the map context. Turning a layer back on "
+				+ "rebuilds from the on-disk cache.")
+				% [freed.get("textures", 0), freed.get("materials", 0),
+				   freed.get("meshes", 0)])
 	var have_data := false
 	if need_data:
 		# ASKED BEFORE THE CALL, not after: the call is what fills the cache, so

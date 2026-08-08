@@ -89,6 +89,16 @@ func _tag_suffix(nm: String, src: String) -> String:
 
 # Local geometry we can render for this proxy, or "" if there is none.
 func _local_glb(nm: String) -> String:
+	# CALLED PER ITEM, PER 2 s TICK, and it stats the disk. Timed separately
+	# because a file_exists() for every entry in the Object Library twice a
+	# minute is the kind of cost that hides inside a loop nobody suspects.
+	HighpolyProfile.begin("previews: _source_for (disk stat per item)")
+	var r := _source_for_body(nm)
+	HighpolyProfile.end("previews: _source_for (disk stat per item)")
+	return r
+
+
+func _source_for_body(nm: String) -> String:
 	var p := HighpolyStore.model_path(nm)
 	if FileAccess.file_exists(p):
 		return p
@@ -233,6 +243,12 @@ func _refresh_body() -> void:
 		if _swapped:
 			_restore()
 		return
+	# THE REMAINING 2-SECOND STALL. With the editor-tree walk cached out, what is
+	# left of this tick is 432.4 ms over 33 calls - 13.1 ms every 2 s, peaking at
+	# 19.5 ms - and it is now the largest recurring cost in the plugin. Timed as
+	# a whole before blaming any part of it, because the last two things I was
+	# sure about here were both wrong.
+	HighpolyProfile.begin("previews: per-item icon pass")
 	for il in _find_lists():
 		for i in range(il.item_count):
 			var md = il.get_item_metadata(i)
@@ -245,7 +261,13 @@ func _refresh_body() -> void:
 			# ks[key] only says the SDK ships this proxy. Whether we can DRAW it
 			# is a different question, and the renderer is about to ask it, so
 			# ask it here rather than queue work that cannot finish.
-			if _source_for(key) == "": continue
+			# ASKED ONLY WHEN THERE IS NO THUMBNAIL YET. _source_for stats the
+			# disk, and it ran for every item on every 2 s tick - a measured
+			# 2,272 calls and 77.7 ms per run - including for items whose
+			# picture was already made and needed no source at all. An item in
+			# the cache is drawable by definition: its thumbnail was rendered
+			# from that source in the first place.
+			if not _cache.has(key) and _source_for(key) == "": continue
 			if _cache.has(key):
 				var cur: Texture2D = il.get_item_icon(i)
 				if cur != _cache[key]:
@@ -261,6 +283,7 @@ func _refresh_body() -> void:
 						self, "_on_editor_preview", key)
 				else:
 					_queue.append(key)
+	HighpolyProfile.end("previews: per-item icon pass")
 	_render_next()
 
 func _restore() -> void:
