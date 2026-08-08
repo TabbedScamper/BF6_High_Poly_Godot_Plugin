@@ -37,6 +37,10 @@ var radius: float = 768.0          # metres; props beyond this are hidden
 var _map := ""
 var _data: Dictionary = {}
 var _cells: Dictionary = {}        # "cx,cz" -> Array[MultiMeshInstance3D] (props)
+# Cells replaced by a single baked mesh (highpoly_hlod.gd). Their MultiMeshes
+# are hidden deliberately, so the distance cull in apply_radius has to leave
+# them alone or it switches the whole cell back on at the next tick.
+var hlod_cells: Dictionary = {}
 var _cell_size := 64.0
 # 0 = use whatever the map package says (64 m today). Anything else overrides it,
 # so the batching/culling trade can be measured with the profiler instead of
@@ -5197,6 +5201,13 @@ func _apply_radius(budget: int = 1 << 30) -> void:
 	for key in _cells.keys():
 		var lst: Array = _cells[key]
 		if lst.is_empty() or not is_instance_valid(lst[0]): continue
+		# A BAKED CELL IS NOT THIS PASS'S BUSINESS. Its MultiMeshes are hidden
+		# on purpose and a single merged mesh is drawing in their place, so
+		# deciding their visibility from distance would switch all of them back
+		# on. That is exactly what happened the first time: 3 cells baked, 9,530
+		# nodes hidden, and the measured draw count moved 25,900 -> 25,907,
+		# because this loop undid the hiding within half a second.
+		if hlod_cells.has(key): continue
 		var parts: PackedStringArray = String(key).split(",")
 		# Euclidean distance to the cell CENTRE, margin = half the cell
 		# diagonal. The old test used the cell's min corner with a square

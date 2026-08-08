@@ -99,13 +99,28 @@ static func bake_cell(mmis: Array, origin: Vector3, weld := 0.0) -> Dictionary:
 						if vi < sn.size() else Vector3.UP
 					var at := -1
 					if inv_w > 0.0:
-						# Colour is part of the key: welding two props of
-						# different colour into one vertex would smear them
-						# together, and the colour is the only thing carrying
-						# their appearance once the textures are gone.
-						var k := "%d,%d,%d,%d" % [
+						# KEYED ON Vector4i, NOT A STRING.
+						#
+						# The first version built "%d,%d,%d,%d" per vertex. A
+						# dense cell holds 18 M vertices, so across the probe's
+						# passes that was over 100 million string allocations
+						# and hashes - the run HUNG and the harness killed it at
+						# 343 s. Godot hashes Vector4i natively with no
+						# allocation, which is the same key for a fraction of
+						# the cost.
+						#
+						# w is the colour, quantised to 5 bits per channel:
+						# colour has to be part of the key or two props of
+						# different colours weld into one vertex and smear
+						# together, and colour is all that carries their
+						# appearance once the textures are gone. 5 bits is far
+						# finer than anything visible at the distance this is
+						# drawn from.
+						var k := Vector4i(
 							int(round(p.x * inv_w)), int(round(p.y * inv_w)),
-							int(round(p.z * inv_w)), int(col.to_rgba32())]
+							int(round(p.z * inv_w)),
+							(int(col.r * 31.0) << 10) | (int(col.g * 31.0) << 5)
+								| int(col.b * 31.0))
 						if wmap.has(k):
 							at = int(wmap[k])
 						else:
@@ -183,6 +198,122 @@ static func _albedo_of(m: Material) -> Color:
 			if v is Color:
 				return v
 	return FALLBACK_ALBEDO
+
+
+# BAKE THE HEAVIEST CELLS AND PUT THEM IN THE SCENE, hiding the MultiMeshes
+# they replace. Cached to disk, because the bake is expensive and the result
+# never changes for a given map.
+#
+# WHY ONLY THE HEAVIEST FEW. The distribution is extremely skewed: the single
+# densest cell carries 9,744 of the frame's 18,766 draw calls and bakes to ONE.
+# Half the frame, from one cell, for 33 s of work. Baking all ~40 populated
+# cells would take about 22 minutes single-threaded, which is unshippable even
+# once; baking three takes ~100 s and captures most of the win. This is the
+# pragmatic version, and it composes with a faster bake later rather than
+# blocking on one.
+#
+# Returns what it did, so a caller can report it rather than claim it.
+# THE PARENT IS DERIVED FROM THE CELLS, NOT PASSED IN. The first version asked
+# the caller for it and was handed mapctx.get_parent(), which is a
+# VBoxContainer - the map context is a Node living under the DOCK, not in the
+# 3D scene, and the run died on the type check after a 125 s build and a 62 s
+# flight. A baked cell belongs exactly where the MultiMeshes it replaces live,
+# and those know their own parent.
+static func bake_and_install(cells: Dictionary, n: int,
+		weld: float, cache_dir: String, mark: Dictionary = {}) -> Dictionary:
+	if n <= 0:
+		return {}
+	var order := _by_weight(cells)
+	var parent: Node3D = null
+	for e in order:
+		for node in e["list"]:
+			if is_instance_valid(node) and node is Node3D:
+				var p := (node as Node3D).get_parent()
+				if p is Node3D:
+					parent = p as Node3D
+					break
+		if parent != null:
+			break
+	if parent == null:
+		return {"error": "no Node3D parent found for any cell"}
+	var made := 0
+	var replaced := 0
+	var saved_draws := 0
+	var ms := 0.0
+	for e in order:
+		if made >= n:
+			break
+		var key := String(e["key"])
+		var list: Array = e["list"]
+		# The cell's own centre, so the baked mesh keeps a tight local bound and
+		# frustum-culls like the props it stands in for. A map-spanning bound is
+		# what made the earlier overlay batching slower than doing nothing.
+		var centre := _centre_of(list)
+		var path := "%s/hlod_%s_w%d.res" % [cache_dir, key.replace(",", "_"),
+			int(weld * 100.0)]
+		var mesh: Mesh = null
+		if cache_dir != "" and ResourceLoader.exists(path):
+			var got = ResourceLoader.load(path)
+			if got is Mesh:
+				mesh = got
+		if mesh == null:
+			var r := bake_cell(list, centre, weld)
+			if r.is_empty():
+				continue
+			mesh = r["mesh"]
+			ms += float(r["ms"])
+			if cache_dir != "":
+				ResourceSaver.save(mesh, path)
+		var mi := MeshInstance3D.new()
+		mi.name = "HLOD_%s" % key.replace(",", "_")
+		mi.mesh = mesh
+		mi.position = centre
+		mi.material_override = baked_material()
+		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		parent.add_child(mi)
+		mi.owner = null
+		for node in list:
+			if is_instance_valid(node) and node is Node3D:
+				var mm := (node as MultiMeshInstance3D).multimesh \
+					if node is MultiMeshInstance3D else null
+				if mm != null and mm.mesh != null:
+					saved_draws += mm.mesh.get_surface_count()
+				(node as Node3D).visible = false
+				replaced += 1
+		# Tell the distance cull to leave this cell alone, or it will switch
+		# every one of those nodes back on at its next tick.
+		mark[key] = true
+		made += 1
+	return {"cells": made, "replaced_nodes": replaced,
+		"draws_saved": saved_draws - made, "bake_ms": ms}
+
+
+static func _centre_of(list: Array) -> Vector3:
+	var acc := Vector3.ZERO
+	var k := 0
+	for node in list:
+		if is_instance_valid(node) and node is Node3D:
+			acc += (node as Node3D).global_position
+			k += 1
+	return acc / maxf(float(k), 1.0)
+
+
+static func _by_weight(cells: Dictionary) -> Array:
+	var order: Array = []
+	for key in cells:
+		var list: Array = cells[key]
+		if list.is_empty():
+			continue
+		var w := 0
+		for node in list:
+			if is_instance_valid(node) and node is MultiMeshInstance3D:
+				var mm := (node as MultiMeshInstance3D).multimesh
+				if mm != null and mm.mesh != null:
+					w += mm.mesh.get_surface_count() * maxi(1, mm.instance_count)
+		if w > 0:
+			order.append({"key": key, "w": w, "list": list})
+	order.sort_custom(func(a, b): return a["w"] > b["w"])
+	return order
 
 
 # MEASUREMENT ONLY. Bake the `n` cells furthest from `cam`, and report what it

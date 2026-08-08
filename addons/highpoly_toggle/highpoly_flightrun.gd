@@ -501,11 +501,47 @@ static func run(host: Node, dock: Node, mapctx: Node) -> bool:
 			# question is what the coarse step buys. 0.5 m and 1.0 m are the
 			# range worth considering for something seen from hundreds of
 			# metres; the control says what it was before welding.
-			var hp: Dictionary = {}
-			for w in [0.0, 0.5, 1.0]:
-				hp["weld_%s" % str(w)] = HighpolyHlod.probe(
-					mapctx._cells, cam.global_position, 4, w)
-			_rep["hlod_probe"] = hp
+			# TWO CELLS, TWO WELD SIZES. The previous version baked 4 cells at
+			# three weld sizes and the run HUNG at 343 s - a dense cell holds
+			# 18 M vertices and there are 12 of those passes. The question here
+			# is the RATIO the weld buys, and two cells answer it; sizing the
+			# whole map is arithmetic once the ratio is known.
+			# ONE CELL PER WELD SIZE, and the run needs --hang-s raised past the
+			# default 90 s to allow it. bake_cell blocks the main thread and
+			# writes no heartbeat, and the DENSEST cell is far heavier than the
+			# 18 M-vertex average across the top eight, so two cells at full
+			# detail already ran past the budget and were killed as a hang
+			# twice. The ratio a weld buys is what this is for, and one cell
+			# gives it; the whole map is arithmetic afterwards.
+			# NOT A PROBE ANY MORE: bake the three heaviest cells and PUT THEM
+			# IN, so the draw count is measured rather than predicted. One cell
+			# carries 9,744 of 18,766 draws and bakes to 1, so three should be
+			# most of the frame. Cached to the map's own directory, so a second
+			# run pays nothing.
+			# MEASURED AT THE WORST VIEWPOINT, which is the flight's FIRST
+			# sample - 106 m up facing the horizon with the whole map in
+			# frustum. The install runs after the flight, so the camera is
+			# sitting in the last quarter where frustum culling leaves 260
+			# calls on screen; reading draws there would flatter any change
+			# enormously and say nothing. Put the camera back first, take the
+			# before, install, take the after.
+			var hcam := vp.get_camera_3d()
+			if hcam != null and not samples.is_empty():
+				hcam.global_transform = samples[0]["t"]
+				for _w in range(4):
+					await tree.process_frame
+				_rep["hlod_draws_before"] = vp.get_render_info(
+					Viewport.RENDER_INFO_TYPE_VISIBLE,
+					Viewport.RENDER_INFO_DRAW_CALLS_IN_FRAME)
+			var mapname := str(_cfg["map"])
+			_rep["hlod_install"] = HighpolyHlod.bake_and_install(
+				mapctx._cells, 3, 1.0, "user://mapcontext/%s" % mapname,
+				mapctx.hlod_cells)
+			for _w2 in range(4):
+				await tree.process_frame
+			_rep["hlod_draws_after"] = vp.get_render_info(
+				Viewport.RENDER_INFO_TYPE_VISIBLE,
+				Viewport.RENDER_INFO_DRAW_CALLS_IN_FRAME)
 			_phase_end()
 	_phase_end()
 
