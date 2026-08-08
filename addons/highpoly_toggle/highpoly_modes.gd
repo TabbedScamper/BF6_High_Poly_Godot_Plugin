@@ -18,7 +18,7 @@ class_name HighpolyModes
 # quietly downloads a few gigabytes or repaints a map the wrong colour.
 #
 #   const   id   your placed pieces   the level around them
-#   SDK      0   SDK proxies          nothing, no download
+#   SDK      0   SDK proxies          nothing
 #   LIGHT    3   SDK proxies          real, untextured
 #   GREY     1   real, clay           real, untextured
 #   TEX      2   real, textured       real, textured
@@ -38,8 +38,8 @@ const TEX := 2
 const ORDER: Array = [SDK, LIGHT, GREY, TEX]
 
 const LABELS: Dictionary = {
-	SDK: "Low-Poly (what you export, nothing downloads)",
-	LIGHT: "Low-Poly + Minimal Downloads",
+	SDK: "Low-Poly (what you export)",
+	LIGHT: "Low-Poly + the real level around it",
 	GREY: "High-Poly (no textures)",
 	TEX: "High-Poly (full textures)",
 }

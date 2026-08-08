@@ -1,10 +1,12 @@
 @tool
 extends EditorPlugin
 # Low / High-poly interchange for Portal SDK level building.
-# v1.5: zero model-management buttons. A background sync (highpoly_sync.gd)
-# downloads the open scene's props first, then (in "full" scope) the rest of
-# the library; overlays swap in automatically as models land; stale models and
-# map data re-download themselves. The dock shows one progress bar + pause.
+#
+# EVERYTHING COMES FROM THE PLAYER'S OWN BATTLEFIELD 6 INSTALL. The map's
+# scenery, the high-poly models that replace the SDK's grey proxies, and the
+# ground clutter are all read out of the game's own files; nothing is fetched
+# and no extracted asset is redistributed. The panel says so at the top and
+# disables itself when no install can be found - see _build_bf6_gate.
 
 var dock: VBoxContainer
 var dock_scroll: ScrollContainer   # panel wrapper: collapses the VBox's huge min height
@@ -168,8 +170,8 @@ var _storage_gen := 0          # supersedes an in-flight usage scan
 # Each rung answers two questions that used to be tangled into one:
 #
 #   id  entry                             your placed pieces   the level around them
-#   0   Low-Poly (what you export)        SDK proxies          nothing, no download
-#   3   Low-Poly + Minimal Downloads      SDK proxies          real, untextured
+#   0   Low-Poly (what you export)        SDK proxies          nothing
+#   3   Low-Poly + the real level         SDK proxies          real, untextured
 #   1   High-Poly (no textures)           real, clay           real, untextured
 #   2   High-Poly (full textures)         real, textured       real, textured
 #
@@ -583,8 +585,8 @@ func _enter_tree() -> void:
 	dock.add_child(job_row)      # takes the button's place while anything downloads
 
 	scope_btn = OptionButton.new()
-	scope_btn.add_item("Download only what this map needs", 0)
-	scope_btn.add_item("Download everything in the background", 1)
+	scope_btn.add_item("Prepare only what this map needs", 0)
+	scope_btn.add_item("Prepare everything in the background", 1)
 	scope_btn.tooltip_text = "Only this map: keeps just the pieces your open map needs and frees the rest. Everything: quietly downloads the whole library so nothing keeps you waiting later. Either way, anything missing downloads the moment you need it."
 	scope_btn.item_selected.connect(func(_i): _scope_changed())
 	dock.add_child(scope_btn)
@@ -653,7 +655,13 @@ func _enter_tree() -> void:
 	# it pixel-identical to entry 1 and left no way to see your real export.
 	for id in Modes.ORDER:      # cheapest rung first
 		mode_btn.add_item(Modes.label(id), id)
-	mode_btn.tooltip_text = "Low-Poly (what you export): only what the SDK ships, and nothing is downloaded.\n\nLow-Poly + Minimal Downloads: your own pieces stay exactly as you export them, but the real level is brought in around them, untextured so it stays small: ground, water, skyline, lighting and the level's own objects.\n\nHigh-Poly: your pieces are swapped for the real game models too, in clay or with their real textures."
+	mode_btn.tooltip_text = "Low-Poly (what you export): only what the SDK ships.
+
+Low-Poly + the real level around it: your own pieces stay exactly as you export them, but the real level is brought in around them, untextured so it stays light: ground, water, skyline, lighting and the level's own objects.
+
+High-Poly: your pieces are swapped for the real game models too, in clay or with their real textures.
+
+All of it is read from your own Battlefield 6 installation."
 	mode_btn.selected = 0
 	mode_btn.item_selected.connect(func(_i): _mode_changed())
 	host.add_child(mode_btn)
@@ -1445,7 +1453,10 @@ func _enter_tree() -> void:
 	# Debounced rather than immediate: the walk covers thousands of files, and a
 	# map load ends several transfers within a second of each other. One scan
 	# once it settles, not one per transfer.
-	mapctx.download_ended.connect(func(_label: String): _storage_dirty())
+	# No download_ended signal any more - nothing downloads. Storage still
+	# changes when a build writes its geometry cache, and build_finished is
+	# what says so.
+	mapctx.build_finished.connect(func(_n: int): _storage_dirty())
 	mapctx.build_finished.connect(func(_b: int): _storage_dirty())
 	mapctx.build_finished.connect(func(_built: int):
 		jobs.clear_activity("Building the level's scenery")
@@ -1453,7 +1464,7 @@ func _enter_tree() -> void:
 		# with — push the current Configure Shaders prefs over the fresh build
 		var _sr := EditorInterface.get_edited_scene_root()
 		if _sr != null: mapctx.apply_shader_prefs(_sr))
-	# every map-context download (map data, props, maptile) gets its own bar
+	# the map build gets its own bar
 	mapctx.job_queue = jobs        # map-context downloads take their turn
 	sync = SyncScript.new()
 	dock.add_child(sync)
@@ -2421,7 +2432,7 @@ func _do_reset() -> void:
 func _do_purge(map: String, info: Dictionary, was_open: bool) -> void:
 	if was_open:
 		# drop the live overlay FIRST: cancels any running props build, detaches
-		# the scatter and frees _MAP_CONTEXT + the maptile decal, so nothing
+		# the scatter and frees _MAP_CONTEXT, so nothing
 		# holds the files we are about to delete
 		var r := EditorInterface.get_edited_scene_root()
 		if r != null:

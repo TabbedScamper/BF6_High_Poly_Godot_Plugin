@@ -7194,6 +7194,196 @@
    "force_killed": false,
    "when": "2026-08-07 20:14:46",
    "note": ""
+  },
+  {
+   "apply_status": "driven through the dock",
+   "backdrop_done": 157,
+   "backdrop_ms": 1511,
+   "backdrop_surfaces": 406,
+   "backdrop_total": 157,
+   "boot_ms": 17414,
+   "build_done": 5498,
+   "build_ms": 22657,
+   "build_sampled": false,
+   "build_stalled": false,
+   "build_timed_out": false,
+   "build_total": 5498,
+   "cell": 0,
+   "census": {
+    "Backdrop": {
+     "instances": 185,
+     "nodes": 158,
+     "surfaces": 406,
+     "visible": true,
+     "visible_in_tree": true
+    },
+    "Props": {
+     "instances": 44920,
+     "nodes": 6643,
+     "surfaces": 12399,
+     "visible": true,
+     "visible_in_tree": true
+    },
+    "Roads": {
+     "instances": 1,
+     "nodes": 1,
+     "surfaces": 47,
+     "visible": true,
+     "visible_in_tree": true
+    },
+    "Terrain": {
+     "instances": 256,
+     "nodes": 257,
+     "surfaces": 256,
+     "visible": true,
+     "visible_in_tree": true
+    },
+    "Water": {
+     "instances": 1,
+     "nodes": 2,
+     "surfaces": 1,
+     "visible": true,
+     "visible_in_tree": true
+    },
+    "_MAP_CONTEXT": {
+     "instances": 0,
+     "nodes": 0,
+     "surfaces": 0,
+     "visible": true,
+     "visible_in_tree": true
+    },
+    "_SCATTER": {
+     "instances": 0,
+     "nodes": 45,
+     "surfaces": 44,
+     "visible": true,
+     "visible_in_tree": true
+    }
+   },
+   "census_surfaces": 13153,
+   "dialogs_dismissed": 0,
+   "dock_controls": {
+    "mapctx_backdrop": true,
+    "mapctx_gi": true,
+    "mapctx_light": true,
+    "mapctx_maplights": true,
+    "mapctx_objects": true,
+    "mapctx_on": true,
+    "mapctx_shadows": true,
+    "mapctx_water": true,
+    "mode": 2,
+    "range": 3500.0
+   },
+   "dock_sync_ms": 0,
+   "engine": {
+    "buffer_mb": 0.0,
+    "mem_static_mb": 11302.3,
+    "nodes": 36004,
+    "objects": 262103,
+    "orphans": 294,
+    "prims": 0,
+    "resources": 423,
+    "texture_mb": 0.0,
+    "vram_mb": 0.0
+   },
+   "flight_error": "the scene holds 13153 surfaces but the viewport is drawing 0 calls \u2014 the map is built and NOT VISIBLE, so no frame times are reported",
+   "godot": "4.6.3-stable (official)",
+   "headless": true,
+   "import_scan_ms": 34372,
+   "lighting": "MP_Dumbo game lighting: sun az 125\u00c2\u00b0 el 29\u00c2\u00b0, 120000 lux",
+   "map": "MP_Dumbo",
+   "map_lights": "Map lights: 7878 loaded (nearest 300 m lit)",
+   "open_ms": 266,
+   "phases": {
+    "game source: mount": {
+     "each_ms": 646.0,
+     "n": 1,
+     "s": 0.646
+    },
+    "game source: partition index": {
+     "each_ms": 582.0,
+     "n": 1,
+     "s": 0.582
+    },
+    "game source: placement walk": {
+     "each_ms": 196.0,
+     "n": 1,
+     "s": 0.196
+    },
+    "game source: typeinfo": {
+     "each_ms": 34.0,
+     "n": 1,
+     "s": 0.034
+    },
+    "map lights: build fixtures": {
+     "each_ms": 120.0,
+     "n": 3,
+     "s": 0.36
+    },
+    "map lights: waiting for a frame": {
+     "each_ms": 29.5,
+     "n": 2,
+     "s": 0.059
+    },
+    "panel tick: map-light culling": {
+     "each_ms": 0.83,
+     "n": 12,
+     "s": 0.01
+    },
+    "panel tick: prop cell culling": {
+     "each_ms": 0.33,
+     "n": 12,
+     "s": 0.004
+    },
+    "panel tick: total": {
+     "each_ms": 1.25,
+     "n": 12,
+     "s": 0.015
+    },
+    "props: apply_radius on every yield": {
+     "each_ms": 0.38,
+     "n": 21,
+     "s": 0.008
+    },
+    "props: create multimesh cells": {
+     "each_ms": 0.06,
+     "n": 5498,
+     "s": 0.344
+    },
+    "props: load mesh (GLB parse + cache)": {
+     "each_ms": 1.9,
+     "n": 5498,
+     "s": 10.459
+    },
+    "props: waiting for the yielded frame": {
+     "each_ms": 143.29,
+     "n": 21,
+     "s": 3.009
+    },
+    "skyline: place multimesh": {
+     "each_ms": 0.03,
+     "n": 157,
+     "s": 0.004
+    }
+   },
+   "probe_draws": 0,
+   "props_built": 5498,
+   "props_per_s": 770.4,
+   "radius": 1000000000.0,
+   "reused_open_scene": true,
+   "scene": "res://Levels/MP_Dumbo.tscn",
+   "scene_nodes": 15037,
+   "scene_nodes_at_open": 7507,
+   "started_unix": 1786152895.889,
+   "total_ms": 76631,
+   "vram_mode": 1,
+   "wall_s": 80.1,
+   "vram_mb": 0.0,
+   "texture_mb": 0.0,
+   "mem_static_mb": 11302.3,
+   "force_killed": false,
+   "when": "2026-08-07 20:35:58",
+   "note": ""
   }
  ]
 }

@@ -3,30 +3,26 @@ extends Node
 class_name HighpolyMapContext
 # Editor-only "Map Context": injects the real map terrain + the game's original
 # object placements as an owner=null "_MAP_CONTEXT" node under the level root.
-# Nothing is saved or exported; the SDK level scene stays byte-identical. Data
-# (terrain GLB + placements.json) is downloaded per-map on demand from the same
-# registry host and cached under user://mapcontext/<Map>/.
+# Nothing is saved or exported; the SDK level scene stays byte-identical.
+#
+# EVERYTHING IS READ FROM THE PLAYER'S OWN BATTLEFIELD 6 INSTALL. Placements,
+# geometry, textures, terrain, water, roads, lights, FX and ground clutter all
+# come out of the game's own files through the reader stack (bf6_source ->
+# bf6_walk -> bf6_meshset), and nothing is fetched or redistributed. Derived
+# results are cached under user://, keyed on the mounted TOCs' signature so a
+# game patch invalidates them.
 #
 # Props are drawn as one MultiMeshInstance3D per unique mesh (thousands of
 # placements, a few hundred draw calls), and streamed by distance from the
 # editor camera via a render-radius slider.
 
-const ZipFetch = preload("highpoly_zipfetch.gd")   # ranged prop fetch
-const BcTex = preload("highpoly_bctex.gd")        # textures shipped beside the mesh
+const BcTex = preload("highpoly_bctex.gd")        # textures beside a local mesh
 const NODE := "_MAP_CONTEXT"
 const CACHE := "user://mapcontext"
-# Download liveness. A dead connection is the one failure that never resolves
-# itself: HTTPRequest.timeout defaults to 0 (wait forever), so `await
-# request_completed` on a socket that was accepted and then went quiet hangs for
-# the rest of the session. Small fetches get a hard deadline; big streamed
-# packages get a stall watchdog instead, so a slow line is never mistaken for a
-# dead one.
-const FETCH_TIMEOUT := 60.0     # seconds, small JSON payloads
-const POLL_SECS := 0.5          # progress/liveness sampling interval
-const STALL_SECS := 45.0        # no new bytes for this long = give up and retry
-var stall_secs: float = STALL_SECS   # instance-tunable so tests need not wait 45 s
-# shared, deduplicated prop-mesh store â€” downloaded ONCE and reused across every
-# map (a rock used by 5 maps is stored once), so per-map data stays tiny.
+const POLL_SECS := 0.5          # progress sampling interval
+# A local mesh store left over from before the reader. Nothing writes to it now;
+# it is still read so a cache built by an older version keeps working, and it is
+# where the vegetation scatter's fallback kit models live.
 const PROPS_CACHE := "user://mapcontext/_props"
 
 var _active := false               # Map Context enabled at all
@@ -78,19 +74,12 @@ const ScatterScript = preload("highpoly_scatter.gd")
 var _scatter = ScatterScript.new()
 var _scatter_n := 0
 # self-healing (v1.5): once per session per map, HEAD the map's packages and
-# compare ETags against the ones recorded at last download. A republished
-# package (game patch, fixed placements, corrected prop meshes) re-downloads
-# automatically â€” no "Reload map data" button. Installs with no recorded ETag
-# (anything pre-1.5) count as stale, which retroactively heals every install
-# that cached wrong props under the old "file exists = current" rule.
-var _session_checked: Dictionary = {}   # map -> true
-var _props_refresh: Dictionary = {}     # map -> true (props.zip must overwrite-all)
-# registry-following props: shared prop meshes are verified per session per map
-# against the model registry (mesh-name keyed hashes from the plugin manifest),
-# so a model swapped on the SITE under the same name reaches map context too â€”
-# not only when the map's props.zip is rebuilt. Verified hashes are remembered
-# in _props/index.json; unknown files are content-hashed ONCE (same sha1[:12]
-# the registry publishes), so nothing is re-downloaded that already matches.
+# STALENESS IS A GAME PATCH, and nothing else. There used to be an ETag
+# comparison against a registry, and a per-session verification of prop
+# hashes from a manifest, because a republished package could change under a
+# cache. Nothing is published any more: every derived cache is keyed on the
+# mounted TOCs' signature, so patching the game invalidates all of them at
+# once and nothing else can.
 var last_verify_updates := 0
 var _props_verified: Dictionary = {}    # map -> true (this session)
 
@@ -103,32 +92,19 @@ var _props_verified: Dictionary = {}    # map -> true (this session)
 # hook) wait for a COMPLETE overlay before shooting.
 signal build_progress(done: int, total: int)   # per work-slice + on completion
 signal backdrop_progress(done: int, total: int)  # the skyline layer's own lane
-# Getting the map objects in is THREE jobs, not two: download the archive,
-# unpack it, then build. The download and the build each had a bar and the
-# unpack had none, so the panel showed a finished download and a build that had
-# not started yet â€” a dead gap of 31 s on Dumbo with nothing moving, which reads
-# as a hang. Keyed by label so it takes its own lane next to the others.
+# Still declared because the build still reports: stage_progress drives the
+# panel's bar, build_finished tells the dock the scenery is up, and
+# _props_refresh / _session_checked are read by cleanup_stale.
 signal stage_progress(label: String, done: int, total: int)
 signal build_finished(built: int)              # completed (not emitted when superseded)
-# Every byte this module pulls, so the dock can show it. The label doubles as
-# the job id â€” several of these can be in flight at once (map data, props and
-# the maptile), and the dock stacks one bar per label.
-# total_bytes = 0 when the server sent no length (bar goes indeterminate).
-signal download_progress(label: String, done_bytes: int, total_bytes: int)
-# set by the panel; downloads take turns through it. Null in tests, where
-# there is no queue and nothing to take turns with.
 var job_queue: Node = null
-signal download_ended(label: String)
-# job labels, shared with the panel so a lane can be opened here and closed
-# there without the two drifting apart into two half-cleared bars
-# "Original map objects" is a PIPELINE, not one job, and the bar showed each
-# stage as if it were the whole thing â€” so a finished download read as a
-# finished layer and the build that followed looked like it had started over.
-# The step is in the label because that is what the bar prints; the "N/M" beside
-# the percentage counts queued DOWNLOADS, which is a different thing.
-#
-# Two steps when the props come in over ranged reads (the fetch writes the files
-# as it goes), three when it falls back to downloading and unpacking an archive.
+var _session_checked: Dictionary = {}   # map -> true
+var _props_refresh: Dictionary = {}     # map -> true
+
+# ONE JOB: build. Getting the map objects in used to be three - fetch the
+# archive, unpack it, then build - and the panel showed a finished transfer
+# beside a build that had not started, which read as a stall. Reading from
+# the install there is only the build, so there is only one bar.
 const UNPACK_JOB := "Unpacking the level's scenery (2/3)"
 const BUILD_JOB_OF3 := "Building the level's scenery (3/3)"
 const BUILD_JOB_OF2 := "Building the level's scenery (2/2)"
@@ -300,15 +276,15 @@ const WATER_NODE := "_WATER"
 
 # WHERE the maptile jpg actually lives â€” it moved, and the SDK no longer ships it:
 #   <= 1.3.3.0  res://raw/maptiles/<Level>.jpg, shipped with the SDK
-#   >= 1.4.1.0  those files are GONE; the stock terrain_decal plugin downloads
+#   >= 1.4.1.0  those files are GONE; the stock terrain_decal plugin fetches
 #               per-level tiles on demand into addons/bf_portal/terrain_decal/textures/
 # Upgraded projects are worse than missing: they keep a stale raw/maptiles/*.import
 # whose imported .ctex was never built (1.4.1.0 ships a .gdignore in raw/), so
 # ResourceLoader.exists() answers TRUE and load() then fails with three errors per
 # call. So we never ask the import system anything: find the jpg ON DISK, newest
 # location first, and decode the bytes ourselves (same trick as _layer_tex).
-# Nothing on disk anywhere = fetch it from the same official CDN the SDK's own
-# "Download Texture" button uses (see ensure_maptile).
+# Nothing on disk = no tile. The SDK's own terrain_decal plugin has a button
+# that fetches one; this reads whatever is already there and does without.
 const TILE_CACHE := "user://mapcontext/_maptiles"
 const Log = preload("highpoly_log.gd")
 const SDK_TILE_DIR := "res://addons/bf_portal/terrain_decal/textures/"
@@ -1105,7 +1081,7 @@ static func _file_size(p: String) -> int:
 	f.close()
 	return n
 
-# A prop's mesh: the EXACT extracted game mesh from the downloaded per-map props
+# A prop's mesh: the EXACT game mesh, read from the player's own install
 # bundle (`glb`) when available â€” the accurate path â€” else the res:// SDK proxy
 # (`model`) fallback for meshes we haven't extracted yet.
 func _prop_mesh(e: Dictionary, dir: String) -> Array:
@@ -2139,7 +2115,7 @@ const RANGED_JOB := "Loading the level's scenery (1/2)"
 const ARCHIVE_JOB := "Loading the level's scenery (1/3)"
 
 
-# ---------- registry-following prop meshes ----------
+# ---------- prop meshes ----------
 func _mesh_for(model_path: String) -> Mesh:
 	if _mesh_cache.has(model_path): return _mesh_cache[model_path]
 	var m: Mesh = null
