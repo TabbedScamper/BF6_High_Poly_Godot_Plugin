@@ -412,6 +412,29 @@ var _map_data := {}
 var _map_data_key := "￿"          # not "" — that is a legitimate key
 
 
+# EVERYTHING map_data DERIVED, dropped so the next ask is computed by the code
+# that is running NOW.
+#
+# map_data is a cache of answers, not of bytes: where the water is, where the
+# roads are, which lights the level has. A live reload replaces the code that
+# PRODUCES those answers and cannot replace answers already given, so a fix to
+# any of them is invisible until something drops this.
+#
+# Found the hard way. The water reader looked in one partition and missed the one
+# aftermath uses; the fix reached the editor, the user re-toggled Water, and
+# nothing happened, because map_data still held the empty answer from before the
+# fix. Worse, map_data only sets its "water" key when water is FOUND, so the
+# stale entry is an absent key rather than an empty list, and every consumer
+# reads it as "this level has no water" rather than "not looked up yet".
+#
+# Nothing on disk is thrown away: the heightfield, the ground images and the
+# geometry cache are all keyed and reused. This is the in-memory summary.
+func drop_map_data() -> void:
+	_map_data.clear()
+	_map_data_key = "￿"
+	_water_part = "￿"
+
+
 func map_data(cache_dir := "") -> Dictionary:
 	if _map_data_key == cache_dir and not _map_data.is_empty():
 		return _map_data
@@ -2999,7 +3022,28 @@ func material_for(state_key: int, scope: String, var_hash := 0):
 	# This is the download path's lesson arriving on the game path: there the
 	# merge key compared material identity rather than content, and fixing it
 	# took the skyline from 49,966 surfaces to 550.
-	var look := _look_key(slots)
+	# ---- CARPAINT ------------------------------------------------------
+	# Before the look-key share for the same reason glass is: a carpaint shell
+	# binds no colour sheet, so every one of them would key alike and collapse
+	# onto one material regardless of what colour the car is.
+	var cp = _carpaint_of(slots, consts)
+	if cp != null:
+		var cm := StandardMaterial3D.new()
+		cm.albedo_color = _srgb_of((cp as Array)[0] as Color)
+		var nm2 = _texture_for(slots.get("normal", slots.get("normal_vt")), true)
+		if nm2 != null:
+			cm.normal_enabled = true
+			cm.normal_texture = nm2
+		cm.roughness = clampf(1.0 - float((cp as Array)[1]), 0.04, 1.0)
+		cm.metallic = 0.0
+		cm.metallic_specular = 0.8
+		_mat_cache[ck] = cm
+		tex_stats["carpaint"] = int(tex_stats.get("carpaint", 0)) + 1
+		tex_stats["materials"] = int(tex_stats["materials"]) + 1
+		return cm
+
+	var tint = _albedo_tint(consts)
+	var look := _look_key(slots, tint)
 	if _mat_by_look.has(look):
 		var shared = _mat_by_look[look]
 		_mat_cache[ck] = shared
@@ -3016,7 +3060,7 @@ func material_for(state_key: int, scope: String, var_hash := 0):
 	# and a name test is a guess about every other map.
 	var mask = _mask_for(slots.get("alpha"))
 	if mask != null:
-		var fm = _foliage_material(slots, mask, _cut_for(slots.get("alpha")))
+		var fm = _foliage_material(slots, mask, _cut_for(slots.get("alpha")), tint)
 		if fm != null:
 			_mat_cache[ck] = fm
 			_mat_by_look[look] = fm
@@ -3074,13 +3118,23 @@ const C_GLASS_ARCH := 0x6BB97444
 func _glass_tint(slots: Dictionary, consts: Dictionary):
 	var tint := Color(0.62, 0.70, 0.72)      # unbound: cool neutral pane
 	var is_glass := slots.has("glass_volume")
-	# The palette is float3[8] and the pane tint is slot 0, which the spec
-	# locates at bytes 4..16 — NOT at 0. Reading from 0 gives the array's
-	# leading element count and a black pane.
+	# SLOT 0 IS AT VALUE BYTE 0, and this was off by one float.
+	#
+	# The spec locates the pane tint at "bytes 4..16 of the payload", and the
+	# payload it means is `[u32 elementCount][element 0][pad]…`. bf6_depot hands
+	# back the VALUE bytes with that count already consumed, so slot 0 starts at
+	# 0 and each later slot at 16*k — the 16-byte cbuffer stride with the last
+	# element unpadded (124 bytes for float3[8], measured).
+	#
+	# Reading from 4 returned (g, b, pad): the headlight glass whose real tint is
+	# the documented (0.791, 0.856, 0.890) came back as (0.856, 0.890, 0.000),
+	# i.e. every pane on the map was drawn a channel to the left and with a zero
+	# blue — clear glass rendered yellow, privacy grey rendered olive. Verified
+	# on retail bytes: 9b974a3f 8d3b5b3f 65d7633f 00000000.
 	var pal = consts.get(C_GLASS_PALETTE)
-	if pal is PackedByteArray and (pal as PackedByteArray).size() >= 16:
+	if pal is PackedByteArray and (pal as PackedByteArray).size() >= 12:
 		var b: PackedByteArray = pal
-		tint = Color(b.decode_float(4), b.decode_float(8), b.decode_float(12))
+		tint = Color(b.decode_float(0), b.decode_float(4), b.decode_float(8))
 		is_glass = true
 	else:
 		var arch = consts.get(C_GLASS_ARCH)
@@ -3104,8 +3158,15 @@ func _glass_material(slots: Dictionary, tint: Color) -> Material:
 	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	m.depth_draw_mode = BaseMaterial3D.DEPTH_DRAW_OPAQUE_ONLY
 	m.cull_mode = BaseMaterial3D.CULL_DISABLED
-	m.albedo_color = Color(clampf(tint.r, 0.0, 1.0), clampf(tint.g, 0.0, 1.0),
-		clampf(tint.b, 0.0, 1.0), 0.22)
+	# ENCODED TO sRGB ON THE WAY IN. The depot's tint is linear, and every colour
+	# a Godot material takes is a source_color: the engine runs srgb_to_linear on
+	# it before the shader sees it (the same conversion foliage_wind.gdshader's
+	# `albedo_mul : source_color` gets). Handing over the linear number directly
+	# means it is linearised twice, which darkens every pane and drags saturated
+	# tints toward black.
+	var lin := Color(clampf(tint.r, 0.0, 1.0), clampf(tint.g, 0.0, 1.0),
+		clampf(tint.b, 0.0, 1.0))
+	m.albedo_color = Color(lin.linear_to_srgb(), 0.22)
 	var alb = _texture_for(slots.get("basecolor"))
 	if alb != null:
 		m.albedo_texture = alb
@@ -3119,19 +3180,162 @@ func _glass_material(slots: Dictionary, tint: Color) -> Material:
 	return m
 
 
+# ---------------------------------------------------------------------------
+# PROP TINT: the constant that colours an otherwise neutral texture.
+#
+# BF6 authors most painted props ONCE, in grey, and colours them with a shader
+# constant. The base _cs sheet of a shipping container decodes to a neutral grey
+# (R 163, G 162, B 161, channels correlated 0.99+); the green, the red and the
+# orange are four constants in four depot records. A reader that binds textures
+# and stops there draws the whole map in primer.
+#
+# The constants, all LINEAR (SHADERS.md §5.4, DESTRUCTION.md §9.5), and their
+# populations over the 7,460 distinct records mp_dumbo's 41 depots hold:
+#
+#   0x8A369BB2  variant paint     1.0 neutral, used AS the colour   1,934 records
+#   0x686A1072  albedo tint       0.5 neutral, x2 = identity        2,095 records
+#   0x888A432A  arch layer tint   0.4995 neutral, x2 = identity     1,081 records
+#   0xC2BB295A  colour table      eight 0.4995-neutral entries      3,080 records
+#
+# `alb` and `l2a` are MUTUALLY EXCLUSIVE — 0 of 7,460 records carry both — so
+# they are two shader families' name for the same job and the order below is a
+# preference, not a blend.
+#
+# THE PAINT REPLACES THE TINT, it does not multiply with it. Measured on the
+# container: across all 19 records with a non-neutral paint, the albedo tint is
+# either exactly neutral or the SAME fixed (0.086, 0.159, 0.315) regardless of
+# which colour the variant is — it is not the variant's colour, and multiplying
+# the two would tint every green container blue.
+const C_ALBEDO_TINT := 0x686A1072
+const C_PAINT_MUL := 0x8A369BB2
+const C_ARCH_LAYER := 0x888A432A
+const C_COLOR_TABLE := 0xC2BB295A
+const C_CARPAINT_BODY := 0xDD0512FA
+const C_CARPAINT_SMOOTH := 0xFE9EDB18
+const C_TILEPAINT_A := 0xF1CEE56D
+const C_TILEPAINT_B := 0xF1CEE56E
+# The neutral values are not all the same number: the albedo tint's is exactly
+# 0.5 while the architecture and colour-table families ship 0.499458. One
+# tolerance covers both; a strict `== 0.5` would call 3,044 identity records
+# tinted and repaint the map for nothing.
+const TINT_EPS := 0.004
+
+
+func _c3(raw, o := 0):
+	if not (raw is PackedByteArray):
+		return null
+	var b: PackedByteArray = raw
+	if b.size() < o + 12:
+		return null
+	return Color(b.decode_float(o), b.decode_float(o + 4), b.decode_float(o + 8))
+
+
+static func _near(c: Color, v: float) -> bool:
+	return absf(c.r - v) < TINT_EPS and absf(c.g - v) < TINT_EPS \
+		and absf(c.b - v) < TINT_EPS
+
+
+# The linear tint this record applies to its albedo, or null for identity.
+func _albedo_tint(consts: Dictionary):
+	var out = null
+	# 1. paint, if it is doing anything. Wins outright.
+	var pm = _c3(consts.get(C_PAINT_MUL))
+	if pm != null and not _near(pm as Color, 1.0):
+		out = pm
+	if out == null:
+		# 2. the two exclusive per-family tints, each 0.5-ish neutral, x2 = 1.
+		var t = _c3(consts.get(C_ALBEDO_TINT))
+		if t == null:
+			t = _c3(consts.get(C_ARCH_LAYER))
+		if t != null and not _near(t as Color, 0.5) and not _near(t as Color, 0.4995):
+			out = Color((t as Color).r * 2.0, (t as Color).g * 2.0, (t as Color).b * 2.0)
+	if out == null:
+		# 3. the eight-entry colour table, ONLY when every entry agrees.
+		#
+		# Which entry a vertex uses is chosen per-vertex by vertex element usage
+		# 0x33, which mp_dumbo's meshes do declare (2,817 of 400 sampled meshes'
+		# sections carry it) but which nothing downstream reads yet. Taking entry
+		# 0 for the whole surface would be a guess on the 473 records whose eight
+		# entries disagree, so those are left untinted until the selector is
+		# wired through — a uniform table has nothing to guess about.
+		var tab = consts.get(C_COLOR_TABLE)
+		if tab is PackedByteArray and (tab as PackedByteArray).size() >= 124:
+			var b: PackedByteArray = tab
+			var e0 = _c3(b, 0)
+			var uniform := true
+			for k in range(1, 8):
+				var ek = _c3(b, 16 * k)
+				if ek == null or not (ek as Color).is_equal_approx(e0 as Color):
+					uniform = false
+					break
+			if uniform and not _near(e0 as Color, 0.5) and not _near(e0 as Color, 0.4995):
+				out = Color((e0 as Color).r * 2.0, (e0 as Color).g * 2.0,
+					(e0 as Color).b * 2.0)
+	if out == null:
+		return null
+	var c: Color = out
+	if absf(c.r - 1.0) < TINT_EPS and absf(c.g - 1.0) < TINT_EPS \
+			and absf(c.b - 1.0) < TINT_EPS:
+		return null
+	return c
+
+
+# A Godot albedo colour from a LINEAR multiplier. Every colour a material takes
+# is a source_color and is run through srgb_to_linear before the shader sees it,
+# so the linear value has to be encoded on the way in or it is linearised twice.
+static func _srgb_of(c: Color) -> Color:
+	return Color(clampf(c.r, 0.0, 4.0), clampf(c.g, 0.0, 4.0),
+		clampf(c.b, 0.0, 4.0)).linear_to_srgb()
+
+
+# ---------------------------------------------------------------------------
+# CARPAINT, by what the record binds rather than by the prop's name.
+#
+# DESTRUCTION.md §9.1: flakes normal bound AND no basecolor texture AND no
+# tile-paint palette. 132 of mp_dumbo's 7,460 records match, and every one of
+# them carries a body colour — which matters because a carpaint record has NO
+# albedo texture at all, so before this the shell fell through to Godot's
+# default and every car on the map was white.
+func _carpaint_of(slots: Dictionary, consts: Dictionary):
+	if not slots.has("carpaint_flakes"):
+		return null
+	if slots.has("basecolor") or slots.has("basecolor_veg"):
+		return null
+	if consts.has(C_TILEPAINT_A) or consts.has(C_TILEPAINT_B):
+		return null
+	var body = _c3(consts.get(C_CARPAINT_BODY))
+	if body == null:
+		return null
+	var smooth := 0.5
+	var s = consts.get(C_CARPAINT_SMOOTH)
+	if s is PackedByteArray and (s as PackedByteArray).size() >= 4:
+		smooth = clampf((s as PackedByteArray).decode_float(0), 0.0, 1.0)
+	return [body, smooth]
+
+
 # The three slots the material actually reads, in a fixed order. Deliberately
 # NOT every slot the depot binds: two states that differ only in a weathering
 # sheet we never sample produce the same StandardMaterial3D, and treating them
 # as different would keep the meshes apart for a difference that cannot be seen.
-func _look_key(slots: Dictionary) -> String:
+func _look_key(slots: Dictionary, tint = null) -> String:
 	# The mask is part of the look. Two states that share a colour sheet and
 	# differ only in their opacity mask are different materials, and folding them
 	# together would hand one of them the other's cutout.
-	return "%s|%s|%s|%s" % [
+	#
+	# THE TINT IS PART OF THE LOOK TOO, and leaving it out silently undoes the
+	# whole tint feature: a variation record is a full copy of the base record
+	# with the constants changed, so the green container and the grey one bind
+	# byte-identical textures. Keyed on textures alone the second one is handed
+	# the first one's material and both come out the same colour.
+	var t := "-"
+	if tint is Color:
+		t = "%.4f,%.4f,%.4f" % [(tint as Color).r, (tint as Color).g,
+			(tint as Color).b]
+	return "%s|%s|%s|%s|%s" % [
 		str(slots.get("basecolor_veg", slots.get("basecolor", ""))),
 		str(slots.get("normal", slots.get("normal_vt", ""))),
 		str(slots.get("emissive", "")),
-		str(slots.get("alpha", ""))]
+		str(slots.get("alpha", "")), t]
 
 
 # ---------------------------------------------------------------------------

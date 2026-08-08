@@ -1985,6 +1985,16 @@ func _hot_reload() -> bool:
 		return true
 
 	var what := HighpolyReload.impact(names, geom_changed)
+	# DROP WHAT THE OLD CODE WORKED OUT, not just the materials it built.
+	#
+	# map_data holds ANSWERS derived from the install: where the water is, where
+	# the roads are, which lights exist. Replacing the code that produces them
+	# does not replace answers already given, so a reader fix stays invisible
+	# until this is dropped. Anything past "code" can have changed one of them.
+	if what != "code" and what != "none":
+		var _gs = mapctx.game_source if mapctx != null else null
+		if _gs != null and _gs.has_method("drop_map_data"):
+			_gs.drop_map_data()
 	Log.info("Reloaded %d file(s) in place: %s" % [names.size(), ", ".join(names)])
 	match what:
 		"code":
