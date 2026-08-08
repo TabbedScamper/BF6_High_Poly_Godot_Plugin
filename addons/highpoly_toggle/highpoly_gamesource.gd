@@ -3105,6 +3105,19 @@ func mesh_for(group_key: String, lod := 0) -> Mesh:
 		var ckeys := _keys_of(cached as ArrayMesh)
 		if not _needs_split(ckeys, scope, var_hash):
 			_keys_for[kc] = ckeys
+			# NAME IT BEFORE DRESSING IT. _dress records _dress_name, and the
+			# only assignment sat further down the read-from-the-game path,
+			# which a cache hit returns before ever reaching. So every mesh
+			# served from the cache was recorded under whatever was dressed
+			# BEFORE it, and describe() - which is what Pick mode prints - named
+			# another object entirely.
+			#
+			# That is how a backdrop smoke plume was reported as
+			# "euu_manhattanbridge_01_floor_01_mesh". The geometry, the state key
+			# and the material were all correct; only the LABEL was wrong, and it
+			# sent this investigation after a mesh-resolution bug that does not
+			# exist.
+			_dress_name = res_name
 			_dress(cached as ArrayMesh, ckeys, scope, var_hash)
 			_mesh_by_sig[_sig_for(kc, ckeys, scope, var_hash)] = cached
 			return cached as ArrayMesh
