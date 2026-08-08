@@ -383,13 +383,40 @@ static func run(host: Node, dock: Node, mapctx: Node) -> bool:
 	_phase_end()
 
 	# ---- settle, then check the map is actually on screen ------------------
+	#
+	# SETTLE IS ALSO THE IDLE MEMORY TEST, and that is not a side effect - it is
+	# the only stretch of a run where the plugin is loaded, the dock is up and
+	# NOTHING is being asked of it. Users report the editor sitting at 3.3 GB
+	# with only the menu open and climbing until the machine dies, and a total
+	# taken once at the end cannot tell "it allocates a lot" from "it allocates
+	# without stopping". A series can: flat means big, rising means leaking.
+	#
+	# Sampled every frame rather than every N, because the heartbeat that is the
+	# prime suspect fires twice a second and a coarse series would alias it.
 	_phase_begin("settle")
 	t = Time.get_ticks_msec()
+	var idle_mem: Array = []
+	var idle_obj: Array = []
+	var idle_orph: Array = []
 	for i in range(int(_cfg["settle_frames"])):
 		await tree.process_frame
 		_tick()
+		idle_mem.append(snappedf(
+			Performance.get_monitor(Performance.MEMORY_STATIC) / 1048576.0, 0.1))
+		idle_obj.append(int(Performance.get_monitor(Performance.OBJECT_COUNT)))
+		idle_orph.append(int(Performance.get_monitor(
+			Performance.OBJECT_ORPHAN_NODE_COUNT)))
 		if Time.get_ticks_msec() - t > int(_cfg["max_settle_s"]) * 1000:
 			break
+	_rep["idle_mem_mb"] = idle_mem
+	_rep["idle_objects"] = idle_obj
+	_rep["idle_orphans"] = idle_orph
+	if idle_mem.size() >= 2:
+		# The number that matters: MB per second of doing nothing.
+		var secs := maxf((Time.get_ticks_msec() - t) / 1000.0, 0.001)
+		_rep["idle_mem_slope_mb_s"] = snappedf(
+			(float(idle_mem[-1]) - float(idle_mem[0])) / secs, 0.01)
+		_rep["idle_orphan_growth"] = int(idle_orph[-1]) - int(idle_orph[0])
 	var vp := EditorInterface.get_editor_viewport_3d(0)
 	if vp == null:
 		return await _abort(tree, "there is no 3D editor viewport to fly in")
@@ -420,6 +447,28 @@ static func run(host: Node, dock: Node, mapctx: Node) -> bool:
 	if fly.has("error"):
 		return await _abort(tree, str(fly["error"]))
 	_rep.merge(fly, true)
+	_phase_end()
+
+	# ---- census -------------------------------------------------------------
+	# WHICH LAYER OWNS THE DRAW CALLS. The flight says the worst viewpoint costs
+	# 59 ms at ~19,000 draws and that frame time tracks draws at +0.87, but it
+	# cannot say WHOSE draws those are, and optimising before knowing that is
+	# guessing. Taken after the flight so it cannot perturb the frames, and it
+	# is structural (a tree walk, not a frustum query), so the camera position
+	# does not matter: it counts everything built, which at the vista viewpoint
+	# is very nearly what is on screen.
+	_phase_begin("census")
+	var croot := EditorInterface.get_edited_scene_root()
+	if croot != null:
+		_rep["census"] = HighpolyCensus.take(croot)
+	# WHOSE MEMORY IS IT. A run with every layer off still measured 3,001 MB of
+	# texture memory with nothing built, which matches what users report, but a
+	# process total cannot separate our caches from the SDK scene's. This asks
+	# our caches directly, so the split is attributed rather than inferred.
+	if mapctx != null and "game_source" in mapctx and mapctx.game_source != null:
+		var gs = mapctx.game_source
+		if gs.has_method("cache_stats"):
+			_rep["cache_stats"] = gs.cache_stats()
 	_phase_end()
 
 	_rep["valid"] = true

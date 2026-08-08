@@ -3299,6 +3299,99 @@ func _hidden_parts(res_name: String, info: Dictionary) -> Dictionary:
 #
 # -> a Dictionary shaped for printing, never null.
 # ---------------------------------------------------------------------------
+# GIVE THE MEMORY BACK.
+#
+# Godot frees a Resource when its last reference drops, and every mesh, material
+# and texture we ever built is still referenced by a cache below - so turning
+# every layer off frees the NODES and releases almost nothing. A user watched
+# the editor reach 16 GB with everything on and sit at 14 GB with everything
+# off; that 14 GB is this. The only _tex_cache.clear() in the file lives inside
+# invalidate_materials(), which teardown never calls.
+#
+# Measured at full build: 2,402 textures (~2.9 GB), 16,125 materials, 7,222
+# meshes. None of it evicts.
+#
+# THE COST IS HONEST AND WORTH STATING: dropping these means the next build
+# re-reads from the install. That is ~10.7 s with the on-disk geometry cache
+# still in place, not the 63 s of a cold read - the disk caches are deliberately
+# NOT touched here, only the in-memory ones.
+#
+# Returns what was released so a caller can say so rather than claiming it.
+func release_caches() -> Dictionary:
+	var before := cache_stats()
+	_tex_cache.clear()
+	_mat_cache.clear()
+	_mesh_by_sig.clear()
+	_obj_cache.clear()
+	_depot_cache.clear()
+	_sky_cache.clear()
+	_water_look_cache.clear()
+	_decal_tex_cache.clear()
+	# Windows will often hold the freed pages rather than returning them to the
+	# OS, so Task Manager can stay high while this genuinely worked. Judge it by
+	# Performance.MEMORY_STATIC and VRAM, not by RSS.
+	return {
+		"textures": before.get("textures", 0),
+		"materials": before.get("materials", 0),
+		"meshes": before.get("meshes", 0),
+		"texture_mb_est": before.get("texture_mb_est", 0.0),
+	}
+
+
+# WHAT OUR CACHES ARE HOLDING, in entries and in estimated bytes.
+#
+# Users report the editor sitting at 3.3 GB with only the menu open, and a run
+# with every layer off measured 3,001 MB of TEXTURE memory with no map built.
+# That number alone cannot say whether it is ours or the SDK scene's, and the
+# caches below have no eviction and no size bound, so nothing here is ever
+# given back. This attributes the total instead of leaving it to inference.
+#
+# Texture bytes are ESTIMATED from dimensions and format, never by calling
+# get_image(): that forces a GPU readback, which on a few thousand textures
+# would stall the editor for seconds - the exact failure this is investigating.
+func cache_stats() -> Dictionary:
+	var tex_bytes := 0
+	var tex_n := 0
+	var mips := 0
+	for k in _tex_cache.keys():
+		var t = _tex_cache[k]
+		if t == null or not (t is Texture2D):
+			continue
+		tex_n += 1
+		var t2 := t as Texture2D
+		var px: int = t2.get_width() * t2.get_height()
+		# 4 bytes/px is the honest upper bound for the RGBA8 we decode to; a
+		# compressed texture is less, so this over-reports rather than flatters.
+		tex_bytes += px * 4
+		if t2 is ImageTexture and (t2 as ImageTexture).get_image() != null:
+			pass  # deliberately not read: see the note above
+	mips = 0
+	var meshes := 0
+	var surfaces := 0
+	for k in _mesh_by_sig.keys():
+		var m = _mesh_by_sig[k]
+		if m is Mesh:
+			meshes += 1
+			surfaces += (m as Mesh).get_surface_count()
+	var objs := 0
+	for k in _obj_cache.keys():
+		if _obj_cache[k] != null:
+			objs += 1
+	return {
+		"textures": tex_n,
+		"texture_mb_est": snappedf(tex_bytes / 1048576.0, 0.1),
+		"materials": _mat_cache.size(),
+		"meshes": meshes,
+		"mesh_surfaces": surfaces,
+		"objects": objs,
+		"depot_entries": _depot_cache.size(),
+		"sky_entries": _sky_cache.size(),
+		# None of these caches evicts. Recorded so the number is not mistaken
+		# for a working set that would come back under pressure.
+		"evicts": false,
+	}
+
+
 func describe(am: Mesh) -> Dictionary:
 	var out := {"found": false, "mesh": "", "scope": "", "variation": 0,
 		"surfaces": []}

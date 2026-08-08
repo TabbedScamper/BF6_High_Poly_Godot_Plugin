@@ -543,6 +543,8 @@ def build_session(a, run_dir):
                         "fx": False, "expect_build": False, "min_draws": 1})
     else:
         session["fx"] = bool(a.fx)
+        if a.no_shadows:
+            session["shadows"] = False
     return session
 
 
@@ -846,6 +848,16 @@ def main():
     ap.add_argument("--sdk-only", action="store_true",
                     help="every layer off: the closest baseline a self-driving "
                          "run can produce (see the note in build_session)")
+    # NOT a way to make a number look better - rule 1 still stands and culling
+    # stays off. This exists to ATTRIBUTE cost: the census says the biggest
+    # layer is 73% shadow passes, but the census is structural and counts every
+    # caster whether or not shadow-distance culling actually renders it (43,075
+    # estimated against 18,766 measured). Running the identical worst case with
+    # and without shadows turns that upper bound into a measured share.
+    ap.add_argument("--no-shadows", action="store_true",
+                    help="worst case but with sun shadows off, to measure what "
+                         "the shadow passes actually cost. Diagnostic only: a "
+                         "result from this is never a target result")
     ap.add_argument("--flight", default="",
                     help="a recorded path (default: the one for this map)")
     ap.add_argument("--project", default=PROJECT)
