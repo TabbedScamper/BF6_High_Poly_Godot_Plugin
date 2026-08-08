@@ -61,6 +61,7 @@ const FlightPath = preload("highpoly_flightpath.gd")
 const GameDir = preload("highpoly_gamedir.gd")
 const HighpolyVariants = preload("highpoly_variants.gd")
 const LightingScript = preload("highpoly_lighting.gd")
+const GameSourceScript = preload("highpoly_gamesource.gd")
 const PlacedCull = preload("highpoly_placedcull.gd")
 const TipsScript = preload("highpoly_tips.gd")
 const JobsScript = preload("highpoly_jobs.gd")
@@ -775,6 +776,19 @@ All of it is read from your own Battlefield 6 installation."
 			return
 		_mapctx_changed())
 	mc_chips.add_child(mapctx_on)
+
+	# PROP LIGHTING: the fixtures a placed prop brought in from the game, and the
+	# glow on its own bulb. Both come from the level - the lights are the ones the
+	# prefab carries and the glow is its emissive sheet - and this only decides
+	# whether they are switched on. Off, a lamp is a lamp that is not turned on,
+	# which is the honest default while laying out geometry.
+	prop_light_on = Theme_.chip("Prop Lighting")
+	prop_light_on.tooltip_text = "Switches on the lights a placed prop carries in the game, and makes its bulbs, screens and lit signs glow. Both come from the level's own data. Preview only: nothing is saved into your map or exported."
+	prop_light_on.button_pressed = false
+	prop_light_on.toggled.connect(func(v: bool):
+		if _locked(prop_light_on): return
+		_set_prop_lighting(v))
+	mc_chips.add_child(prop_light_on)
 
 	# The distant skyline is its own layer: it is what you see PAST the edge of
 	# the play area, and wanting the horizon is a different question from wanting
@@ -3182,6 +3196,7 @@ func _save_mapctx_state() -> void:
 		"gi": mapctx_gi.button_pressed if mapctx_gi else true,
 		"shadows": mapctx_shadows.button_pressed if mapctx_shadows else true,
 		"maplights": mapctx_maplights.button_pressed if mapctx_maplights else false,
+		"proplight": prop_light_on.button_pressed if prop_light_on else false,
 		"fill": mapctx_fill.value if mapctx_fill else 22.0,
 		"optimize": true,      # always on: it is what the Range slider means
 		"fx": mapctx_fx.button_pressed if mapctx_fx else false,
@@ -3675,6 +3690,36 @@ func _reoverride_selection() -> void:
 # destroyed shells, …) cycles base -> variants -> base instead — doors always
 # win when a prop is both. Only consumed when something was actually hit, so
 # normal click/drag selection and camera behavior stay untouched.
+var prop_light_on: Button = null
+
+
+# ONE SWITCH, BOTH HALVES. The fixtures are Light3D children of each overlay and
+# only need showing; the glow is an emission multiplier baked into the materials,
+# so that half needs the materials rebuilding. Doing only one of the two would
+# leave a lamp casting light with a dark bulb, or a bright bulb lighting nothing.
+func _set_prop_lighting(on: bool) -> void:
+	# STATICS ARE SET THROUGH THE PRELOAD CONST, never through the class_name.
+	# After an in-place reload the two are different script objects and the
+	# assignment lands on the wrong one, which is a bug this plugin has already
+	# paid for once.
+	LightingScript.prop_lighting = on
+	GameSourceScript.prop_emission = PROP_EMISSION_ON if on else 1.0
+	var r := EditorInterface.get_edited_scene_root()
+	var n: int = LightingScript.set_prop_lights_shown(r, on)
+	var gs = mapctx.game_source if mapctx != null else null
+	if gs != null and gs.has_method("invalidate_materials"):
+		var st: Dictionary = gs.invalidate_materials()
+		Log.info("Prop lighting %s: %d fixture(s), %d mesh(es) re-dressed"
+			% ["on" if on else "off", n, st["meshes"]])
+	lbl.text = "Prop lighting " + ("on" if on else "off")
+	_save_mapctx_state()
+
+
+# How hard a lit sheet is driven when the switch is on. Ours, not the level's:
+# the sheet says WHERE the light is, not how bright the room should read.
+const PROP_EMISSION_ON := 4.0
+
+
 func _forward_3d_gui_input(camera: Camera3D, event: InputEvent) -> int:
 	if diag_pick != null and diag_pick.button_pressed:
 		var v := _pick_input(camera, event)

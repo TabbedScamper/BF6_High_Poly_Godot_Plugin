@@ -1033,6 +1033,40 @@ static func make_light(L: Dictionary) -> Light3D:
 # placed lamp costs what a level lamp costs.
 const PROP_LIGHT_CAP := 8
 
+# PROP LIGHTING, one switch.
+#
+# A placed lamp brings its own fixtures in from the game, and it also has an
+# emissive sheet for the bulb. With the switch off both are inert and the prop
+# reads as a lamp that is not turned on, which is the honest default for a
+# builder laying out geometry. With it on the fixtures light and the bulb glows.
+#
+# The lights are the GAME's - nothing is invented here - and the emission side
+# lives in highpoly_gamesource, which builds the materials.
+static var prop_lighting := true
+const PROP_LIGHT_NAME := "_HP_LIGHT_"
+
+
+# Switch every placed prop's fixtures on or off, without rebuilding anything.
+# Returns how many it touched, so the panel can say something true.
+static func set_prop_lights_shown(root: Node, on: bool) -> int:
+	if root == null:
+		return 0
+	var n := 0
+	var stack: Array = [root]
+	while not stack.is_empty():
+		var node: Node = stack.pop_back()
+		if node is Light3D and str(node.name).begins_with(PROP_LIGHT_NAME):
+			(node as Light3D).visible = on
+			n += 1
+			continue
+		for c in node.get_children():
+			# the map-context subtree is the level's own lighting and has its
+			# own switch; walking it here would be six figures of nodes as well
+			if c.name != "_MAP_CONTEXT":
+				stack.append(c)
+	return n
+
+
 static func attach_prop_lights(overlay: Node3D, recs: Array) -> int:
 	if overlay == null or recs.is_empty():
 		return 0
@@ -1043,7 +1077,8 @@ static func attach_prop_lights(overlay: Node3D, recs: Array) -> int:
 		if not (r is Dictionary):
 			continue
 		var lt := make_light(r as Dictionary)
-		lt.name = "_HP_LIGHT_%d" % n
+		lt.name = PROP_LIGHT_NAME + str(n)
+		lt.visible = prop_lighting
 		overlay.add_child(lt)
 		lt.owner = null                 # editor-only, never saved into the scene
 		n += 1

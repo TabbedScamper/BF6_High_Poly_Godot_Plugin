@@ -3877,6 +3877,9 @@ func material_for(state_key: int, scope: String, var_hash := 0,
 	if emis != null:
 		mat.emission_enabled = true
 		mat.emission_texture = emis
+		# The same switch as the shader path, so a lamp does not depend on which
+		# material class it happened to take.
+		mat.emission_energy_multiplier = prop_emission
 		any = true
 	if tint is Color:
 		# Applied UNIFORMLY, which is the honest approximation and not the whole
@@ -4776,6 +4779,11 @@ func _decal_sheet(file_guid, is_normal: bool):
 	return tex if varies else null
 
 
+# PROP LIGHTING, the emission half. Read by every material builder that binds an
+# emissive sheet. 1.0 is the sheet as authored; the panel raises it. Static so
+# the dock can set it and re-dress without threading it through every call.
+static var prop_emission := 1.0
+
 var _smooth_cache := {}                # texture asset -> bool, does its alpha vary
 
 
@@ -4935,6 +4943,7 @@ func _tint_masked_material(slots: Dictionary, tint: Color):
 	if emis != null:
 		m.set_shader_parameter("emission_tex", emis)
 		m.set_shader_parameter("use_emission", true)
+		m.set_shader_parameter("emission_energy", prop_emission)
 	return m
 
 
@@ -4963,6 +4972,7 @@ func _smooth_material(slots: Dictionary, tint):
 	if emis != null:
 		m.set_shader_parameter("emission_tex", emis)
 		m.set_shader_parameter("use_emission", true)
+		m.set_shader_parameter("emission_energy", prop_emission)
 	# Uniform, as the plain path applies it: the per-texel paint mask is the
 	# masked-tint path above and is a separate decision from smoothness.
 	if tint is Color:

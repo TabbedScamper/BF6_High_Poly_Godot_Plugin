@@ -92,6 +92,10 @@ uniform float breaker_scale = 1.0;
 // extra fetch. Everything drew at a flat ROUGHNESS = 1 before, which is why
 // props read uniformly matte whatever they are made of.
 uniform bool use_smooth = false;
+// PROP LIGHTING. 1.0 is the sheet as authored, which reads as a lamp that is not
+// switched on; the panel raises it so a bulb, a screen or a lit sign reads as
+// POWERED. The sheet is the level's; the multiplier is the switch and is ours.
+uniform float emission_energy = 1.0;
 
 void fragment() {
 	vec4 c = texture(albedo_tex, UV);
@@ -107,7 +111,7 @@ void fragment() {
 		NORMAL_MAP_DEPTH = normal_scale;
 	}
 	if (use_emission) {
-		EMISSION = texture(emission_tex, UV).rgb;
+		EMISSION = texture(emission_tex, UV).rgb * emission_energy;
 	}
 	ROUGHNESS = use_smooth ? clamp(1.0 - c.a, 0.02, 1.0) : 1.0;
 	METALLIC = 0.0;
