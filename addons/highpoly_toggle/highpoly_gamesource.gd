@@ -964,11 +964,20 @@ uniform sampler2D cv : source_color, filter_linear_mipmap, repeat_enable;
 uniform sampler2D op : filter_linear_mipmap, repeat_enable;
 uniform bool has_cv = false;
 uniform bool has_op = false;
+// A DECAL's basecolor alpha IS its coverage - measured, 11 of the 13 basecolors
+// used by records with no op slot have a varying alpha and it is exactly the
+// ribbon fading into the ground. A TERRAIN LAYER's basecolor alpha is not:
+// concrete tile spans 0.86..1.00, cobblestone 0.54..1.00 and broken asphalt
+// 0.40..1.00, and that is a blend/height field, not coverage. The same
+// `ALPHA = cv.a` fallback is right for the first and would draw every block
+// pavement at 54% opacity for the second, so the layer route says so.
+uniform bool opaque_alpha = false;
 uniform vec4 flat_col : source_color = vec4(0.35, 0.35, 0.35, 1.0);
 void fragment() {
 	vec4 c = has_cv ? texture(cv, UV) : flat_col;
 	ALBEDO = c.rgb;
-	ALPHA = has_op ? texture(op, UV).r : c.a;
+	// R, not A. Of this map's 33 op textures, 30 vary on R and one on A.
+	ALPHA = opaque_alpha ? 1.0 : (has_op ? texture(op, UV).r : c.a);
 	ROUGHNESS = 0.85;
 	SPECULAR = 0.2;
 }
@@ -1147,6 +1156,10 @@ func _road_material(key: String) -> Material:
 		if alb != null:
 			mat.set_shader_parameter("cv", alb)
 			mat.set_shader_parameter("has_cv", true)
+		# Full coverage: the layer carries no `_op` of its own (checked - the
+		# four layers these records point at bind only cv/ao/nhs) and its
+		# basecolor alpha is a blend field rather than a mask.
+		mat.set_shader_parameter("opaque_alpha", true)
 		return mat
 	var parts := key.split("|")
 	var cv = _texture_for(parts[0] if parts.size() > 0 else "")
