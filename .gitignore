@@ -4,3 +4,8 @@ __pycache__/
 # generated on demand by bc_pipeline.py: a throwaway Godot project that
 # holds a copy of the plugin so the pipeline can bake against it
 _bakeproj/
+
+# per-run performance artefacts: editor logs, stdout/stderr and frame samples,
+# one directory per run. These accumulate quickly and are never worth
+# committing. The rolled-up history/baseline files beside them ARE tracked.
+native/perfrun/

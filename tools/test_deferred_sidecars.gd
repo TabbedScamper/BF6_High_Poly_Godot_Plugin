@@ -15,7 +15,13 @@ extends SceneTree
 # Run with "-- <dir of glb>".
 
 const MC = preload("res://addons/highpoly_toggle/highpoly_mapcontext.gd")
-const SP := "C:/Users/mwalt/AppData/Local/Temp/claude/C--Users-mwalt/9b036b50-aae1-4310-8139-063d65d55375/scratchpad"
+# Where this test looks when no directory is given on the command line. It used
+# to be one machine's absolute temp path, which made every default run fail for
+# anybody else. Set HIGHPOLY_TEST_DIR to point it somewhere, or pass the folder
+# as the first argument after "--".
+static func _sp() -> String:
+	var e := OS.get_environment("HIGHPOLY_TEST_DIR")
+	return e if e != "" else OS.get_user_data_dir().path_join("test")
 
 var fails := 0
 
@@ -23,7 +29,7 @@ var fails := 0
 func _init() -> void:
 	await process_frame
 	var a := OS.get_cmdline_user_args()
-	var dir: String = str(a[0]) if a.size() > 0 else SP + "/props_sample"
+	var dir: String = str(a[0]) if a.size() > 0 else _sp() + "/props_sample"
 	var n := int(str(a[1])) if a.size() > 1 else 40
 
 	var mc = MC.new()
