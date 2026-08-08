@@ -1042,16 +1042,37 @@ const PROP_LIGHT_CAP := 8
 #
 # The lights are the GAME's - nothing is invented here - and the emission side
 # lives in highpoly_gamesource, which builds the materials.
-static var prop_lighting := true
+# DEFAULTS OFF, matching the panel's chip. It defaulted to TRUE while the chip
+# defaulted to false, so a fresh boot built every fixture visible and the switch
+# read "off" - the user saw lights that the panel said were not on.
+static var prop_lighting := false
 const PROP_LIGHT_NAME := "_HP_LIGHT_"
 
 
 # Switch every placed prop's fixtures on or off, without rebuilding anything.
 # Returns how many it touched, so the panel can say something true.
+# NOT BY NAME. Every fixture goes into one holder, so they all asked to be
+# called _HP_LIGHT_0 and Godot - which renames on collision, and does it BEFORE
+# the node is in the tree if the name is set first - threw the names away
+# entirely: 2,534 fixtures in the holder, 4 of them still called _HP_LIGHT_*,
+# the rest @OmniLight3D@25259. The name test then matched almost nothing and the
+# switch turned the textures off while every light stayed on.
+#
+# The holder contains prop fixtures and nothing else, so its children ARE the
+# set. No names involved.
 static func set_prop_lights_shown(root: Node, on: bool) -> int:
 	if root == null:
 		return 0
 	var n := 0
+	var holder := root.get_node_or_null(PROP_LIGHT_HOLDER)
+	if holder != null:
+		for c in holder.get_children():
+			if c is Light3D:
+				(c as Light3D).visible = on
+				n += 1
+	# Fixtures built by a version that parented them INSIDE the overlay are
+	# still out there in scenes people already have open. Those did keep their
+	# names, so the old test heals them.
 	var stack: Array = [root]
 	while not stack.is_empty():
 		var node: Node = stack.pop_back()
@@ -1062,7 +1083,7 @@ static func set_prop_lights_shown(root: Node, on: bool) -> int:
 		for c in node.get_children():
 			# the map-context subtree is the level's own lighting and has its
 			# own switch; walking it here would be six figures of nodes as well
-			if c.name != "_MAP_CONTEXT":
+			if c.name != "_MAP_CONTEXT" and c.name != PROP_LIGHT_HOLDER:
 				stack.append(c)
 	return n
 
@@ -1146,9 +1167,12 @@ static func attach_prop_lights(prop: Node3D, recs: Array) -> int:
 		# make_light places the fixture in the PROP's space; that is what has to
 		# be preserved once the node is parented somewhere else entirely.
 		var local := lt.transform
-		lt.name = PROP_LIGHT_NAME + str(n)
 		lt.visible = prop_lighting
 		holder.add_child(lt)
+		# NAMED AFTER add_child, and uniquely. Setting a name first and letting
+		# Godot resolve the collision is what discarded it: the node came out as
+		# @OmniLight3D@25259 and nothing could find it again.
+		lt.name = "%s%d_%d" % [PROP_LIGHT_NAME, prop.get_instance_id(), n]
 		lt.owner = null                 # editor-only, never saved into the scene
 		lt.global_transform = prop.global_transform * local
 		_prop_tracked.append([prop, lt, local])

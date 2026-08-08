@@ -3275,6 +3275,13 @@ func _restore_mapctx_state() -> void:
 	if mapctx_gi: mapctx_gi.set_pressed_no_signal(bool(d.get("gi", true)))
 	if mapctx_shadows: mapctx_shadows.set_pressed_no_signal(bool(d.get("shadows", true)))
 	if mapctx_maplights: mapctx_maplights.set_pressed_no_signal(bool(d.get("maplights", false)))
+	# set_pressed_no_signal SKIPS the handler, so the switch has to be applied by
+	# hand or the statics and the chip disagree. That is what left a rebooted
+	# scene showing lit fixtures under a chip that read "off".
+	if prop_light_on:
+		var _pl := bool(d.get("proplight", false))
+		prop_light_on.set_pressed_no_signal(_pl)
+		_set_prop_lighting(_pl)
 	# set_pressed_no_signal skips the handler, so the card layer has to be told
 	# separately — otherwise a restore leaves the statics saying "off" while the
 	# chip reads on (or vice versa) and the next build guesses wrong.
