@@ -1006,7 +1006,14 @@ func roads() -> Mesh:
 		var pr: Dictionary = rec["props"]
 		var cv := _prop_guid(pr, BF6Decals.SLOT_CV)
 		var op := _prop_guid(pr, BF6Decals.SLOT_OP)
+		# A PROP-LESS RECORD IS NOT A BROKEN ONE, and it is not a small case:
+		# 135 of this map's 433 records carry no textures at all, and their
+		# AssetSlot is a terrain LAYER-GRAPH LAYER INDEX. The surface is that
+		# layer's own material - slot 8 is L08 concrete tile on 109 records,
+		# which is every block pavement on the map. Those were drawing flat grey.
 		var key := "%s|%s" % [cv, op]
+		if cv == "" and op == "":
+			key = "layer:%d" % int(rec["asset_slot"])
 		if not groups.has(key):
 			groups[key] = []
 		(groups[key] as Array).append(rec)
@@ -1096,13 +1103,52 @@ func _prop_guid(props: Dictionary, slot: int) -> String:
 	return BF6Decals.guid_str((p as Array)[1])
 
 
+# The terrain layer palette, loaded once, for the prop-less road records.
+var _road_pal = null
+var _road_pal_tried := false
+
+
+func _road_layer_albedo(layer: int):
+	if not _road_pal_tried:
+		_road_pal_tried = true
+		var pal := BF6TerrainLayers.new()
+		var pidx: Dictionary = walk.gi if walk != null and walk.gi is Dictionary 			else {}
+		if pal.load(src, level, pidx):
+			_road_pal = pal
+		else:
+			_say("game source: roads - terrain layer palette: %s" % pal.error)
+	if _road_pal == null:
+		return null
+	var nm: String = _road_pal.albedo_of(layer)
+	if nm == "":
+		return null
+	var raw := src.get_res(nm)
+	if raw.is_empty():
+		return null
+	var got := _tex.decode(raw, func(form): return src.get_chunk(str(form)),
+		texture_max_dim)
+	if got.is_empty() or not (got.get("image") is Image):
+		return null
+	return ImageTexture.create_from_image(got["image"] as Image)
+
+
 func _road_material(key: String) -> Material:
 	if _road_shader == null:
 		_road_shader = Shader.new()
 		_road_shader.code = ROAD_SHADER
-	var parts := key.split("|")
 	var mat := ShaderMaterial.new()
 	mat.shader = _road_shader
+	# The terrain-layer route. The palette is the same one the ground reads, so
+	# a pavement decal and the pavement under it are painted from one source
+	# rather than two that can disagree.
+	if key.begins_with("layer:"):
+		var li := int(key.substr(6))
+		var alb = _road_layer_albedo(li)
+		if alb != null:
+			mat.set_shader_parameter("cv", alb)
+			mat.set_shader_parameter("has_cv", true)
+		return mat
+	var parts := key.split("|")
 	var cv = _texture_for(parts[0] if parts.size() > 0 else "")
 	var op = _texture_for(parts[1] if parts.size() > 1 else "")
 	if cv != null:
