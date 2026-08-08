@@ -51,6 +51,10 @@ nothing to switch on. Everything else in this panel still works."
 const PreviewsScript = preload("highpoly_previews.gd")
 const ProfilerScript = preload("highpoly_profiler.gd")
 const MapContextScript = preload("highpoly_mapcontext.gd")
+# Only ever used to ASSIGN statics. Reads and calls go through HighpolyLib as
+# before; it is assignment through a class_name that breaks after a live reload.
+# See the note at MapContextScript.mesh_cache_enabled.
+const LibScript = preload("highpoly_lib.gd")
 const HighpolyCollision = preload("highpoly_collision.gd")
 const HighpolyDoors = preload("highpoly_doors.gd")
 const FlightPath = preload("highpoly_flightpath.gd")
@@ -201,7 +205,7 @@ const MODE_TEX := Modes.TEX
 func _mode() -> int:
 	if mode_btn == null: return HighpolyLib.Tier.LOW
 	var t: int = Modes.tier(mode_btn.get_selected_id())
-	HighpolyLib.detail = t
+	LibScript.detail = t
 	return t
 
 func _textured() -> bool:
@@ -1073,7 +1077,17 @@ All of it is read from your own Battlefield 6 installation."
 	#   no benefit attached to a switch. Always on now.
 	#   The shader preferences it happened to load on the way past are still
 	#   loaded, below, because those are real settings behind their own dialog.
-	HighpolyMapContext.mesh_cache_enabled = true
+	# THROUGH THE PRELOAD CONST, never through the class_name.
+	#
+	# Assigning a static var via HighpolyMapContext.x fails at runtime once that
+	# script has been replaced in place by a live reload:
+	#   "Invalid assignment of property 'mesh_cache_enabled' ... on a base object
+	#    of type 'GDScript'"
+	# The class_name global re-registers to a script object this already-compiled
+	# file cannot index statics on; the preloaded const still points at the object
+	# CACHE_MODE_REPLACE updated, which is the whole basis of the live reload.
+	# Reads of CONSTANTS are fine either way, because those resolve at parse time.
+	MapContextScript.mesh_cache_enabled = true
 	var _es := EditorInterface.get_editor_settings()
 	var _sp: Variant = _es.get_project_metadata("highpoly_mapctx", "_shaders", {})
 	if _sp is Dictionary:
@@ -1847,7 +1861,7 @@ func _apply_ui(d: Dictionary) -> void:
 	# The statics the chips only MIRROR have to be told too, because nothing
 	# fired a handler to tell them.
 	if mapctx_fx != null:
-		HighpolyMapContext.show_fx_cards = mapctx_fx.button_pressed
+		MapContextScript.show_fx_cards = mapctx_fx.button_pressed
 	_refresh_gates()
 	_lighting_subs_enabled(mapctx_light != null and mapctx_light.button_pressed)
 	# The window is a child of the editor, not of the dock, so a reopen closes it
@@ -2742,7 +2756,7 @@ func _do_reset() -> void:
 		if b: b.set_pressed_no_signal(false)
 	if mapctx_backdrop: mapctx_backdrop.set_pressed_no_signal(false)
 	if mapctx_water: mapctx_water.set_pressed_no_signal(false)
-	HighpolyMapContext.show_fx_cards = false
+	MapContextScript.show_fx_cards = false
 	_lighting_subs_enabled(false)
 	if mapctx_variant_row: mapctx_variant_row.visible = false
 	if ovr_chk: ovr_chk.text = _override_label()
@@ -2758,7 +2772,7 @@ func _do_reset() -> void:
 	var open_map: String = mapctx.map_of(r) if is_instance_valid(r) else ""
 	if open_map != "":
 		es.set_project_metadata("highpoly_mapctx", open_map, {})
-	HighpolyMapContext.mesh_cache_enabled = true
+	MapContextScript.mesh_cache_enabled = true
 	es.set_project_metadata("highpoly_mapctx", "_mesh_cache", true)
 	lbl.text = "Reset. %s freed. It is all worked out again the next time you open a map." % _human_size(freed)
 	_refresh_storage()
@@ -2846,7 +2860,7 @@ func _check_scene_change() -> void:
 	if mapctx_light: mapctx_light.set_pressed_no_signal(false)
 	if mapctx_fx:
 		mapctx_fx.set_pressed_no_signal(false)
-		HighpolyMapContext.show_fx_cards = false   # keep the card layer in step
+		MapContextScript.show_fx_cards = false   # keep the card layer in step
 	_lighting_subs_enabled(false)
 	if mapctx_variant_row: mapctx_variant_row.visible = false
 	if col_chk: col_chk.set_pressed_no_signal(false)
@@ -3232,7 +3246,7 @@ func _restore_mapctx_state() -> void:
 	# separately — otherwise a restore leaves the statics saying "off" while the
 	# chip reads on (or vice versa) and the next build guesses wrong.
 	if mapctx_fx:
-		HighpolyMapContext.show_fx_cards = bool(d.get("fx", false))
+		MapContextScript.show_fx_cards = bool(d.get("fx", false))
 	if mapctx_fx and bool(d.get("fx", false)):
 		mapctx_fx.set_pressed_no_signal(true)
 		mapctx.set_fx_cards_shown(r, true)
@@ -3361,7 +3375,7 @@ func _ensure_game_source(map: String, gen: int = -1) -> bool:
 	mapctx.game_source = gs
 	# The object library reads from the same source: a placed object is
 	# assembled from the game's own prefab instead of a fetched GLB.
-	HighpolyLib.game_source = gs
+	LibScript.game_source = gs
 	LightingScript.game_source = gs   # the level's own sky panorama
 	return true
 

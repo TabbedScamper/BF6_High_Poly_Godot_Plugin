@@ -4479,6 +4479,11 @@ func _tint_mask_for(file_guid):
 	if known != null:
 		return tex
 	var small = _texture_for(file_guid, true, TINT_MASK_PROBE_DIM)
+	# DROPPED FROM THE TEXTURE CACHE AS SOON AS IT HAS ANSWERED. A capped fetch
+	# is cached under its own key and would otherwise stay resident for the whole
+	# session behind the full-size copy of the same sheet — measured at +407 MB
+	# over 331 sheets, which is a lot of video memory to spend on a yes/no.
+	_tex_cache.erase("%s@%d" % [an, TINT_MASK_PROBE_DIM])
 	var img: Image = (small as ImageTexture).get_image() if small != null else null
 	if img == null:
 		_tint_mask_cache[an] = false

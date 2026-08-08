@@ -125,8 +125,11 @@ static func _apply_wave_sim(m: ShaderMaterial, sim_v: Variant) -> void:
 		clampf(float(sim.get("chop", 0.0)), 0.0, 1.2) * 0.7)
 	# FoamThreshold -> where a crest goes white. Low threshold, foam on any
 	# crest; high, only on the sharpest.
+	# The 0.58 floor is not slack: crest_h is a four-component sine sum
+	# normalised over its own amplitude, so it clusters around the middle and a
+	# cutoff below about half puts foam on most of the surface.
 	var thr := clampf(float(sim.get("foam_threshold", 0.0)) / FOAM_THRESHOLD_SPAN, 0.0, 1.0)
-	m.set_shader_parameter("foam_cut", lerpf(0.25, 0.92, thr))
+	m.set_shader_parameter("foam_cut", lerpf(0.58, 0.95, thr))
 	m.set_shader_parameter("foam_crest", bool(sim.get("foam", true)))
 
 

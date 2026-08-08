@@ -15,7 +15,6 @@ shader_type spatial;
 //   * t_oceanfoam_nsh            the ocean variant's foam, same packing.
 //   * t_oceannoise               3-channel noise, used to break up tiling.
 //
-//
 // The game's, read off WaterOceanSimulationEntityData in the level's schematic
 // (see highpoly_gamesource.water_sim for the measurements behind each):
 //   * WindAngle            which way the swell travels. Radians.
@@ -80,7 +79,7 @@ uniform float foam_strength = 0.30;   // shoreline brightening (0 = off)
 uniform vec4 waves[4];
 uniform float wave_gain = 0.55;       // from WindSpeed, normalised (0.07 = 1.0)
 uniform float wave_chop = 0.05;       // from Choppiness, clamped for stability
-uniform float foam_cut = 0.35;        // from FoamThreshold, normalised
+uniform float foam_cut = 0.62;        // from FoamThreshold, normalised
 uniform bool foam_crest = true;       // from EnableFoam
 uniform float roughness_min = 0.06;
 uniform sampler2D depth_tex : hint_depth_texture, filter_nearest;
