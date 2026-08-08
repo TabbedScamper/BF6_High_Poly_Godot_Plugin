@@ -199,11 +199,23 @@ static func _show_proxy_only(node: Node3D) -> void:
 	_set_proxy_visible(node, true)
 
 # ---------- apply ----------
-static func apply(root: Node, tier: Tier, textured: bool = true) -> int:
-	if root == null: return 0
+# WHAT WOULD BE SWAPPED, without swapping any of it. -> [[Node3D, key], …]
+#
+# Split out of apply() so a caller can put a bar on the work. apply() itself
+# cannot: it is one uninterrupted pass that builds an overlay per prop, the
+# editor does not repaint until it returns, and a swap of a few thousand props is
+# a hard freeze with nothing on screen. A caller that has the list up front knows
+# the total, can do them a slice at a time and can yield a frame between slices.
+#
+# Deciding WHICH nodes to touch is cheap (a name match); building each overlay is
+# not, and only the second half needs to be paced. The walk is identical to the
+# one apply() used to do inline, including the order, so the two produce the same
+# result on the same scene.
+static func plan(root: Node) -> Array:
+	var out: Array = []
+	if root == null: return out
 	var ks := known()
-	if ks.is_empty(): return 0
-	var count := 0
+	if ks.is_empty(): return out
 	var stack: Array = [root]
 	while not stack.is_empty():
 		var node: Node = stack.pop_back()
@@ -212,12 +224,20 @@ static func apply(root: Node, tier: Tier, textured: bool = true) -> int:
 		if node is Node3D:
 			var k := _match_key(node, ks)
 			if k != "":
-				if apply_one(node as Node3D, k, tier, textured):
-					count += 1
+				out.append([node as Node3D, k])
 				_push_user_children(node, stack)   # user props nested under this one
 				continue
 		for c in node.get_children():
 			stack.append(c)
+	return out
+
+
+static func apply(root: Node, tier: Tier, textured: bool = true) -> int:
+	var count := 0
+	for e in plan(root):
+		var pair: Array = e
+		if apply_one(pair[0] as Node3D, str(pair[1]), tier, textured):
+			count += 1
 	return count
 
 # Apply only the props in `names` (the batched swap-in pass after downloads):

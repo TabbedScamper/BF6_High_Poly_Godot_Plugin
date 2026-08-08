@@ -1791,7 +1791,7 @@ func _startup() -> void:
 func _apply_open_scene() -> void:
 	if EditorInterface.get_edited_scene_root() == null:
 		return
-	_apply_scene()
+	await _apply_scene()
 	_reapply_placed_cull()
 
 func _show_migration_wizard() -> void:
@@ -2860,7 +2860,7 @@ func _do_purge(map: String, info: Dictionary, was_open: bool) -> void:
 	HighpolyStore.ctx_scan(true)
 	if previews: previews.rescan_context()
 	if EditorInterface.get_edited_scene_root() != null:
-		_apply_scene()
+		await _apply_scene()
 	lbl.text = "%s purged. About %s freed, and it re-downloads on demand." % [map,
 		_human_size(int(info.get("map_bytes", 0)) + int(info.get("excl_bytes", 0)))]
 	_refresh_storage()
@@ -3548,7 +3548,7 @@ func _mode_changed() -> void:
 	# real per-object geometry. Ownership of that node moved there — hiding it
 	# from here meant switching to High-Poly stripped the level's assets even
 	# with nothing loaded to replace them.
-	_apply_scene()
+	await _apply_scene()
 	# a mode switch rebuilds every preview — re-apply the placed-object cull so
 	# your custom map content keeps distance-culling in the new detail mode
 	_reapply_placed_cull()
@@ -3587,11 +3587,65 @@ func _mode_changed() -> void:
 				_mapctx_tex_mode()):
 			_mapctx_changed()
 
+# PACED, so the swap has a bar instead of being a freeze.
+#
+# This used to be one call to HighpolyLib.apply, which walks the scene and builds
+# an overlay per prop without ever returning to the editor. Nothing repaints for
+# the duration, so the panel kept showing whatever it last said (the finished
+# read), which looks exactly like being done. Now the plan comes first, so the
+# total is known, and the work is done a slice at a time with a frame in between.
+#
+# THE SLICE IS TIMED, NOT COUNTED, and it re-times itself from the cost of the
+# yield. A yielded frame is not free here: the editor redraws the whole scene,
+# and the build harness measured 125 ms per yield with a map loaded and up to two
+# seconds while the skyline is up. At a fixed "yield every 50 props" a big scene
+# would spend more time redrawing than swapping. Working for four times what the
+# last yield cost holds the overhead near 20% whatever the scene weighs, and a
+# bar that moves five times a second is no better than one that moves twice.
+#
+# Scenes small enough to finish inside the first slice never yield at all, so the
+# common case pays nothing for any of this.
+const SWAP_JOB := "Swapping placed objects"
+var _swap_gen := 0
+
 func _apply_scene() -> void:
 	var r := EditorInterface.get_edited_scene_root()
 	if r == null:
 		lbl.text = "No scene open"; return
-	var n := HighpolyLib.apply(r, _mode(), _textured())
+	# A newer swap cancels an older one. Two mode switches in quick succession
+	# would otherwise interleave, each applying its own tier to a different half
+	# of the scene.
+	_swap_gen += 1
+	var gen := _swap_gen
+	var tier := _mode()
+	var tex := _textured()
+	var todo: Array = HighpolyLib.plan(r)
+	var total := todo.size()
+	var lane := _lane(SWAP_JOB)
+	var tree: SceneTree = dock.get_tree() if dock != null else null
+	var budget := 400                      # ms of work before the first yield
+	var slice_t0 := Time.get_ticks_msec()
+	var n := 0
+	for i in range(total):
+		var pair: Array = todo[i]
+		# Re-checked every item: the plan was made before the first yield and the
+		# scene is live in between.
+		if not is_instance_valid(pair[0]):
+			continue
+		if HighpolyLib.apply_one(pair[0] as Node3D, str(pair[1]), tier, tex):
+			n += 1
+		if tree == null or Time.get_ticks_msec() - slice_t0 < budget:
+			continue
+		lane.call(i + 1, total)
+		lbl.text = "Swapping placed objects: %d of %d" % [i + 1, total]
+		var y0 := Time.get_ticks_msec()
+		await tree.process_frame
+		if gen != _swap_gen or EditorInterface.get_edited_scene_root() != r:
+			lane.call(total, total)        # close the bar, leave the rest to the newer pass
+			return
+		budget = clampi((Time.get_ticks_msec() - y0) * 4, 250, 2000)
+		slice_t0 = Time.get_ticks_msec()
+	lane.call(total, total)
 	# Drain what the pass could not draw from the library. This used to happen
 	# only on a mode switch, which was survivable while "could not draw" meant
 	# "showed the SDK proxy": the user could see something was missing. A
@@ -3952,7 +4006,7 @@ func _scope_changed() -> void:
 		previews.clear_cache()
 		var n := HighpolyStore.prune_keep(keep)
 		if root != null:
-			_apply_scene()
+			await _apply_scene()
 		lbl.text = "Scene-only: freed %d model(s)" % n)
 	dlg.canceled.connect(func():
 		_sync_scope_control()      # snap the control back, nothing changed
