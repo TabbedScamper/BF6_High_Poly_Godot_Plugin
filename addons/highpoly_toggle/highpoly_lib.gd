@@ -342,12 +342,22 @@ static func _asset_id(key: String) -> String:
 	# never represent.
 	if game_source != null and game_source.has_object(key):
 		return "game://%s" % key
+	# GAMEPLAY SPAWNERS HAVE NO MESH BLUEPRINT - they are pure spawn logic, so
+	# has_object never answers for them and they keep the SDK's placeholder.
+	# What they spawn is a character, and characters assemble at identity out of
+	# the character library instead.
+	if game_source != null:
+		var fac := HighpolySoldier.faction_for(key)
+		if fac != "":
+			return "soldier://%s" % fac
 	return ""
 
 static func _instance_for(key: String, id: String) -> Node3D:
 	if id.begins_with("variant://"):
 		var vs := variant_scene(id.trim_prefix("variant://"))
 		return vs.instantiate() as Node3D if vs != null else null
+	if id.begins_with("soldier://"):
+		return HighpolySoldier.build(game_source, id.trim_prefix("soldier://"))
 	if id.begins_with("game://"):
 		if game_source == null:
 			return null
