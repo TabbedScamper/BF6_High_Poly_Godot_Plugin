@@ -28,7 +28,6 @@ var _override: Array = []      # nodes currently carrying the override
 # How many props the last _apply_scene() put on the download queue. `wanted` is
 # drained by whoever reads it first, so the count has to be carried rather than
 # re-read: _mode_changed used to ask for the list again and always got nothing.
-var _last_queued := 0
 # relative preloads: the plugin works from ANY folder under addons/ (users
 # often drop the whole repo zip in, nesting the plugin one level deeper)
 # WRITTEN ONCE because it is applied from two places. The chip sets it when the
@@ -52,7 +51,6 @@ nothing to switch on. Everything else in this panel still works."
 const PreviewsScript = preload("highpoly_previews.gd")
 const ProfilerScript = preload("highpoly_profiler.gd")
 const MapContextScript = preload("highpoly_mapcontext.gd")
-const SyncScript = preload("highpoly_sync.gd")
 const HighpolyCollision = preload("highpoly_collision.gd")
 const HighpolyDoors = preload("highpoly_doors.gd")
 const FlightPath = preload("highpoly_flightpath.gd")
@@ -78,7 +76,6 @@ var previews: Node
 var profiler: Node          # performance recorder (highpoly_profiler.gd)
 var perf_btn: Button       # its start/stop button
 var mapctx: Node
-var sync: Node
 var reopen_btn: Button       # shown when a reload changed the panel layout
 var diag_pick: Button        # Pick mode: click-select our own overlay geometry
 # The note box. A member rather than a local because two different paths label
@@ -141,7 +138,6 @@ var _mapctx_gen := 0
 var _gs_opening := false
 var update_btn: Button         # "Update Plugin to vX.Y.Z" — hidden until a newer version exists
 var banner: Label              # legacy-mode notice ("reorganization pending")
-var sync_lbl: Label
 var jobs: Node                 # HighpolyJobs: the download queue
 var job_row: VBoxContainer     # the one universal bar, in the Check-for-Updates slot
 # the stage checklist shown while the install is being read
@@ -157,12 +153,9 @@ var log_view: RichTextLabel
 var log_count: Label
                                # download (typed by base, like mapctx/sync — the
                                # global class name isn't registered until a scan)
-var pause_btn: Button
 var check_btn: Button          # manual "Check for updates" (forces a registry re-check)
-var scope_btn: OptionButton    # sync scope: current scene only / all models
 var _edited_root: Node = null  # tracks the active scene to detect tab switches
 var _ready_names: Dictionary = {}   # models that landed since the last swap-in pass
-var _swap_timer: Timer
 # ---- storage section (dock) ----
 var storage_lbl: Label         # disk usage summary (computed async)
 var purge_maps: OptionButton   # downloaded maps eligible for purge
@@ -471,7 +464,6 @@ func _perf_state() -> Dictionary:
 		"scene": (String(r.name) if r != null else "(none)"),
 		"map": (mapctx.map_of(r) if (mapctx != null and r != null) else ""),
 		"mode": (mode_btn.get_selected_id() if mode_btn != null else -1),
-		"scope": HighpolyStore.scope(),
 		"map_context": chip.call(mapctx_on),
 		"objects": chip.call(mapctx_objects),
 		"backdrop": chip.call(mapctx_backdrop),
@@ -481,7 +473,6 @@ func _perf_state() -> Dictionary:
 		"contact_shading": chip.call(mapctx_gi),
 		"shadows": chip.call(mapctx_shadows),
 		"map_lights": chip.call(mapctx_maplights),
-		"models_local": HighpolyStore.count(),
 	}
 
 func _shed_map_context() -> int:
@@ -570,20 +561,6 @@ func _enter_tree() -> void:
 	job_bar.add_child(job_pct)
 	jobs.changed.connect(_refresh_job_bar)
 
-	# (the model sync has no bar of its own — it reports on the universal bar)
-	sync_lbl = Label.new()
-	sync_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	sync_lbl.add_theme_font_size_override("font_size", Theme_.fs(12))
-	dock.add_child(sync_lbl)
-	pause_btn = Button.new()
-	pause_btn.text = "Pause downloads"
-	pause_btn.visible = false
-	pause_btn.tooltip_text = "Stops downloading for now. Use it if you are on limited internet, or need the bandwidth for something else. Nothing is lost. It carries on from where it stopped."
-	pause_btn.pressed.connect(func():
-		sync.paused = not sync.paused
-		pause_btn.text = "Resume downloads" if sync.paused else "Pause downloads")
-	dock.add_child(_centred(pause_btn))
-
 	check_btn = Button.new()
 	check_btn.text = "Check for updates"
 	check_btn.tooltip_text = "Checks for newly fixed models straight away. This happens by itself every hour, so you rarely need to press it."
@@ -632,13 +609,6 @@ func _enter_tree() -> void:
 	read_note.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
 	read_panel.add_child(read_note)
 	dock.add_child(read_panel)
-
-	scope_btn = OptionButton.new()
-	scope_btn.add_item("Prepare only what this map needs", 0)
-	scope_btn.add_item("Prepare everything in the background", 1)
-	scope_btn.tooltip_text = "Only this map: keeps just the pieces your open map needs and frees the rest. Everything: quietly downloads the whole library so nothing keeps you waiting later. Either way, anything missing downloads the moment you need it."
-	scope_btn.item_selected.connect(func(_i): _scope_changed())
-	dock.add_child(scope_btn)
 
 	# The master control. It switches the borrowed scenery on and off and sets
 	# the draw distance for the scenery, the effects, the map lights and your
@@ -1486,22 +1456,6 @@ All of it is read from your own Battlefield 6 installation."
 		if _sr != null: mapctx.apply_shader_prefs(_sr))
 	# the map build gets its own bar
 	mapctx.job_queue = jobs        # map-context downloads take their turn
-	sync = SyncScript.new()
-	dock.add_child(sync)
-	# The recorder reads download rates and the panel's own state, so a
-	# recording says WHAT WAS HAPPENING rather than only what the frame cost.
-	# Both are pulled on a timer rather than pushed from here, so nothing else
-	# has to remember to report, and a missing profiler is simply a no-op.
-	profiler.sync = sync
-	profiler.state_provider = func() -> Dictionary: return _perf_state()
-	sync.model_ready.connect(_on_model_ready)
-	sync.progress_changed.connect(_update_progress)
-	sync.manifest_refreshed.connect(_on_manifest_refreshed)
-	_swap_timer = Timer.new()
-	_swap_timer.one_shot = true
-	_swap_timer.wait_time = 0.5
-	_swap_timer.timeout.connect(_swap_in_ready)
-	dock.add_child(_swap_timer)
 	mapctx_timer = Timer.new(); mapctx_timer.wait_time = 0.5
 	mapctx_timer.timeout.connect(func():
 		# INSTRUMENTED because the panel is reported to get slower the more has
@@ -1626,7 +1580,6 @@ func _exit_tree() -> void:
 		LightingScript.clear(r)                          # frees _GAME_LIGHTING
 		HighpolyLib.restore(r)                             # overlays off, SDK proxies back
 	if previews: previews.shutdown()                       # SDK's own icons back
-	HighpolyStore.save()
 	Log.hook(Callable())         # never call into a freed panel
 	if jobs: jobs.reset()        # release the gate: nobody is left to call release()
 	if tools_btn:
@@ -1645,28 +1598,17 @@ func _exit_tree() -> void:
 		dock_root = null
 		dock_scroll = null
 
-# ---------- startup: migration -> scope -> sync ----------
+# ---------- startup ----------
 func _startup() -> void:
 	# UNATTENDED SESSION, when the environment asks for one. Runs the real dock
 	# path over the real scene and quits with a report, which is the only way to
 	# measure what a user actually experiences — a bench that loads the same
 	# meshes into a bare tree measures a different world.
 	#
-	# Checked FIRST and returns: none of the interactive startup below (the
-	# migration wizard, the scope prompt) makes sense with nobody at the
-	# keyboard, and a modal dialog would hang the run until it timed out.
+	# Checked FIRST and returns: an unattended run has nobody at the keyboard.
 	if HighpolyAutorun.requested():
 		HighpolyAutorun.run(self, dock, mapctx)
 		return
-	if HighpolyMigrate.needed():
-		_show_migration_wizard()
-		return
-	if not HighpolyStore.initialized():
-		HighpolyStore.save()          # fresh install: create the store marker
-	if HighpolyStore.scope() == "":
-		_show_scope_prompt()
-		return
-	_start_sync()
 	_apply_open_scene()
 
 # Draw the open scene with whatever Detail Mode we start in.
@@ -1687,146 +1629,6 @@ func _apply_open_scene() -> void:
 	await _apply_scene()
 	_reapply_placed_cull()
 
-func _show_migration_wizard() -> void:
-	var s: Dictionary = HighpolyMigrate.scan()
-	var mb := int(s.model_bytes / 1048576.0)
-	var freed := int(s.med_bytes / 1048576.0)
-	var lines := [
-		"High-Poly Preview 1.5 reorganizes its storage so the editor no longer",
-		"imports every downloaded model (much faster startup + updates).",
-		"",
-		"• Move %d model(s) (%d MB) into the new cache: no re-download" % [s.models, mb],
-		"• Delete %d editor import file(s) and %d retired medium-tier model(s) (frees ~%d MB)" % [s.import_files, s.med_files, freed],
-	]
-	if s.obj_only > 0:
-		lines.append("• Re-download %d legacy model(s) in the current format" % s.obj_only)
-	lines.append("• Map data re-checks itself automatically from now on")
-	lines.append("")
-	lines.append("Your scenes, the SDK proxies, and the Portal exporter are not affected.")
-	var dlg := ConfirmationDialog.new()
-	dlg.title = "High-Poly Preview: one-time reorganization"
-	dlg.dialog_text = "\n".join(PackedStringArray(lines))
-	dlg.ok_button_text = "Reorganize now"
-	dlg.cancel_button_text = "Not yet"
-	dlg.confirmed.connect(func():
-		HighpolyLib.use_legacy = false
-		banner.visible = false
-		var res: Dictionary = await HighpolyMigrate.run(dock, func(m: String): sync_lbl.text = m)
-		previews.clear_cache()
-		if HighpolyStore.scope() == "":
-			_show_scope_prompt(res.get("redownload", []))
-		else:
-			_start_sync(res.get("redownload", [])))
-	dlg.canceled.connect(func():
-		# fully usable legacy mode; the wizard re-offers next launch
-		HighpolyLib.use_legacy = true
-		banner.text = "Downloads are paused until the files are tidied up, which happens the next time you start the editor."
-		banner.visible = true
-		lbl.text = "%d high-poly assets available (legacy layout)" % HighpolyLib.known().size()
-		dlg.queue_free())
-	EditorInterface.popup_dialog_centered(dlg)
-
-func _show_scope_prompt(redownload: Array = []) -> void:
-	var dlg := ConfirmationDialog.new()
-	dlg.title = "High-Poly Preview: model downloads"
-	dlg.dialog_text = "How should models download?\n\n" + \
-		"Full library: everything syncs quietly in the background\n" + \
-		"(one large download, small deltas afterwards). Best if you build a lot.\n\n" + \
-		"As needed: only the models your open scenes use."
-	dlg.ok_button_text = "Full library"
-	dlg.cancel_button_text = "As needed"
-	dlg.confirmed.connect(func():
-		HighpolyStore.set_scope("full")
-		_start_sync(redownload))
-	dlg.canceled.connect(func():
-		HighpolyStore.set_scope("scene")
-		_start_sync(redownload)
-		dlg.queue_free())
-	EditorInterface.popup_dialog_centered(dlg)
-
-func _start_sync(extra: Array = []) -> void:
-	lbl.text = "%d models local" % HighpolyStore.count()
-	_sync_scope_control()
-	Log.info("startup: %d models local · scope=%s · quality=%s · mode=%s"
-		% [HighpolyStore.count(), HighpolyStore.scope(),
-			HighpolyStore.quality(),
-			"low-poly" if _mode() == HighpolyLib.Tier.LOW else "high-poly"])
-	await sync.start()
-	if not extra.is_empty():
-		sync.enqueue(extra, true)
-	# Prefetch the open scene in BOTH modes. This used to skip Low-Poly on the
-	# reasoning that nothing it fetched would be displayed, which was true when
-	# Low-Poly drew the SDK proxy. Low-Poly now draws our geometry in clay, so
-	# skipping the prefetch is what leaves placed assets as white blocks. The
-	# bytes are not the same bytes either: _tier_for() pulls Low-Poly at the web
-	# rendition, whose geometry is identical to hq and whose textures we do not
-	# render, so the accurate silhouette arrives at a fraction of the size.
-	var r := EditorInterface.get_edited_scene_root()
-	if r != null:
-		var keys := HighpolyLib.scene_keys(r)
-		Log.info("prefetching %d model(s) for the open scene" % keys.size())
-		sync.prioritize_scene(keys)
-
-# ---------- background sync -> auto swap-in ----------
-func _on_model_ready(nm: String) -> void:
-	_ready_names[nm] = true
-	previews.invalidate(nm)
-	_swap_timer.start()   # debounce: one scene walk per burst of downloads
-
-func _swap_in_ready() -> void:
-	var names := _ready_names
-	_ready_names = {}
-	if names.is_empty():
-		return
-	var r := EditorInterface.get_edited_scene_root()
-	if r == null: return
-	# pre-parse the GLBs a couple per frame (the expensive part), so the single
-	# scene walk afterwards only instantiates cached scenes — no frame hitch
-	var parsed := 0
-	for nm in names.keys():
-		HighpolyStore.load_scene(nm)
-		parsed += 1
-		if parsed % 2 == 0:
-			await get_tree().process_frame
-	# THE SCENE CAN CLOSE WHILE THIS YIELDS. `r` was checked before the loop, and
-	# the loop above gives up a frame every second model — long enough for the
-	# user to switch or close the scene, which frees the root we are still
-	# holding. apply_names takes a typed `root: Node`, so passing the freed one
-	# fails at the call itself; a user's editor log caught it doing exactly that.
-	if r == null or not is_instance_valid(r):
-		return
-	var n := HighpolyLib.apply_names(r, names, _mode(), _textured())
-	if n > 0:
-		lbl.text = "%d piece(s) upgraded as models arrived" % n
-
-# The sync manager adopted a NEW manifest (a model changed server-side, e.g. a
-# site model swap under the same name): map-context prop meshes re-verify, and
-# if any were actually replaced, the visible context rebuilds with them.
-func _on_manifest_refreshed() -> void:
-	mapctx.reset_props_verification()
-	if mapctx_objects == null or not mapctx_objects.button_pressed: return
-	var r := EditorInterface.get_edited_scene_root()
-	if r == null: return
-	var map: String = mapctx.map_of(r)
-	if map == "": return
-	var gen := _mapctx_gen
-	if previews: previews.rescan_context()
-	if gen != _mapctx_gen:
-		return                         # user toggled Map Context while props re-verified
-	if not is_instance_valid(r):
-		return                         # scene closed while the props verified
-	if mapctx.last_verify_updates > 0 and mapctx_objects.button_pressed:
-		lbl.text = mapctx.apply(r, mapctx_on.button_pressed, true, _mapctx_tex_mode(), mapctx_backdrop != null and mapctx_backdrop.button_pressed, mapctx_water != null and mapctx_water.button_pressed)
-
-# Reload changed plugin code and do the cheapest thing that makes it visible.
-#
-# -> false when the reload failed in a way the user must act on.
-# Every mesh of ours drawn within a marker's radius.
-#
-# Walks the map-context overlay and tests the INSTANCE transforms rather than
-# get_aabb(): the visual AABB belongs to the rendering server and comes back
-# empty for a node it has not drawn yet, which reports "nothing here" for a
-# scene that is fully built. The same trap the marker report already documents.
 func _marked_meshes(root: Node) -> Array:
 	var pts: Array = []
 	for m in HighpolyMarkers.list(root):
@@ -2016,16 +1818,14 @@ func _hot_reload() -> bool:
 
 
 func _check_updates_now() -> void:
-	if HighpolyLib.use_legacy:
-		lbl.text = "Run the storage reorganization first (restart the editor)"
-		return
 	check_btn.disabled = true
 	# CODE FIRST, and only what actually moved.
 	#
-	# This button used to be about models. It now also picks up plugin code
-	# without an editor restart, which is the whole point of pressing it after a
-	# fix: the scripts and shaders whose CONTENT differs are replaced in place,
-	# and objects already holding them run the new code immediately.
+	# This button used to be about downloading models. There are no models to
+	# download: everything is read from the install. What is left is the thing it
+	# grew into, which is applying plugin code without an editor restart. The
+	# scripts and shaders whose CONTENT differs are replaced in place, and objects
+	# already holding them run the new code immediately.
 	#
 	# Hash-compared rather than mtime-compared on purpose. A zip extraction
 	# stamps every file with the same "now", so an mtime test would replay the
@@ -2033,48 +1833,8 @@ func _check_updates_now() -> void:
 	if not _hot_reload():
 		check_btn.disabled = false
 		return
-	lbl.text = "Checking for updated models…"
-	await sync.check_now()
-	# whatever the open scene needs jumps the queue, same as startup — and
-	# "same as startup" no longer carries a Low-Poly exception, because startup
-	# no longer has one. Both modes draw our geometry, so both modes want the
-	# scene's models; they differ only in which rendition _tier_for() picks.
-	var r := EditorInterface.get_edited_scene_root()
-	if r != null:
-		sync.prioritize_scene(HighpolyLib.scene_keys(r))
-	# Self-heal the open map's package (new files download via ETag) and sweep
-	# obsoleted cache artifacts — one button = full migration.
-	#
-	# Deliberately OUTSIDE the mode check, and with the once-per-session ETag
-	# guard cleared first. Both of those made this button lie about what it does:
-	# in Low-Poly it skipped the map package entirely, and in any mode the guard
-	# meant a map already touched this session was declared "ready" without a
-	# single request to the server. So a republished map could not be picked up
-	# by pressing Check for updates — only by restarting the editor. Refreshing
-	# the map package is cheap (it pulls mapdata.zip, not the multi-GB prop
-	# tiers; those still follow the map-context build and the current mode).
-	if r != null:
-		var _map: String = mapctx.map_of(r)
-		if _map != "" and mapctx.has_data(_map):
-			# NOTHING TO RE-FETCH. This used to re-pull mapdata.zip and flag a
-			# republished props.zip. The map is read from the install now, so the
-			# only thing that can make it stale is a game patch - and every reader
-			# cache is keyed on the mounted TOCs' signature, so a patch invalidates
-			# them without anyone pressing anything.
-			pass
-		var _swept: int = mapctx.cleanup_stale(_map)
-		if _swept > 0:
-			lbl.text = "Checked for updates. %d out-of-date file(s) cleared." % _swept
-			_refresh_storage()
-			# the sweep can delete prop meshes the preview index thinks are there
-			if previews: previews.rescan_context()
 	check_btn.disabled = false
-	lbl.text = sync.status_text()
-	# incremental map-context refresh: the background re-bake overwrites shared
-	# prop GLBs (user://mapcontext/_props) file-by-file — re-parse and rebuild
-	# JUST the changed meshes instead of a full overlay re-toggle. Re-fetch the
-	# root: the scene may have changed/closed during the await above.
-	_refresh_storage()   # disk usage may have shifted (downloads / re-bake)
+	_refresh_storage()
 
 # ---------- the floating tool panel ----------
 # The tools live in their own window rather than an editor dock. Level building
@@ -2593,20 +2353,6 @@ func _maybe_play_splash() -> void:
 		if tint: tint.color.a = Theme_.num("tint", TINT_DEFAULT)
 		if dock_scroll: dock_scroll.modulate.a = 1.0
 
-func _update_progress() -> void:
-	if sync == null: return
-	var busy: bool = sync.pending() > 0 or sync.bootstrapping
-	pause_btn.visible = busy or sync.paused
-	# One bar for everything. A real download outranks this, so a transfer in
-	# progress is never hidden behind the background model sync.
-	if busy:
-		jobs.set_activity("Loading models for this level",
-			int(sync.progress_ratio() * 1000.0), 1000)
-	else:
-		jobs.clear_activity("Loading models for this level")
-	sync_lbl.text = sync.status_text() if not HighpolyLib.use_legacy else ""
-
-# ---------- storage (usage + per-map purge) ----------
 func _human_size(bytes: int) -> String:
 	if bytes >= 1073741824:
 		return "%.1f GB" % (bytes / 1073741824.0)
@@ -2646,8 +2392,6 @@ func _refresh_storage() -> void:
 	var gen := _storage_gen
 	_reload_purge_options()
 	storage_lbl.text = "Measuring disk usage…"
-	var models: Array = await mapctx.dir_usage_async(HighpolyStore.MODELS_DIR)
-	if gen != _storage_gen: return
 	var props: Array = await mapctx.dir_usage_async(MapContextScript.PROPS_CACHE)
 	if gen != _storage_gen: return
 	var maps_bytes := 0
@@ -2657,77 +2401,44 @@ func _refresh_storage() -> void:
 		if gen != _storage_gen: return
 		maps_bytes += int(u[1])
 		nmaps += 1
-	var total := int(models[1]) + int(props[1]) + maps_bytes
-	# library fractions from the live registry — COUNTS only: the manifest
-	# carries no per-model byte sizes, so no invented "of X GB" totals
-	var mtot := HighpolyStore.remote.size()
-	var ptot := HighpolyStore.mesh_remote.size()
+	var total := int(props[1]) + maps_bytes
 	# One plain sentence, then a line per thing, in the words a map builder would
 	# use. The old single line packed all of this into one dense string that
 	# never actually said what any of it was.
 	var lines := ["Using %s on your PC" % _human_size(total), ""]
-	lines.append("  Object models: %s%s downloaded  (%s)" % [_fmt_n(int(models[0])),
-		(" of %s" % _fmt_n(mtot)) if mtot > 0 else "", _human_size(int(models[1]))])
-	lines.append("  Level scenery: %s%s pieces  (%s)" % [_fmt_n(int(props[0])),
-		(" of %s" % _fmt_n(ptot)) if ptot > 0 else "", _human_size(int(props[1]))])
-	lines.append("  Levels: %s downloaded  (%s)" % [_fmt_n(nmaps), _human_size(maps_bytes)])
+	lines.append("  Object meshes worked out so far: %s  (%s)"
+		% [_fmt_n(int(props[0])), _human_size(int(props[1]))])
+	lines.append("  Levels read from your game: %s  (%s)"
+		% [_fmt_n(nmaps), _human_size(maps_bytes)])
 	storage_lbl.text = "\n".join(lines)
 
 func _reload_purge_options() -> void:
 	if purge_maps == null: return
 	var maps: Array = MapContextScript.cached_maps()
-	# High-poly models arrive as soon as you open a level, whether or not you
-	# ever switched Extended Terrain on. Without this the level never appears
-	# here, and those models can never be freed.
-	var open_map: String = mapctx.map_of(EditorInterface.get_edited_scene_root()) 		if mapctx != null else ""
-	if open_map != "" and not maps.has(open_map) and _scene_model_count() > 0:
-		maps = maps.duplicate()
-		maps.append(open_map)
-		maps.sort()
 	purge_maps.clear()
 	for m in maps:
 		purge_maps.add_item(str(m))
 	# AN EMPTY DROPDOWN NEXT TO A GREYED-OUT DELETE reads as something broken.
-	# It is the ordinary state before anything has been downloaded, so it should
-	# say that rather than leave the user looking for what they did wrong.
+	# It is the ordinary state before a level has been read, so it should say so
+	# rather than leave the user looking for what they did wrong.
 	if maps.is_empty():
-		purge_maps.add_item("Nothing downloaded yet")
+		purge_maps.add_item("Nothing read yet")
 	purge_maps.disabled = maps.is_empty()
 	purge_btn.disabled = maps.is_empty()
-
-# The models this scene actually has on disk. Also the fallback list of what to
-# free for a level whose data was never downloaded — no placements file exists,
-# but the open scene knows exactly which objects it uses.
-func _scene_keys_on_disk() -> Dictionary:
-	var out: Dictionary = {}
-	var r := EditorInterface.get_edited_scene_root()
-	if r == null: return out
-	for k in HighpolyLib.scene_keys(r):        # an Array of names, not a Dictionary
-		if FileAccess.file_exists(HighpolyStore.model_path(str(k))):
-			out[k] = true
-	return out
-
-func _scene_model_count() -> int:
-	return _scene_keys_on_disk().size()
 
 func _purge_selected() -> void:
 	if purge_maps.selected < 0: return
 	var map := purge_maps.get_item_text(purge_maps.selected)
 	purge_btn.disabled = true
 	storage_lbl.text = "Sizing a %s purge…" % map
-	# hand over the open scene's models: for a level with no downloaded data
-	# they are the only record of which high-poly models belong to it
-	var _open: String = mapctx.map_of(EditorInterface.get_edited_scene_root())
-	var extra: Dictionary = _scene_keys_on_disk() if map == _open else {}
-	# purging a DIFFERENT map must not take the open scene's models with it —
-	# that scene may have no downloaded map data, so nothing else vouches for them
-	var keep: Dictionary = {} if map == _open else _scene_keys_on_disk()
-	var info: Dictionary = await mapctx.purge_info(map, extra, keep)
+	# Nothing is shared with a model library any more, so there is no set of
+	# objects to hand over or hold back: a level owns the work done for it.
+	var info: Dictionary = await mapctx.purge_info(map, {}, {})
 	purge_btn.disabled = false
 	var open_map: String = mapctx.map_of(EditorInterface.get_edited_scene_root())
 	var freed := int(info.get("map_bytes", 0)) + int(info.get("excl_bytes", 0)) 		+ int(info.get("hp_bytes", 0))
 	var excl_n: int = (info.get("excl", []) as Array).size()
-	var txt := "Purge downloaded data for %s?\n\nFrees about %s: the map's own data (%s) plus %d objects only %s uses (%s)." % [
+	var txt := "Clear the work done for %s?\n\nFrees about %s: the map's own data (%s) plus %d objects only %s uses (%s)." % [
 		map, _human_size(freed), _human_size(int(info.get("map_bytes", 0))),
 		excl_n, map, _human_size(int(info.get("excl_bytes", 0)))]
 	var hp_n: int = (info.get("hp_excl", []) as Array).size()
@@ -2774,7 +2485,6 @@ func _do_reset() -> void:
 		if mapctx: lbl.text = mapctx.apply(r, false, false, false)
 		HighpolyLib.restore(r)
 		SdkHide.restore_all(r)
-	if sync: sync.paused = true
 	storage_lbl.text = "Deleting everything…"
 	# capture BEFORE the delete: afterwards there are no downloaded maps to list,
 	# and their saved toggle state would be stranded describing data that is gone
@@ -2810,12 +2520,8 @@ func _do_reset() -> void:
 	var open_map: String = mapctx.map_of(r) if is_instance_valid(r) else ""
 	if open_map != "":
 		es.set_project_metadata("highpoly_mapctx", open_map, {})
-	HighpolyStore.set_scope("")          # "" = not chosen yet
-	_sync_scope_control()
 	HighpolyMapContext.mesh_cache_enabled = true
 	es.set_project_metadata("highpoly_mapctx", "_mesh_cache", true)
-	if sync:
-		sync.paused = false
 	lbl.text = "Reset. %s freed. It is all worked out again the next time you open a map." % _human_size(freed)
 	_refresh_storage()
 
@@ -2923,11 +2629,6 @@ func _check_scene_change() -> void:
 	# pass. That is true of the guard and irrelevant, because the guard is
 	# downstream of a check that already rejected the call. A user's editor log
 	# showed exactly that, three times in a row, on a scene swap.
-	# What the OLD scene used tells us nothing about the new one, and the set is
-	# accumulated now precisely because prioritize_scene only ever sees part of
-	# it. This is where it resets.
-	if sync != null:
-		sync.forget_scene()
 	var alive: Node = old if (old != null and is_instance_valid(old)) else null
 	ShapeViz.release(alive)
 	PlacedCull.release(alive)  # a saved property: don't leave it on a closed scene
@@ -2940,17 +2641,6 @@ func _check_scene_change() -> void:
 	if r != null and is_instance_valid(r):
 		_reapply_placed_cull()
 	if lbl and old != null: lbl.text = "Different map opened, so everything is back to Low-Poly"
-	# The new scene's props move to the front of the download queue — but ONLY if
-	# High-Poly is actually on, exactly as _start_sync() does at launch.
-	#
-	# A swap resets the dock to Low-Poly a few lines above, and this used to skip
-	# the prefetch on that basis: opening a map in Low-Poly began a large download
-	# of models the mode did not draw. Low-Poly draws them now, so the prefetch is
-	# what makes a freshly-opened scene show real shapes instead of white proxies.
-	# The size objection is answered where it belongs, in _tier_for(): Low-Poly
-	# pulls the web rendition, same geometry, a fraction of the bytes.
-	if r != null and sync != null and not HighpolyLib.use_legacy:
-		sync.prioritize_scene(HighpolyLib.scene_keys(r))
 	# fresh dock instance (editor start / plugin re-enable) — not a scene
 	# switch: bring the overlay back the way this map had it
 	if old == null and r != null:
@@ -3534,26 +3224,9 @@ func _mode_changed() -> void:
 	# whatever this scene needs but doesn't have yet: front of the queue, and
 	# swapped in automatically as it lands (no prompt, no re-apply button).
 	#
-	# HIGH-POLY MODES ONLY. Low-Poly draws the SDK's own proxies and needs
-	# nothing from our library, so it queues nothing — see _diff_and_queue.
-	# Leaving on Low-Poly therefore fetches zero bytes; this is the moment the
-	# user asks for real models, so it is also the moment the fetch belongs.
-	if not HighpolyLib.use_legacy and _mode() != HighpolyLib.Tier.LOW:
-		# REPORT WHAT _apply_scene ALREADY QUEUED. This used to call
-		# take_wanted() a second time, and _apply_scene() runs first and drains
-		# it — so the list here was ALWAYS empty, the queueing never happened
-		# twice (which was the saving grace) and the user was never told that
-		# anything had started. Switching to High-Poly with a scene full of
-		# props nobody had downloaded yet looked exactly like nothing happening.
-		if _last_queued > 0:
-			lbl.text += ", %d downloading in background" % _last_queued
-		# the hourly diff was skipped for every tick spent in Low-Poly, so the
-		# library backlog has to be rebuilt on the way out or nothing but the
-		# open scene would ever arrive
-		sync.check_now()
 	lbl.text += _mode_hint()
 	if shed > 0:
-		lbl.text += ". %d borrowed layer(s) switched off. They are still downloaded and come back the moment you climb a rung" % shed
+		lbl.text += ". %d borrowed layer(s) switched off. They come back the moment you climb a rung" % shed
 	# The map-context overlay follows the same dropdown (orange / clay /
 	# textured). Re-skin what is already built rather than rebuild it: the full
 	# apply() starts with _clear() and re-parses every prop, so changing Detail
@@ -3625,16 +3298,6 @@ func _apply_scene() -> void:
 		budget = clampi((Time.get_ticks_msec() - y0) * 4, 250, 2000)
 		slice_t0 = Time.get_ticks_msec()
 	lane.call(total, total)
-	# Drain what the pass could not draw from the library. This used to happen
-	# only on a mode switch, which was survivable while "could not draw" meant
-	# "showed the SDK proxy": the user could see something was missing. A
-	# map-context stand-in looks right, so nothing would ever prompt the upgrade.
-	_last_queued = 0
-	if not HighpolyLib.use_legacy and sync != null:
-		var missing: Array = HighpolyLib.take_wanted()
-		if not missing.is_empty():
-			sync.prioritize_scene(missing)
-			_last_queued = missing.size()
 	lbl.text = "%s: %d piece(s)" % [mode_btn.get_item_text(mode_btn.selected), n]
 
 # current placed-object cull distance from the Range slider (mirrors the slider
@@ -3696,10 +3359,7 @@ func _reoverride_selection() -> void:
 			_override.append(s)
 	lbl.text = ("%s: %d piece(s)" % [_override_label(), n]) if n > 0 \
 			else "Override: select object(s), follows the selection live"
-	if not HighpolyLib.use_legacy:
-		var missing: Array = HighpolyLib.take_wanted()
-		if not missing.is_empty():
-			sync.prioritize_scene(missing)
+
 
 # ---------- viewport double-click: doors, then variant cycling ----------
 # Double-clicking a door proxy swings it open/closed like in game. If no door
@@ -3721,12 +3381,6 @@ func _forward_3d_gui_input(camera: Camera3D, event: InputEvent) -> int:
 				hit = HighpolyVariants.click(camera, mb.position, r)
 			if not hit.is_empty():
 				lbl.text = str(hit.get("msg", ""))
-				var need := str(hit.get("fetch", ""))
-				if need != "":
-					# published but not on disk: fetch, then cycle for real. Not
-					# awaited here because this handler must return a verdict to
-					# the editor synchronously.
-					_fetch_variants_then_cycle(hit.get("node"), need)
 				return EditorPlugin.AFTER_GUI_INPUT_STOP
 	return EditorPlugin.AFTER_GUI_INPUT_PASS
 
@@ -3821,21 +3475,6 @@ func _report_focus(root: Node, gs) -> void:
 	var note: String = mark_note.text.strip_edges() if mark_note != null else ""
 	HighpolyDiagnose.run(root, gs, mapctx, note)
 
-# Double-clicked a prop whose variants are published but not downloaded: fetch
-# them, then perform the swap the click asked for, so one double-click is still
-# one visible result rather than "click, wait, click again".
-func _fetch_variants_then_cycle(node: Variant, key: String) -> void:
-	if sync == null or HighpolyLib.use_legacy: return
-	var n: int = await sync.fetch_variants(key)
-	if not is_instance_valid(node) or not (node is Node3D):
-		return
-	if n <= 0:
-		lbl.text = "%s: could not download its variants (see the log)" % key
-		return
-	var res: Dictionary = HighpolyVariants.cycle(node as Node3D, key)
-	lbl.text = str(res.get("msg", "%s: %d variant(s) ready" % [key, n]))
-
-# ---------- collision visualization ----------
 func _collision_changed() -> void:
 	var r := EditorInterface.get_edited_scene_root()
 	if r == null:
@@ -3879,60 +3518,6 @@ func _on_selection_changed() -> void:
 		_reoverride_selection()
 	if iso_chk != null and iso_chk.button_pressed and col_chk.button_pressed:
 		_reisolate_selection()
-
-# ---------- sync scope (replaces the Purge button) ----------
-func _sync_scope_control() -> void:
-	if scope_btn == null: return
-	scope_btn.select(scope_btn.get_item_index(1 if HighpolyStore.scope() == "full" else 0))
-
-func _scope_changed() -> void:
-	var to_full: bool = scope_btn.get_selected_id() == 1
-	if to_full:
-		var missing: int = maxi(HighpolyStore.remote.size() - HighpolyStore.count(), 0)
-		var dlg := ConfirmationDialog.new()
-		dlg.dialog_text = ("Download the whole library?\n\n~%d model(s) still to fetch. This can take a while " +
-				"on a slow connection. It runs quietly in the background (pause any time), " +
-				"and the editor stays fully usable.") % missing
-		dlg.ok_button_text = "Download all"
-		dlg.cancel_button_text = "Cancel"
-		dlg.confirmed.connect(func():
-			HighpolyStore.set_scope("full")
-			lbl.text = "Syncing the full library in the background…"
-			await sync.check_now())
-		dlg.canceled.connect(func():
-			_sync_scope_control()      # snap back, nothing changed
-			dlg.queue_free())
-		EditorInterface.popup_dialog_centered(dlg)
-		return
-	# dropping to scene-only: prune everything the open scene doesn't use
-	var r := EditorInterface.get_edited_scene_root()
-	var keep := {}
-	if r != null:
-		for k in HighpolyLib.scene_keys(r):
-			keep[k] = true
-	var extra: int = HighpolyStore.count() - keep.size()
-	var dlg := ConfirmationDialog.new()
-	dlg.dialog_text = "Keep only the current scene's models?\nFrees the rest from disk (roughly %d model(s)). Anything you need later re-downloads on demand." % maxi(extra, 0)
-	dlg.ok_button_text = "Scene only"
-	dlg.confirmed.connect(func():
-		HighpolyStore.set_scope("scene")
-		# drop overlays first so nothing references the files being removed
-		var root := EditorInterface.get_edited_scene_root()
-		# Unconditional now, both sides. The mode check was a proxy for "are there
-		# overlays to drop", and that stopped being true when Low-Poly started
-		# drawing our geometry: in Low-Poly this walked past live overlays and
-		# pruned the files still open underneath them.
-		if root != null:
-			HighpolyLib.restore(root)
-		previews.clear_cache()
-		var n := HighpolyStore.prune_keep(keep)
-		if root != null:
-			await _apply_scene()
-		lbl.text = "Scene-only: freed %d model(s)" % n)
-	dlg.canceled.connect(func():
-		_sync_scope_control()      # snap the control back, nothing changed
-		dlg.queue_free())
-	EditorInterface.popup_dialog_centered(dlg)
 
 func _on_node_added(node: Node) -> void:
 	if not (node is Node3D): return
@@ -3981,17 +3566,7 @@ func _swap_deferred(node: Node) -> void:
 		await _ensure_source_for_mode()
 		if not is_instance_valid(node):
 			return
-	var drew := HighpolyLib.apply_one(node as Node3D, k, _mode(), _textured())
-	if not HighpolyLib.use_legacy and sync != null:
-		# A just-placed prop goes to the VERY front of the queue -- and "drew
-		# something" no longer means "we have the real model". apply_one now
-		# succeeds on a map-context STAND-IN, which is a distance-streaming bake
-		# (merged parts, half-res basecolor). Queueing only on failure would leave
-		# a placed, inspected object showing that bake forever, which is precisely
-		# the artefact this pairing exists to prevent.
-		HighpolyLib.take_wanted()
-		if not drew or not HighpolyStore.has_model(k):
-			sync.prioritize_one(k)
+	HighpolyLib.apply_one(node as Node3D, k, _mode(), _textured())
 	# a piece placed while optimization is on should distance-cull right away, like
 	# the rest of your map content (O(1): only this node's own meshes are touched)
 	if mapctx_optimize != null and mapctx_optimize.button_pressed:

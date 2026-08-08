@@ -255,6 +255,8 @@ static func check_plugin_update(host: Node, cb: Callable) -> void:
 # "anything not in the zip": this deletes from the user's addons folder, and
 # the blast radius of a wrong answer there is somebody's install.
 const REMOVED_FILES := [
+	"highpoly_sync.gd",     # 2.0: nothing is downloaded, everything is read
+	                        #      from the player's own install
 	"highpoly_jobbars.gd",     # 1.21.0: one universal bar replaced the stacked ones
 	"highpoly_turbo.gd",       # long gone
 ]

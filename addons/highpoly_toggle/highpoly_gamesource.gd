@@ -181,7 +181,7 @@ const OPEN_STAGES := [ST_MOUNT, ST_TYPES, ST_INDEX, ST_WALK, ST_GROUND,
 #      reload told the user to rebuild the whole map. Now "rebuild" is something
 #      we state deliberately by bumping this, not a side effect of which file an
 #      edit happened to land in.
-const GEOM_EPOCH := 2
+const GEOM_EPOCH := 3
 
 # A FUNCTION, not read as a constant from outside, and that is load-bearing.
 # GDScript folds a constant into the caller at parse time, so a caller that read
@@ -1045,7 +1045,7 @@ func _write_fallback_layers(pal, by_area: Array, out_dir: String) -> void:
 # _height_at now evaluates the SAME triangle the terrain mesh draws, so the
 # drape lands ON the rendered surface rather than near it and the lift only has
 # to cover float precision. 15 cm was tall enough to cut through car tyres.
-const ROAD_Y_BIAS := 0.02
+const ROAD_Y_BIAS := 0.01
 
 # COVERAGE IS A SECOND TEXTURE, not an alpha channel, so this cannot be a
 # StandardMaterial3D. The markings — lane lines, crosswalks, arrows — live ONLY
