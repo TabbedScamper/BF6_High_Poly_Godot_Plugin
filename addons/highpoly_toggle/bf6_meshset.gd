@@ -37,6 +37,10 @@ const DECL_SIZE := 100
 
 # VertexElementUsage
 const U_POS := 1
+# BoneIndices. On a Rigid/Composite destructible this is the per-vertex
+# DESTRUCTION PART index; on a Skinned mesh it is a skeleton bone id, which is a
+# different and differently-sized space (MESHSET_GEOMETRY.md 5.2).
+const U_BONE := 2
 const U_NORMAL := 6
 const U_UV0 := 33
 const U_UV1 := 34
@@ -171,6 +175,10 @@ func _sections(d: PackedByteArray, off: int, count: int) -> Array:
 			"vertex_count": int(d.decode_u32(p + 0x2C)),
 			"bones_per_vertex": bpv,
 			"elements": decl["elements"], "streams": decl["streams"],
+			# BOTH DECLARATIONS, because the BoneIndices element may live in
+			# either one (MESHSET_GEOMETRY.md 5.1 says to search both) and the
+			# choice above is about which one describes the POSITIONS.
+			"decl0": _decl(d, p + 0x64), "decl1": _decl(d, p + 0xC8),
 		})
 	return out
 
@@ -324,6 +332,14 @@ func read_lod(d: PackedByteArray, lod := 0, chunk := PackedByteArray(),
 				int(s["start_index"]), pcount, vcount, voff)
 		if idx.is_empty():
 			continue
+
+		# THE PER-VERTEX DESTRUCTION PART INDEX, when the mesh carries one.
+		#
+		# This is what lets a consumer hide the deflated tyre and the cracked
+		# windscreen that are built into the intact car (DESTRUCTION.md 4). It is
+		# read here rather than by the caller because only this function has the
+		# vertex buffer and the stream layout to hand.
+		var parts := _read_parts(buf, voff, vcount, s)
 		# state_key and material_id ride along: a caller that has decoded a
 		# section still needs to know which depot record dresses it, and
 		# re-parsing the file to find out would be absurd.
@@ -331,7 +347,71 @@ func read_lod(d: PackedByteArray, lod := 0, chunk := PackedByteArray(),
 					"normals": normals, "indices": idx,
 					"uv_sets": uv_sets.size(),
 					"state_key": s.get("state_key", 0),
-					"material_id": s.get("material_id", 0)})
+					"material_id": s.get("material_id", 0),
+					"parts": parts})
+	return out
+
+
+# The BoneIndices element -> one part index per vertex, or an empty array.
+#
+# MESHSET_GEOMETRY.md 5.1, and three things in it are easy to get wrong:
+#
+#   SLOT 0 IS STORED LAST within the element, so the lane to read is
+#   laneCount-1, not 0. Lane count comes from the format: UShort2 (22) and
+#   UShort2N (24) are 2 lanes; Short4 (17), Short4N (21), UShort4 (23) and
+#   UShort4N (25) are 4.
+#
+#   THE VALUE IS A DIRECT GLOBAL PART INDEX. The section's own u16 bone list is
+#   the SET of part ids the section touches, not a palette to map through -
+#   mapping through it corrupts exactly the vertices whose part id happens to
+#   fall below the palette length, which is a partial and hard-to-spot
+#   corruption. Measured against the authored part boxes, com_carsuv_01 goes
+#   from 62.58% to 100.00% containment when the palette mapping is removed.
+#
+#   THE ELEMENT MAY BE IN EITHER DECLARATION, so both are searched.
+#
+# Read as RAW u16 rather than through _read_attr, which normalises the N
+# formats and would turn part 17 into 0.00026.
+func _read_parts(buf: PackedByteArray, base: int, count: int,
+		s: Dictionary) -> PackedInt32Array:
+	var out := PackedInt32Array()
+	for which in ["decl0", "decl1"]:
+		var dc = s.get(which)
+		if not (dc is Dictionary):
+			continue
+		var els: Array = (dc as Dictionary)["elements"]
+		var streams: Array = (dc as Dictionary)["streams"]
+		for el in els:
+			if int(el[0]) != U_BONE:
+				continue
+			var fmt := int(el[1])
+			var lanes := 0
+			if fmt == 22 or fmt == 24:
+				lanes = 2
+			elif fmt == 17 or fmt == 21 or fmt == 23 or fmt == 25:
+				lanes = 4
+			if lanes == 0:
+				continue
+			var off := int(el[2])
+			var si := int(el[3])
+			if si >= streams.size():
+				continue
+			var sstride := int(streams[si][0])
+			if sstride == 0:
+				continue
+			var sbase := base
+			for k in range(si):
+				sbase += int(streams[k][0]) * count
+			var lane_off := off + (lanes - 1) * 2
+			if sbase + (count - 1) * sstride + lane_off + 2 > buf.size():
+				continue
+			out.resize(count)
+			for i in range(count):
+				var raw := int(buf.decode_u16(sbase + i * sstride + lane_off))
+				# The 0x8000 remap is DECODED, UNVALIDATED - no sampled BF6 mesh
+				# sets the bit. Masking it off is the safe reading either way.
+				out[i] = raw & 0x7FFF
+			return out
 	return out
 
 

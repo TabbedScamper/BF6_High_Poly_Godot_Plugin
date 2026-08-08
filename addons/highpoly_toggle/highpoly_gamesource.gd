@@ -1981,6 +1981,81 @@ func _variation_live(scope: String, vh: int, res_name: String) -> int:
 	return live
 
 
+# ---------------------------------------------------------------------------
+# THE PARTS THIS PROP HIDES AT SPAWN - DESTRUCTION.md 4.3's twin-pair rule.
+#
+#   a part is hidden IFF HealthStateIndex != 0
+#   AND an intact (state 0) twin exists for the same PartComponentIndex
+#
+# The "and" is the whole rule. Culling every non-zero state removes legitimate
+# static geometry: plenty of props have parts whose damaged look IS the authored
+# look, and those have no state-0 twin. Measured over mp_dumbo's car meshes, 74
+# props carry the table with no twin pairs at all and are correctly left intact,
+# while 40 have something to hide.
+#
+# THE TABLE IS ON THE PROP, NOT THE MESH. `X_mesh` is owned by `X` in the same
+# folder, and the table is field 0x5B95359C on one of the prop's instances.
+#
+# SKINNED MESHES ARE EXEMPT (4.4). On a playable vehicle the per-vertex
+# BoneIndices value is a SKELETON BONE - a different and differently-sized index
+# space; ob_veh_helicopter_ah6m_base has 56 bones against 50 destruction parts.
+# Indexing the part table with a bone id is a category error that would cull
+# arbitrary pieces of every aircraft.
+const F_PHYSICS_PART_INFOS := 0x5B95359C
+const F_HEALTH_STATE := 0x97C633FB
+const F_PART_COMPONENT := 0x0723904B
+const MESHTYPE_SKINNED := 1
+
+var _hidden_cache := {}
+
+
+func _hidden_parts(res_name: String, info: Dictionary) -> Dictionary:
+	if _hidden_cache.has(res_name):
+		return _hidden_cache[res_name]
+	var out := {}
+	if int(info.get("mesh_type", -1)) == MESHTYPE_SKINNED:
+		_hidden_cache[res_name] = out
+		return out
+	# `X_mesh` -> `X`; a mesh whose name does not carry the suffix IS its own
+	# prop, which is the same fallback resolve_mesh uses in the other direction.
+	var prop := res_name
+	if prop.ends_with(MESH_SUFFIX):
+		prop = prop.substr(0, prop.length() - MESH_SUFFIX.length())
+	var raw := src.get_ebx(prop + ".ebx")
+	if raw.is_empty():
+		raw = src.get_ebx(prop)
+	if raw.is_empty():
+		_hidden_cache[res_name] = out
+		return out
+	var e := BF6Ebx.new(types, walk.gi)
+	if not e.parse(raw):
+		_hidden_cache[res_name] = out
+		return out
+	for i in range(e.instance_offsets.size()):
+		var inst = e.read_instance(i)
+		if not (inst is Dictionary):
+			continue
+		var t = (inst as Dictionary).get(F_PHYSICS_PART_INFOS)
+		if not (t is Array) or (t as Array).is_empty():
+			continue
+		var rows: Array = t
+		var intact := {}
+		for r in rows:
+			if r is Dictionary and int((r as Dictionary).get(F_HEALTH_STATE, -1)) == 0:
+				intact[int((r as Dictionary).get(F_PART_COMPONENT, -1))] = true
+		for k in range(rows.size()):
+			var rd = rows[k]
+			if not (rd is Dictionary):
+				continue
+			if int((rd as Dictionary).get(F_HEALTH_STATE, 0)) != 0 					and intact.has(int((rd as Dictionary).get(F_PART_COMPONENT, -1))):
+				out[k] = true
+		break
+	if not out.is_empty():
+		tex_stats["dest_props"] = int(tex_stats.get("dest_props", 0)) + 1
+	_hidden_cache[res_name] = out
+	return out
+
+
 # A mesh's LOD-0 section state keys, from the resource alone.
 func _section_keys(res_name: String) -> Array:
 	if _sec_keys.has(res_name):
@@ -2096,6 +2171,16 @@ func mesh_for(group_key: String, lod := 0) -> Mesh:
 	# Sections with no material resolved are merged together too, under key 0 —
 	# they will all be drawn with Godot's default anyway, so splitting them buys
 	# nothing.
+	# WHAT THE GAME HIDES AT SPAWN, dropped before anything is merged.
+	#
+	# A destructible prop's damaged look is built INTO its intact mesh - the
+	# deflated tyre, the cracked windscreen, the crushed panel - tagged per
+	# vertex and hidden until the piece breaks. Nothing separate is placed, so
+	# there is no placement to filter: on mp_dumbo `dc_` rows are 0. Left in, a
+	# parked car carries its own wreck inside it, which is what the overlapping
+	# geometry was.
+	var hidden: Dictionary = _hidden_parts(res_name, info)
+
 	var by_mat := {}                # merge key -> [verts, normals, uvs, indices]
 	var order: Array = []           # insertion order, so the result is stable
 	var want_normals := {}
@@ -2148,8 +2233,23 @@ func mesh_for(group_key: String, lod := 0) -> Mesh:
 			au.append_array(uv)
 		else:
 			want_uvs[key] = false
-		for i in (idx as PackedInt32Array):
-			ai.push_back(i + base)
+		# PER TRIANGLE, on its first vertex's tag. A triangle spans one
+		# destruction part in practice, and requiring all three to be visible
+		# would also drop the seam triangles between a hidden part and a visible
+		# one - a hole in the intact body rather than a removed overlay.
+		var pv: PackedInt32Array = sec.get("parts", PackedInt32Array())
+		var ii: PackedInt32Array = idx
+		if not hidden.is_empty() and not pv.is_empty():
+			for k in range(0, ii.size() - 2, 3):
+				var v0 := int(ii[k])
+				if v0 < pv.size() and hidden.has(int(pv[v0])):
+					continue
+				ai.push_back(int(ii[k]) + base)
+				ai.push_back(int(ii[k + 1]) + base)
+				ai.push_back(int(ii[k + 2]) + base)
+		else:
+			for i in ii:
+				ai.push_back(i + base)
 		by_mat[key] = [av, an, au, ai]
 
 	var am := ArrayMesh.new()
@@ -2231,7 +2331,12 @@ func _geom_open() -> void:
 	var sig := src.signature()
 	if sig == "":
 		return
-	var d := "user://bf6_geom/%s_%s" % [level, sig]
+	# VERSIONED, because this cache holds the RESULT of decisions this reader
+	# makes and not just the game's bytes. The TOC signature catches a game patch;
+	# it does not catch us starting to cull destruction overlays, and a stale entry
+	# would keep serving a car with its crash panels inside it forever. Bump on any
+	# change to what the geometry itself contains.
+	var d := "user://bf6_geom/%s_%s_g2" % [level, sig]
 	if DirAccess.make_dir_recursive_absolute(d) != OK and not DirAccess.dir_exists_absolute(d):
 		return
 	_geom_dir = d
