@@ -1764,12 +1764,19 @@ func _exit_tree() -> void:
 
 # ---------- startup ----------
 func _startup() -> void:
-	# UNATTENDED SESSION, when the environment asks for one. Runs the real dock
-	# path over the real scene and quits with a report, which is the only way to
-	# measure what a user actually experiences — a bench that loads the same
+	# UNATTENDED SESSIONS, when the environment asks for one. Both run the real
+	# dock path over the real scene and quit with a report, which is the only way
+	# to measure what a user actually experiences — a bench that loads the same
 	# meshes into a bare tree measures a different world.
 	#
-	# Checked FIRST and returns: an unattended run has nobody at the keyboard.
+	# Checked FIRST and returning: an unattended run has nobody at the keyboard.
+
+	# The performance run (tools/perfrun.py) is tested before the autorun because
+	# the two configure the dock differently, and a stale BF6_AUTORUN left in the
+	# environment must not shadow a perf run that was explicitly asked for.
+	if HighpolyFlightRun.requested():
+		HighpolyFlightRun.run(self, dock, mapctx)
+		return
 	if HighpolyAutorun.requested():
 		HighpolyAutorun.run(self, dock, mapctx)
 		return
