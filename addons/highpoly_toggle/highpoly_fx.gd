@@ -149,6 +149,7 @@ static func apply(root: Node, map: String, on: bool, progress := Callable(),
 	var n := 0
 	var authored := 0
 	var skipped := 0
+	var nonsprite := 0
 	var all: Array = d.get("fx", [])
 	var seen := 0
 	var slice := Time.get_ticks_msec()
@@ -186,6 +187,26 @@ static func apply(root: Node, map: String, on: bool, progress := Callable(),
 		var gp: Variant = _params.get(effect.to_upper())
 		if gp != null:
 			authored += 1
+
+		# ONLY SPRITE EMITTERS GET A BILLBOARD.
+		#
+		# A spawn point with no flipbook was still drawing a quad, filled with
+		# the class fallback colour - hundreds of solid orange and white squares
+		# standing in for effects that are not billboards at all. The families
+		# without a sheet are not missing art, they are a different kind of
+		# effect: sparks, volumedecals, thindebris, meshdebris, sand, pebbles,
+		# lights, birds, rats, and two graphs the game itself calls `dummy`.
+		# Only `globalsorting` is the sprite smoke and fire family, and 40 of
+		# its 41 graphs carry a sheet.
+		#
+		# So draw what can be drawn correctly and COUNT the rest into the status
+		# line. A coloured square that reads as a solid lit cube is a wrong
+		# answer; nothing, said out loud, is an honest one.
+		var sh := str((gp as Dictionary).get("sheet", "")) if gp is Dictionary else ""
+		if sh == "" or _sheets.get(sh) == null:
+			nonsprite += 1
+			continue
+
 		var pos: Array = f.get("pos", [0, 0, 0])
 		var e := _emitter(cls, effect, gp)
 		e.position = Vector3(pos[0], pos[1], pos[2])
@@ -198,6 +219,8 @@ static func apply(root: Node, map: String, on: bool, progress := Callable(),
 	var msg := "FX: %d emitters, %d with authored parameters (%d%%)" % [
 		n, authored, (authored * 100 / maxi(n, 1))]
 	msg += ", %d of %d flipbooks from the game" % [n_sheets, n_want]
+	if nonsprite > 0:
+		msg += ". %d points are mesh, decal, spark or light effects rather than billboards, and are not drawn" % nonsprite
 	if skipped > 0:
 		msg += " - %d more skipped at the %d budget" % [skipped, MAX_EMITTERS]
 	return msg
