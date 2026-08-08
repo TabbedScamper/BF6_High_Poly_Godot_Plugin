@@ -204,7 +204,7 @@ const OPEN_STAGES := [ST_MOUNT, ST_TYPES, ST_INDEX, ST_WALK, ST_GROUND,
 #      reload told the user to rebuild the whole map. Now "rebuild" is something
 #      we state deliberately by bumping this, not a side effect of which file an
 #      edit happened to land in.
-const GEOM_EPOCH := 3
+const GEOM_EPOCH := 4
 
 # A FUNCTION, not read as a constant from outside, and that is load-bearing.
 # GDScript folds a constant into the caller at parse time, so a caller that read

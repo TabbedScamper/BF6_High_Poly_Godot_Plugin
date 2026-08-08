@@ -114,7 +114,32 @@ func _find_tocs(level: String, all_levels := false) -> Array:
 				shared.append(p)
 	shared.sort_custom(func(a, b): return _mount_key(a) < _mount_key(b))
 	lvl.sort_custom(func(a, b): return _mount_key(a) < _mount_key(b))
-	# the level goes LAST: it may not displace a global it depends on
+	# THE LEVEL BEING READ GOES LAST, and with every level mounted that stops
+	# being a one-line ordering and becomes the whole correctness of the mount.
+	#
+	# A later mount displaces an earlier one for any name they share. With one
+	# level that only meant "do not let the level displace a global it depends
+	# on". With all of them, every OTHER level is also in the list, and levels
+	# share names freely: the shader-state depots, the terrain resources, the
+	# section keys. Sorted purely by path, mp_dumbo lands wherever the alphabet
+	# puts it, and everything after it wins. The level you are reading then
+	# resolves its own materials against another level's data, which does not
+	# fail - it returns a depot with no record for the key, and the surface is
+	# drawn untextured. Roads came back grey and placed props came back white.
+	#
+	# So the other levels are mounted first, purely to make their objects
+	# reachable, and the level being read is mounted last so nothing can displace
+	# it.
+	if all_levels and level != "":
+		var want_lc := "/levels/%s/" % level.to_lower()
+		var others: Array = []
+		var mine: Array = []
+		for p2 in lvl:
+			if str(p2).to_lower().replace("\\", "/").contains(want_lc):
+				mine.append(p2)
+			else:
+				others.append(p2)
+		lvl = others + mine
 	return shared + lvl
 
 
