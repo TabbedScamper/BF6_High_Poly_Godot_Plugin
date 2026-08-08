@@ -156,6 +156,189 @@ var texture_max_dim := 1024
 # gets attributed to the wrong change.
 var timings := {}
 
+# THE SAME PHASES, WITH WHAT THEY PROCESSED AND WHERE THE ANSWER CAME FROM.
+#
+# `timings` is milliseconds and nothing else, and a bare millisecond count has
+# pointed optimisation work at the wrong phase more than once. "partition index
+# 300 ms" reads as a solved problem right up until you learn it is 300 ms
+# because the index came off disk, and 19 SECONDS the first time this install
+# is opened. The cold read is 85 s and the warm one is 1.3 s: the two are
+# different measurements, and a table that mixes them is worse than no table.
+#
+# So every phase records three things beside its time:
+#   items   how many of whatever it processes (bundles, partitions, rows, tiles)
+#   from    where the answer came from, one of:
+#             install   read out of the game's archives. This is the cold cost.
+#             cache     served from a file this plugin wrote on an earlier open.
+#             memory    served from a dictionary already live in this process.
+#             mixed     both, and `note` carries the split.
+#   note    anything that makes the row readable on its own
+#
+# A phase that is fast BECAUSE IT WAS CACHED says so in its own row. Without
+# that line someone eventually deletes the caching to simplify a code path and
+# only finds out on a machine that has never opened the map.
+const FROM_INSTALL := "install"
+const FROM_CACHE := "cache"
+const FROM_MEMORY := "memory"
+const FROM_MIXED := "mixed"
+
+var phases := {}                       # name -> {ms, items, unit, from, note}
+var _phase_order: Array = []
+
+# Set while open_map runs: true when ANY of mount / index / walk had to read the
+# install. Reported at the top of the table, because it is the one fact that
+# decides whether the rest of the numbers mean anything.
+var read_was_cold := false
+
+
+# Record one phase. Also writes `timings`, which is what the dock already
+# forwards into the profiler's TIME BY PHASE table, so a new phase here appears
+# there too without anything else changing.
+func note_phase(name: String, ms: float, items := 0, unit := "items",
+		from := "", note := "") -> void:
+	if not phases.has(name):
+		_phase_order.append(name)
+	phases[name] = {"ms": maxf(0.0, ms), "items": items, "unit": unit,
+		"from": from, "note": note}
+	timings[name] = int(ms)
+	_ph_forward(name, ms)
+
+
+# Add to a phase that is measured in pieces (the ground's sub-steps, called once
+# each but worth keeping apart) rather than replacing it.
+func add_phase(name: String, ms: float, items := 0, unit := "items",
+		from := "", note := "") -> void:
+	var e: Dictionary = phases.get(name, {"ms": 0.0, "items": 0, "unit": unit,
+		"from": from, "note": note})
+	if not phases.has(name):
+		_phase_order.append(name)
+	e["ms"] = float(e["ms"]) + maxf(0.0, ms)
+	e["items"] = int(e["items"]) + items
+	if from != "":
+		e["from"] = from if str(e.get("from", "")) in ["", from] else FROM_MIXED
+	if note != "":
+		e["note"] = note
+	e["unit"] = unit
+	phases[name] = e
+	timings[name] = int(e["ms"])
+	_ph_forward(name, ms)
+
+
+# THE SHARED PROFILE SINK, and the reason most of this reader's phases never
+# reach it.
+#
+# HighpolyProfile keeps static dictionaries with no lock, and open_map runs on a
+# WorkerThreadPool task, so forwarding from there would be a data race whose
+# symptom is a corrupted report or a crash rather than a wrong number. The dock
+# already forwards `timings` from the main thread once the open returns, so
+# nothing is actually lost; the phases just arrive as one batch at the end
+# instead of live. Anything called from the main thread (map_data during a
+# build) does forward live, and that is what this guard is for.
+func _ph_forward(name: String, ms: float) -> void:
+	if OS.get_thread_caller_id() != OS.get_main_thread_id():
+		return
+	HighpolyProfile.add("game source: %s" % name, int(ms * 1000.0))
+
+
+# The table, as lines. Printed by open_map so it exists in the session log even
+# when the profiler is not recording, which is most of the time.
+func phase_report(title := "") -> PackedStringArray:
+	var out := PackedStringArray()
+	if _phase_order.is_empty():
+		return out
+	out.append("")
+	out.append("READER PHASES  %s  %s" % [
+		level if title == "" else title,
+		"COLD (read from the install)" if read_was_cold
+			else "WARM (served from caches)"])
+	out.append("  A phase marked \"cache\" is cheap only because an earlier open")
+	out.append("  paid for it. Delete the cache and it costs what \"install\" costs.")
+	out.append("  %-26s %9s  %-20s %11s  %-7s %s"
+		% ["phase", "wall", "items", "each", "from", "note"])
+	var total := 0.0
+	for k in _phase_order:
+		var e: Dictionary = phases[k]
+		var ms := float(e["ms"])
+		var n := int(e["items"])
+		total += ms
+		var each := "" if n <= 0 else ("%.3f ms" % (ms / float(n)))
+		out.append("  %-26s %8.2fs  %-20s %11s  %-7s %s"
+			% [str(k).left(26), ms / 1000.0,
+			   ("%d %s" % [n, e["unit"]]) if n > 0 else "",
+			   each, str(e.get("from", "")), str(e.get("note", ""))])
+	out.append("  %-26s %8.2fs   (attributed; the total open was %.2fs)"
+		% ["sum of the above", total / 1000.0,
+		   float(timings.get("_total", 0)) / 1000.0])
+	return out
+
+
+func print_phases() -> void:
+	for line in phase_report():
+		_say(line)
+
+
+# THE PER-MESH HALF OF THE READER, which the open never sees.
+#
+# open_map ends before a single mesh has been asked for: everything below is
+# paid during the map context's props and skyline builds, once per mesh group,
+# and it is where a cold build spends its minutes. Reported on the same terms as
+# the open (wall, items, each, and whether it was a cache hit) so the two tables
+# can be read against each other instead of in different units.
+#
+# Called by the builder when a build finishes; safe to call at any point, and
+# the numbers are cumulative since this source was opened.
+func build_report() -> PackedStringArray:
+	var out := PackedStringArray()
+	if n_meshes == 0 and n_geom_hit == 0 and n_mesh_shared == 0:
+		return out
+	var asks := n_geom_hit + n_geom_miss + n_mesh_shared
+	out.append("")
+	out.append("READER, PER MESH  %s  %d mesh asks" % [level, asks])
+	out.append("  %-30s %9s  %-18s %11s  %s"
+		% ["phase", "wall", "items", "each", "from"])
+	# A table of rows rather than a helper lambda: a lambda would capture `out`
+	# by value (a PackedStringArray is a value type in GDScript) and every line
+	# it appended would be written to a copy and thrown away.
+	var rows: Array = [
+		["mesh: read the resource (CAS)", t_res, n_geom_miss, "meshes", FROM_INSTALL],
+		["mesh: parse + build ArrayMesh", t_parse, n_geom_miss, "meshes", FROM_INSTALL],
+		["mesh: load from geom cache", t_geom_load, n_geom_loaded, "meshes", FROM_CACHE],
+		["mesh: save to geom cache", t_geom_save, n_geom_saved, "meshes", FROM_INSTALL],
+		["materials: dress surfaces", t_mat, n_mat_built + n_mat_cached,
+			"lookups", FROM_MIXED],
+		["materials: of which textures", t_tex, int(tex_stats.get("decoded", 0)),
+			"decoded", FROM_INSTALL],
+		["materials: of which depots", t_depot, n_depot_parsed, "depots",
+			FROM_INSTALL],
+	]
+	for r in rows:
+		var us := int((r as Array)[1])
+		var items := int((r as Array)[2])
+		out.append("  %-30s %8.2fs  %-18s %11s  %s"
+			% [str((r as Array)[0]).left(30), us / 1e6,
+			   "%d %s" % [items, str((r as Array)[3])],
+			   "" if items <= 0 else ("%.3f ms" % (us / 1000.0 / float(items))),
+			   str((r as Array)[4])])
+	out.append("  cache hits: %d of %d mesh asks served from disk (%.0f%%), "
+		% [n_geom_hit, maxi(1, asks), 100.0 * n_geom_hit / maxf(1.0, float(asks))]
+		+ "%d shared in memory, %d read from the install" % [n_mesh_shared, n_geom_miss])
+	out.append("  materials: %d built, %d from the cache (%.0f%% reuse); "
+		% [n_mat_built, n_mat_cached,
+		   100.0 * n_mat_cached / maxf(1.0, float(n_mat_built + n_mat_cached))]
+		+ "textures %d decoded, %d reused, %d failed"
+		% [int(tex_stats.get("decoded", 0)), int(tex_stats.get("reused", 0)),
+		   int(tex_stats.get("failed", 0))])
+	if n_geom_miss == 0 and asks > 0:
+		out.append("  NOTE: every mesh came from a cache. These per-mesh costs are")
+		out.append("  NOT what a first open pays. Delete user://bf6_geom to measure that.")
+	return out
+
+
+func print_build_report() -> void:
+	for line in build_report():
+		_say(line)
+
+
 var tex_dims := {}                     # "WxH fFMT mip" -> count
 var tex_stats := {"decoded": 0, "reused": 0, "failed": 0, "no_depot": 0,
 	"no_key": 0, "materials": 0}
@@ -236,6 +419,9 @@ func open_map(map: String, game_dir := "", progress := Callable()) -> bool:
 	error = ""
 	level = map.to_lower()
 	timings.clear()
+	phases.clear()
+	_phase_order.clear()
+	read_was_cold = false
 	var t_all := Time.get_ticks_msec()
 	var t := Time.get_ticks_msec()
 	src = BF6Source.new()
@@ -250,7 +436,18 @@ func open_map(map: String, game_dir := "", progress := Callable()) -> bool:
 			true, 0, catalogue_mount):
 		error = src.last_error()
 		return false
-	timings["mount"] = Time.get_ticks_msec() - t
+	# COUNTED IN BUNDLES, not in seconds alone. The mount is a sweep over every
+	# bundle in every mounted TOC, so bundles is the denominator that makes two
+	# runs comparable: a level mount and a catalogue mount differ by 5x in the
+	# work they do and the per-bundle cost is what says whether that ratio is
+	# the whole story.
+	var mount_cached: bool = bool(src.stats.get("from_cache", false))
+	if not mount_cached:
+		read_was_cold = true
+	note_phase("mount", Time.get_ticks_msec() - t, src.ebx.size(), "ebx",
+		FROM_CACHE if mount_cached else FROM_INSTALL,
+		"%d res, %d chunks, %s" % [src.res.size(), src.chunks.size(),
+			"every level" if catalogue_mount else "this level only"])
 	t = Time.get_ticks_msec()
 
 	if progress.is_valid():
@@ -276,12 +473,30 @@ func open_map(map: String, game_dir := "", progress := Callable()) -> bool:
 	for g in LIGHT_TYPES:
 		walk.want_types[str(g)] = "light"
 	walk.want_fields = LIGHT_FIELDS
-	timings["typeinfo"] = Time.get_ticks_msec() - t
+	# Always the install: the type layouts are read out of bf6.exe on every open
+	# and the only caches BF6Types keeps are in-memory ones, so this row never
+	# goes warm and there is no point looking for a cache that is not there.
+	note_phase("typeinfo", Time.get_ticks_msec() - t, 1, "exe", FROM_INSTALL,
+		exe.get_file())
 	t = Time.get_ticks_msec()
+	# WHETHER THE INDEX WAS BUILT OR READ, decided by whether it reported any
+	# progress at all. bf6_source.partition_index returns a cached dictionary
+	# before it starts the sweep, and the sweep is the only thing that calls the
+	# callback, so zero calls IS the cache hit. There is no flag to read: the
+	# index does not record one, and inferring it from "it was fast" is exactly
+	# the mistake this table exists to stop.
+	var idx_ticks := 0
 	walk.build_catalog(func(done, total, _found):
+		idx_ticks += 1
 		if progress.is_valid():
 			progress.call(ST_INDEX, done, total))
-	timings["partition index"] = Time.get_ticks_msec() - t
+	var idx_cached := idx_ticks == 0
+	if not idx_cached:
+		read_was_cold = true
+	note_phase("partition index", Time.get_ticks_msec() - t,
+		int(walk.stats.get("guid_index", 0)), "partitions",
+		FROM_CACHE if idx_cached else FROM_INSTALL,
+		"%d names in the catalogue" % int(walk.stats.get("catalog", 0)))
 	t = Time.get_ticks_msec()
 
 	# WHICH BUNDLES OWN A DEPOT, handed to the walk BEFORE it runs so every row
@@ -290,6 +505,12 @@ func open_map(map: String, game_dir := "", progress := Callable()) -> bool:
 	# prefab — an ancestor in the walk graph, with no path relationship to the
 	# partition the placement sits in. Matching by directory instead resolved
 	# 54.7% of sections; this resolves 99.5%.
+	# TIMED, because it is a linear scan of every res name the mount produced and
+	# a catalogue mount produces 450k of them. It runs before the walk on every
+	# open, warm or cold, and nothing had ever measured it: a phase that only
+	# exists between two phases that ARE measured is exactly the kind that hides
+	# for a year inside somebody else's number.
+	var t_scope := Time.get_ticks_msec()
 	for rn in src.res.keys():
 		var n := str(rn)
 		var at := n.find(SHADERSTATE)
@@ -297,6 +518,10 @@ func open_map(map: String, game_dir := "", progress := Callable()) -> bool:
 			_depot_bundles[n.substr(0, at)] = n
 	for d in _depot_bundles:
 		walk.scope_index[str(d)] = str(d)
+	note_phase("depot scope index", Time.get_ticks_msec() - t_scope,
+		src.res.size(), "res names", FROM_MEMORY,
+		"%d depot scopes found" % _depot_bundles.size())
+	t = Time.get_ticks_msec()
 	if progress.is_valid():
 		progress.call(ST_WALK, 0, 0)
 		walk.progress = func(found: int, _seen: int):
@@ -304,8 +529,29 @@ func open_map(map: String, game_dir := "", progress := Callable()) -> bool:
 	if not walk.run_cached(level):
 		error = str(walk.stats.get("error", "the placement walk produced nothing"))
 		return false
-	timings["placement walk"] = Time.get_ticks_msec() - t
+	var walk_cached: bool = bool(walk.stats.get("from_cache", false))
+	if not walk_cached:
+		read_was_cold = true
+	# Per ROW rather than per partition: rows are what the build consumes, and
+	# the cold walk is 50 s for ~48k of them, so the per-row figure is the one
+	# that can be compared against a change to the traversal.
+	note_phase("placement walk", Time.get_ticks_msec() - t, walk.rows.size(),
+		"placements", FROM_CACHE if walk_cached else FROM_INSTALL,
+		"%d light entities" % walk.ents.size())
+	t = Time.get_ticks_msec()
 	_geom_open()
+	# The geometry cache directory carries GEOM_EPOCH, so a bump orphans every
+	# mesh on disk and the next open is cold no matter how many times the map has
+	# been built. Recorded here rather than left to be discovered from a build
+	# that is mysteriously slow again.
+	var geom_n := 0
+	if _geom_dir != "":
+		geom_n = DirAccess.get_files_at(_geom_dir).size()
+	note_phase("geometry cache open", Time.get_ticks_msec() - t, geom_n,
+		"meshes on disk",
+		FROM_CACHE if geom_n > 0 else FROM_INSTALL,
+		("epoch %d, empty: every mesh will be read from the install" % GEOM_EPOCH)
+			if geom_n == 0 else ("epoch %d" % GEOM_EPOCH))
 
 	# THE GROUND'S APPEARANCE IS BUILT HERE, not in map_data, and the reason is
 	# which thread each runs on. map_data is called from the middle of the build,
@@ -322,12 +568,20 @@ func open_map(map: String, game_dir := "", progress := Callable()) -> bool:
 		t = Time.get_ticks_msec()
 		if progress.is_valid():
 			progress.call(ST_GROUND, 0, 0)
-		terrain_surface(surface_cache, false, progress)
-		timings["terrain surface"] = Time.get_ticks_msec() - t
+		var sf := terrain_surface(surface_cache, false, progress)
+		if not _surface_cached:
+			read_was_cold = true
+		note_phase("terrain surface", Time.get_ticks_msec() - t,
+			int(sf.get("slices", 0)), "layer slices",
+			FROM_CACHE if _surface_cached else FROM_INSTALL,
+			"served from %s/splat/layers.json" % surface_cache.get_file()
+				if _surface_cached else "composited from the streaming tree")
 	timings["_total"] = Time.get_ticks_msec() - t_all
 	timings["_cached"] = 1 if walk.stats.get("from_cache", false) else 0
-	_say("game source: %s — %d placements%s" % [map, walk.rows.size(),
+	timings["_cold"] = 1 if read_was_cold else 0
+	_say("game source: %s, %d placements%s" % [map, walk.rows.size(),
 		"  (cached)" if walk.stats.get("from_cache", false) else ""])
+	print_phases()
 	return true
 
 
@@ -470,6 +724,14 @@ func refresh_water() -> void:
 		_map_data["water"] = w
 
 
+# Has map_data already been built for this cache directory? Asked by the builder
+# BEFORE it calls map_data, so its phase table can say whether that call was a
+# dictionary lookup or the ninety seconds of terrain, roads, lights and FX that
+# the first ask actually is.
+func map_data_ready(cache_dir := "") -> bool:
+	return _map_data_key == cache_dir and not _map_data.is_empty()
+
+
 func map_data(cache_dir := "") -> Dictionary:
 	if _map_data_key == cache_dir and not _map_data.is_empty():
 		return _map_data
@@ -480,6 +742,7 @@ func map_data(cache_dir := "") -> Dictionary:
 
 
 func _build_map_data(cache_dir: String) -> Dictionary:
+	var t_group := Time.get_ticks_msec()
 	var by_mesh := {}
 	var by_bd := {}
 	var dropped := 0
@@ -576,6 +839,14 @@ func _build_map_data(cache_dir: String) -> Dictionary:
 	var wmin: float = -2048.0
 	if lo.x < INF:
 		wmin = floorf(minf(lo.x, lo.z) / 512.0) * 512.0
+	# THE GROUPING PASS, which nothing had ever timed. It runs over every walk row
+	# and does a mesh resolve, a variation hash and a live-variation lookup per
+	# row, and on a warm open (walk from cache, geometry from cache) it is one of
+	# the few things left that is genuinely proportional to the map.
+	note_phase("map data: group placements", Time.get_ticks_msec() - t_group,
+		walk.rows.size(), "rows", FROM_MEMORY,
+		"%d prop groups, %d skyline groups, %d rows with no geometry"
+		% [by_mesh.size(), by_bd.size(), dropped])
 	_say("game source: %d prop groups, %d skyline groups, %d placements, "
 		% [props.size(), backdrop.size(), walk.rows.size() - dropped]
 		+ "%d rows with no geometry (gameplay objects)" % dropped)
@@ -590,32 +861,58 @@ func _build_map_data(cache_dir: String) -> Dictionary:
 		var hm := terrain(cache_dir)
 		if not hm.is_empty():
 			out["heightmap"] = hm
-		timings["terrain"] = Time.get_ticks_msec() - t
+		# NO CACHE AT ALL, and that is the point of saying so here. The
+		# heightfield is composited out of the streaming tree and written to
+		# height_game.r16 on EVERY open, warm or cold, because nothing ever reads
+		# that file back in place of doing the work. It is the largest thing left
+		# on a warm open and it is invisible in a table that only prints seconds.
+		note_phase("ground: heightfield", Time.get_ticks_msec() - t,
+			int(hm.get("res", 0)), "samples per side", FROM_INSTALL,
+			"composited and written on every open, never read back")
 		t = Time.get_ticks_msec()
-		# The ground's appearance — colour map, layer palette, splat. The
+		# The ground's appearance: colour map, layer palette, splat. The
 		# expensive one, and skipped outright once the map's cache holds it.
 		var sf := terrain_surface(cache_dir)
 		if not sf.is_empty():
 			out["surface"] = sf
-		timings["terrain surface"] = Time.get_ticks_msec() - t
+		# A SECOND ASK, under its own name. open_map already built this on the
+		# worker, so this call is normally a JSON read of layers.json. Filing it
+		# under "terrain surface" would overwrite the cold measurement with the
+		# warm one and make the composite look free.
+		note_phase("map data: surface re-ask", Time.get_ticks_msec() - t,
+			int(sf.get("slices", 0)), "layer slices",
+			FROM_CACHE if _surface_cached else FROM_INSTALL,
+			"already built by the open" if _surface_cached
+				else "the open did not build it, so it was composited here")
 		t = Time.get_ticks_msec()
 		# ORDER MATTERS: the roads are draped on the heightfield terrain() just
 		# composited, so they cannot be built before it.
 		var rd := roads()
 		if rd != null:
 			out["roads"] = rd
-		timings["roads"] = Time.get_ticks_msec() - t
+		note_phase("roads", Time.get_ticks_msec() - t,
+			0 if rd == null else rd.get_surface_count(), "surfaces",
+			FROM_INSTALL, "TerrainDecals, draped on the heightfield")
 		t = Time.get_ticks_msec()
 		# Written as the files the light and FX layers already read, rather than
-		# handed over in memory. Those two layers are toggled long after the build
-		# — from the dock, on demand — so the data has to outlive this call, and a
+		# handed over in memory. Those two layers are toggled long after the build,
+		# from the dock, on demand, so the data has to outlive this call, and a
 		# file in the map's own cache is what the rest of the plugin means by that.
 		out["lights"] = lights(cache_dir)
+		note_phase("lights", Time.get_ticks_msec() - t, int(out["lights"]),
+			"fixtures", FROM_MEMORY, "from the walk's light entities")
+		t = Time.get_ticks_msec()
 		out["fx"] = fx(cache_dir)
-		timings["lights + fx"] = Time.get_ticks_msec() - t
+		note_phase("fx points", Time.get_ticks_msec() - t, int(out["fx"]),
+			"emitters", FROM_INSTALL, "emitter graph read per distinct effect")
+		timings["lights + fx"] = int(phases["lights"]["ms"]) \
+			+ int(phases["fx points"]["ms"])
+	var t_w := Time.get_ticks_msec()
 	var w := water()
 	if not w.is_empty():
 		out["water"] = w
+	note_phase("water", Time.get_ticks_msec() - t_w, w.size(), "bodies",
+		FROM_INSTALL, "the level's water partition")
 	return out
 
 
@@ -746,8 +1043,16 @@ const COLOR_RES := 4096                # colour map side (~2 m per texel on a 8 
 const LAYER_TEX_DIM := 512             # per-slice detail textures; all slices must match
 
 
+# Set by terrain_surface: true when it returned the cached answer without
+# touching the install. It is the difference between a 40 s phase and a 5 ms
+# one, and it is invisible from the outside because both return the same
+# dictionary.
+var _surface_cached := false
+
+
 func terrain_surface(cache_dir: String, force := false,
 		progress := Callable()) -> Dictionary:
+	_surface_cached = false
 	if src == null or cache_dir == "":
 		return {}
 	var dir_splat := "%s/splat" % cache_dir
@@ -756,6 +1061,7 @@ func terrain_surface(cache_dir: String, force := false,
 			and FileAccess.file_exists("%s/colormap.png" % cache_dir):
 		var got: Variant = JSON.parse_string(FileAccess.get_file_as_string(meta_path))
 		if got is Dictionary:
+			_surface_cached = true
 			return got as Dictionary
 
 	var pick := ""
@@ -811,27 +1117,45 @@ func terrain_surface(cache_dir: String, force := false,
 	t0 = Time.get_ticks_msec()
 	if cmap != null:
 		cmap.save_png("%s/colormap.png" % cache_dir)
-	_say("game source: terrain colour map — %d tiles, %dx%d (read %.1fs, assemble %.1fs, write %.1fs)"
+	var t_write := Time.get_ticks_msec() - t0
+	_say("game source: terrain colour map, %d tiles, %dx%d (read %.1fs, assemble %.1fs, write %.1fs)"
 		% [tiles.size(), COLOR_RES, COLOR_RES, t_read / 1000.0, t_asm / 1000.0,
-		   (Time.get_ticks_msec() - t0) / 1000.0])
+		   t_write / 1000.0])
+	# THREE SEPARATE COSTS, kept apart. Reading the tiles is CAS I/O plus a BC7
+	# decode per tile, assembling is a blit into one 4096 image, and writing is a
+	# PNG encode. They have nothing in common and a single "colour map" number
+	# would send anyone straight at the wrong one.
+	note_phase("ground: colour tiles read", t_read, tiles.size(), "tiles",
+		FROM_INSTALL, "BC7 decode per tile out of the streaming tree")
+	note_phase("ground: colour assemble", t_asm, tiles.size(), "tiles",
+		FROM_MEMORY, "into one %dx%d image" % [COLOR_RES, COLOR_RES])
+	note_phase("ground: colour PNG write", t_write, 1, "file", FROM_MEMORY,
+		"colormap.png")
 
 	# ---- the palette ---------------------------------------------------------
 	if progress.is_valid():
 		progress.call(ST_PAL, 0, 0)
+	t0 = Time.get_ticks_msec()
 	var pidx: Dictionary = walk.gi if walk != null and walk.gi is Dictionary \
 		else src.partition_index()
 	var pal := BF6TerrainLayers.new()
 	if not pal.load(src, level, pidx):
-		_say("game source: terrain layers — %s" % pal.error)
+		_say("game source: terrain layers, %s" % pal.error)
 		return {}
+	note_phase("ground: layer palette", Time.get_ticks_msec() - t0,
+		pal.layers.size(), "layers", FROM_INSTALL,
+		"the level's layer graph chain")
 
 	# ---- the splat -----------------------------------------------------------
 	t0 = Time.get_ticks_msec()
 	var comp := sp.composite(chunks, fetch, SURFACE_RES, func(done: int, total: int):
 		if progress.is_valid():
 			progress.call(ST_SPLAT, done, total))
-	_say("game source: terrain splat composite — %.1fs"
-		% ((Time.get_ticks_msec() - t0) / 1000.0))
+	var t_splat := Time.get_ticks_msec() - t0
+	_say("game source: terrain splat composite, %.1fs" % (t_splat / 1000.0))
+	note_phase("ground: splat composite", t_splat, int(comp.get("pages", 0)),
+		"pages", FROM_INSTALL,
+		"into a %dx%d index and weight raster" % [SURFACE_RES, SURFACE_RES])
 	if comp.is_empty():
 		_say("game source: terrain splat — %s" % sp.error)
 		return {}
@@ -863,11 +1187,15 @@ func terrain_surface(cache_dir: String, force := false,
 			linked.sort()
 			base = mt.rasterize(SURFACE_RES, func(k): return sp.base_list(k),
 				sp.full_list(), linked)
-			_say("game source: terrain base field — %d pairs, %d nodes, %.1fs"
-				% [mt.pairs.size(), mt.nodes.size(),
-				   (Time.get_ticks_msec() - t0) / 1000.0])
+			var t_base := Time.get_ticks_msec() - t0
+			_say("game source: terrain base field, %d pairs, %d nodes, %.1fs"
+				% [mt.pairs.size(), mt.nodes.size(), t_base / 1000.0])
+			note_phase("ground: street materials", t_base, mt.nodes.size(),
+				"tree nodes", FROM_INSTALL,
+				"%d material pairs rasterised to %dx%d"
+				% [mt.pairs.size(), SURFACE_RES, SURFACE_RES])
 		else:
-			_say("game source: terrain base field — %s" % mt.error)
+			_say("game source: terrain base field, %s" % mt.error)
 
 	# WHAT IS LEFT AFTER THE LAYERS WE CAN DRAW.
 	#
@@ -935,6 +1263,7 @@ func terrain_surface(cache_dir: String, force := false,
 
 	var slice_meta: Array = []
 	var written := 0
+	var t_slices := Time.get_ticks_msec()
 	for s in range(picked.size()):
 		if progress.is_valid():
 			progress.call(ST_LAYERS, s, picked.size())
@@ -960,6 +1289,13 @@ func terrain_surface(cache_dir: String, force := false,
 			"texels": int(per_layer.get(li, 0)),
 		})
 
+	# Two decodes and two PNG encodes per slice, so the per-item figure is what
+	# says whether a map with 32 textured layers is going to cost twice what one
+	# with 16 does. It does, and this row is where that shows.
+	note_phase("ground: layer textures", Time.get_ticks_msec() - t_slices,
+		written, "slices", FROM_INSTALL,
+		"albedo + normal decoded and written at %dpx" % LAYER_TEX_DIM)
+
 	# Remap the composited layer indices to slice indices. A texel whose layer
 	# has no texture is left pointing past the end of the array on purpose: the
 	# shader's `id < splat_slices` test then falls back for it, which is the
@@ -968,6 +1304,7 @@ func terrain_surface(cache_dir: String, force := false,
 	# Through a 256-entry lookup rather than a dictionary. This runs over 16.7
 	# million bytes; a Dictionary.get per byte is about a minute of GDScript, and
 	# a PackedByteArray index is the same answer for free.
+	var t_remap := Time.get_ticks_msec()
 	var lut := PackedByteArray()
 	lut.resize(256)
 	lut.fill(255)
@@ -991,9 +1328,17 @@ func terrain_surface(cache_dir: String, force := false,
 		Image.FORMAT_RGBA8, wgt)
 	img_idx.save_png("%s/idx.png" % dir_splat)
 	img_w.save_png("%s/w.png" % dir_splat)
+	# 16.7 million bytes through a lookup table plus two PNG encodes. It is pure
+	# GDScript over a byte array, which is the shape that used to be a minute
+	# before the LUT went in, so it is worth a row of its own to keep honest.
+	note_phase("ground: slice remap + write", Time.get_ticks_msec() - t_remap,
+		idx.size(), "texel bytes", FROM_MEMORY, "idx.png and w.png")
 
 	# ---- the slope fallback, also from the game ------------------------------
+	var t_fb := Time.get_ticks_msec()
 	_write_fallback_layers(pal, picked, "%s/terrain_layers" % cache_dir)
+	note_phase("ground: slope fallback", Time.get_ticks_msec() - t_fb,
+		picked.size(), "layers", FROM_INSTALL, "terrain_layers/")
 
 	var meta := {
 		"slices": written,
@@ -2790,6 +3135,24 @@ var n_surfaces := 0
 var n_pal_split := 0
 var n_pal_rebuilt := 0
 
+# WHERE THE MATERIAL TIME GOES, split out of t_mat, in microseconds.
+#
+# t_mat is one number covering a depot parse, a per-key record lookup, a texture
+# decode and a GPU upload, and those want four different fixes. The texture
+# decode is the only one that is obviously heavy, which is exactly why it should
+# be measured instead of assumed: on a map whose textures all dedup, the decode
+# can be a rounding error and the cost is the depot parse nobody suspected.
+var t_tex := 0                         # decode + compress + ImageTexture upload
+var t_depot := 0                       # reading and parsing a ShaderBlockDepot
+var n_depot_parsed := 0
+var n_mat_built := 0                   # material_for reached the depot
+var n_mat_cached := 0                  # material_for answered from _mat_cache
+# Geometry provenance per mesh ask, so "props: load mesh" can be read as a cache
+# hit rate rather than as a total. A build that is 90% cache hits and one that is
+# 10% have completely different next steps.
+var n_geom_hit := 0                    # served from user://bf6_geom
+var n_geom_miss := 0                   # read from the install and parsed
+
 
 # djb2-lower of an ObjectVariation asset path, `.ebx` dropped, or 0 for none.
 #
@@ -3127,12 +3490,14 @@ func mesh_for(group_key: String, lod := 0) -> Mesh:
 			_dress_name = res_name
 			_dress(cached as ArrayMesh, ckeys, scope, var_hash)
 			_mesh_by_sig[_sig_for(kc, ckeys, scope, var_hash)] = cached
+			n_geom_hit += 1
 			return cached as ArrayMesh
 		n_pal_rebuilt += 1
 
 	var d := src.get_res(res_name)
 	if d.is_empty():
 		return null
+	n_geom_miss += 1
 	t_res += Time.get_ticks_usec() - _t0
 	var _t1 := Time.get_ticks_usec()
 	var mat_us := 0
@@ -3671,7 +4036,9 @@ func material_for(state_key: int, scope: String, var_hash := 0,
 	var ck := "%s|%s|%d|%s" % [scope, BF6Depot.key_hex(state_key), var_hash,
 		"" if pal.is_empty() else ",".join(Array(pal).map(func(x): return str(x)))]
 	if _mat_cache.has(ck):
+		n_mat_cached += 1
 		return _mat_cache[ck]
+	n_mat_built += 1
 
 	var pair = _depot_for(scope)
 	if pair == null:
@@ -5367,14 +5734,22 @@ func _texture_for(file_guid, is_normal := false, cap := -1):
 	if _tex_cache.has(an):
 		tex_stats["reused"] = int(tex_stats["reused"]) + 1
 		return _tex_cache[an]
+	# EVERYTHING FROM HERE IS THE TEXTURE COST, and it is timed as one block
+	# because that is how it is paid: a miss reads the resource, decodes it,
+	# maybe compresses it and uploads it, and there is no useful place to stop
+	# the clock in the middle. A hit above costs nothing and is counted, not
+	# timed, which is why the two are on opposite sides of this line.
+	var _tt := Time.get_ticks_usec()
 	var raw := src.get_res(an.get_slice("@", 0) if cap >= 0 else an)
 	if raw.is_empty():
 		_tex_cache[an] = null
 		tex_stats["failed"] = int(tex_stats["failed"]) + 1
+		t_tex += Time.get_ticks_usec() - _tt
 		return null
 	var got := _tex.decode(raw, func(form): return src.get_chunk(str(form)),
 		texture_max_dim if cap < 0 else cap)
 	if got.is_empty() or not (got.get("image") is Image):
+		t_tex += Time.get_ticks_usec() - _tt
 		_tex_cache[an] = null
 		tex_stats["failed"] = int(tex_stats["failed"]) + 1
 		return null
@@ -5437,6 +5812,7 @@ func _texture_for(file_guid, is_normal := false, cap := -1):
 	var t := ImageTexture.create_from_image(img)
 	_tex_cache[an] = t
 	tex_stats["decoded"] = int(tex_stats["decoded"]) + 1
+	t_tex += Time.get_ticks_usec() - _tt
 	return t
 
 
@@ -5449,10 +5825,18 @@ func _depot_for(scope: String):
 	if name == null:
 		_depot_cache[scope] = null
 		return null
+	# ONE PARSE PER SCOPE, and a map touches a few dozen of the 15,391 depots the
+	# mount carries. Timed anyway: a depot is a large blob and "a few dozen" is a
+	# guess that has been wrong before. If this row is seconds rather than
+	# milliseconds, the scope index is resolving more scopes than the map has.
+	var _td := Time.get_ticks_usec()
 	var b := src.get_res(str(name))
 	if b.is_empty():
 		_depot_cache[scope] = null
+		t_depot += Time.get_ticks_usec() - _td
 		return null
 	var dep := BF6Depot.new()
 	_depot_cache[scope] = [dep, b] if dep.parse(b) else null
+	n_depot_parsed += 1
+	t_depot += Time.get_ticks_usec() - _td
 	return _depot_cache[scope]

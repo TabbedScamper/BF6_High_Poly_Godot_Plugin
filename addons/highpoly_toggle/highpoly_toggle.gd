@@ -1356,12 +1356,21 @@ All of it is read from your own Battlefield 6 installation."
 	perf_btn = Button.new()
 	perf_btn.text = "Record performance"
 	perf_btn.tooltip_text = "Measures the frame rate while you fly, then reports what was actually being drawn when it was worst, broken down by what put it there. Fly the route that feels slow, then press Stop. Writes a spreadsheet next to the log."
+	# The frame-bucket timer rides this same button rather than getting a switch
+	# of its own. It is off at every other moment, which is the point of it: the
+	# call sites cost nothing measurable while it is off, and there is no second
+	# control to explain or to leave switched on by accident. Its table goes into
+	# the log, so "Save log file" already carries it.
 	perf_btn.pressed.connect(func():
 		if profiler == null: return
 		if profiler.recording:
+			HighpolyProfile.set_enabled(false)
 			lbl.text = profiler.stop()
+			if HighpolyProfile.has_data():
+				Log.info(HighpolyProfile.report())
 			perf_btn.text = "Record performance"
 		else:
+			HighpolyProfile.set_enabled(true)
 			lbl.text = profiler.start()
 			perf_btn.text = "Stop recording")
 	perf_row.add_child(perf_btn)
@@ -1544,58 +1553,87 @@ All of it is read from your own Battlefield 6 installation."
 		# key out of a string as it goes), and tick_lights walks every mined
 		# fixture. Which one it is should come from a recording rather than from
 		# whichever looks worst in the source.
+		# HighpolyProfile is the microsecond half of the same question. The
+		# HighpolyProfiler.span() calls below stay: they feed the session
+		# recording, which is what tells you a phase got slower over an hour. But
+		# span() takes MILLIseconds, so every stage under 1 ms in here reads as
+		# zero and the tick total is the sum of a handful of zeros. The buckets
+		# added around them measure in microseconds and are keyed by frame, so a
+		# tick that lands badly once in twenty shows up as a hitch rather than
+		# being averaged into nothing.
+		HighpolyProfile.begin("panel heartbeat")
 		var _tt := Time.get_ticks_msec()
 		# The read's clock, ticked here rather than by the worker. The stages that
 		# take longest report nothing at all while they run, so this is the only
 		# thing that keeps the panel moving through them.
 		if not _read_model.is_empty():
+			HighpolyProfile.begin("panel: read progress refresh")
 			_read_refresh()
+			HighpolyProfile.end("panel: read progress refresh")
 		# Safety net for the save guard. _apply_changes defers the restore, and a
 		# deferred call is normally run the same frame, but if anything ever eats
 		# it the scene would sit stocked with the preview off and no way to tell
 		# why. Half a second late is invisible; never is not.
 		if _stocked_for_save:
 			_unstock_after_save()
+		HighpolyProfile.begin("panel: state crumb")
 		_crumb_state_change()
+		HighpolyProfile.end("panel: state crumb")
+		HighpolyProfile.begin("panel: scene change check")
 		_check_scene_change()
+		HighpolyProfile.end("panel: scene change check")
+		HighpolyProfile.begin("panel: lighting guard")
 		_lighting_guard()
+		HighpolyProfile.end("panel: lighting guard")
 		if mapctx:
+			HighpolyProfile.begin("prop cell culling")
 			var _t_ctx := Time.get_ticks_msec()
 			mapctx.tick()
 			HighpolyProfiler.span("panel tick: prop cell culling",
 				Time.get_ticks_msec() - _t_ctx)
+			HighpolyProfile.end("prop cell culling")
 		# gamemode markers self-heal: full overlay rebuilds (and whatever
 		# else) can drop the _GAMEMODE node — if a variant is selected and
 		# the node is gone, re-apply it (cheap: small JSON + a few dozen nodes)
 		if mapctx_variant != null and mapctx_variant.selected > 0 \
 				and mapctx_variant_row != null and mapctx_variant_row.visible:
+			HighpolyProfile.begin("gamemode marker heal")
 			var _gr := EditorInterface.get_edited_scene_root()
 			if _gr != null and _gr.get_node_or_null("_GAMEMODE") == null:
 				var _gmode := mapctx_variant.get_item_text(mapctx_variant.selected)
 				lbl.text = HighpolyGamemode.apply(_gr, mapctx.map_of(_gr), _gmode, mapctx)
 				mapctx.set_variant_layers(_gmode)
+			HighpolyProfile.end("gamemode marker heal")
 		# map-lights culling: only lights near the editor camera render
 		var _vp3 := EditorInterface.get_editor_viewport_3d(0)
 		var _cam3 := _vp3.get_camera_3d() if _vp3 else null
 		if _cam3:
 			var _r3 := EditorInterface.get_edited_scene_root()
+			HighpolyProfile.begin("map light culling")
 			var _t_lt := Time.get_ticks_msec()
 			LightingScript.tick_lights(_r3, _cam3.global_position)
 			HighpolyProfiler.span("panel tick: map-light culling",
 				Time.get_ticks_msec() - _t_lt)
+			HighpolyProfile.end("map light culling")
 			# A placed fixture's lights hang off a scene-level holder so they do
 			# not inflate the prop's selection box, so something has to carry
 			# them when the builder moves the prop. A few matrix multiplies per
 			# tracked fixture, capped at 8 per prop, and dead rows drop out.
+			HighpolyProfile.begin("prop light follow")
 			LightingScript.refresh_prop_lights()
+			HighpolyProfile.end("prop light follow")
 			# Local lighting zones follow the camera the way the game follows the
 			# player: entering an interior blends its exposure in, leaving blends
 			# it out. Costs an AABB test per zone (59 across the whole fleet, and
 			# most maps have none), so it is not worth gating.
 			if mapctx_light != null and mapctx_light.button_pressed:
+				HighpolyProfile.begin("lighting zone blend")
 				LightingScript.tick_zones(_r3, _cam3.global_position,
 						LightingScript.base_ev())
+				HighpolyProfile.end("lighting zone blend")
+			HighpolyProfile.begin("collision outline tidy")
 			ShapeViz.tick()      # tidy up any outline the editor rebuilt
+			HighpolyProfile.end("collision outline tidy")
 		# a CANCELLED scenery build (Extended Terrain switched off, or a new
 		# apply superseding it) ends without a build_finished — without this the
 		# bar would sit there at whatever percent it had reached
@@ -1608,8 +1646,16 @@ All of it is read from your own Battlefield 6 installation."
 			jobs.clear_activity(mapctx.build_job)
 		HighpolyProfiler.span("panel tick: total", Time.get_ticks_msec() - _tt)
 		# collision overlays follow objects the user moves/rescales
+		#
+		# MEASURED SEPARATELY, and note it sits OUTSIDE the "panel tick: total"
+		# span above: the recorder's idea of a tick has never included this walk,
+		# so if this is the expensive part the recorder has been reporting a tick
+		# total that is missing it. The heartbeat bucket below does include it.
 		if col_chk.button_pressed or HighpolyCollision.has_isolation():
-			HighpolyCollision.refresh_transforms())
+			HighpolyProfile.begin("collision overlay follow")
+			HighpolyCollision.refresh_transforms()
+			HighpolyProfile.end("collision overlay follow")
+		HighpolyProfile.end("panel heartbeat"))
 	dock.add_child(mapctx_timer); mapctx_timer.start()
 	_edited_root = EditorInterface.get_edited_scene_root()
 
@@ -1650,6 +1696,10 @@ func _exit_tree() -> void:
 	# died rather than closed, so this has to run on the ordinary path — and it
 	# runs first, before any of the teardown below can throw and skip it.
 	HighpolyProfiler.crumbs_end()
+	# A recording left running across a plugin reload would leave open buckets on
+	# a stack that outlives the panel, and the next session would charge its first
+	# frames to whatever was open when this one ended.
+	HighpolyProfile.set_enabled(false)
 	if get_tree().node_added.is_connected(_on_node_added):
 		get_tree().node_added.disconnect(_on_node_added)
 	var esel := EditorInterface.get_selection()
@@ -2419,8 +2469,18 @@ static func _grouped(n: int) -> String:
 			out = "," + out
 	return ("-" + out) if n < 0 else out
 
+# The other end of every jobs.changed emit. Timed here as well as at the emit
+# side so a recording can separate "the bar is updated too often" from "updating
+# the bar is expensive": the job bucket counts the calls, this one counts the
+# Control writes they cause.
 func _refresh_job_bar() -> void:
 	if jobs == null or job_row == null: return
+	HighpolyProfile.begin("job bar: panel redraw")
+	_refresh_job_bar_body()
+	HighpolyProfile.end("job bar: panel redraw")
+
+
+func _refresh_job_bar_body() -> void:
 	var busy: bool = jobs.busy()
 	job_row.visible = busy
 	if check_btn: check_btn.visible = not busy
@@ -3802,7 +3862,25 @@ func _set_prop_lighting(on: bool) -> void:
 const PROP_EMISSION_ON := 4.0
 
 
+# WRAPPED RATHER THAN WRAPPED IN PLACE. The body below returns from five
+# different points, and a bucket left open by an early return would swallow
+# everything begun after it, so the measurement sits in a shell that always
+# closes. Same pattern anywhere else in this file with several exits.
+#
+# WORTH MEASURING because of how often it runs: set_input_event_forwarding_always
+# _enabled() is on, so every mouse move over the 3D viewport arrives here, which
+# during camera navigation is several events per frame. Anything non-trivial in
+# this path is paid at exactly the moment the user is looking for smoothness.
 func _forward_3d_gui_input(camera: Camera3D, event: InputEvent) -> int:
+	if not HighpolyProfile.enabled:
+		return _forward_3d_gui_input_body(camera, event)
+	HighpolyProfile.begin("viewport input forwarding")
+	var r := _forward_3d_gui_input_body(camera, event)
+	HighpolyProfile.end("viewport input forwarding")
+	return r
+
+
+func _forward_3d_gui_input_body(camera: Camera3D, event: InputEvent) -> int:
 	if diag_pick != null and diag_pick.button_pressed:
 		var v := _pick_input(camera, event)
 		if v != EditorPlugin.AFTER_GUI_INPUT_PASS:
@@ -3836,6 +3914,15 @@ func _forward_3d_gui_input(camera: Camera3D, event: InputEvent) -> int:
 # the same spot again does the same job and cannot be intercepted by anything, so
 # the feature does not depend on which of the two the editor lets us have.
 func _pick_input(camera: Camera3D, event: InputEvent) -> int:
+	if not HighpolyProfile.enabled:
+		return _pick_input_body(camera, event)
+	HighpolyProfile.begin("pick mode input")
+	var r := _pick_input_body(camera, event)
+	HighpolyProfile.end("pick mode input")
+	return r
+
+
+func _pick_input_body(camera: Camera3D, event: InputEvent) -> int:
 	var gs = mapctx.game_source if mapctx != null else null
 	var root := EditorInterface.get_edited_scene_root()
 	if root == null:
@@ -3953,13 +4040,33 @@ func _reisolate_selection() -> void:
 	lbl.text = ("Isolated collision: %d object(s)" % n) if n > 0 \
 			else "Isolate: select placed object(s), follows the selection live"
 
+# Fires on every click in the viewport and on every arrow-key step through the
+# scene tree, so it is on the interactive path even though it is not per-frame.
 func _on_selection_changed() -> void:
+	HighpolyProfile.begin("selection changed")
 	if ovr_chk != null and ovr_chk.button_pressed:
 		_reoverride_selection()
 	if iso_chk != null and iso_chk.button_pressed and col_chk.button_pressed:
 		_reisolate_selection()
+	HighpolyProfile.end("selection changed")
 
+
+# Wrapped for the same reason as the input forwarder: seven early returns.
+#
+# THE CALL COUNT IS THE POINT HERE. This is connected to the tree-wide
+# node_added signal, so a map-context build fires it about 11,600 times, and
+# those arrive in bursts inside single frames. Whether the burst costs anything
+# now that there is a bool gate at the top is exactly what nobody has measured.
 func _on_node_added(node: Node) -> void:
+	if not HighpolyProfile.enabled:
+		_on_node_added_body(node)
+		return
+	HighpolyProfile.begin("node added filter")
+	_on_node_added_body(node)
+	HighpolyProfile.end("node added filter")
+
+
+func _on_node_added_body(node: Node) -> void:
 	if not (node is Node3D): return
 	if node.name == HighpolyLib.HP_NODE or node.name == HighpolyCollision.COL_NODE: return
 	# OUR OWN BUILD IS NOT A USER PLACING SOMETHING.

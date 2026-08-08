@@ -66,11 +66,19 @@ func ratio() -> float:
 # can then say which bars were up when, which overlapped, and which never
 # closed — the last being a bar stuck on screen for the rest of the session,
 # invisible to every other kind of instrumentation.
+#
+# TIMED because of what changed.emit() reaches: _refresh_job_bar in the dock,
+# which writes three Labels and a ProgressBar. Callers report progress from
+# inside their own loops, so the emit rate is set by whatever is loading, not by
+# the frame rate, and several updates can land in one frame. If the panel gets
+# choppy while something is building, this bucket is where it shows.
 func set_activity(label: String, done: int, total: int) -> void:
+	HighpolyProfile.begin("job bar: progress update")
 	if not _acts.has(label):
 		HighpolyProfiler.lane_open(label)
 	_acts[label] = clampf(float(done) / float(total), 0.0, 1.0) if total > 0 else 0.0
 	changed.emit()
+	HighpolyProfile.end("job bar: progress update")
 
 # label defaults to clearing EVERYTHING only for teardown; normal callers pass
 # their own label so they cannot cancel somebody else's progress.
@@ -95,8 +103,16 @@ func acquire(name: String) -> int:
 	if _active_id != 0:
 		Log.info("Queued: %s: waiting for %s" % [name, _active])
 	changed.emit()
+	# One bucket per spin, so the CALL COUNT is the number of frames this job sat
+	# in the queue. The time per spin is near nothing; the count is the number
+	# worth reading, because a job that spun for 900 frames means the queue, not
+	# the work, is what the user was waiting on.
 	while _active_id != 0 or (_waiting.size() > 0 and int(_waiting[0]["id"]) != id):
-		if not is_inside_tree(): return id        # panel closed mid-wait
+		HighpolyProfile.begin("job queue: waiting for its turn")
+		if not is_inside_tree():
+			HighpolyProfile.end("job queue: waiting for its turn")
+			return id                             # panel closed mid-wait
+		HighpolyProfile.end("job queue: waiting for its turn")
 		await get_tree().process_frame
 	if _waiting.size() > 0 and int(_waiting[0]["id"]) == id:
 		_waiting.pop_front()
@@ -109,9 +125,14 @@ func acquire(name: String) -> int:
 	changed.emit()
 	return id
 
+# Same emit cost as set_activity, kept separate because this one is driven by a
+# transfer's chunk size rather than by a build's loop, and the two are worth
+# telling apart when reading a recording.
 func report(done: int, total: int) -> void:
+	HighpolyProfile.begin("job bar: download progress")
 	_ratio = clampf(float(done) / float(total), 0.0, 1.0) if total > 0 else 0.0
 	changed.emit()
+	HighpolyProfile.end("job bar: download progress")
 
 func release(id: int, ok: bool, note := "") -> void:
 	if _active_id != id:

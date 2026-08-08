@@ -67,6 +67,9 @@ static func _restore_range(mi: GeometryInstance3D) -> void:
 # now — see highpoly_shapeviz.gd.)
 
 static func release(root: Node) -> void:
+	# Two more whole-scene walks, on a path the user feels directly: it runs when
+	# a scene is closed, when the plugin is switched off and on every teardown.
+	HighpolyProfile.begin("placed cull: release scene")
 	var blind := 0
 	if root != null:
 		# Proxies revealed for the LOD handover go back under the overlay's
@@ -97,17 +100,30 @@ static func release(root: Node) -> void:
 				blind += 1
 	_orig.clear()
 	_revealed.clear()
+	HighpolyProfile.end("placed cull: release scene")
 	if blind > 0:
 		Log.warn(("Cleared the draw distance on %d object(s) without knowing what "
 			+ "they started with: the plugin had been reloaded since it set them. "
 			+ "If any of those shipped with their own draw distance, it is off now.")
 			% blind)
 
+# INSTRUMENTED, NOT REDUCED. This pass is a whole-scene walk and it is called
+# from the Range slider's handler, from _reapply_placed_cull after every rebuild,
+# and once per node dropped into the scene. The measurement is here to say how
+# long that walk takes and in which frame it lands; nothing here culls less, and
+# nothing here should be made to. The slider is the user's control, not ours.
 static func apply(root: Node, r: float, on: bool) -> String:
 	if root == null:
 		return "No scene"
+	HighpolyProfile.begin("placed cull: whole pass")
+	# The gather is separated from the writes because they fail differently: the
+	# gather is a recursive walk whose cost tracks NODE COUNT, the writes track
+	# how many of those nodes are meshes and each one calls get_aabb().
+	HighpolyProfile.begin("placed cull: gather meshes")
 	var arr: Array = []
 	_collect(root, arr)
+	HighpolyProfile.end("placed cull: gather meshes")
+	HighpolyProfile.begin("placed cull: set ranges")
 	var n := 0
 	for mi in arr:
 		# A near-gate we have no record of is one WE set before a plugin reload:
@@ -146,7 +162,9 @@ static func apply(root: Node, r: float, on: bool) -> String:
 			mi.visibility_range_end_margin = maxf(d * 0.1, 8.0)
 			mi.visibility_range_fade_mode = GeometryInstance3D.VISIBILITY_RANGE_FADE_DISABLED
 		n += 1
+	HighpolyProfile.end("placed cull: set ranges")
 	var lod := _apply_lod(root, r, on)
+	HighpolyProfile.end("placed cull: whole pass")
 	if not on:
 		return "Placed objects: full range"
 	if lod > 0:
@@ -171,7 +189,15 @@ static func apply(root: Node, r: float, on: bool) -> String:
 #
 # Only in Low-Poly. In High-Poly the point is to look at the real models, and
 # swapping them for blockouts at 40% of the range would defeat that.
+#
+# TIMED SEPARATELY from the flat pass above because it is the more expensive of
+# the two and the cost is not obvious from reading it: it walks the scene AGAIN
+# for pairs, then walks each overlay's meshes, then each proxy's meshes, and
+# takes an AABB per overlay mesh. The flat pass is one walk. If the two turn out
+# to be the same price the second walk is worth folding into the first, but that
+# is a claim for a recording to make, not this comment.
 static func _apply_lod(root: Node, r: float, on: bool) -> int:
+	HighpolyProfile.begin("placed cull: low-poly LOD handover")
 	var pairs: Array = []
 	_collect_pairs(root, pairs)
 	var want := on and HighpolyLib.detail == HighpolyLib.Tier.LOW
@@ -228,6 +254,7 @@ static func _apply_lod(root: Node, r: float, on: bool) -> int:
 			mi.visibility_range_end_margin = maxf(d * 0.25, 40.0)
 			mi.visibility_range_fade_mode = GeometryInstance3D.VISIBILITY_RANGE_FADE_SELF
 		count += 1
+	HighpolyProfile.end("placed cull: low-poly LOD handover")
 	return count
 
 # Put a proxy back under the overlay's control. Only touches nodes WE revealed:

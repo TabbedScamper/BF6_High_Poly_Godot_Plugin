@@ -157,6 +157,341 @@ var _last_report := 0               # _build_done at the last print/file report
 var _build_status_base := ""        # apply()'s summary minus the objects part
 var _last_status := ""              # exact string the last full apply() returned
 var status_label: Label = null      # set by the toggle plugin: live progress target
+
+# ---------------------------------------------------------------------------
+# WHERE A BUILD GOES, phase by phase.
+#
+# The profiler's TIME BY PHASE table is the older half of this and it is still
+# fed (every _ph call forwards to HighpolyProfiler.span, so no existing row
+# moves or disappears). It has two limits this fixes rather than replaces:
+#
+#   1. it only records while a RECORDING is running, which is almost never, so
+#      an ordinary open leaves no trace of where its minutes went;
+#   2. it records milliseconds and a call count and nothing else. "props: load
+#      mesh 12.4 s" cannot tell a build that read 2,100 meshes out of the game
+#      from one that loaded 2,100 out of a cache, and those are opposite
+#      problems: the first wants a faster parser, the second is already solved
+#      and the next person to "optimise" it will delete the cache.
+#
+# So a phase carries its item count and its PROVENANCE, and the table prints
+# per-item cost beside the total. A phase that is fast because it was cached
+# says so on its own line.
+#
+# KEPT LOCALLY AS WELL AS FORWARDED. HighpolyProfile.add takes every sample
+# (see _ph_forward), but it is off unless someone switched profiling on and it
+# does not carry item counts or provenance. This dictionary is what makes the
+# table below printable on an ordinary open, which is the only kind of open
+# anybody ever complains about.
+const PH_INSTALL := "install"       # read out of the player's BF6 install
+const PH_CACHE := "cache"           # served from a file this plugin wrote
+const PH_MEMORY := "memory"         # already in this process
+const PH_MIXED := "mixed"
+const PH_ENGINE := "engine"         # Godot did it: parse, upload, draw
+
+var _ph_rows := {}                  # name -> {ms, n, items, from}
+var _ph_order: Array = []
+var _ph_t0 := 0                     # ticks at the start of the build being timed
+
+
+func _ph_reset() -> void:
+	_ph_rows.clear()
+	_ph_order.clear()
+	_ph_t0 = Time.get_ticks_msec()
+	_yield_reset()
+
+
+# One phase sample. `ms` is wall time, `items` is how many of whatever the phase
+# processes, `from` is where the answer came from.
+func _ph(name: String, ms: float, items := 1, from := "") -> void:
+	if not _ph_rows.has(name):
+		_ph_order.append(name)
+		_ph_rows[name] = {"ms": 0.0, "n": 0, "items": 0, "from": from}
+	var e: Dictionary = _ph_rows[name]
+	e["ms"] = float(e["ms"]) + maxf(0.0, ms)
+	e["n"] = int(e["n"]) + 1
+	e["items"] = int(e["items"]) + items
+	if from != "" and str(e["from"]) != from:
+		e["from"] = from if str(e["from"]) == "" else PH_MIXED
+	_ph_forward(name, ms, items, from)
+
+
+# THE ONE PLACE THE SHARED SINKS ARE FED.
+#
+# HighpolyProfiler.span is the existing phase table and is fed unconditionally,
+# so extending this file never costs the old report a row. HighpolyProfile.add
+# is the newer per-frame profiler and takes an already-measured span in
+# microseconds, which is exactly the shape every call site here already has.
+#
+# BOTH ARE MAIN-THREAD ONLY. They keep static dictionaries with no lock, so a
+# call from a worker is a data race that shows up as a corrupted report or a
+# crash rather than a wrong number. Everything in this file runs on the main
+# thread; the guard is here so that stays true if something later does not.
+func _ph_forward(name: String, ms: float, _items: int, _from: String) -> void:
+	if OS.get_thread_caller_id() != OS.get_main_thread_id():
+		return
+	HighpolyProfiler.span(name, ms)
+	HighpolyProfile.add(name, int(ms * 1000.0))
+
+
+# ---------------------------------------------------------------------------
+# THE YIELDED FRAMES, counted and timed one at a time.
+#
+# "props/skyline: waiting for the yielded frame" was 16.8 s of a 50.9 s build
+# and is still about 4 s of 26.2 s, and nobody has ever established WHAT that
+# frame is doing. There are two candidates and they want opposite fixes:
+#
+#   A. the editor is redrawing the terrain, roads, water and whatever else is
+#      still visible, which is a fixed cost per frame and only goes away by
+#      yielding less often;
+#   B. the RenderingServer is flushing the meshes and MultiMeshes the slice just
+#      created, which is proportional to what was built and goes away by
+#      creating fewer, larger instances.
+#
+# Both are measured here rather than argued about:
+#
+#   the regression   every yield records the frame's cost and how many
+#                    MultiMeshInstances were created in the slice before it. A
+#                    least-squares fit then splits the frame into a fixed part
+#                    (A) and a per-new-instance part (B). No extra frames, no
+#                    cost, runs on every build.
+#   the paired probe every PROBE_EVERY yields, a SECOND frame is awaited
+#                    immediately after the first. Nothing is created between the
+#                    two, so the second frame is pure (A). first minus second is
+#                    (B), measured directly, and it cross-checks the fit.
+#
+# The probe costs one extra frame per PROBE_EVERY yields and stops after
+# PROBE_MAX samples, so it is bounded at a couple of seconds on the worst build
+# measured. It stays on because a number nobody collects is a question nobody
+# answers, and this one has been open since #70 was filed.
+const PROBE_EVERY := 8
+const PROBE_MAX := 48
+
+var _yield_lanes := {}              # lane -> stats dictionary
+
+
+func _yield_reset() -> void:
+	_yield_lanes.clear()
+
+
+func _yield_lane(lane: String) -> Dictionary:
+	if not _yield_lanes.has(lane):
+		_yield_lanes[lane] = {
+			"n": 0, "ms": 0.0, "min": 1e9, "max": 0.0,
+			"worst": [],                       # [ms, new instances, draw calls]
+			"sx": 0.0, "sy": 0.0, "sxx": 0.0, "sxy": 0.0,
+			"probe_n": 0, "probe_first": 0.0, "probe_second": 0.0,
+			"draws_first": 0, "draws_last": 0,
+			"made": 0,                         # MMIs created across the build
+			"hist": [0, 0, 0, 0, 0, 0, 0],     # see YIELD_BUCKETS
+		}
+	return _yield_lanes[lane]
+
+
+# A HISTOGRAM, NOT AN AVERAGE. The target is a steady 60 fps, which is a 16.7 ms
+# frame, so what matters is how many frames blew past it and by how far. An
+# average of 49 ms can be four hundred good frames and one two-second stall, and
+# the stall is the only part anybody feels.
+const YIELD_BUCKETS := [8.0, 16.7, 33.0, 66.0, 133.0, 500.0]
+const YIELD_BUCKET_NAMES := ["under 8 ms", "8 to 16.7 ms", "16.7 to 33 ms",
+	"33 to 66 ms", "66 to 133 ms", "133 to 500 ms", "over 500 ms (a stall)"]
+
+
+# Record one yielded frame. `made` is how many MultiMeshInstances the slice
+# before it created, which is the whole point: without it the frame cost is a
+# number with no explanation attached.
+func _yield_note(lane: String, ms: float, made: int) -> void:
+	var e: Dictionary = _yield_lane(lane)
+	e["n"] = int(e["n"]) + 1
+	e["ms"] = float(e["ms"]) + ms
+	e["min"] = minf(float(e["min"]), ms)
+	e["max"] = maxf(float(e["max"]), ms)
+	e["made"] = int(e["made"]) + made
+	var x := float(made)
+	e["sx"] = float(e["sx"]) + x
+	e["sy"] = float(e["sy"]) + ms
+	e["sxx"] = float(e["sxx"]) + x * x
+	e["sxy"] = float(e["sxy"]) + x * ms
+	var draws := _draw_calls()
+	if int(e["draws_first"]) == 0:
+		e["draws_first"] = draws
+	e["draws_last"] = draws
+	var hist: Array = e["hist"]
+	var b := YIELD_BUCKETS.size()
+	for i in range(YIELD_BUCKETS.size()):
+		if ms < float(YIELD_BUCKETS[i]):
+			b = i
+			break
+	hist[b] = int(hist[b]) + 1
+	# The five worst frames, by name. An average hides a 900 ms stall inside four
+	# hundred 4 ms frames, and the stall is the thing a user actually feels.
+	var worst: Array = e["worst"]
+	worst.append([ms, made, draws])
+	worst.sort_custom(func(a, b): return float(a[0]) > float(b[0]))
+	if worst.size() > 5:
+		worst.resize(5)
+
+
+func _yield_should_probe(lane: String) -> bool:
+	var e: Dictionary = _yield_lane(lane)
+	return int(e["probe_n"]) < PROBE_MAX and int(e["n"]) % PROBE_EVERY == 0
+
+
+func _yield_note_probe(lane: String, first: float, second: float) -> void:
+	var e: Dictionary = _yield_lane(lane)
+	e["probe_n"] = int(e["probe_n"]) + 1
+	e["probe_first"] = float(e["probe_first"]) + first
+	e["probe_second"] = float(e["probe_second"]) + second
+
+
+static func _draw_calls() -> int:
+	return int(RenderingServer.get_rendering_info(
+		RenderingServer.RENDERING_INFO_TOTAL_DRAW_CALLS_IN_FRAME))
+
+
+# How many MultiMeshInstances have been created since this LANE last yielded.
+#
+# PER LANE, because the props and the skyline build concurrently and a single
+# counter would credit the skyline's creations to the props lane's next frame
+# and ruin both fits. _add_cell_multimeshes is only ever called by the props
+# loop and _add_multimesh only by the skyline loop, so attributing at the source
+# is exact rather than a guess.
+var _mmi_made := 0                  # both lanes, for the summary line
+var _inst_made := 0                 # instances inside those MultiMeshes
+var _mmi_lane := {"props": 0, "skyline": 0}
+var _mmi_seen := {"props": 0, "skyline": 0}
+
+
+func _mmi_add(lane: String, n: int) -> void:
+	_mmi_made += n
+	_mmi_lane[lane] = int(_mmi_lane.get(lane, 0)) + n
+
+
+func _mmi_since_yield(lane: String) -> int:
+	var now := int(_mmi_lane.get(lane, 0))
+	var d := now - int(_mmi_seen.get(lane, 0))
+	_mmi_seen[lane] = now
+	return d
+
+
+# The table. Written to the log rather than only to a profiler report, because
+# the profiler has to be recording and the log always is.
+func _ph_report(title: String) -> PackedStringArray:
+	var out := PackedStringArray()
+	if _ph_order.is_empty():
+		return out
+	var wall := Time.get_ticks_msec() - _ph_t0
+	var total := 0.0
+	for k in _ph_order:
+		# Rows marked "(of which)" are a breakdown of the row above them and are
+		# already counted there. Adding them to the sum would push the attributed
+		# share past 100% and make the honest gap look like an error.
+		if not str(k).ends_with("(of which)"):
+			total += float(_ph_rows[k]["ms"])
+	out.append("")
+	out.append("MAP CONTEXT PHASES  %s  %.1f s wall" % [title, wall / 1000.0])
+	out.append("  \"from\" says where the answer came from. A row marked cache is")
+	out.append("  cheap only because an earlier run paid for it. Rows marked")
+	out.append("  \"(of which)\" break down the row above and are not summed again.")
+	out.append("  %-42s %9s %7s %10s %11s  %s"
+		% ["phase", "wall", "calls", "items", "each", "from"])
+	var keys: Array = _ph_order.duplicate()
+	keys.sort_custom(func(a, b): return float(_ph_rows[a]["ms"]) > float(_ph_rows[b]["ms"]))
+	for k in keys:
+		var e: Dictionary = _ph_rows[k]
+		var ms := float(e["ms"])
+		var items := int(e["items"])
+		out.append("  %-42s %8.2fs %7d %10d %11s  %s"
+			% [str(k).left(42), ms / 1000.0, int(e["n"]), items,
+			   "" if items <= 0 else ("%.2f ms" % (ms / float(items))),
+			   str(e["from"])])
+	# The percentage is only meaningful once there is a wall to divide by. It is
+	# also the honest bit of the table: everything NOT instrumented lives in the
+	# gap, and a low figure means the next thing to time is whatever is missing.
+	out.append("  %-42s %8.2fs   of %.2f s wall%s"
+		% ["sum of the above", total / 1000.0, wall / 1000.0,
+		   "" if wall < 500 else (" (%.0f%% attributed)"
+			   % (100.0 * total / float(wall)))])
+	return out
+
+
+# WHAT THE YIELDED FRAMES WERE ACTUALLY DOING. See PROBE_EVERY above for the two
+# hypotheses this is built to separate.
+func _yield_report(lane: String) -> PackedStringArray:
+	var out := PackedStringArray()
+	if not _yield_lanes.has(lane):
+		return out
+	var e: Dictionary = _yield_lanes[lane]
+	var n := int(e["n"])
+	if n == 0:
+		return out
+	var ms := float(e["ms"])
+	out.append("")
+	out.append("YIELDED FRAMES  %s" % lane)
+	out.append("  %d frames, %.2f s in total, %.1f ms each on average"
+		% [n, ms / 1000.0, ms / float(n)])
+	out.append("  fastest %.1f ms, slowest %.1f ms, %d MultiMeshInstances created"
+		% [float(e["min"]), float(e["max"]), int(e["made"])])
+	if int(e["draws_last"]) > 0:
+		out.append("  draw calls in frame: %d at the first yield, %d at the last"
+			% [int(e["draws_first"]), int(e["draws_last"])])
+	else:
+		out.append("  draw calls: none reported (no renderer, or nothing drawn)")
+	var hist: Array = e["hist"]
+	for i in range(hist.size()):
+		if int(hist[i]) > 0:
+			out.append("    %-22s %5d frames (%.0f%%)"
+				% [str(YIELD_BUCKET_NAMES[i]), int(hist[i]),
+				   100.0 * int(hist[i]) / float(n)])
+	var worst: Array = e["worst"]
+	for w in worst:
+		out.append("    worst: %8.1f ms after %4d new instances, %d draw calls"
+			% [float((w as Array)[0]), int((w as Array)[1]), int((w as Array)[2])])
+	# Least squares over (new instances, frame ms). The intercept is what a
+	# yielded frame costs when the slice before it built NOTHING, which is the
+	# redraw of what is already on screen; the slope is what each newly created
+	# MultiMeshInstance adds, which is the RenderingServer flushing it.
+	var sn := float(n)
+	var sx := float(e["sx"])
+	var sy := float(e["sy"])
+	var den := sn * float(e["sxx"]) - sx * sx
+	if absf(den) > 1e-6:
+		var slope := (sn * float(e["sxy"]) - sx * sy) / den
+		var icept := (sy - slope * sx) / sn
+		out.append("  fit: %.1f ms fixed per frame + %.2f ms per new instance"
+			% [icept, slope])
+		var flush := slope * sx
+		out.append("  which splits the %.2f s into %.2f s redrawing what was already"
+			% [ms / 1000.0, icept * sn / 1000.0]
+			+ " there and %.2f s flushing new geometry" % (flush / 1000.0))
+	if int(e["probe_n"]) > 0:
+		var pn := float(e["probe_n"])
+		var f1 := float(e["probe_first"]) / pn
+		var f2 := float(e["probe_second"]) / pn
+		out.append("  probe: %d paired frames. The frame after a slice cost %.1f ms;"
+			% [int(pn), f1]
+			+ " the very next frame, with nothing new created, cost %.1f ms." % f2)
+		if f1 - f2 > 1.0:
+			out.append("  So %.1f ms of a yielded frame is the new geometry being"
+				% (f1 - f2)
+				+ " flushed, and %.1f ms is the steady redraw." % f2)
+		else:
+			out.append("  The two are the same, so the cost is the steady redraw of"
+				+ " what is already on screen, not the new geometry.")
+	else:
+		out.append("  probe: no paired frames were taken (the build was too short).")
+	return out
+
+
+func _log_build_phases(title: String, lane: String) -> void:
+	for line in _ph_report(title):
+		Log.info(line)
+	for line in _yield_report(lane):
+		Log.info(line)
+	if game_source != null and game_source.has_method("build_report"):
+		for line in game_source.build_report():
+			Log.info(str(line))
+
+
 # incremental refresh ("Check for Updates"): per-parsed-GLB source stamps plus
 # which prop entries each source built, so a cache file overwritten by the
 # background re-bake rebuilds JUST its own MultiMeshes â€” no full re-toggle
@@ -1420,8 +1755,8 @@ func _load_geom_tier(gp: String) -> Array:
 	# bake exists to skip.
 	var own: Array = meshes
 
-	HighpolyProfiler.span("props: ResourceLoader.load(.geom.res)",
-		Time.get_ticks_msec() - _tg)
+	_ph("props: ResourceLoader.load(.geom.res)",
+		Time.get_ticks_msec() - _tg, meshes.size(), PH_CACHE)
 
 	# The textures. A worker has usually decoded them already; _bind_side does
 	# the same job for the glb path and says so in a recording when it has to
@@ -1433,15 +1768,15 @@ func _load_geom_tier(gp: String) -> Array:
 	elif BcTex.exists(gp):
 		var _t := Time.get_ticks_msec()
 		d = _decode_side(gp)
-		HighpolyProfiler.span("textures: decoded on the MAIN thread (no prefetch)",
-			Time.get_ticks_msec() - _t)
+		_ph("textures: decoded on the MAIN thread (no prefetch)",
+			Time.get_ticks_msec() - _t, 1, PH_CACHE)
 	if d is Dictionary and not (d as Dictionary).is_empty():
 		var _tb := Time.get_ticks_msec()
 		BcTex.bind_meshes(own, d as Dictionary)
-		HighpolyProfiler.span("textures: bind to materials",
-			Time.get_ticks_msec() - _tb)
-	HighpolyProfiler.span("props: textures, all of it (of which)",
-		Time.get_ticks_msec() - _tx)
+		_ph("textures: bind to materials",
+			Time.get_ticks_msec() - _tb, (d as Dictionary).size(), PH_ENGINE)
+	_ph("props: textures, all of it (of which)",
+		Time.get_ticks_msec() - _tx, 1, PH_CACHE)
 	return own
 
 const _TEX_SLOTS := [
@@ -1820,8 +2155,8 @@ func _finish_prop(gp: String, baked: String, out: Array,
 		var _tc := Time.get_ticks_msec()
 		var _n: int = await _compress_textures(m)
 		if _n > 0:
-			HighpolyProfiler.span("props: compress textures for VRAM",
-				Time.get_ticks_msec() - _tc)
+			_ph("props: compress textures for VRAM",
+				Time.get_ticks_msec() - _tc, _n, PH_ENGINE)
 		done.append(_with_lods(m))
 	# QUEUED, NOT WRITTEN. The fast-load sidecar is worth about 8x on a LATER
 	# build and nothing at all on this one, yet it used to be written inline â€”
@@ -1856,8 +2191,8 @@ func _finish_prop(gp: String, baked: String, out: Array,
 		# trusting a cached mesh, deletes it and re-bakes from the GLB. That is
 		# the same guarantee without a second texture upload at the worst
 		# possible moment.
-	HighpolyProfiler.span("props: material passes (of which)",
-		Time.get_ticks_msec() - _tf)
+	_ph("props: material passes (of which)",
+		Time.get_ticks_msec() - _tf, done.size(), PH_ENGINE)
 	return done
 
 
@@ -1884,7 +2219,7 @@ func flush_sidecars() -> void:
 			await get_tree().process_frame
 			slice = Time.get_ticks_msec()
 	var ms := Time.get_ticks_msec() - t0
-	HighpolyProfiler.span("sidecars: write fast-load cache", ms)
+	_ph("sidecars: write fast-load cache", ms, n, PH_CACHE)
 	HighpolyProfiler.crumb("sidecars", "wrote %d in %.1f s" % [n, ms / 1000.0])
 	Log.debug("fast-load cache: %d sidecar(s) written in %.1f s" % [n, ms / 1000.0])
 
@@ -2366,10 +2701,10 @@ func _merge_meshes(pairs: Array) -> Array:
 	# a 200.4 s parent â€” impossible, and it hid the actually useful question of
 	# which of the two was doing the merging. The prop half genuinely is nested
 	# inside "props: load mesh"; the skyline half is not nested in anything.
-	HighpolyProfiler.span(
+	_ph(
 		"  of which: merge (props)" if _merge_who == "props"
 			else "skyline: merge mesh nodes",
-		Time.get_ticks_msec() - _tm)
+		Time.get_ticks_msec() - _tm, pairs.size(), PH_ENGINE)
 	return _out
 
 
@@ -2715,16 +3050,21 @@ func _add_multimesh(parent: Node3D, mesh: Mesh, xf: Array, textured: bool, flat_
 		var o := i * 12
 		var dst: Array = neg if _det3(xf, o) < 0.0 else pos
 		for j in range(12): dst.append(xf[o + j])
+	# Counted for the same reason the props cells are: these are what the frame
+	# after the slice has to flush. See _yield_report.
+	_inst_made += count
 	if not pos.is_empty():
 		var m1 := _build_mmi(mesh, pos, textured, flat_mat)
 		_no_backdrop_shadow(m1)
 		parent.add_child(m1)
 		_bd_list.append(m1)
+		_mmi_add("skyline", 1)
 	if not neg.is_empty():
 		var m2 := _build_mmi(_flipped_mesh(mesh), neg, textured, flat_mat)
 		_no_backdrop_shadow(m2)
 		parent.add_child(m2)
 		_bd_list.append(m2)
+		_mmi_add("skyline", 1)
 
 
 # The skyline never casts. _build_mmi's size rule lets it through â€” every
@@ -2778,6 +3118,12 @@ static func mark_never_casts(g: GeometryInstance3D) -> void:
 # out. Every call that wants layers passes what its toggles actually say.
 func apply(root: Node, enabled: bool, show_objects: bool, tex = true,
 		backdrop := false, water := false) -> String:
+	# The phase table covers ONE apply and the builds it launches. Reset here
+	# rather than per build: the two builders run concurrently and the terrain,
+	# the roads and the water are paid before either of them starts, so a table
+	# that began at the props build would miss the first half of the wait.
+	_ph_reset()
+	var _t_apply := Time.get_ticks_msec()
 	var tex_mode: int = (2 if tex else 0) if tex is bool else int(tex)
 	var textured := tex_mode == 2
 	# PREVIOUS state, captured before it is overwritten: the skyline salvage
@@ -2841,13 +3187,35 @@ func apply(root: Node, enabled: bool, show_objects: bool, tex = true,
 			if pr is Node3D:
 				old_ctx2.remove_child(pr)
 				saved_props = pr as Node3D
+	var _t_clear := Time.get_ticks_msec()
 	_clear(root, saved_bd != null, saved_props != null)
+	# THE TEARDOWN IS A PHASE. It frees every MultiMeshInstance in the overlay,
+	# which on a full map is tens of thousands of nodes, and it runs on the main
+	# thread inside a toggle handler where the user is waiting. It has never been
+	# measured; if a "why did that toggle take four seconds" complaint has no
+	# other explanation, it is this row.
+	_ph("apply: clear the old overlay", Time.get_ticks_msec() - _t_clear,
+		1, PH_ENGINE)
 
-	# Load map data whenever we need geometry â€” terrain context OR objects.
+	# Load map data whenever we need geometry: terrain context OR objects.
 	var need_data := enabled or show_objects or backdrop or water
 	var have_data := false
 	if need_data:
+		# ASKED BEFORE THE CALL, not after: the call is what fills the cache, so
+		# afterwards the answer is always yes and the row would always claim to
+		# have been free.
+		var _data_cached: bool = game_source != null \
+			and game_source.has_method("map_data_ready") \
+			and game_source.map_data_ready("%s/%s" % [CACHE, map])
+		var _t_data := Time.get_ticks_msec()
 		have_data = _load_data(map)
+		# CACHED AFTER THE FIRST ASK, and that is exactly why it is worth a row.
+		# _load_data reaches game_source.map_data, which builds the heightfield,
+		# the roads, the lights and the FX the first time and returns a stored
+		# dictionary afterwards. A one second row here and a ninety second row
+		# here are the same call.
+		_ph("apply: map data", Time.get_ticks_msec() - _t_data, 1,
+			PH_MEMORY if _data_cached else PH_INSTALL)
 
 	# `backdrop` counts here too: the skyline is a layer in its own right, so
 	# wanting it is reason enough to build even with the terrain, the objects and
@@ -2871,7 +3239,15 @@ func apply(root: Node, enabled: bool, show_objects: bool, tex = true,
 	#     ground-layer albedo/normal, slope-selected, so it's no longer pixelated.
 	var tmat: ShaderMaterial = null
 	if textured:
+		# THE GROUND'S MATERIAL, which is a stack of image loads: the splat index
+		# and weight pages, the colour map, and one Texture2DArray built from up
+		# to 32 layer slices. All of it comes off disk from the map's cache, so
+		# it is a cache row, and it is the reason switching Extended Terrain on
+		# is not instant even on a map that is otherwise fully built.
+		var _t_tm := Time.get_ticks_msec()
 		tmat = _terrain_shader_mat(map)               # detail material for our extended terrain
+		_ph("terrain: ground material (splat + colour map)",
+			Time.get_ticks_msec() - _t_tm, maxi(1, _splat_n), PH_CACHE)
 
 	# STAND DOWN, AND STAND THEIRS DOWN TOO.
 	#
@@ -2884,8 +3260,14 @@ func apply(root: Node, enabled: bool, show_objects: bool, tex = true,
 	#
 	# Also sweep any decal an older version of this plugin injected, which can
 	# still be sitting in a live scene after an in-session upgrade.
+	var _t_dec := Time.get_ticks_msec()
 	_remove_maptile(root)
 	_set_sdk_decal_shown(root, not enabled)
+	# Two scene walks looking for decal nodes. Cheap, and measured anyway: it
+	# runs on every toggle, and "cheap" is a claim rather than a measurement
+	# until a row says so.
+	_ph("decals: maptile and SDK decal", Time.get_ticks_msec() - _t_dec, 1,
+		PH_ENGINE)
 
 	if not enabled and not show_objects and not backdrop and not water:
 		if not textured: return "Map Context off"
@@ -2936,7 +3318,15 @@ func apply(root: Node, enabled: bool, show_objects: bool, tex = true,
 	if enabled:
 		var terrain_lift := 0.0
 		if hm.has("file"):
+			# THE HEIGHTFIELD MESH: a 16-bit raw file read and turned into chunked
+			# geometry on the MAIN THREAD, inside the toggle handler. Counted in
+			# chunks so a change to terrain_step can be judged by what it costs
+			# per chunk rather than only by whether the total moved.
+			var _t_ter := Time.get_ticks_msec()
 			var tmi := _build_terrain_from_heightmap(dir, hm)   # chunked full-accuracy mesh from raw 16-bit heights
+			_ph("terrain: build the heightfield mesh",
+				Time.get_ticks_msec() - _t_ter,
+				0 if tmi == null else tmi.get_child_count(), PH_CACHE)
 			if tmi:
 				# exact data height, no sink (was -0.5 to dodge z-fighting under
 				# the SDK bowl: read as "terrain a meter low" â€” the heightmap is
@@ -2958,15 +3348,20 @@ func apply(root: Node, enabled: bool, show_objects: bool, tex = true,
 			# editor camera (highpoly_scatter.gd). Any detail mode â€” grass reads
 			# fine over the flat green too; no scatter.json â†’ strict no-op.
 			if hm.has("file"):
+				var _t_sc := Time.get_ticks_msec()
 				_scatter.y_lift = terrain_lift    # grass sits ON the (possibly lifted) ground
 				_scatter_n = _scatter.setup(self, ctx, map, dir, hm, _scatter_tile(map))
 				if _scatter_n > 0:
 					var scam := _editor_cam()
 					if scam: _scatter.tick(scam.global_transform.origin)
+				_ph("scatter: set up the vegetation kits",
+					Time.get_ticks_msec() - _t_sc, maxi(1, _scatter_n), PH_CACHE)
 	# Roads and street markings, baked from the level's TerrainDecals and draped
 	# on the heightfield by roads_build.py. They belong with the ground, so they
 	# follow Extended Terrain rather than getting a switch of their own: without
 	# them the map is bare dirt where the street network should be.
+	var _t_roads := Time.get_ticks_msec()
+	var _roads_from := ""
 	if enabled:
 		# FROM THE INSTALL when the game source is live: same records, same
 		# drape, same Y bias, read out of the player's own TerrainDecals resource
@@ -2975,6 +3370,7 @@ func apply(root: Node, enabled: bool, show_objects: bool, tex = true,
 		# over the live read.
 		var rmesh = _data.get("roads") if _data is Dictionary else null
 		if rmesh is Mesh:
+			_roads_from = PH_MEMORY   # already built by map_data, on the worker
 			var rmi := MeshInstance3D.new()
 			rmi.name = "Roads"
 			rmi.mesh = rmesh as Mesh
@@ -2984,6 +3380,7 @@ func apply(root: Node, enabled: bool, show_objects: bool, tex = true,
 			rmi.owner = null
 		var rp := "%s/roads/roads.glb" % dir
 		if rmesh == null and FileAccess.file_exists(rp):
+			_roads_from = PH_CACHE            # the pre-baked roads.glb on disk
 			var rn := _load_external_glb(rp)   # live root, adopted into the tree
 			if rn != null:
 				rn.name = "Roads"
@@ -3005,8 +3402,18 @@ func apply(root: Node, enabled: bool, show_objects: bool, tex = true,
 	# other way round) and it is not scenery. The Configure Shaders water setting
 	# still drives its ripple speed either way: apply_shader_prefs walks the whole
 	# overlay, so the plane picks the pref up wherever it is parented.
+	if _roads_from != "":
+		_ph("roads: place the street mesh", Time.get_ticks_msec() - _t_roads,
+			1, _roads_from)
 	if water:
+		# One plane per body plus its shader, its normal maps and its wave video.
+		# It has its own toggle and its own complaint history ("Water takes a
+		# moment"), so it gets its own row instead of disappearing into apply.
+		var _t_w := Time.get_ticks_msec()
 		_add_water_plane(ctx, textured)
+		var _wn: Variant = _data.get("water", []) if _data is Dictionary else []
+		_ph("water: build the surface", Time.get_ticks_msec() - _t_w,
+			maxi(1, (_wn as Array).size() if _wn is Array else 1), PH_INSTALL)
 
 	# The distant skyline / out-of-bounds vista is its OWN layer, not part of the
 	# terrain. Extended Terrain gives you the ground the level sits on, Water the
@@ -3036,7 +3443,13 @@ func apply(root: Node, enabled: bool, show_objects: bool, tex = true,
 		# own progress lane, exactly like the map objects.
 		# nearest-first, same as the props layer: the horizon fills in outward
 		# from wherever the camera is standing rather than in file order
+		var _t_sort := Time.get_ticks_msec()
 		var bd_entries: Array = _sorted_prop_entries(_data.get("backdrop", []))
+		# Nearest-first ordering costs a distance test per instance of every
+		# entry, so it scales with placements and not with entries. Small on the
+		# skyline, not obviously small on the props: both are measured.
+		_ph("skyline: sort the queue nearest first",
+			Time.get_ticks_msec() - _t_sort, bd_entries.size(), PH_MEMORY)
 		bd_total = bd_entries.size()
 		_bd_total = bd_total
 		_bd_done = 0
@@ -3096,7 +3509,10 @@ func apply(root: Node, enabled: bool, show_objects: bool, tex = true,
 		_props_mat = orange
 		_props_tex_mode = tex_mode    # set_objects_shown fast path key
 		_variant_layer_groups = {}    # groups rebuild under the fresh Props node
+		var _t_psort := Time.get_ticks_msec()
 		var entries := _sorted_prop_entries(_data.get("props", []))
+		_ph("props: sort the queue nearest first",
+			Time.get_ticks_msec() - _t_psort, entries.size(), PH_MEMORY)
 		_build_total = entries.size()
 		_build_done = 0
 		_build_props = 0
@@ -3218,7 +3634,24 @@ func _build_backdrop_async(bd_root: Node3D, entries: Array, dir: String,
 			# returns without yielding, but _prop_mesh is a coroutine either way
 			# and calling one bare hands back a state object rather than the
 			# Array — which then reads as "no meshes" and builds nothing.
+			#
+			# TIMED, and it was not before. The game branch had no span at all,
+			# so on a game-sourced map the skyline's largest cost, the one this
+			# note above blames for 94.6 s, was attributed to nothing.
+			var _bkey := str(e.get("mesh", ""))
+			var _bwas := _mesh_cache.has(_bkey)
+			var _bh0 := int(game_source.n_geom_hit)
+			var _bm0 := int(game_source.n_geom_miss)
+			var _tg := Time.get_ticks_msec()
 			meshes = await _prop_mesh(e, dir)
+			var _bms := float(Time.get_ticks_msec() - _tg)
+			var _bfrom := PH_MEMORY
+			if not _bwas:
+				if int(game_source.n_geom_miss) > _bm0:
+					_bfrom = PH_INSTALL
+				elif int(game_source.n_geom_hit) > _bh0:
+					_bfrom = PH_CACHE
+			_ph("skyline: load mesh (game source)", _bms, 1, _bfrom)
 			# A suspension point the skyline loop did not have before: the scene
 			# can be closed or the layer switched off across it, and everything
 			# below assumes bd_root is still there.
@@ -3241,8 +3674,8 @@ func _build_backdrop_async(bd_root: Node3D, entries: Array, dir: String,
 				_merge_who = "skyline"
 				meshes = await _parse_prop_file(gp)
 				_merge_who = "props"
-				HighpolyProfiler.span("skyline: load mesh (GLB parse + cache)",
-					Time.get_ticks_msec() - _ts)
+				_ph("skyline: load mesh (GLB parse + cache)",
+					Time.get_ticks_msec() - _ts, 1, PH_CACHE)
 		elif e.has("model"):
 			var bm := _mesh_for(str(e["model"]))
 			if bm != null:
@@ -3260,8 +3693,8 @@ func _build_backdrop_async(bd_root: Node3D, entries: Array, dir: String,
 			var _tm := Time.get_ticks_msec()
 			for msh: Mesh in meshes:
 				_add_multimesh(bdest, msh, e.get("xf", []), textured, mat)
-			HighpolyProfiler.span("skyline: place multimesh",
-				Time.get_ticks_msec() - _tm)
+			_ph("skyline: place multimesh", Time.get_ticks_msec() - _tm,
+				maxi(1, int((e.get("xf", []) as Array).size() / 12)), PH_ENGINE)
 			_bd_ok += 1
 		_bd_done += 1
 		if Time.get_ticks_msec() - frame_start >= BUILD_FRAME_MS:
@@ -3271,7 +3704,10 @@ func _build_backdrop_async(bd_root: Node3D, entries: Array, dir: String,
 			# practice meant it only started obeying the Range slider once the
 			# user touched the slider. New pieces now obey it the moment they
 			# exist, exactly like the props layer.
+			var _tr := Time.get_ticks_msec()
 			_apply_radius()
+			_ph("skyline: apply_radius on every yield",
+				Time.get_ticks_msec() - _tr, maxi(1, _bd_list.size()), PH_ENGINE)
 			backdrop_progress.emit(_bd_done, _bd_total)
 			if not is_inside_tree():
 				_end_build_draw(bd_root)
@@ -3280,10 +3716,21 @@ func _build_backdrop_async(bd_root: Node3D, entries: Array, dir: String,
 			# the skyline is 3,118 draw calls from 34 nodes, by far the largest
 			# single source in the overlay, so a yielded frame that draws it is
 			# the most expensive frame in the build.
+			var _made := _mmi_since_yield("skyline")
 			var _ty := Time.get_ticks_msec()
 			await get_tree().process_frame
-			HighpolyProfiler.span("skyline: waiting for the yielded frame",
-				Time.get_ticks_msec() - _ty)
+			var _fms := float(Time.get_ticks_msec() - _ty)
+			_ph("skyline: waiting for the yielded frame", _fms, 1, PH_ENGINE)
+			_yield_note("skyline", _fms, _made)
+			# The paired probe, exactly as in the props loop, and this is the lane
+			# it was written for: 16.8 s of a 50.9 s build went here and nobody
+			# has ever known whether it was the redraw or the flush.
+			if _yield_should_probe("skyline"):
+				var _ty2 := Time.get_ticks_msec()
+				await get_tree().process_frame
+				_yield_note_probe("skyline", _fms,
+					float(Time.get_ticks_msec() - _ty2))
+				_mmi_since_yield("skyline")   # the probe frame built nothing
 			if gen != _build_gen:
 				_end_build_draw(bd_root)
 				return                  # superseded by a new apply()/_clear()
@@ -3292,12 +3739,32 @@ func _build_backdrop_async(bd_root: Node3D, entries: Array, dir: String,
 				return
 			frame_start = Time.get_ticks_msec()
 	_apply_radius()                 # final pass: the last slice obeys it too
+	var _t_show := Time.get_ticks_msec()
 	_end_build_draw(bd_root)        # the finished skyline appears, here
+	_ph("skyline: reveal the finished layer", Time.get_ticks_msec() - _t_show,
+		1, PH_ENGINE)
+	var _side_n := maxi(1, _side_writes.size())
+	var _t_side := Time.get_ticks_msec()
 	await flush_sidecars()          # cache written after the skyline is up
+	_ph("skyline: flush the fast-load sidecars",
+		Time.get_ticks_msec() - _t_side, _side_n, PH_CACHE)
 	HighpolyProfiler.crumb("skyline", "build finished, %d of %d" % [_bd_ok, _bd_total])
 	_release_texture_images()       # no-op if the props lane is still running
 	backdrop_progress.emit(_bd_total, _bd_total)
 	Log.debug("map context: skyline built, %d of %d piece(s)" % [_bd_ok, _bd_total])
+	# ONLY THE YIELD REPORT HERE, not the whole phase table. The props lane is
+	# usually still running and shares the table, so printing it now would show
+	# half a build and invite exactly the wrong conclusion. The yield lanes are
+	# separate per lane, so the skyline's is complete the moment it finishes.
+	for line in _yield_report("skyline"):
+		Log.info(line)
+	if not _building:
+		# Nothing else is running, so this build IS the whole apply and the table
+		# is complete. When the props lane is still going, it prints the table
+		# when it finishes and the skyline's rows are in it.
+		for line in _ph_report("%s skyline, %d of %d built"
+				% [_map, _bd_ok, _bd_total]):
+			Log.info(line)
 
 
 # --- keeping the work in progress off the screen ----------------------------
@@ -3415,11 +3882,39 @@ func _build_props_async(props_root: Node3D, entries: Array, dir: String,
 		var e = entries[ei]
 		vram_check()      # reports once if memory is getting high; never stops
 		var gp := _prop_path(e, dir)
+		# WHERE THIS MESH IS ABOUT TO COME FROM, sampled before the call because
+		# the call is what makes it a hit. Three answers, and they are three
+		# different builds wearing the same phase name: an in-process dictionary
+		# hit costs nothing, a geometry-cache hit is a file read, and an install
+		# read is the CAS fetch plus a MeshSet parse that the 85 s cold figure is
+		# made of. One "props: load mesh" total cannot be read without this.
+		var mkey := str(e.get("mesh", "")) if from_game else gp
+		var was_cached := _mesh_cache.has(mkey)
+		var g_hit0 := 0
+		var g_miss0 := 0
+		if from_game:
+			g_hit0 = int(game_source.n_geom_hit)
+			g_miss0 = int(game_source.n_geom_miss)
 		var _t0 := Time.get_ticks_msec()
 		_merge_who = "props"
 		var meshes: Array = await _prop_mesh(e, dir)  # the expensive part (GLB parse; cached)
-		HighpolyProfiler.span("props: load mesh (GLB parse + cache)",
-			Time.get_ticks_msec() - _t0)
+		var _ml := Time.get_ticks_msec() - _t0
+		var mesh_from := PH_MEMORY
+		var mesh_row := "props: mesh, shared in memory (of which)"
+		if was_cached:
+			pass                              # already the memory answer
+		elif from_game:
+			if int(game_source.n_geom_miss) > g_miss0:
+				mesh_from = PH_INSTALL
+				mesh_row = "props: mesh, read from the install (of which)"
+			elif int(game_source.n_geom_hit) > g_hit0:
+				mesh_from = PH_CACHE
+				mesh_row = "props: mesh, from the geometry cache (of which)"
+		else:
+			mesh_from = PH_CACHE
+			mesh_row = "props: mesh, parsed from a GLB (of which)"
+		_ph("props: load mesh (GLB parse + cache)", _ml, 1, mesh_from)
+		_ph(mesh_row, _ml, 1, mesh_from)
 		var mesh: Mesh = meshes[0] if meshes.size() > 0 else null
 		if gp != "":
 			# refresh bookkeeping: which entries this source file built (recorded
@@ -3461,8 +3956,11 @@ func _build_props_async(props_root: Node3D, entries: Array, dir: String,
 					for msh: Mesh in meshes:
 						_add_cell_multimeshes(_variant_group(props_root, str(k)),
 								msh, bux[k], textured, flat_mat, gp)
-			HighpolyProfiler.span("props: create multimesh cells",
-				Time.get_ticks_msec() - _t1)
+			# COUNTED IN INSTANCES, not in entries. One entry can be a single
+			# crate or 4,000 of them, so a per-entry cost is meaningless here and
+			# a per-instance one can be compared across maps.
+			_ph("props: create multimesh cells", Time.get_ticks_msec() - _t1,
+				maxi(1, int((e.get("xf", []) as Array).size() / 12)), PH_ENGINE)
 			_build_props += 1
 		_build_done += 1
 		if Time.get_ticks_msec() - frame_start >= BUILD_FRAME_MS:
@@ -3474,8 +3972,11 @@ func _build_props_async(props_root: Node3D, entries: Array, dir: String,
 			# separately so the next recording either convicts it or clears it.
 			var _t2 := Time.get_ticks_msec()
 			_apply_radius()                 # freshly added cells obey the range slider
-			HighpolyProfiler.span("props: apply_radius on every yield",
-				Time.get_ticks_msec() - _t2)
+			# Per CELL, which is the set it walks. If this row's per-item cost is
+			# flat the walk is linear and fine; if it climbs, the suspicion above
+			# is confirmed and the fix is to walk only what the slice added.
+			_ph("props: apply_radius on every yield",
+				Time.get_ticks_msec() - _t2, maxi(1, _cells.size()), PH_ENGINE)
 			_report_progress()
 			# Per SLICE, not per prop: ~40 ms of work apiece, so a crash narrows
 			# to a handful of props by name rather than to "somewhere in 2,761".
@@ -3499,10 +4000,21 @@ func _build_props_async(props_root: Node3D, entries: Array, dir: String,
 			# building. It stays small only while the layer is hidden â€” see
 			# _begin_build_draw â€” so a regression there shows up as this number
 			# growing rather than as a vague "builds feel slower lately".
+			var _made := _mmi_since_yield("props")
 			var _ty := Time.get_ticks_msec()
 			await get_tree().process_frame  # keep the editor smooth
-			HighpolyProfiler.span("props: waiting for the yielded frame",
-				Time.get_ticks_msec() - _ty)
+			var _fms := float(Time.get_ticks_msec() - _ty)
+			_ph("props: waiting for the yielded frame", _fms, 1, PH_ENGINE)
+			_yield_note("props", _fms, _made)
+			# THE PAIRED PROBE. Nothing is created between these two awaits, so
+			# the second frame cannot be flushing new geometry: whatever it costs
+			# is the redraw of what was already on screen. See PROBE_EVERY.
+			if _yield_should_probe("props"):
+				var _ty2 := Time.get_ticks_msec()
+				await get_tree().process_frame
+				_yield_note_probe("props", _fms,
+					float(Time.get_ticks_msec() - _ty2))
+				_mmi_since_yield("props")   # the probe frame built nothing
 			if gen != _build_gen:
 				_end_build_draw(props_root)
 				return                      # superseded: _clear() already released
@@ -3512,12 +4024,22 @@ func _build_props_async(props_root: Node3D, entries: Array, dir: String,
 				build_finished.emit(_build_props)
 				return
 			frame_start = Time.get_ticks_msec()
+	var _t_final := Time.get_ticks_msec()
 	_apply_radius()
+	_ph("props: final apply_radius", Time.get_ticks_msec() - _t_final,
+		maxi(1, _cells.size()), PH_ENGINE)
 	_building = false
 	HighpolyProfiler.crumb("props", "build finished, %d built" % _build_props)
+	var _t_show := Time.get_ticks_msec()
 	_end_build_draw(props_root)   # the finished map appears, here
+	_ph("props: reveal the finished layer", Time.get_ticks_msec() - _t_show,
+		1, PH_ENGINE)
 	# and only NOW write the fast-load cache, with the map already on screen
+	var _side_n := maxi(1, _side_writes.size())   # drained by the flush
+	var _t_side := Time.get_ticks_msec()
 	await flush_sidecars()
+	_ph("props: flush the fast-load sidecars",
+		Time.get_ticks_msec() - _t_side, _side_n, PH_CACHE)
 	_report_progress(true)
 	# The CPU-side texture pool has done its job — it exists to stop the same
 	# pixels being decoded once per prop, and nothing decodes after this. The GPU
@@ -3534,13 +4056,24 @@ func _build_props_async(props_root: Node3D, entries: Array, dir: String,
 	# depot-plus-texture material work — and they want completely different
 	# fixes: the first is I/O, the second could move to a worker thread, the
 	# third cannot because it uploads to the GPU. A single total picks none.
-	if game_source != null and int(game_source.n_meshes) > 0:
-		HighpolyProfiler.span("props: game source — read the resource (CAS)",
-			int(game_source.t_res / 1000))
-		HighpolyProfiler.span("props: game source — parse + build the ArrayMesh",
-			int(game_source.t_parse / 1000))
-		HighpolyProfiler.span("props: game source — materials (depot + textures)",
-			int(game_source.t_mat / 1000))
+	# OR THE CACHE SERVED ANY, which is the case this used to miss entirely.
+	# n_meshes only counts meshes READ FROM THE INSTALL, so a fully cached build
+	# reported none of this: the one run where you most want to see what the
+	# geometry cache bought you was the one run that printed nothing.
+	if game_source != null and (int(game_source.n_meshes) > 0
+			or int(game_source.n_geom_loaded) > 0):
+		_ph("props: game source, read the resource (CAS)",
+			int(game_source.t_res / 1000), int(game_source.n_geom_miss), PH_INSTALL)
+		_ph("props: game source, parse + build the ArrayMesh",
+			int(game_source.t_parse / 1000), int(game_source.n_geom_miss), PH_INSTALL)
+		_ph("props: game source, materials (depot + textures)",
+			int(game_source.t_mat / 1000), int(game_source.n_mat_built), PH_INSTALL)
+		_ph("props: game source, texture decode (of which)",
+			int(game_source.t_tex / 1000),
+			int(game_source.tex_stats.get("decoded", 0)), PH_INSTALL)
+		_ph("props: game source, depot parse (of which)",
+			int(game_source.t_depot / 1000), int(game_source.n_depot_parsed),
+			PH_INSTALL)
 		HighpolyProfiler.mark("phase",
 			"game source: %d meshes — read %.1f s, parse %.1f s, materials %.1f s"
 			% [int(game_source.n_meshes), game_source.t_res / 1e6,
@@ -3554,10 +4087,12 @@ func _build_props_async(props_root: Node3D, entries: Array, dir: String,
 			% [int(game_source.n_meshes), int(game_source.n_mesh_shared),
 			   100.0 * game_source.n_mesh_shared
 			   / maxf(1.0, float(game_source.n_meshes + game_source.n_mesh_shared))])
-		HighpolyProfiler.span("props: game source — load cached geometry",
-			int(game_source.t_geom_load / 1000))
-		HighpolyProfiler.span("props: game source — save geometry to the cache",
-			int(game_source.t_geom_save / 1000))
+		_ph("props: game source, load cached geometry",
+			int(game_source.t_geom_load / 1000),
+			int(game_source.n_geom_loaded), PH_CACHE)
+		_ph("props: game source, save geometry to the cache",
+			int(game_source.t_geom_save / 1000),
+			int(game_source.n_geom_saved), PH_CACHE)
 		HighpolyProfiler.mark("phase",
 			"game source geometry cache: %d loaded (%.1f s), %d saved (%.1f s)"
 			% [int(game_source.n_geom_loaded), game_source.t_geom_load / 1e6,
@@ -3569,6 +4104,13 @@ func _build_props_async(props_root: Node3D, entries: Array, dir: String,
 			   int(ts.get("failed", 0))]
 			+ "%d materials, %.0f MB of pixels"
 			% [int(ts.get("materials", 0)), float(ts.get("bytes", 0)) / 1048576.0])
+	# THE TABLE, WRITTEN WHETHER OR NOT ANYONE IS RECORDING. Everything above
+	# this line goes to the profiler and is therefore invisible on an ordinary
+	# open, which is every open anybody actually complains about.
+	Log.info("props: %d instances in %d MultiMeshInstances over %d cells"
+		% [_inst_made, _mmi_made, _cells.size()])
+	_log_build_phases("%s props, %d of %d built"
+		% [_map, _build_props, _build_total], "props")
 	build_finished.emit(_build_props)
 
 # Progress: emit the signal (the toggle dock drives a ProgressBar off it) and
@@ -4131,13 +4673,13 @@ func _bind_side(inst: Node, glb_path: String) -> void:
 	elif BcTex.exists(glb_path):
 		var _t := Time.get_ticks_msec()
 		d = _decode_side(glb_path)
-		HighpolyProfiler.span("textures: decoded on the MAIN thread (no prefetch)",
-			Time.get_ticks_msec() - _t)
+		_ph("textures: decoded on the MAIN thread (no prefetch)",
+			Time.get_ticks_msec() - _t, 1, PH_CACHE)
 	if d is Dictionary and not (d as Dictionary).is_empty():
 		var _tb := Time.get_ticks_msec()
 		BcTex.bind(inst, d as Dictionary)
-		HighpolyProfiler.span("textures: bind to materials",
-			Time.get_ticks_msec() - _tb)
+		_ph("textures: bind to materials",
+			Time.get_ticks_msec() - _tb, (d as Dictionary).size(), PH_ENGINE)
 
 
 # Free whatever the placement loop never claimed. A cancelled or finished build
@@ -4234,6 +4776,11 @@ func _add_cell_multimeshes(parent: Node3D, mesh: Mesh, xf: Array, textured: bool
 			var mmi := _build_mmi(msh, gxf, textured, flat_mat)
 			if src != "": mmi.set_meta("src", src)   # refresh: find MMIs by source file
 			parent.add_child(mmi); mmi.owner = null
+			# COUNTED FOR THE YIELD ANALYSIS. A MultiMeshInstance created in a
+			# slice is what the RenderingServer has to flush in the frame that
+			# follows it, so this is the x axis of the fit in _yield_report.
+			_mmi_add("props", 1)
+			_inst_made += int(gxf.size() / 12)
 			if not _cells.has(key): _cells[key] = []
 			_cells[key].append(mmi)
 
@@ -4266,11 +4813,25 @@ func ensure_layer(root: Node, layer: String, tex_mode: int) -> bool:
 		fd.cull_mode = BaseMaterial3D.CULL_DISABLED
 		flat = fd
 
+	# ONE LAYER IS A BUILD TOO. ensure_layer is what a single toggle takes now
+	# (apply() used to tear the whole overlay down for it), so it gets its own
+	# phase table rather than appending to whatever the last full apply left
+	# behind and reporting a wall time measured from minutes ago.
+	#
+	# NOT WHILE SOMETHING IS STILL BUILDING. Switching Water on during a props
+	# build would otherwise wipe the props lane's yield history halfway through
+	# and report the second half as the whole build, which is exactly the kind
+	# of quietly wrong number this table exists to replace.
+	if not _building and _hidden_builds.is_empty():
+		_ph_reset()
 	match layer:
 		"water":
 			if ctx.get_node_or_null("Water") != null:
 				return true                # already there; caller just flips it
+			var _t_w := Time.get_ticks_msec()
 			_add_water_plane(ctx, textured)
+			_ph("water: build the surface", Time.get_ticks_msec() - _t_w, 1,
+				PH_INSTALL)
 			_show_water = true
 			return ctx.get_node_or_null("Water") != null
 		"backdrop":
@@ -4280,7 +4841,10 @@ func ensure_layer(root: Node, layer: String, tex_mode: int) -> bool:
 			bd_root.name = "Backdrop"
 			ctx.add_child(bd_root)
 			bd_root.owner = null
+			var _t_bs := Time.get_ticks_msec()
 			var entries: Array = _sorted_prop_entries(_data.get("backdrop", []))
+			_ph("skyline: sort the queue nearest first",
+				Time.get_ticks_msec() - _t_bs, entries.size(), PH_MEMORY)
 			_bd_total = entries.size()
 			_bd_done = 0
 			_bd_ok = 0
@@ -4301,7 +4865,10 @@ func ensure_layer(root: Node, layer: String, tex_mode: int) -> bool:
 			_props_mat = flat
 			_props_tex_mode = tex_mode
 			_variant_layer_groups = {}
+			var _t_ps := Time.get_ticks_msec()
 			var pe: Array = _sorted_prop_entries(_data.get("props", []))
+			_ph("props: sort the queue nearest first",
+				Time.get_ticks_msec() - _t_ps, pe.size(), PH_MEMORY)
 			_build_total = pe.size()
 			_build_done = 0
 			_build_props = 0
