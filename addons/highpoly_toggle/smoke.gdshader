@@ -51,6 +51,13 @@ uniform float gain : hint_range(0.0, 4.0) = 1.0;
 uniform float noise_scale = 0.35;
 // Only used when the record binds no soft-edge mask of its own.
 uniform float edge_fade : hint_range(0.0, 0.5) = 0.12;
+// THE SHEET IS NOT ALWAYS COLOUR. The vertical plume's
+// t_bd_smokeplume_05_rising_unpremult packs DIRECTIONAL LIGHTING in RGB - three
+// near-identical greyscale plumes, channel correlations RG 0.92, RB 0.94, GB
+// 0.97 - so drawing it as albedo gives a rainbow column. The usable value is
+// the channel average, exactly as with the six-way flipbooks. Set from a
+// measurement of the sheet, not from its name.
+uniform bool lighting_packed = false;
 
 void fragment() {
 	vec2 uv = UV;
@@ -65,16 +72,18 @@ void fragment() {
 	}
 	uv += scroll_a * TIME;
 	vec4 s = texture(smoke_tex, uv);
+	// one scalar, not three: averaging per channel would leave a colour
+	vec3 base = lighting_packed ? vec3((s.r + s.g + s.b) / 3.0) : s.rgb;
 
 	if (has_ramp) {
 		// BLACKBODY: a temperature-to-colour strip, which is what gives a
 		// vertical column a lit base instead of a uniform warm grey. Indexed by
 		// the sheet's own luminance - that mapping is OURS; the strip is the
 		// level's.
-		float temp = clamp(dot(s.rgb, vec3(0.299, 0.587, 0.114)), 0.0, 1.0);
+		float temp = clamp(dot(base, vec3(0.299, 0.587, 0.114)), 0.0, 1.0);
 		ALBEDO = texture(ramp_tex, vec2(temp, 0.5)).rgb * tint * gain;
 	} else {
-		ALBEDO = s.rgb * tint;
+		ALBEDO = base * tint;
 	}
 
 	float cover = s.a;

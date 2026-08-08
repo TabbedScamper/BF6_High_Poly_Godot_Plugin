@@ -146,6 +146,11 @@ static func _match_key(node: Node, ks: Dictionary) -> String:
 			return ""
 		var base := sfp.get_file().get_basename()
 		if ks.has(base): return base
+		# The spawner proxies answer for themselves. known() is a scan of
+		# res://objects/*.tscn and these two are in it, but making the soldier
+		# depend on that scan having run adds a failure mode with no upside:
+		# the key is fixed and we know it.
+		if HighpolySoldier.faction_for(base) != "": return base
 		# AN INSTANCE ANSWERS FOR ITSELF, AND IS NEVER GUESSED AT BY ITS NAME.
 		#
 		# This used to fall through to the node-name rules below when the scene's

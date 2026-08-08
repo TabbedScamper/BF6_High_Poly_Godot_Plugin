@@ -95,6 +95,10 @@ static func build(gs, faction: String) -> Node3D:
 		built += 1
 
 	if built == 0:
+		# SAY SO. A spawner that silently keeps its placeholder is
+		# indistinguishable from a spawner the plugin never looked at, and that
+		# ambiguity cost a round trip once already.
+		push_warning("[highpoly] soldier %s: no part of %s could be built" % [faction, cha])
 		root.queue_free()
 		return null
 	return root

@@ -4975,6 +4975,42 @@ func _vec2_const(consts: Dictionary, hash_id: int, fallback: Vector2) -> Vector2
 		(raw as PackedByteArray).decode_float(4))
 
 
+# Mean saturation over the sheet, on a 32x32 reduction. Real smoke albedo is
+# near-neutral; a directional-lighting pack is not.
+var _litpack_cache := {}
+
+func _is_lighting_packed(tex) -> bool:
+	if tex == null:
+		return false
+	var id: int = tex.get_instance_id()
+	if _litpack_cache.has(id):
+		return _litpack_cache[id]
+	var img: Image = tex.get_image()
+	if img == null:
+		_litpack_cache[id] = false
+		return false
+	var s2 := (img.duplicate() as Image)
+	if s2.is_compressed():
+		s2.decompress()
+	s2.resize(32, 32, Image.INTERPOLATE_BILINEAR)
+	var tot := 0.0
+	var n := 0
+	for y in range(32):
+		for x in range(32):
+			var c := s2.get_pixel(x, y)
+			if c.a < 0.05:
+				continue
+			var mx := maxf(c.r, maxf(c.g, c.b))
+			var mn := minf(c.r, minf(c.g, c.b))
+			if mx > 0.02:
+				tot += (mx - mn) / mx
+				n += 1
+	var sat := tot / maxf(float(n), 1.0)
+	var packed := n > 0 and sat > 0.10
+	_litpack_cache[id] = packed
+	return packed
+
+
 func _smoke_of(slots: Dictionary, consts: Dictionary):
 	if not slots.has("smoke_ca"):
 		return null
@@ -4992,6 +5028,12 @@ func _smoke_of(slots: Dictionary, consts: Dictionary):
 	var m := ShaderMaterial.new()
 	m.shader = _smoke_shader
 	m.set_shader_parameter("smoke_tex", sheet)
+	# IS THIS SHEET COLOUR, OR IS IT LIGHTING? The horizontal family binds a
+	# real colour+alpha sheet; the vertical one binds directional lighting
+	# packed across RGB, and drawing that as albedo gives a rainbow column.
+	# Measured rather than guessed from the filename: a lighting-packed sheet
+	# carries chroma a smoke sheet has no reason to have.
+	m.set_shader_parameter("lighting_packed", _is_lighting_packed(sheet))
 	# EITHER NOISE. The horizontal family binds t_tilingnoise_01_rgbm and the
 	# vertical one t_tilingnoises_curly_01_d, in different slots; both are the
 	# same job.
