@@ -4721,6 +4721,22 @@ func _decal_gloss(consts: Dictionary) -> float:
 func _decal_of(slots: Dictionary, consts: Dictionary = {}):
 	if not (slots.has("decal_ca") or slots.has("decal_nrm")):
 		return null
+	# THE DECAL FAMILY IS EXCLUSIVE, and getting this wrong hijacked ordinary
+	# props. An ELECTRICAL BOX binds decal_ca for the warning stickers printed on
+	# it, ALONGSIDE its real basecolor t_metalpaintedwhite_02_cs and its
+	# normal_vt. Treating "binds a decal slot" as "is a decal" drew the sticker
+	# sheet over the whole box, which is exactly what the user reported: the base
+	# right, the top wrapped in warning stickers.
+	#
+	# A real decal binds the decal family and NOTHING ELSE that says "surface":
+	# a puddle has no basecolor and no normal, which is the whole reason it needs
+	# this path. A prop that has either of those is a prop, and the ordinary path
+	# below already knows what to do with it - including ignoring a sticker slot
+	# it has no way to project, which is a missing detail rather than a wrong
+	# material.
+	if slots.has("basecolor") or slots.has("basecolor_veg") \
+			or slots.has("normal") or slots.has("normal_vt"):
+		return null
 	# THE NORMAL SHEET IS LOADED AS A COLOUR TEXTURE, DELIBERATELY.
 	#
 	# is_normal makes _texture_for compress with COMPRESS_SOURCE_NORMAL, which
