@@ -1163,7 +1163,27 @@ static func refresh_prop_lights() -> void:
 		var lt := row[1] as Node3D
 		if not prop.is_inside_tree() or not lt.is_inside_tree():
 			continue
-		lt.global_transform = prop.global_transform * (row[2] as Transform3D)
+		# ONLY MOVE A FIXTURE WHOSE PROP MOVED.
+		#
+		# This runs on the 0.5 s heartbeat over every tracked fixture, and a
+		# user's profile put it at 3.0 ms a tick across 1,880 of them - 6 ms a
+		# second, forever, while they were standing still doing nothing. Props
+		# do not move unless somebody drags one, so nearly all of that was
+		# rewriting transforms to the values they already had. Each write
+		# dirties the light and notifies the RenderingServer, which is the part
+		# that costs.
+		#
+		# Reading global_transform is cheap when nothing upstream is dirty
+		# (Godot caches it); the write is what is worth avoiding.
+		var now := prop.global_transform
+		if row.size() > 3 and (row[3] as Transform3D).is_equal_approx(now):
+			alive.append(row)
+			continue
+		lt.global_transform = now * (row[2] as Transform3D)
+		if row.size() > 3:
+			row[3] = now
+		else:
+			row.append(now)
 		alive.append(row)
 	_prop_tracked = alive
 
@@ -1194,7 +1214,10 @@ static func attach_prop_lights(prop: Node3D, recs: Array) -> int:
 		lt.name = "%s%d_%d" % [PROP_LIGHT_NAME, prop.get_instance_id(), n]
 		lt.owner = null                 # editor-only, never saved into the scene
 		lt.global_transform = prop.global_transform * local
-		_prop_tracked.append([prop, lt, local])
+		# [prop, light, local offset, LAST APPLIED prop transform]. The fourth
+		# entry lets refresh_prop_lights skip a fixture whose prop has not
+		# moved; see the note there.
+		_prop_tracked.append([prop, lt, local, prop.global_transform])
 		n += 1
 	return n
 

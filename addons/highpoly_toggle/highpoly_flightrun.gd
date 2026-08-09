@@ -403,6 +403,24 @@ static func run(host: Node, dock: Node, mapctx: Node) -> bool:
 	# This existed and was never enabled by any run, so five runs were spent
 	# inferring per-frame costs from the SHAPE of frame times while the
 	# instrument that names them sat switched off.
+	# THE PANEL'S BACKDROP VIDEO, optionally stopped for the run.
+	#
+	# waves.ogv is 480x800 at 24 fps and loops for as long as the panel is open,
+	# so the editor decodes 24 Theora frames a second on the main thread for a
+	# backdrop drawn at 28% brightness behind the UI. Worse for a stutter hunt,
+	# video codecs decode keyframes far more expensively than the frames between
+	# them and keyframes recur on a fixed interval - a rhythmic hitch by
+	# construction. HighpolyProfile cannot see any of it: the decode is engine
+	# C++, not a bucket we instrumented.
+	#
+	# So it gets an A/B rather than an assertion.
+	if not bool(_cfg.get("panel_video", true)) and dock != null \
+			and "video" in dock and dock.video != null:
+		dock.video.paused = true
+		_rep["panel_video"] = "paused for this run"
+	else:
+		_rep["panel_video"] = "playing"
+
 	HighpolyProfile.reset()
 	HighpolyProfile.set_enabled(true)
 

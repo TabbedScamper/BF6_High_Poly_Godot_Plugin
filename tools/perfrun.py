@@ -545,6 +545,8 @@ def build_session(a, run_dir):
         session["fx"] = bool(a.fx)
         if a.no_shadows:
             session["shadows"] = False
+    if a.no_panel_video:
+        session["panel_video"] = False
     return session
 
 
@@ -854,6 +856,14 @@ def main():
     # caster whether or not shadow-distance culling actually renders it (43,075
     # estimated against 18,766 measured). Running the identical worst case with
     # and without shadows turns that upper bound into a measured share.
+    # The panel's looping backdrop video decodes 24 Theora frames a second on
+    # the main thread for as long as the panel is open, and keyframes cost far
+    # more than the frames between them. The frame profiler cannot see any of
+    # it, because the decode is engine C++ rather than GDScript we instrumented.
+    ap.add_argument("--no-panel-video", action="store_true",
+                    help="pause the panel's backdrop video for the run, to "
+                         "measure what it costs. Diagnostic: a result from "
+                         "this is not a target result")
     ap.add_argument("--no-shadows", action="store_true",
                     help="worst case but with sun shadows off, to measure what "
                          "the shadow passes actually cost. Diagnostic only: a "

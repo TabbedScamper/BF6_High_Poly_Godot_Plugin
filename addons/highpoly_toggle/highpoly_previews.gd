@@ -126,11 +126,15 @@ func clear_cache() -> void:
 	_cache.clear()
 	_pending.clear()
 	_queue.clear()
+	# The written-off set goes too: whatever changed on disk is exactly the
+	# thing that could give a source to an item that had none.
+	_nosrc.clear()
 
 # a specific model was re-downloaded: just its thumb goes stale
 func invalidate(nm: String) -> void:
 	_cache.erase(nm)
 	_pending.erase(nm)
+	_nosrc.erase(nm)
 
 # SUSPECT IN THE 2-SECOND STALL. Fitting frame time against draw calls on a
 # worst-case flight leaves 48 residual outliers of 70-145 ms that rendering does
@@ -155,6 +159,11 @@ func _find_lists() -> Array:
 var _lists_cache: Array = []
 var _lists_found_at := 0
 
+# Keys the install has no drawable source for. Without this they are re-statted
+# from disk on every 2 s tick for the whole session; see the note where it is
+# filled. Cleared wherever a source could newly appear.
+var _nosrc: Dictionary = {}
+
 # How long to wait before searching again when the last search found NOTHING.
 # A hit is validated cheaply and reused indefinitely, but a miss has nothing to
 # validate, so it needs a clock or a closed Object Library would put the full
@@ -168,7 +177,11 @@ func _find_lists_body() -> Array:
 	if not _lists_cache.is_empty():
 		var ok := true
 		for il in _lists_cache:
-			if not is_instance_valid(il) or il.item_count == 0:
+			# Visibility is part of what makes the cached answer still correct:
+			# a dock the user collapsed or tabbed away must drop out, or its
+			# icons keep getting repainted where nobody can see them.
+			if not is_instance_valid(il) or il.item_count == 0 \
+					or not il.is_visible_in_tree():
 				ok = false
 				break
 		if ok:
@@ -183,6 +196,13 @@ func _find_lists_body() -> Array:
 	var out: Array = []
 	for il in get_tree().root.find_children("*", "ItemList", true, false):
 		if il.item_count == 0:
+			continue
+		# A LIST NOBODY CAN SEE DOES NOT NEED ITS ICONS REPAINTED. The Object
+		# Library is an SDK dock, so it can be collapsed, tabbed behind another
+		# dock, or closed entirely while this plugin carries on repainting it
+		# every 2 s. A user's profile put this pass at 8.4 ms a tick, which is
+		# most of a periodic hitch they could feel while doing nothing at all.
+		if not il.is_visible_in_tree():
 			continue
 		# folder rows (FX/SFX) sit first, so scan a few items for a real asset
 		for i in range(mini(il.item_count, 6)):
@@ -267,7 +287,24 @@ func _refresh_body() -> void:
 			# picture was already made and needed no source at all. An item in
 			# the cache is drawable by definition: its thumbnail was rendered
 			# from that source in the first place.
-			if not _cache.has(key) and _source_for(key) == "": continue
+			# ITEMS WITH NO SOURCE ARE REMEMBERED, or they are re-statted from
+			# disk for the rest of the session.
+			#
+			# An item the install cannot draw takes neither branch below: it is
+			# never cached (no picture) and never queued (nothing to render), so
+			# the next tick asks again, and the next. A user's profile shows
+			# 1,988 _source_for calls across 28 ticks - 71 items re-checked
+			# every 2 s forever, 2.4 ms a tick, permanently. It is the single
+			# clearest piece of pure waste in this file.
+			#
+			# _nosrc is cleared by clear_cache() and invalidate(), which are the
+			# two moments a source can appear, so nothing stays written off
+			# after the thing it was waiting for arrives.
+			if not _cache.has(key):
+				if _nosrc.has(key): continue
+				if _source_for(key) == "":
+					_nosrc[key] = true
+					continue
 			if _cache.has(key):
 				var cur: Texture2D = il.get_item_icon(i)
 				if cur != _cache[key]:
