@@ -535,7 +535,7 @@ static func run(host: Node, dock: Node, mapctx: Node) -> bool:
 					Viewport.RENDER_INFO_DRAW_CALLS_IN_FRAME)
 			var mapname := str(_cfg["map"])
 			_rep["hlod_install"] = HighpolyHlod.bake_and_install(
-				mapctx._cells, 3, 1.0, "user://mapcontext/%s" % mapname,
+				mapctx._cells, 12, 1.0, "user://mapcontext/%s" % mapname,
 				mapctx.hlod_cells)
 			for _w2 in range(4):
 				await tree.process_frame
