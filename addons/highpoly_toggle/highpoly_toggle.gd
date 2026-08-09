@@ -1553,6 +1553,14 @@ All of it is read from your own Battlefield 6 installation."
 		# The icons are rendered from the same prop meshes the build just wrote,
 		# so this is the moment they can stop being the SDK blockout.
 		if previews: previews.rescan_context()
+		# AND THE VARIANT ROW, which could not have been filled before now.
+		#
+		# It lists the layers the map's own placements carry, and it was only
+		# ever refreshed on the objects TOGGLE - which fires before the build,
+		# when the map data is still empty. So it found no layers, hid itself,
+		# and nothing ever asked again: the dropdown never appeared even once
+		# the props were on screen and their layers were known.
+		_variant_row_update(mapctx_objects != null and mapctx_objects.button_pressed)
 		_swap_placed_after_build())
 	# the map build gets its own bar
 	mapctx.job_queue = jobs        # map-context downloads take their turn
