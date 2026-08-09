@@ -29,6 +29,13 @@ var _active := false               # Map Context enabled at all
 var _show_objects := false         # original map objects (props) layer on
 var _show_backdrop := false        # distant skyline / out-of-bounds vista layer on
 var _show_water := false           # rivers / sea layer on
+# Set by the dock from its own toggles, because the light and FX layers are
+# switched independently of apply() and this object cannot see those buttons.
+# Default TRUE so a caller that never sets them gets exactly the old behaviour:
+# skipping work is opt-in, and a layer that quietly had no data would be a much
+# worse bug than mining data nobody asked for.
+var want_lights := true
+var want_fx := true
 var _bd_total := 0                 # skyline build: entries queued
 var _bd_done := 0                  # skyline build: entries processed
 var _bd_ok := 0                    # skyline build: entries that produced a mesh
@@ -1348,6 +1355,24 @@ func _terrain_shader_mat(map: String) -> ShaderMaterial:
 var game_source = null
 
 
+# Mine one optional map_data section NOW, for a layer that is being switched on
+# after a build chose not to build it.
+#
+# THIS IS WHAT MAKES SKIPPING SAFE. The light and FX layers read the files
+# map_data writes, and they read them directly rather than through map_data - so
+# without this a skipped section would mean a layer that switches on, finds
+# nothing and shows nothing, which is far worse than mining data nobody asked
+# for. Returns whether the section is present afterwards.
+func ensure_section(name: String) -> bool:
+	if game_source == null or _map == "":
+		return false
+	var want := {}
+	want[name] = true
+	var d: Dictionary = game_source.map_data("%s/%s" % [CACHE, _map], want)
+	_data = d
+	return d.has(name)
+
+
 func _load_data(map: String) -> bool:
 	# The game source carries its own placements, in this exact shape, so the
 	# whole build path below is unchanged — see highpoly_gamesource.map_data().
@@ -1357,7 +1382,13 @@ func _load_data(map: String) -> bool:
 		# That is a file derived from the player's own game, not a download.
 		# The drape must sample the same lattice this context meshes the
 		# terrain on, or the roads sit on a surface nobody draws.
-		_data = game_source.map_data("%s/%s" % [CACHE, map])
+		# ONLY WHAT THE LAYERS THAT ARE ON NEED. Mining lights, FX and water for
+		# an apply that draws none of them was 64 s of a 74 s terrain-only apply
+		# in a user's log. Anything skipped is mined the moment its layer is
+		# switched on, so this costs nothing later.
+		_data = game_source.map_data("%s/%s" % [CACHE, map], {
+			"lights": want_lights, "fx": want_fx, "water": _show_water,
+		})
 		# AFTER map_data, not before: the stride is derived from the terrain
 		# metadata, and map_data is what produces it. Setting drape_step from a
 		# stale stride put the roads on a lattice the terrain was not meshed on.

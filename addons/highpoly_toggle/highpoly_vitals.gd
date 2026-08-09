@@ -312,6 +312,12 @@ static func report() -> String:
 			if not bool(cs.get("evicts", false)):
 				out.append("  These do not evict. They are released when you switch")
 				out.append("  maps, or when every layer is switched off.")
+	else:
+		# THIS ELSE BELONGS TO THE PROBE, and it had drifted onto the pool check
+		# below - so a report with a full cache table ended with "cache figures
+		# unavailable" directly underneath it, which is a straight
+		# self-contradiction in the one document people send us when confused.
+		out.append("  Cache figures unavailable: the dock did not register a probe.")
 	# THE SHARED TEXTURE POOLS, which the line above knows nothing about.
 	#
 	# These are static and live in a different file, so every memory report we
@@ -333,8 +339,6 @@ static func report() -> String:
 			out.append("  A non-zero image count after a build has finished means")
 			out.append("  the CPU copies were never dropped. They are only needed")
 			out.append("  while uploading.")
-	else:
-		out.append("  Cache figures unavailable: the dock did not register a probe.")
 
 	# --- stalls -------------------------------------------------------------
 	out.append("")

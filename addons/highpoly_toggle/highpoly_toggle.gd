@@ -913,6 +913,11 @@ All of it is read from your own Battlefield 6 installation."
 	mapctx_fx.toggled.connect(func(v: bool):
 		if _locked(mapctx_fx): return
 		var _r := EditorInterface.get_edited_scene_root()
+		# Same as the map lights: the build skips mining FX emitters when this
+		# layer is off, so switching it on is where they get mined.
+		if v and mapctx != null:
+			mapctx.want_fx = true
+			mapctx.ensure_section("fx")
 		# the level's flipbook cards are drawn as props, so they follow this
 		# switch too rather than arriving unbidden with the map objects
 		mapctx.set_fx_cards_shown(_r, v)
@@ -997,6 +1002,13 @@ All of it is read from your own Battlefield 6 installation."
 	mapctx_maplights.tooltip_text = "The street lights, signs and indoor lights the real level has, several thousand of them on some maps. Only the ones near your camera light up. Costs frame rate."
 	mapctx_maplights.toggled.connect(func(v: bool):
 		var _r := EditorInterface.get_edited_scene_root()
+		# The build only mines the light entities when this layer is on, so
+		# switching it on is the moment to make sure they exist. set_map_lights
+		# reads the file map_data writes and never asks map_data for it, so
+		# without this the layer would come on to nothing.
+		if v and mapctx != null:
+			mapctx.want_lights = true
+			mapctx.ensure_section("lights")
 		lbl.text = await LightingScript.set_map_lights(_r,
 				v and mapctx_light.button_pressed, mapctx.map_of(_r),
 				_lane(LIGHTS_JOB))
@@ -3179,7 +3191,20 @@ func _mapctx_rebuild() -> void:
 	if not mapctx_on.button_pressed: return
 	var r := EditorInterface.get_edited_scene_root()
 	if mapctx.map_of(r) == "": return
+	# Which optional map data to mine. The light and FX layers have their own
+	# buttons and apply() never saw them, so every apply mined 3,874 light
+	# entities and 701 FX emitters whether or not anything would draw them.
+	_mapctx_sync_wants()
 	lbl.text = mapctx.apply(r, true, mapctx_objects.button_pressed, _mapctx_tex_mode(), mapctx_backdrop != null and mapctx_backdrop.button_pressed, mapctx_water != null and mapctx_water.button_pressed)
+
+
+# The dock owns these two buttons; the map context cannot see them. Kept in one
+# place so a new caller cannot forget half of it.
+func _mapctx_sync_wants() -> void:
+	if mapctx == null:
+		return
+	mapctx.want_lights = mapctx_maplights != null and mapctx_maplights.button_pressed
+	mapctx.want_fx = mapctx_fx != null and mapctx_fx.button_pressed
 
 # "Game lighting": inject/remove the real map sun+sky+fog (highpoly_lighting.gd).
 # Independent of the Map Context download (no map data needed — compiled-in table).

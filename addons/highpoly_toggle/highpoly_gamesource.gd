@@ -849,6 +849,10 @@ func open_async(host: Node, map: String, game_dir := "",
 # is a different answer rather than the same one.
 var _map_data := {}
 var _map_data_key := "￿"          # not "" — that is a legitimate key
+# Which OPTIONAL sections of map_data have been mined so far. Not part of the
+# cache key: sections are added as their layers are switched on, so this records
+# progress rather than identity.
+var _md_built := {}
 
 
 # EVERYTHING map_data DERIVED, dropped so the next ask is computed by the code
@@ -907,16 +911,84 @@ func map_data_ready(cache_dir := "") -> bool:
 	return _map_data_key == cache_dir and not _map_data.is_empty()
 
 
-func map_data(cache_dir := "") -> Dictionary:
+# BUILD ONLY WHAT THE LAYERS THAT ARE ON ACTUALLY NEED.
+#
+# This used to build all of it, every time, whatever was switched on. A user's
+# log records an apply with terrain=true objects=false backdrop=false
+# water=false which then went on to mine 3,874 lights, 701 FX emitters, an ocean
+# simulation and 49 scatter kits - none of which anything was going to draw. It
+# is 64 s of a 74 s terrain-only apply, on the main thread, and it is the "why
+# is it extracting things I did not ask for" that people keep reporting.
+#
+# `want` names the OPTIONAL sections: lights, fx, water. Absent or empty means
+# build everything, so every existing caller behaves exactly as before. The
+# ground, the roads and the group placements are always built: a terrain apply
+# genuinely needs them, and they are what the props and skyline lanes key off.
+#
+# Sections are added LAZILY. Switching the light layer on later asks again with
+# lights wanted, and only the missing section is built - so nothing is lost by
+# not building it up front, which is what makes this safe to skip rather than
+# merely cheaper.
+const MD_OPTIONAL := ["lights", "fx", "water"]
+
+func map_data(cache_dir := "", want := {}) -> Dictionary:
+	var need := _md_need(want)
 	if _map_data_key == cache_dir and not _map_data.is_empty():
+		var missing := {}
+		for k in MD_OPTIONAL:
+			if bool(need.get(k, true)) and not _md_built.has(k):
+				missing[k] = true
+		if missing.is_empty():
+			return _map_data
+		_md_fill(cache_dir, missing, _map_data)
 		return _map_data
-	var out := _build_map_data(cache_dir)
+	var out := _build_map_data(cache_dir, need)
 	_map_data = out
 	_map_data_key = cache_dir
 	return out
 
 
-func _build_map_data(cache_dir: String) -> Dictionary:
+func _md_need(want: Dictionary) -> Dictionary:
+	if want.is_empty():
+		return {"lights": true, "fx": true, "water": true}
+	var d := {}
+	for k in MD_OPTIONAL:
+		d[k] = bool(want.get(k, false))
+	return d
+
+
+# Build the optional sections named in `need` into `out`. Used both by the first
+# build and by a later ask that turns a layer on.
+func _md_fill(cache_dir: String, need: Dictionary, out: Dictionary) -> void:
+	if cache_dir != "" and bool(need.get("lights", false)) \
+			and not _md_built.has("lights"):
+		var t := Time.get_ticks_msec()
+		# Written as the files the light layer reads, rather than handed over in
+		# memory: the layer is toggled long after the build, from the dock.
+		out["lights"] = lights(cache_dir)
+		_md_built["lights"] = true
+		note_phase("lights", Time.get_ticks_msec() - t, int(out["lights"]),
+			"fixtures", FROM_MEMORY, "from the walk's light entities")
+	if cache_dir != "" and bool(need.get("fx", false)) and not _md_built.has("fx"):
+		var t := Time.get_ticks_msec()
+		out["fx"] = fx(cache_dir)
+		_md_built["fx"] = true
+		note_phase("fx points", Time.get_ticks_msec() - t, int(out["fx"]),
+			"emitters", FROM_INSTALL, "emitter graph read per distinct effect")
+	if bool(need.get("water", false)) and not _md_built.has("water"):
+		var t_w := Time.get_ticks_msec()
+		var w := water()
+		if not w.is_empty():
+			out["water"] = w
+		_md_built["water"] = true
+		note_phase("water", Time.get_ticks_msec() - t_w, w.size(), "bodies",
+			FROM_INSTALL, "the level's water partition")
+	if phases.has("lights") and phases.has("fx points"):
+		timings["lights + fx"] = int(phases["lights"]["ms"]) \
+			+ int(phases["fx points"]["ms"])
+
+
+func _build_map_data(cache_dir: String, need := {}) -> Dictionary:
 	var t_group := Time.get_ticks_msec()
 	var by_mesh := {}
 	var by_bd := {}
@@ -1079,26 +1151,29 @@ func _build_map_data(cache_dir: String) -> Dictionary:
 		note_phase("roads", Time.get_ticks_msec() - t,
 			0 if rd == null else rd.get_surface_count(), "surfaces",
 			FROM_INSTALL, "TerrainDecals, draped on the heightfield")
-		t = Time.get_ticks_msec()
-		# Written as the files the light and FX layers already read, rather than
-		# handed over in memory. Those two layers are toggled long after the build,
-		# from the dock, on demand, so the data has to outlive this call, and a
-		# file in the map's own cache is what the rest of the plugin means by that.
-		out["lights"] = lights(cache_dir)
-		note_phase("lights", Time.get_ticks_msec() - t, int(out["lights"]),
-			"fixtures", FROM_MEMORY, "from the walk's light entities")
-		t = Time.get_ticks_msec()
-		out["fx"] = fx(cache_dir)
-		note_phase("fx points", Time.get_ticks_msec() - t, int(out["fx"]),
-			"emitters", FROM_INSTALL, "emitter graph read per distinct effect")
-		timings["lights + fx"] = int(phases["lights"]["ms"]) \
-			+ int(phases["fx points"]["ms"])
-	var t_w := Time.get_ticks_msec()
-	var w := water()
-	if not w.is_empty():
-		out["water"] = w
-	note_phase("water", Time.get_ticks_msec() - t_w, w.size(), "bodies",
-		FROM_INSTALL, "the level's water partition")
+	# GIVE THE HEIGHTFIELD BACK. It exists for one reason: _height_at(), which is
+	# read by exactly one caller, the road drape just above. After that it is
+	# dead weight held for the rest of the session - and it is not small. A
+	# user's log records a 16385 x 16385 field, which at u16 is 537 MB resident
+	# for nothing. The metadata stays (it is a few floats and cheap to keep);
+	# only the samples go.
+	if not _hm.is_empty() and _hm.has("data"):
+		var _hm_mb := float((_hm["data"] as PackedByteArray).size()) / 1048576.0
+		_hm["data"] = PackedByteArray()
+		if _hm_mb >= 1.0:
+			_say("game source: released the %.0f MB heightfield; the roads are "
+				% _hm_mb + "draped and nothing else reads it")
+	# The optional sections, only the ones asked for. Anything skipped here is
+	# built on demand the moment its layer is switched on: see map_data().
+	_md_fill(cache_dir, need, out)
+	var skipped := PackedStringArray()
+	for k in MD_OPTIONAL:
+		if not _md_built.has(k):
+			skipped.append(str(k))
+	if not skipped.is_empty():
+		_say("game source: skipped %s - the layer(s) are off. They are mined the "
+			% ", ".join(skipped)
+			+ "moment you switch one on, so nothing is lost by not doing it now.")
 	return out
 
 
@@ -6124,7 +6199,14 @@ func _texture_for(file_guid, is_normal := false, cap := -1):
 		img.get_format(), str(got.get("chunk", "?")),
 		" mip" if img.has_mipmaps() else ""]
 	tex_dims[key] = int(tex_dims.get(key, 0)) + 1
-	tex_stats["bytes"] = int(tex_stats.get("bytes", 0)) + img.get_data().size()
+	# get_data() RETURNED A COPY of every texture, once each, purely to read its
+	# length: 3,701 textures on a real map, so 4.1 GB allocated and thrown away
+	# to count 4.1 GB. Same defect as the readback in cache_stats, in a place
+	# that reads as harmless arithmetic. The size is a function of dimensions and
+	# format, so compute it.
+	tex_stats["bytes"] = int(tex_stats.get("bytes", 0)) \
+		+ HighpolyBcTex.img_bytes(img.get_width(), img.get_height(),
+			int(img.get_format()))
 	if not img.is_compressed() and img.get_width() >= 4 and img.get_height() >= 4:
 		img.compress(Image.COMPRESS_S3TC,
 			Image.COMPRESS_SOURCE_NORMAL if is_normal

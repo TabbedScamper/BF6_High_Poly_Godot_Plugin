@@ -128,7 +128,7 @@ static func release_all() -> void:
 # would allocate a second copy of every one of them - which is the failure this
 # measurement exists to find. Block-compressed sizes are exact; anything else
 # falls back to 4 bytes per pixel, which over-reports rather than flatters.
-static func _img_bytes(w: int, h: int, fmt: int) -> int:
+static func img_bytes(w: int, h: int, fmt: int) -> int:
 	var px := maxi(1, w) * maxi(1, h)
 	match fmt:
 		Image.FORMAT_DXT1, Image.FORMAT_RGTC_R:
@@ -158,11 +158,11 @@ static func _img_bytes(w: int, h: int, fmt: int) -> int:
 # anyone whether that is a rounding error or several gigabytes.
 static func pool_stats() -> Dictionary:
 	_pool_mx.lock()
-	var img_bytes := 0
+	var cpu_bytes := 0
 	for k in _pool.keys():
 		var im = _pool[k]
 		if im is Image:
-			img_bytes += _img_bytes((im as Image).get_width(),
+			cpu_bytes += img_bytes((im as Image).get_width(),
 				(im as Image).get_height(), int((im as Image).get_format()))
 	var tex_bytes := 0
 	for k in _tex_pool.keys():
@@ -173,7 +173,7 @@ static func pool_stats() -> Dictionary:
 			tex_bytes += (tx as Texture2D).get_width() \
 				* (tx as Texture2D).get_height() * 4
 	var d := {"images": _pool.size(), "textures": _tex_pool.size(),
-		"image_mb": snappedf(img_bytes / 1048576.0, 0.1),
+		"image_mb": snappedf(cpu_bytes / 1048576.0, 0.1),
 		"texture_mb_est": snappedf(tex_bytes / 1048576.0, 0.1),
 		"hits": _pool_hits, "misses": _pool_misses}
 	_pool_mx.unlock()
