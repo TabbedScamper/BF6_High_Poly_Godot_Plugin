@@ -23,6 +23,27 @@ class_name HighpolyHlod
 # 6 M - and this is paid ONCE per map into the same on-disk cache the geometry
 # already uses, not on every build.
 #
+# DO NOT THREAD THIS. Cells are independent and one task per cell looks like
+# free parallelism, so it will occur to whoever reads this next. It was tried,
+# properly: only the ARITHMETIC on the worker, each task reading surface arrays
+# and instance transforms and returning raw PackedArrays, with the ArrayMesh
+# built on the main thread afterwards so resource CREATION never left it.
+#
+# The editor froze. The log's last line was "perfrun: phase hlod threaded", the
+# heartbeat stopped at that phase and no report was written -
+# WorkerThreadPool.wait_for_task_completion blocks the main thread and the tasks
+# never finish. That test ran inside the REAL editor on a real map; two earlier
+# attempts hung headless under --script inside SceneTree._init, which proved
+# nothing either way because that context has no main loop, and I wrongly wrote
+# one of them up as fact.
+#
+# The bake is therefore serial: 66 s for the 3 heaviest cells, 7.7 s for the
+# next 9, cached to disk so a re-run costs nothing. Whether that needs to be
+# faster is a real question and not an obvious yes - it is paid once per map,
+# against a build that already costs 125 s here and 289 s on a user's machine.
+# If it does, native is the route: native/build.bat already compiles one
+# translation unit against gdextension_interface.h and MSVC is present.
+#
 # WHAT THIS FILE IS NOT, yet: the colour handling is a placeholder. Merging
 # props that use 3,850 different materials into one surface needs their albedo
 # baked into vertex colours, and this prototype writes a per-material constant
