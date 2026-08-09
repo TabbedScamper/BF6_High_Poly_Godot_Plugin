@@ -96,15 +96,30 @@ func load(src, level: String, pidx: Dictionary) -> bool:
 	var link_of: Array = []
 	if lc_name != "":
 		var lc: PackedByteArray = src.get_res(lc_name)
-		# The table is located by its own invariant — it must end exactly at EOF
-		# — rather than by measuring the variable-length string region.
-		for off in range(0, maxi(0, lc.size() - 12)):
-			var n := int(lc.decode_u32(off + 8))
-			if n > 0 and n < 512 and off + 12 + n * 5 == lc.size():
-				surface_key = int(lc.decode_u64(off))
-				for i in range(n):
-					link_of.append(int(lc.decode_u32(off + 12 + i * 5 + 1)))
-				break
+		# The table is located by its own invariant - it must end exactly at EOF
+		# - rather than by measuring the variable-length string region.
+		#
+		# SOLVED, NOT SEARCHED. This used to walk every byte of the resource and
+		# break only when the invariant held, which is the same shape as the
+		# offset search below: free when it matches, a full sweep of the buffer
+		# when it does not, on the main thread. It is the one that runs FIRST, so
+		# a install that fails both pays for both.
+		#
+		# The invariant is off + 12 + n * 5 == size, and n is bounded to 1..511.
+		# That makes the offset a FUNCTION of n rather than something to hunt
+		# for: there are at most 511 places the table can possibly start. The old
+		# loop took the smallest matching offset, which is the largest n, so
+		# counting n downwards reproduces its choice exactly.
+		for n in range(511, 0, -1):
+			var off := lc.size() - 12 - n * 5
+			if off < 0:
+				continue
+			if int(lc.decode_u32(off + 8)) != n:
+				continue
+			surface_key = int(lc.decode_u64(off))
+			for i in range(n):
+				link_of.append(int(lc.decode_u32(off + 12 + i * 5 + 1)))
+			break
 
 	# --- §9.1: find the record table by the 100%-resolve rule ----------------
 	var draw: PackedByteArray = src.get_res(depot_name)
