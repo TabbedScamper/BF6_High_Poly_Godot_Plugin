@@ -3163,7 +3163,7 @@ func _apply_mapctx(r: Node, on: bool, objs: bool, tex: int, gen: int) -> void:
 	# time it happens instead of needing a reproduction.
 	Log.info("Map context apply: terrain=%s objects=%s backdrop=%s water=%s tex=%d map=%s"
 		% [str(on), str(objs), str(bd), str(wt), tex, map if map != "" else "<none>"])
-	var _res: String = mapctx.apply(r, on, objs, tex, bd, wt)
+	var _res: String = await _apply_with_placements(r, on, objs, tex, bd, wt)
 	Log.info("Map context apply returned: %s" % (_res if _res != "" else "<empty>"))
 	lbl.text = _res
 
@@ -3242,7 +3242,29 @@ func _mapctx_rebuild() -> void:
 	# buttons and apply() never saw them, so every apply mined 3,874 light
 	# entities and 701 FX emitters whether or not anything would draw them.
 	_mapctx_sync_wants()
-	lbl.text = mapctx.apply(r, true, mapctx_objects.button_pressed, _mapctx_tex_mode(), mapctx_backdrop != null and mapctx_backdrop.button_pressed, mapctx_water != null and mapctx_water.button_pressed)
+	lbl.text = await _apply_with_placements(r, true, mapctx_objects.button_pressed,
+		_mapctx_tex_mode(),
+		mapctx_backdrop != null and mapctx_backdrop.button_pressed,
+		mapctx_water != null and mapctx_water.button_pressed)
+
+
+# THE ONLY WAY THE MAP CONTEXT IS APPLIED, so the placement walk cannot be
+# skipped by a path that forgot to ask for it.
+#
+# The open stopped walking placements when no map layer was on, which is right -
+# Detail Mode does not need the level's contents. But the on-demand walk was
+# wired into ONE of the two callers that build, and the other one applied with
+# an unwalked source: "0 prop groups, 0 skyline groups, 0 placements", and
+# clicking Original map objects brought nothing in.
+#
+# Guarding each caller is what produced that bug, so there is one chokepoint now
+# and both callers go through it. ensure_placements returns immediately when the
+# walk has already run, so this costs nothing on the common path.
+func _apply_with_placements(r: Node, on: bool, objs: bool, tex, bd: bool, wt: bool) -> String:
+	if on and mapctx != null and mapctx.game_source != null \
+			and not mapctx.game_source.placements_ready:
+		await _ensure_placements_async(mapctx.game_source)
+	return mapctx.apply(r, on, objs, tex, bd, wt)
 
 
 # The dock owns these two buttons; the map context cannot see them. Kept in one
