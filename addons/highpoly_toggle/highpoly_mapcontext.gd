@@ -3573,6 +3573,20 @@ func apply(root: Node, enabled: bool, show_objects: bool, tex = true,
 		else:
 			objs = ", %d object meshes" % _build_props
 	_last_status = "%s: terrain %s%s%s%s%s" % [map, tex, surr, objs, sct, mt]
+	# A BUILD WITH NO LANES STILL HAS TO REPORT.
+	#
+	# The phase table is printed by whichever of the props or skyline lanes
+	# finishes last, so an apply that starts NEITHER - terrain on its own, which
+	# is exactly what someone does first - printed nothing at all. A user spent
+	# 15 minutes on a terrain-only build and their log had a four and a half
+	# minute hole where the table should have been, because no lane ever ran to
+	# print it.
+	if not _building and bd_total <= 0:
+		for line in _ph_report("%s terrain only" % map):
+			Log.info(line)
+		if game_source != null and game_source.has_method("build_report"):
+			for line in game_source.build_report():
+				Log.info(str(line))
 	return _last_status
 
 # ---------- non-blocking props build ----------

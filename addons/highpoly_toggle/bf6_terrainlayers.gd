@@ -127,7 +127,20 @@ func load(src, level: String, pidx: Dictionary) -> bool:
 	if record_offset < 0 or resolve_rate < 1.0:
 		# §9.1 makes the 100% requirement the thing that pins the offset. A
 		# partial fit is not a partial answer, it is the wrong offset.
-		error = "record table did not resolve fully (%.1f%%)" % (resolve_rate * 100.0)
+		#
+		# SAY THAT, because the bare percentage reads as "most of it resolved"
+		# and it means the opposite: the palette is unusable and the ground
+		# draws with no layer materials at all. A user reported "textures are
+		# really corrupt" and their log carried this at 5.0% as a passing info
+		# line that nobody read as a failure - including me, at first.
+		#
+		# The usual cause is a game version whose record layout this search
+		# cannot pin, NOT missing files, and those are different fixes.
+		error = ("terrain layer palette UNUSABLE - the record table offset "
+			+ "could not be pinned (best fit %.1f%%, needs 100%%). Usually a "
+			+ "game version whose layout differs from what this reader "
+			+ "expects, rather than missing files. The ground will draw "
+			+ "without its layer materials.") % (resolve_rate * 100.0)
 		return false
 
 	# --- what each layer binds ------------------------------------------------

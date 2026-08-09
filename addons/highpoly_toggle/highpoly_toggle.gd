@@ -3496,6 +3496,15 @@ func _ensure_game_source(map: String, gen: int = -1) -> bool:
 	_gs_opening = true
 	lbl.text = "Reading %s from your Battlefield 6 install." % map
 	var gs = HighpolyGameSource.new()
+	# WIRE THE READER'S OWN LOG, or its whole phase table goes to stdout.
+	#
+	# log_fn was declared and never assigned, so _say() always fell through to
+	# print() - into the editor's Output panel, which nobody thinks to copy, and
+	# NOT into the log people send us. A user reported a 15 minute terrain build
+	# and their saved log was 28 lines with a four and a half minute silent gap
+	# exactly where the answer should have been. The table existed the whole
+	# time; it was going somewhere nobody looks.
+	gs.log_fn = func(s: String) -> void: Log.info(s)
 	gs.surface_cache = "%s/%s" % [HighpolyMapContext.CACHE, map]
 	# Cold is the ~90 s case, and it has to be decided BEFORE the read: the whole
 	# point of saying "this takes a couple of minutes" is saying it first.

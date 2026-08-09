@@ -33,6 +33,13 @@ class_name HighpolyGameSource
 # tested. The plugin passes its logger in; a bare harness passes nothing.
 var log_fn := Callable()
 
+# Which bf6.exe supplied the type layouts, and which others were available.
+# Recorded for the log: SP and MP ship different type databases and the first
+# candidate wins silently, so "which one" is a real question a support log has
+# to answer rather than something to guess at afterwards.
+var _exe_used := ""
+var _exe_others: Array = []
+
 
 func _say(s: String) -> void:
 	if not log_fn.is_valid():
@@ -242,6 +249,80 @@ func _ph_forward(name: String, ms: float) -> void:
 
 # The table, as lines. Printed by open_map so it exists in the session log even
 # when the profiler is not recording, which is most of the time.
+# WHAT THIS INSTALL ACTUALLY CONTAINS, as five numbers that can be compared
+# against a working machine at a glance.
+#
+# This exists because a user's terrain rendered with 95% of its layer materials
+# missing, their bus and rubble drew white, and several props got no overlay at
+# all - and every one of those reported the same thing, "depot ok, record NO".
+# The cause was not in the plugin: their install held 9,951 depot scopes against
+# 16,936 here, and 205,348 res against 260,328, while carrying the IDENTICAL
+# 38,226 placements for the map. The map was whole and the library behind it was
+# not. Finding that took diffing two logs by hand; these five lines make it the
+# first thing anyone sees.
+#
+# The reference figures are deliberately included. A number with nothing to
+# compare it to is not a diagnosis, and nobody reading a stranger's log knows
+# what "9,951 depot scopes" is supposed to be.
+const REF_EBX := 450884
+const REF_RES := 260328
+const REF_NAMES := 818517
+const REF_SCOPES := 16936
+
+func install_report() -> PackedStringArray:
+	var out := PackedStringArray()
+	if src == null:
+		return out
+	# Taken from the source itself rather than from a stats dictionary: these
+	# are the same values the mount note prints, so the two can never disagree.
+	var ebx := int(src.ebx.size())
+	var res := int(src.res.size())
+	var names := int(walk.stats.get("catalog", 0)) if walk != null else 0
+	var scopes := int(_depot_bundles.size())
+	if ebx == 0 and res == 0:
+		return out
+	out.append("")
+	out.append("YOUR BATTLEFIELD 6 INSTALL, next to a known-good one")
+	# THE VERSION EVIDENCE FIRST, because it is the thing that explains a
+	# shortfall AND a layout the reader cannot parse, and we were not recording
+	# it at all. bf6.exe's size and modification time are not a version string,
+	# but two installs that differ in either are not the same build - which is
+	# the question actually being asked when someone's terrain will not resolve.
+	if _exe_used != "":
+		var f := FileAccess.open(_exe_used, FileAccess.READ)
+		var sz := 0
+		if f != null:
+			sz = f.get_length()
+			f.close()
+		out.append("  type database      %s" % _exe_used)
+		out.append("                     %d bytes, modified %s" % [sz,
+			Time.get_datetime_string_from_unix_time(
+				FileAccess.get_modified_time(_exe_used))])
+		if not _exe_others.is_empty():
+			# SP and MP carry different type databases and the first candidate
+			# wins. If the layouts do not fit this install, this is the first
+			# thing to try swapping.
+			out.append("  ALSO PRESENT       %s" % ", ".join(_exe_others))
+			out.append("                     (SP and MP carry DIFFERENT type")
+			out.append("                      databases; the wrong one resolves")
+			out.append("                      to wrong layouts rather than failing)")
+	out.append("  game folder        %s" % src.game)
+	out.append("  A big shortfall here is not a plugin bug: it means the game")
+	out.append("  itself is missing content, and nothing can be drawn from")
+	out.append("  records that are not on your disk. Verify or repair the game")
+	out.append("  install if these read low.")
+	for row in [["EBX entries", ebx, REF_EBX], ["resources", res, REF_RES],
+			["catalogue names", names, REF_NAMES],
+			["depot scopes", scopes, REF_SCOPES]]:
+		var have := int(row[1])
+		var want := int(row[2])
+		var pct := 100.0 * float(have) / maxf(float(want), 1.0)
+		out.append("  %-18s %10d   reference %10d   %5.1f%%%s"
+			% [row[0], have, want, pct,
+			   "   <-- LOW" if pct < 90.0 else ""])
+	return out
+
+
 func phase_report(title := "") -> PackedStringArray:
 	var out := PackedStringArray()
 	if _phase_order.is_empty():
@@ -273,6 +354,13 @@ func phase_report(title := "") -> PackedStringArray:
 
 
 func print_phases() -> void:
+	# The install fingerprint goes FIRST. When something is wrong with a user's
+	# game rather than with this plugin, the phase timings underneath are a
+	# distraction - the five counts above them are the answer, and they should
+	# be the first thing read rather than something found by diffing two logs
+	# by hand afterwards.
+	for line in install_report():
+		_say(line)
 	for line in phase_report():
 		_say(line)
 
@@ -464,6 +552,18 @@ func open_map(map: String, game_dir := "", progress := Callable()) -> bool:
 	if not types.open(exe):
 		error = types.error
 		return false
+	# WHICH EXE WON, recorded because it is a real choice with consequences and
+	# the log never said. SP and MP carry DIFFERENT type databases, and picking
+	# the wrong one resolves types to the WRONG LAYOUTS rather than failing -
+	# which looks exactly like a table whose offset cannot be pinned, and is a
+	# live suspect for a user whose terrain layer palette came back unusable.
+	# The candidate order puts SP first, so an install with both silently gets
+	# SP; if that turns out to be the bug, this line is what proves it.
+	_exe_used = exe
+	_exe_others = []
+	for c in BF6Types.exe_candidates(src.game):
+		if c != exe and FileAccess.file_exists(c):
+			_exe_others.append(c)
 
 	walk = BF6Walk.new(src, types)
 	# LIGHTS COME OUT OF THE SAME PASS as the placements. They are placed by
