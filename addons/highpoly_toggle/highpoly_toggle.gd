@@ -2528,16 +2528,39 @@ func _read_refresh() -> void:
 	read_title.text = read_model_title(_read_model, now)
 	read_list.text = "\n".join(PackedStringArray(
 		read_model_lines(_read_model, now)))
-	# and the same thing on the one real bar, so it reads at a glance
+	# THE BIG BAR SHOWS THE WHOLE READ, not the current stage's own counts.
+	#
+	# It was fed the stage's done/total, and half the stages have no denominator
+	# to give: the walk reports rows-found-so-far against a total of 0, and the
+	# ground stages report 0,0. Those became "0 of 1" and an indeterminate bar,
+	# so reading placements - the longest stage of a cold open - never moved the
+	# bar at all.
+	#
+	# There IS an honest overall denominator: the read has a fixed, ordered list
+	# of stages, and the model already knows which one it is on. Position is the
+	# stage index plus how far through that stage we are when it can say, scaled
+	# by 100 so a fractional stage still moves the bar. Monotonic, always
+	# determinate, and it keeps moving through a stage that cannot count itself
+	# because the NEXT stage starting is itself progress.
 	var total := int(_read_model["total"])
+	var done := int(_read_model["done"])
+	var stages: Array = HighpolyGameSource.OPEN_STAGES
+	var at: int = stages.find(str(_read_model["stage"]))
+	if at < 0:
+		at = 0
+	var frac := 0.0
+	if total > 0:
+		frac = clampf(float(done) / float(total), 0.0, 1.0)
 	if jobs != null:
+		# THE KEY STAYS THE BARE STAGE NAME. _read_end clears activities by
+		# iterating OPEN_STAGES and calling clear_activity(stage), so folding a
+		# live count into this string would leave the bar stuck at the end of
+		# every read with nothing able to clear it. The per-stage counts already
+		# have a home in the read panel's own list.
 		jobs.set_activity(str(_read_model["stage"]),
-			int(_read_model["done"]) if total > 0 else 0,
-			total if total > 0 else 1)
+			int(round((float(at) + frac) * 100.0)), stages.size() * 100)
 	if job_bar != null and is_instance_valid(job_bar):
-		# No denominator exists for this stage, and there is no honest one to
-		# invent. An indeterminate bar says "running" without claiming a figure.
-		job_bar.indeterminate = total <= 0
+		job_bar.indeterminate = false
 
 
 static func _clock(ms: int) -> String:
