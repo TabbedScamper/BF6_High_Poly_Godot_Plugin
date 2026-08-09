@@ -50,9 +50,16 @@ static func set_verbose(v: bool) -> void:
 	info("verbose logging %s" % ("ON" if v else "off"))
 
 
+# When this editor session started logging, as wall-clock. Compared against the
+# plugin files on disk so a log can say it is describing code that is no longer
+# there. See _staleness().
+static var _session_at := 0
+
+
 static func _open_session() -> void:
 	if _fh != null:
 		return
+	_session_at = int(Time.get_unix_time_from_system())
 	# truncate per editor session: one file, always the current run
 	_fh = FileAccess.open(SESSION_LOG, FileAccess.WRITE)
 	if _fh != null:
@@ -143,6 +150,46 @@ static func flush() -> void:
 		_since_flush = 0
 
 
+# IS THIS LOG DESCRIBING CODE THAT IS STILL ON DISK?
+#
+# Godot loads plugin scripts once, at editor start. Update the plugin while the
+# editor is open and every line written afterwards describes the OLD code, with
+# nothing to say so - the log is byte-identical to one from before the update,
+# same timestamps, same behaviour, and it reads as "the fix did not work".
+#
+# That has cost three rounds of diagnosis on this project alone: a fix deployed
+# at 18:25 against a session that opened at 18:18, and a log full of the
+# behaviour it had already fixed.
+#
+# Returns "" when the running code is current.
+static func _staleness() -> String:
+	if _session_at == 0:
+		return ""
+	var dir := "res://addons/highpoly_toggle"
+	var newest := 0
+	var name := ""
+	for f in DirAccess.get_files_at(dir):
+		if not str(f).ends_with(".gd"):
+			continue
+		var mt := int(FileAccess.get_modified_time("%s/%s" % [dir, f]))
+		if mt > newest:
+			newest = mt
+			name = str(f)
+	# A minute of slack: the plugin logs its first line a moment after the files
+	# it was loaded from were read, and a deploy that lands in that window is the
+	# one being tested rather than a stale one.
+	if newest <= _session_at + 60:
+		return ""
+	return ("THE PLUGIN ON DISK IS NEWER THAN THE ONE RUNNING. %s was written\n"
+		% name
+		+ "           %s, after this editor session started at %s.\n"
+			% [Time.get_datetime_string_from_unix_time(newest, true),
+			   Time.get_datetime_string_from_unix_time(_session_at, true)]
+		+ "           Godot loads plugin scripts once, at editor start, so\n"
+		+ "           everything below describes the OLDER code. Restart the\n"
+		+ "           editor before reading this as evidence of anything.")
+
+
 static func lines() -> Array: return _lines
 static func error_count() -> int: return _errors
 static func warning_count() -> int: return _warnings
@@ -227,6 +274,14 @@ static func header() -> String:
 	# anyone wants after a crash, and because the alternative — "reproduce it
 	# with a log file attached" — asks the user to hit an intermittent crash a
 	# second time before learning anything at all.
+	# FIRST, above everything. A stale session makes every other line in the file
+	# describe code that no longer exists, so it has to be read before them and
+	# not found afterwards.
+	var stale := _staleness()
+	if stale != "":
+		lines.append("")
+		lines.append(stale)
+		lines.append("")
 	var last := HighpolyProfiler.last_session_end()
 	if last != "":
 		lines.append("PREVIOUS SESSION DID NOT EXIT CLEANLY. It stopped here:")
