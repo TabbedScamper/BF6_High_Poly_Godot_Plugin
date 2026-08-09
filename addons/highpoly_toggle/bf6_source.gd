@@ -36,6 +36,9 @@ var error := ""
 # to remove. Resolving at build time means a warm mount touches no .toc file at
 # all.
 var tocs: Array = []                 # BF6Toc, only populated on a cold mount
+# TOC paths already swept, so the catalogue can be added to a level mount
+# without reopening what is already here.
+var _mounted := {}
 var chunks := {}                     # guid -> [chunk_id, cas_ix, off, size]
 var ebx := {}                        # name -> [chunk_id, cas_ix, off, size, declared]
 var res := {}                        # name -> [..., declared, type, rid]
@@ -237,38 +240,26 @@ func _save_cache(p: String) -> void:
 #
 # It is a PROJECTION, and reported as one. Use it to steer, then confirm the
 # real number with an unbounded run before believing it.
-func mount(level := "", progress := Callable(), use_cache := true,
-		bundle_limit := 0, all_levels := false) -> bool:
-	var t0 := Time.get_ticks_msec()
-	var paths := _find_tocs(level, all_levels)
-
-	# The TOCs still have to be PARSED even on a cache hit: chunk_location()
-	# reads the loose-chunk record straight out of toc.body, so the bodies must
-	# be resident. That is ~100 ms per big toc rather than the 21 s bundle
-	# sweep, and it is why the cache stores the index but not the parse.
-	var sig := ""
-	# Remembered for the partition index, which caches under the same identity:
-	# it is derived from these exact TOCs, so it must go stale with them.
-	_sig = ""
-	_level = level
-	if use_cache:
-		sig = _signature(paths)
-		_sig = sig
-		if _load_cache(_cache_path_scoped(level, sig, all_levels)):
-			stats["ms"] = Time.get_ticks_msec() - t0
-			return true
-
+# The archive sweep, over a list of TOC paths.
+#
+# Extracted from mount() so the catalogue can be added to an existing mount
+# rather than requiring a second full one. FIRST MOUNT WINS throughout (`if
+# ebx.has(n): continue`), which is what makes adding later archives safe: they
+# can only fill names the level did not already provide, so a level read that
+# has already resolved cannot be changed underneath by the catalogue arriving.
+func _sweep(paths: Array, progress := Callable(), bundle_limit := 0) -> Dictionary:
 	var opened := 0
 	var failed := 0
 	var collisions := 0
-	var total_bundles := 0
 	for p in paths:
 		if bundle_limit > 0 and opened >= bundle_limit:
 			break
+		if _mounted.has(str(p)):
+			continue
 		var t := BF6Toc.new()
 		if not t.load_from(p):
 			continue
-		total_bundles += t.bundles.size()
+		_mounted[str(p)] = true
 		tocs.append(t)
 		# Resolve the loose-chunk map NOW, while this toc's body is resident.
 		for c in t.chunks:
@@ -324,6 +315,72 @@ func mount(level := "", progress := Callable(), use_cache := true,
 							chunk_seg[rec["id"]] = seg
 		if progress.is_valid():
 			progress.call(tocs.size(), paths.size(), ebx.size())
+	return {"opened": opened, "failed": failed, "collisions": collisions}
+
+
+# ADD THE REST OF THE GAME'S LEVELS to a mount that only opened one.
+#
+# The catalogue mount is what makes an object from another level resolvable, and
+# it costs 85 s cold against 18 s for a level mount. Paying it before the map can
+# appear is the wrong order: the map's OWN props come from the level's archives,
+# so it does not need the catalogue at all, and the catalogue is only needed once
+# somebody browses or places an object from elsewhere.
+#
+# Additive, not a re-mount: _sweep skips TOCs already opened, and first-wins
+# means what is already resolved stays resolved. So this can run on a worker
+# while the map is on screen.
+func mount_rest(progress := Callable(), use_cache := true) -> bool:
+	var t0 := Time.get_ticks_msec()
+	var paths := _find_tocs(_level, true)
+	var sw := _sweep(paths, progress, 0)
+	stats["ms_rest"] = Time.get_ticks_msec() - t0
+	stats["ebx"] = ebx.size()
+	stats["res"] = res.size()
+	# Saved under the ALL-LEVELS key, because the state now equals what an
+	# all-levels mount would have produced. The next session's upgrade then loads
+	# it in one go instead of sweeping again.
+	if use_cache and _sig != "":
+		_save_cache(_cache_path_scoped(_level, _sig, true))
+	return int(sw["opened"]) > 0
+
+
+# Is the catalogue already here, from a cache written by an earlier session?
+func has_catalogue_cache() -> bool:
+	return _sig != "" and FileAccess.file_exists(
+		_cache_path_scoped(_level, _sig, true))
+
+
+func load_catalogue_cache() -> bool:
+	if not has_catalogue_cache():
+		return false
+	return _load_cache(_cache_path_scoped(_level, _sig, true))
+
+
+func mount(level := "", progress := Callable(), use_cache := true,
+		bundle_limit := 0, all_levels := false) -> bool:
+	var t0 := Time.get_ticks_msec()
+	var paths := _find_tocs(level, all_levels)
+
+	# The TOCs still have to be PARSED even on a cache hit: chunk_location()
+	# reads the loose-chunk record straight out of toc.body, so the bodies must
+	# be resident. That is ~100 ms per big toc rather than the 21 s bundle
+	# sweep, and it is why the cache stores the index but not the parse.
+	var sig := ""
+	# Remembered for the partition index, which caches under the same identity:
+	# it is derived from these exact TOCs, so it must go stale with them.
+	_sig = ""
+	_level = level
+	if use_cache:
+		sig = _signature(paths)
+		_sig = sig
+		if _load_cache(_cache_path_scoped(level, sig, all_levels)):
+			stats["ms"] = Time.get_ticks_msec() - t0
+			return true
+
+	var sw := _sweep(paths, progress, bundle_limit)
+	var opened: int = sw["opened"]
+	var failed: int = sw["failed"]
+	var collisions: int = sw["collisions"]
 	stats = {
 		"ms": Time.get_ticks_msec() - t0,
 		"tocs": tocs.size(),

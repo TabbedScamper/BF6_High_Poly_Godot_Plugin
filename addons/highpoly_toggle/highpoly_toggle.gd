@@ -3652,7 +3652,40 @@ func _ensure_game_source(map: String, gen: int = -1) -> bool:
 	# assembled from the game's own prefab instead of a fetched GLB.
 	LibScript.game_source = gs
 	LightingScript.game_source = gs   # the level's own sky panorama
+	# THE PLACEABLE CATALOGUE, AFTER THE MAP IS USABLE, not in front of it.
+	#
+	# It is 85 s cold, it covers objects from OTHER levels, and this map does not
+	# need it: its own props come from its own archives. Paying it up front is
+	# what made a first open take three and a half minutes before anything could
+	# be drawn. Added on a worker instead, additively, so the map is on screen
+	# and being worked on while it lands.
+	_upgrade_catalogue_async(gs)
 	return true
+
+
+# Runs the catalogue sweep off the main thread and refreshes what depends on it.
+func _upgrade_catalogue_async(gs) -> void:
+	if gs == null or gs.catalogue_ready:
+		return
+	HighpolyVitals.crumb("adding the placeable catalogue in the background")
+	var done := [false]
+	var tid := WorkerThreadPool.add_task(func() -> void:
+		gs.upgrade_catalogue()
+		done[0] = true, true, "bf6 placeable catalogue")
+	while not done[0]:
+		if get_tree() == null:
+			break
+		await get_tree().process_frame
+	WorkerThreadPool.wait_for_task_completion(tid)
+	HighpolyVitals.crumb("idle, nothing building")
+	if not gs.catalogue_ready:
+		return
+	# Icons and placed objects that could not resolve from the level's archives
+	# alone can resolve now, and nothing may keep the old answer.
+	if previews != null:
+		previews.clear_cache()
+	Log.info("the placeable catalogue is ready: objects from other maps can be "
+		+ "drawn now")
 
 
 func _mapctx_changed() -> void:

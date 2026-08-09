@@ -149,7 +149,16 @@ func which_chunk(hdr: Dictionary) -> String:
 # Header-exact first (b30 = mipCount, u32[15]@56 = per-mip byte sizes, u16@28 =
 # slices; chunks are front-ordered largest-mip-first with no padding), then the
 # reference implementation's fallbacks.
-func dims_for(hdr: Dictionary, pix: PackedByteArray) -> Array:
+# max_dim > 0 asks for the largest level in this chunk that fits the cap, rather
+# than the chunk's top level.
+#
+# THE CAP DID NOT CAP. decode() swapped to the embedded chunk when a texture
+# exceeded the limit and then took that chunk's TOP level, which is typically
+# mip 1 - so texture_max_dim = 1024 on a 4096 texture returned 2048, four times
+# the bytes asked for, and reported success. The embedded chunk holds the whole
+# tail of the mip chain, so the level that actually fits is already in the bytes
+# we fetched; it only had to be indexed to.
+func dims_for(hdr: Dictionary, pix: PackedByteArray, max_dim := 0) -> Array:
 	var w := int(hdr["width"])
 	var h := int(hdr["height"])
 	var dxgi := int(hdr["dxgi"])
@@ -174,8 +183,28 @@ func dims_for(hdr: Dictionary, pix: PackedByteArray) -> Array:
 				for i in range(fm, mipcount):
 					tail += int(sizes[i])
 				if tail * slices == pix.size():
-					return [Vector2i(maxi(1, w >> fm), maxi(1, h >> fm)),
-							pix.slice(0, int(sizes[fm]))]
+					# Walk down the chain until the level fits the cap. Never past
+					# the last level: a texture whose smallest mip is still over
+					# the cap gets its smallest mip, which is the best this chunk
+					# can offer, and the caller is told.
+					var lvl := fm
+					if max_dim > 0:
+						while lvl + 1 < mipcount \
+								and (maxi(1, w >> lvl) > max_dim
+									or maxi(1, h >> lvl) > max_dim):
+							lvl += 1
+					# Byte offset of that level within the chunk.
+					var off := 0
+					for i in range(fm, lvl):
+						off += int(sizes[i]) * slices
+					# `* slices` where the old code took one slice's worth. For a
+					# single-slice texture, which is nearly all of them, this is
+					# the identical range. For a cubemap the old slice was too
+					# short for decode()'s per-face loop and the texture was
+					# refused, so this can only turn a refusal into an image.
+					var n := int(sizes[lvl]) * slices
+					return [Vector2i(maxi(1, w >> lvl), maxi(1, h >> lvl)),
+							pix.slice(off, mini(off + n, pix.size()))]
 
 	# THE FALLBACKS BELOW ASSUME A BLOCK FORMAT and are wrong for the handful of
 	# textures that are not one. Inherited from the reference implementation and
@@ -312,7 +341,7 @@ func decode(res: PackedByteArray, fetch: Callable, max_dim := 0) -> Dictionary:
 				break
 		if pix.is_empty():
 			continue
-		var dd := dims_for(hdr, pix)
+		var dd := dims_for(hdr, pix, max_dim)
 		var dim: Vector2i = dd[0]
 		var top: PackedByteArray = dd[1]
 		if dim.x <= 0 or dim.y <= 0:

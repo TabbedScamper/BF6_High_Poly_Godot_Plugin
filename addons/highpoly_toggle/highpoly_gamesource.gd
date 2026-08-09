@@ -89,7 +89,22 @@ var error := ""
 # that have a model at all.
 #
 # That trade is the whole plugin: it exists to draw the objects you place.
-var catalogue_mount := true
+#
+# BUT NOT BEFORE THE MAP CAN APPEAR. Those 85 s used to be paid up front, on the
+# path that opens a level, and the level does not need them: a map's own props
+# come out of its own archives. The catalogue is needed the moment somebody
+# browses the Object Library or places an object from another level, which is
+# after the map is on screen and is a fine time to still be working.
+#
+# So the open mounts this level, and the catalogue is added afterwards on a
+# worker (upgrade_catalogue). The add is additive and first-wins, so nothing the
+# level already resolved can change underneath it.
+var catalogue_mount := false
+# True once the whole placeable catalogue is mounted. Until then an object from
+# another level legitimately does not resolve yet, which is different from not
+# existing, and callers that care should say so rather than reporting "the game
+# has no prefab for this".
+var catalogue_ready := false
 
 # Where terrain_surface writes, when the caller wants the ground built as part of
 # the open rather than in the middle of the build. Empty = do not build it here.
@@ -472,6 +487,13 @@ func build_report() -> PackedStringArray:
 		var tfail := int(tex_stats.get("failed", 0))
 		out.append("  %-34s %8d%s" % ["failed to decode", tfail,
 			"   <-- these draw as whatever was last bound" if tfail > 0 else ""])
+		var over := int(tex_stats.get("over_cap", 0))
+		var atc := int(tex_stats.get("at_cap", 0))
+		if over + atc > 0:
+			out.append("  %-34s %8d px" % ["resolution cap", texture_max_dim])
+			out.append("  %-34s %8d" % ["  within it", atc])
+			out.append("  %-34s %8d%s" % ["  larger than it", over,
+				"   <-- no smaller level exists in the chunk" if over > 0 else ""])
 		if not tex_dims.is_empty():
 			# The biggest families only. The full table runs to hundreds of rows
 			# and the point is which handful dominate.
@@ -488,6 +510,49 @@ func build_report() -> PackedStringArray:
 func print_build_report() -> void:
 	for line in build_report():
 		_say(line)
+
+
+# THE PLACEABLE CATALOGUE, added after the map is already on screen.
+#
+# Blocking, and meant to be called from a worker: it is the 85 s cold sweep of
+# every other level's archives that used to sit in front of the map appearing.
+# A cache written by an earlier session turns it into a load instead.
+#
+# Safe to call more than once; the second call returns immediately.
+func upgrade_catalogue(progress := Callable()) -> bool:
+	if catalogue_ready or src == null:
+		return catalogue_ready
+	var t := Time.get_ticks_msec()
+	var from_cache := false
+	if src.has_catalogue_cache() and src.load_catalogue_cache():
+		from_cache = true
+	elif not src.mount_rest(progress):
+		_say("game source: could not add the placeable catalogue: %s"
+			% src.last_error())
+		return false
+	catalogue_ready = true
+	# The depot scope index is derived from the resource names, and there are now
+	# more of them. Rebuilt rather than appended so it cannot disagree with the
+	# mount it describes.
+	_depot_bundles.clear()
+	for rn in src.res.keys():
+		var n := str(rn)
+		var at := n.find(SHADERSTATE)
+		if at > 0 and n.find("shaderblockdepot", at) > 0:
+			_depot_bundles[n.substr(0, at)] = n
+	if walk != null:
+		for d in _depot_bundles:
+			walk.scope_index[str(d)] = str(d)
+	# Objects that did not resolve before may resolve now, so nothing may keep a
+	# "this does not exist" answer from the level-only mount.
+	_obj_cache.clear()
+	note_phase("catalogue mount", Time.get_ticks_msec() - t, src.ebx.size(),
+		"ebx", FROM_CACHE if from_cache else FROM_INSTALL,
+		"every level's archives, %d depot scopes" % _depot_bundles.size())
+	_say("game source: placeable catalogue ready, %d ebx, %d res, %d depot scopes%s"
+		% [src.ebx.size(), src.res.size(), _depot_bundles.size(),
+		   "  (cached)" if from_cache else ""])
+	return true
 
 
 var tex_dims := {}                     # "WxH fFMT mip" -> count
@@ -6199,6 +6264,17 @@ func _texture_for(file_guid, is_normal := false, cap := -1):
 		img.get_format(), str(got.get("chunk", "?")),
 		" mip" if img.has_mipmaps() else ""]
 	tex_dims[key] = int(tex_dims.get(key, 0)) + 1
+	# DID THE CAP ACTUALLY CAP. It did not, for a long time: decode() swapped to
+	# the embedded chunk and then took that chunk's top level, so a 1024 cap on a
+	# 4096 texture returned 2048 and called it done. Counted now, because the
+	# whole point of the setting is a memory ceiling and a ceiling that silently
+	# lets things through is worse than no ceiling.
+	var _cap := texture_max_dim if cap < 0 else cap
+	if _cap > 0:
+		if img.get_width() > _cap or img.get_height() > _cap:
+			tex_stats["over_cap"] = int(tex_stats.get("over_cap", 0)) + 1
+		else:
+			tex_stats["at_cap"] = int(tex_stats.get("at_cap", 0)) + 1
 	# get_data() RETURNED A COPY of every texture, once each, purely to read its
 	# length: 3,701 textures on a real map, so 4.1 GB allocated and thrown away
 	# to count 4.1 GB. Same defect as the readback in cache_stats, in a place
