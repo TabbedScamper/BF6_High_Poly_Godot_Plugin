@@ -152,6 +152,10 @@ static func _match_key(node: Node, ks: Dictionary) -> String:
 		# the key is fixed and we know it.
 		if HighpolySoldier.faction_for(base) != "": return base
 		if HighpolyWeapon.weapon_for(base) != "": return base
+		# And the vehicles, for the same reason: they live under
+		# res://objects/gameplay/vehicles/ rather than in the props scan, so
+		# known() does not carry them and the key has to answer for itself.
+		if base.begins_with("VEH_"): return base
 		# AN INSTANCE ANSWERS FOR ITSELF, AND IS NEVER GUESSED AT BY ITS NAME.
 		#
 		# This used to fall through to the node-name rules below when the scene's
@@ -359,6 +363,19 @@ static func _asset_id(key: String) -> String:
 		var wep := HighpolyWeapon.weapon_for(key)
 		if wep != "":
 			return "weapon://%s" % wep
+		# AND THE VEHICLES, which had no route at all: every Portal vehicle
+		# shares one generic spawner blueprint, so has_object never answers for
+		# them and a placed VEH_* kept its proxy for ever. Their geometry lives
+		# in the hardware library under its own name, same as a weapon's.
+		if str(key).begins_with("VEH_"):
+			var veh := HighpolyVehicle.vehicle_for(game_source, key)
+			if veh != "":
+				return "vehicle://%s" % key
+			var why := HighpolyVehicle.unresolved_reason(key)
+			if why != "":
+				# Keeps the proxy AND says why, rather than looking like the
+				# overlay silently failed.
+				HighpolyLog.info("%s keeps its SDK model: %s" % [key, why])
 	return ""
 
 static func _instance_for(key: String, id: String) -> Node3D:
@@ -369,6 +386,8 @@ static func _instance_for(key: String, id: String) -> Node3D:
 		return HighpolySoldier.build(game_source, id.trim_prefix("soldier://"))
 	if id.begins_with("weapon://"):
 		return HighpolyWeapon.build(game_source, id.trim_prefix("weapon://"))
+	if id.begins_with("vehicle://"):
+		return HighpolyVehicle.build(game_source, id.trim_prefix("vehicle://"))
 	if id.begins_with("game://"):
 		if game_source == null:
 			return null
@@ -457,6 +476,9 @@ static func _nofit_for(key: String) -> bool:
 	# to the wrong asset is a bug in the resolution chain, to be fixed there,
 	# not something a bounding box should be papering over.
 	if game_source != null and game_source.has_object(key): return true
+	# A vehicle is not the shape of its SDK stand-in either, and it comes from
+	# the game with the game's transform. Same reasoning as the soldier's.
+	if str(key).begins_with("VEH_"): return true
 	if use_legacy:
 		var side := "%s/%s/%s.json" % [LEGACY_DIR, key, key]
 		if FileAccess.file_exists(side):
