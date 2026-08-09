@@ -65,6 +65,12 @@ var resolve_rate := 0.0
 # did. A future report should be able to say whether the fix held.
 var scan_ms := 0
 var scan_candidates := 0
+# WHICH depot was used and whether it belongs to this level. A depot from
+# another level shares no keys with these layer graphs, so it fails in exactly
+# the way a moved record layout does, and the log could not tell them apart.
+var depot_used := ""
+var depot_matched_level := false
+var depot_seen := 0
 
 
 # -> true when the whole chain closes on this level.
@@ -74,6 +80,23 @@ func load(src, level: String, pidx: Dictionary) -> bool:
 	var lg_name := ""
 	var lc_name := ""
 	var depot_name := ""
+	# THE DEPOT MUST BELONG TO THIS LEVEL, and it was the only one of the three
+	# not asked to.
+	#
+	# The two lines below both require nl.contains(level); the depot test asked
+	# only for "layergraph", with no level filter and no break, so it kept the
+	# LAST match in dictionary order. The mount carries every level's resources
+	# (bf6_source mounts non-level TOCs and, for the catalogue, all levels), so
+	# on any install holding more than one terrain depot this could hand back
+	# another level's - and a depot from the wrong level shares no shader state
+	# keys with these layer graphs, which presents exactly as "no offset
+	# resolved even one record".
+	#
+	# Level-matched wins; any layer-graph depot is still accepted as a fallback,
+	# because a single-level mount has nothing else to offer and that case used
+	# to work. Which one was taken is recorded either way.
+	var depot_any := ""
+	var depot_n := 0
 	var low := level.to_lower()
 	for rn in src.res.keys():
 		var ty := int(src.res[rn][5])
@@ -86,11 +109,19 @@ func load(src, level: String, pidx: Dictionary) -> bool:
 		elif ty == RES_LAYERCOMB and nl.contains(low):
 			lc_name = n
 		elif ty == RES_DEPOT and nl.contains("layergraph"):
-			depot_name = n
+			depot_n += 1
+			depot_any = n
+			if nl.contains(low):
+				depot_name = n
+	depot_matched_level = depot_name != ""
+	depot_seen = depot_n
+	if depot_name == "":
+		depot_name = depot_any
 	if lg_name == "" or depot_name == "":
 		error = "no layer graphs (%s) or layergraphs depot (%s) for %s" % [
 			lg_name, depot_name, level]
 		return false
+	depot_used = depot_name
 
 	# --- §9.2: layer count and the Linked (crater) layers --------------------
 	var link_of: Array = []
@@ -181,9 +212,14 @@ func load(src, level: String, pidx: Dictionary) -> bool:
 		# that does not describe this level's layer graphs at all, rather than a
 		# record layout we failed to locate.
 		error = ("terrain layer palette UNUSABLE - this level's layer graphs "
-			+ "match NOTHING in its shader depot (no offset resolved even one "
-			+ "record, %d records looked for, scan took %d ms). The ground will "
-			+ "draw without its layer materials.") % [declared, scan_ms]
+			+ "match NOTHING in the shader depot (no offset resolved even one "
+			+ "record, %d records looked for, scan took %d ms). Depot used: %s "
+			+ "(%s; %d layer-graph depots visible). The ground will draw "
+			+ "without its layer materials.") % [declared, scan_ms,
+				depot_used.get_file(),
+				"belongs to this level" if depot_matched_level
+					else "DOES NOT NAME THIS LEVEL, which alone would cause this",
+				depot_seen]
 		return false
 	if record_offset < 0 or resolve_rate < 1.0:
 		# §9.1 makes the 100% requirement the thing that pins the offset. A
