@@ -533,6 +533,31 @@ static func run(host: Node, dock: Node, mapctx: Node) -> bool:
 				_rep["hlod_draws_before"] = vp.get_render_info(
 					Viewport.RENDER_INFO_TYPE_VISIBLE,
 					Viewport.RENDER_INFO_DRAW_CALLS_IN_FRAME)
+			# NATIVE vs GDSCRIPT ON THE SAME CELL. One cell, both paths, so the
+			# speedup is measured rather than claimed - and the vertex counts
+			# are compared too, because a merge that is fast and wrong is worse
+			# than a slow one.
+			_phase_begin("hlod native ab")
+			var ranked := HighpolyHlod.by_weight_public(mapctx._cells)
+			if not ranked.is_empty():
+				var lst: Array = ranked[0]["list"]
+				var ctr := HighpolyHlod.centre_public(lst)
+				var t_n := Time.get_ticks_msec()
+				var rn := HighpolyHlod.bake_cell_native(lst, ctr, 1.0)
+				var n_ms := Time.get_ticks_msec() - t_n
+				var t_g := Time.get_ticks_msec()
+				var rg := HighpolyHlod.bake_cell(lst, ctr, 1.0)
+				var g_ms := Time.get_ticks_msec() - t_g
+				_rep["hlod_native_ab"] = {
+					"native_ms": n_ms, "gdscript_ms": g_ms,
+					"native_verts": rn.get("verts", -1),
+					"gdscript_verts": rg.get("verts", -1),
+					"native_tris": rn.get("tris", -1),
+					"gdscript_tris": rg.get("tris", -1),
+					"native_available": rn.has("native"),
+				}
+			_phase_end()
+
 			var mapname := str(_cfg["map"])
 			_rep["hlod_install"] = HighpolyHlod.bake_and_install(
 				mapctx._cells, 12, 1.0, "user://mapcontext/%s" % mapname,

@@ -56,6 +56,135 @@ class_name HighpolyHlod
 const FALLBACK_ALBEDO := Color(0.5, 0.5, 0.5)
 
 
+# THE NATIVE MERGE, when the extension is there. Same work, same output, in C++.
+#
+# GDScript spends 33 s on the densest cell because each of its 65.9 M vertices
+# costs an interpreted transform plus a Dictionary lookup, and that cannot be
+# threaded (WorkerThreadPool deadlocks inside the editor). So the loop moves
+# rather than multiplies.
+#
+# Everything crosses as ONE PackedByteArray in each direction. to_byte_array()
+# and to_float32_array() are memcpys rather than loops, so the packing here is
+# nearly free next to the merge, and it means the extension needs no
+# PackedVector3Array marshalling - which would have meant hardcoding
+# version-specific builtin method hashes and breaking on a Godot update.
+#
+# Falls back to the GDScript path when the extension is absent, so a user
+# without the DLL gets a slower bake rather than no plugin.
+static var _native = null
+static var _native_tried := false
+
+static func _oodle():
+	if not _native_tried:
+		_native_tried = true
+		if ClassDB.class_exists("BF6Oodle"):
+			var o = ClassDB.instantiate("BF6Oodle")
+			if o != null and o.has_method("merge_cell"):
+				_native = o
+	return _native
+
+
+static func bake_cell_native(mmis: Array, origin: Vector3,
+		weld: float) -> Dictionary:
+	var nat = _oodle()
+	if nat == null:
+		return {}
+	var t0 := Time.get_ticks_usec()
+	# header: 'BF6M', version, weld, origin xyz, chunk count
+	var head := PackedInt32Array([0x4D364642, 1]).to_byte_array()
+	head.append_array(PackedFloat32Array([weld, origin.x, origin.y,
+		origin.z]).to_byte_array())
+	var body := PackedByteArray()
+	var chunks := 0
+	for node in mmis:
+		if not is_instance_valid(node) or not (node is MultiMeshInstance3D):
+			continue
+		var mmi := node as MultiMeshInstance3D
+		var mm := mmi.multimesh
+		if mm == null or mm.mesh == null or mm.instance_count <= 0:
+			continue
+		var mesh := mm.mesh
+		var node_xf := mmi.global_transform
+		# The node transform is folded into every instance here rather than
+		# passed separately: the C++ side then has one matrix per instance and
+		# no notion of a parent, which is one fewer thing to keep in step.
+		var xf_f := PackedFloat32Array()
+		for i in range(mm.instance_count):
+			var xf := node_xf * mm.get_instance_transform(i)
+			xf_f.append_array(PackedFloat32Array([
+				xf.basis.x.x, xf.basis.x.y, xf.basis.x.z,
+				xf.basis.y.x, xf.basis.y.y, xf.basis.y.z,
+				xf.basis.z.x, xf.basis.z.y, xf.basis.z.z,
+				xf.origin.x, xf.origin.y, xf.origin.z]))
+		for s in range(mesh.get_surface_count()):
+			var arr := mesh.surface_get_arrays(s)
+			if arr.is_empty():
+				continue
+			var sv: PackedVector3Array = arr[Mesh.ARRAY_VERTEX]
+			if sv.is_empty():
+				continue
+			var sn: PackedVector3Array = arr[Mesh.ARRAY_NORMAL] \
+				if arr[Mesh.ARRAY_NORMAL] != null else PackedVector3Array()
+			if sn.size() != sv.size():
+				sn = PackedVector3Array()
+				sn.resize(sv.size())
+				for i in range(sv.size()):
+					sn[i] = Vector3.UP
+			var si: PackedInt32Array = arr[Mesh.ARRAY_INDEX] \
+				if arr[Mesh.ARRAY_INDEX] != null else PackedInt32Array()
+			var col := _albedo_of(mesh.surface_get_material(s))
+			var rgba := int(col.r * 255.0) | (int(col.g * 255.0) << 8) \
+				| (int(col.b * 255.0) << 16) | (255 << 24)
+			body.append_array(PackedInt32Array([sv.size(), si.size(),
+				mm.instance_count, rgba]).to_byte_array())
+			body.append_array(sv.to_byte_array())
+			body.append_array(sn.to_byte_array())
+			if si.size() > 0:
+				body.append_array(si.to_byte_array())
+			body.append_array(xf_f.to_byte_array())
+			chunks += 1
+	if chunks == 0:
+		return {}
+	head.append_array(PackedInt32Array([chunks]).to_byte_array())
+	head.append_array(body)
+	var res: PackedByteArray = nat.merge_cell(head)
+	if res.size() < 8:
+		return {}
+	var vc := res.decode_u32(0)
+	var ic := res.decode_u32(4)
+	if vc == 0:
+		return {}
+	var o := 8
+	var verts := res.slice(o, o + vc * 12).to_float32_array()
+	o += vc * 12
+	var norms := res.slice(o, o + vc * 12).to_float32_array()
+	o += vc * 12
+	var cols := res.slice(o, o + vc * 4)
+	o += vc * 4
+	var idx := res.slice(o, o + ic * 4).to_int32_array()
+	var pv := PackedVector3Array(); pv.resize(vc)
+	var pn := PackedVector3Array(); pn.resize(vc)
+	var pc := PackedColorArray(); pc.resize(vc)
+	for i in range(vc):
+		pv[i] = Vector3(verts[i * 3], verts[i * 3 + 1], verts[i * 3 + 2])
+		pn[i] = Vector3(norms[i * 3], norms[i * 3 + 1], norms[i * 3 + 2])
+		pc[i] = Color8(cols[i * 4], cols[i * 4 + 1], cols[i * 4 + 2],
+			cols[i * 4 + 3])
+	var arrays := []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = pv
+	arrays[Mesh.ARRAY_NORMAL] = pn
+	arrays[Mesh.ARRAY_COLOR] = pc
+	arrays[Mesh.ARRAY_INDEX] = idx
+	var am := ArrayMesh.new()
+	am.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	return {
+		"mesh": am, "verts": vc, "tris": int(ic / 3), "dropped_tris": 0,
+		"ms": (Time.get_ticks_usec() - t0) / 1000.0, "sources": chunks,
+		"native": true,
+	}
+
+
 # Merge every instance of every MultiMesh in `mmis` into one ArrayMesh, in the
 # space of `origin` (the cell centre), so the result can be placed at that point
 # and keep a tight local bound.
@@ -307,6 +436,17 @@ static func bake_and_install(cells: Dictionary, n: int,
 		made += 1
 	return {"cells": made, "replaced_nodes": replaced,
 		"draws_saved": saved_draws - made, "bake_ms": ms}
+
+
+# The two rankers, exposed so a caller can build the same job list this file
+# builds for itself - a harness comparing two merge paths has to hand both of
+# them the SAME cell or the comparison means nothing.
+static func by_weight_public(cells: Dictionary) -> Array:
+	return _by_weight(cells)
+
+
+static func centre_public(list: Array) -> Vector3:
+	return _centre_of(list)
 
 
 static func _centre_of(list: Array) -> Vector3:

@@ -26,6 +26,14 @@
 #include <cstdint>
 #include <cstring>
 #include <string>
+// For the cell merge below: a hash map and a growable buffer. The merge cannot
+// know its output size in advance - that is the whole point of welding - so it
+// accumulates in std::vector and copies into the PackedByteArray once at the
+// end, rather than reserving the worst case, which would be the 4.6 GB this
+// design exists to avoid.
+#include <cmath>
+#include <unordered_map>
+#include <vector>
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -309,6 +317,231 @@ static void call_find(void *, GDExtensionClassInstancePtr,
 	get_variant_from(GDEXTENSION_VARIANT_TYPE_INT)(ret, &found);
 }
 
+// ------------------------------------------------------------- cell merge
+//
+// MERGE AND WELD A MAP CELL'S PROPS INTO ONE MESH. The second thing Godot
+// cannot do fast enough for us, and the reason is measured rather than assumed:
+// welding the densest cell in GDScript takes 33 s, and the whole map about 22
+// minutes, because each of 65.9 M vertices costs an interpreted transform plus
+// a Dictionary lookup. Threading it was tried and DEADLOCKS - inside the editor
+// WorkerThreadPool.wait_for_task_completion never returns - so the loop has to
+// get cheaper rather than more parallel.
+//
+// EVERYTHING CROSSES AS ONE PackedByteArray, both directions, and that is a
+// design choice rather than laziness. Marshalling PackedVector3Array through
+// the raw GDExtension C interface needs per-type index and resize bindings, and
+// resize is a builtin looked up by a VERSION-SPECIFIC HASH; hardcoding those
+// breaks the extension on a Godot update in a way that is painful to diagnose.
+// PackedByteArray marshalling already exists here and is already proven. On the
+// GDScript side to_byte_array() and to_float32_array() are memcpys rather than
+// loops, so packing costs nothing worth measuring next to the merge.
+//
+// in   'BF6M' u32, version u32, weld f32, origin f32[3], chunks u32
+//      per chunk: vc u32, ic u32, inst u32, rgba u32,
+//                 verts f32[3*vc], normals f32[3*vc], indices u32[ic],
+//                 transforms f32[12*inst]  (three basis COLUMNS then the
+//                 origin, which is exactly what basis.x/.y/.z give you)
+// out  vc u32, ic u32, verts f32[3*vc], normals f32[3*vc],
+//      colours u8[4*vc], indices u32[ic]
+//
+// An empty return means malformed input or nothing to draw. The caller treats
+// that as "do not bake this cell" rather than an error: a cell with no drawable
+// geometry is a normal thing to meet.
+
+struct MergeKey {
+	int32_t x, y, z;
+	uint32_t c;
+	bool operator==(const MergeKey &o) const {
+		return x == o.x && y == o.y && z == o.z && c == o.c;
+	}
+};
+
+struct MergeKeyHash {
+	size_t operator()(const MergeKey &k) const {
+		// Quantised coordinates are small and strongly correlated between
+		// neighbouring vertices, so a plain xor collides badly enough to turn
+		// the map into a linked list.
+		uint64_t h = 1469598103934665603ULL;
+		auto mix = [&h](uint64_t v) {
+			h ^= v + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+		};
+		mix((uint64_t)(uint32_t)k.x);
+		mix((uint64_t)(uint32_t)k.y);
+		mix((uint64_t)(uint32_t)k.z);
+		mix((uint64_t)k.c);
+		return (size_t)h;
+	}
+};
+
+static inline uint32_t rd_u32(const uint8_t *p) {
+	uint32_t v; memcpy(&v, p, 4); return v;
+}
+
+static inline float rd_f32(const uint8_t *p) {
+	float v; memcpy(&v, p, 4); return v;
+}
+
+static void call_merge_cell(void *, GDExtensionClassInstancePtr,
+		const GDExtensionConstVariantPtr *args, GDExtensionInt argc,
+		GDExtensionVariantPtr ret, GDExtensionCallError *err) {
+	(void)err;
+	alignas(8) uint8_t out[16] = {};
+	pba_ctor(&out, nullptr);
+
+	if (argc >= 1) {
+		static GDExtensionTypeFromVariantConstructorFunc to_pba =
+				get_variant_to(GDEXTENSION_VARIANT_TYPE_PACKED_BYTE_ARRAY);
+		alignas(8) uint8_t src[16] = {};
+		to_pba(&src, const_cast<GDExtensionVariantPtr>(args[0]));
+
+		int64_t src_len = 0;
+		pba_size(&src, nullptr, &src_len, 0);
+		const uint8_t *b = src_len > 0 ? pba_index_const(&src, 0) : nullptr;
+
+		if (b && src_len >= 28 && rd_u32(b) == 0x4D364642u /* 'BF6M' */) {
+			size_t at = 8;
+			const float weld = rd_f32(b + at); at += 4;
+			const float ox = rd_f32(b + at); at += 4;
+			const float oy = rd_f32(b + at); at += 4;
+			const float oz = rd_f32(b + at); at += 4;
+			const uint32_t chunks = rd_u32(b + at); at += 4;
+			const float inv_w = weld > 0.0f ? 1.0f / weld : 0.0f;
+
+			std::vector<float> ov, on;
+			std::vector<uint8_t> oc;
+			std::vector<uint32_t> oi;
+			std::unordered_map<MergeKey, uint32_t, MergeKeyHash> wmap;
+			wmap.reserve(1u << 16);
+			std::vector<uint32_t> remap;
+			bool ok = true;
+
+			for (uint32_t ci = 0; ci < chunks && ok; ++ci) {
+				if (at + 16 > (size_t)src_len) { ok = false; break; }
+				const uint32_t vc = rd_u32(b + at); at += 4;
+				const uint32_t ic = rd_u32(b + at); at += 4;
+				const uint32_t inst = rd_u32(b + at); at += 4;
+				const uint32_t rgba = rd_u32(b + at); at += 4;
+				const size_t need = (size_t)vc * 24 + (size_t)ic * 4
+						+ (size_t)inst * 48;
+				if (at + need > (size_t)src_len) { ok = false; break; }
+				const uint8_t *pv = b + at; at += (size_t)vc * 12;
+				const uint8_t *pn = b + at; at += (size_t)vc * 12;
+				const uint8_t *pi = b + at; at += (size_t)ic * 4;
+				const uint8_t *pt = b + at; at += (size_t)inst * 48;
+
+				const uint8_t cr = (uint8_t)(rgba & 0xFF);
+				const uint8_t cg = (uint8_t)((rgba >> 8) & 0xFF);
+				const uint8_t cb = (uint8_t)((rgba >> 16) & 0xFF);
+				const uint8_t ca = (uint8_t)((rgba >> 24) & 0xFF);
+				// 5 bits a channel in the KEY, matching the GDScript version:
+				// two props of different colours must not weld together, but
+				// neighbouring shades of one prop should.
+				const uint32_t ckey = (uint32_t)((cr >> 3) << 10)
+						| (uint32_t)((cg >> 3) << 5) | (uint32_t)(cb >> 3);
+
+				for (uint32_t k = 0; k < inst; ++k) {
+					const uint8_t *tp = pt + (size_t)k * 48;
+					const float bx0 = rd_f32(tp + 0), bx1 = rd_f32(tp + 4), bx2 = rd_f32(tp + 8);
+					const float by0 = rd_f32(tp + 12), by1 = rd_f32(tp + 16), by2 = rd_f32(tp + 20);
+					const float bz0 = rd_f32(tp + 24), bz1 = rd_f32(tp + 28), bz2 = rd_f32(tp + 32);
+					const float tx = rd_f32(tp + 36), ty = rd_f32(tp + 40), tz = rd_f32(tp + 44);
+					// A parked (zero scale) instance draws nothing, and adding
+					// it would collapse its triangles onto a point.
+					const float det = bx0 * (by1 * bz2 - by2 * bz1)
+							- by0 * (bx1 * bz2 - bx2 * bz1)
+							+ bz0 * (bx1 * by2 - bx2 * by1);
+					if (det == 0.0f) continue;
+
+					remap.assign(vc, 0u);
+					for (uint32_t vi = 0; vi < vc; ++vi) {
+						const float sx = rd_f32(pv + (size_t)vi * 12 + 0);
+						const float sy = rd_f32(pv + (size_t)vi * 12 + 4);
+						const float sz = rd_f32(pv + (size_t)vi * 12 + 8);
+						const float wx = bx0 * sx + by0 * sy + bz0 * sz + tx - ox;
+						const float wy = bx1 * sx + by1 * sy + bz1 * sz + ty - oy;
+						const float wz = bx2 * sx + by2 * sy + bz2 * sz + tz - oz;
+
+						if (inv_w > 0.0f) {
+							MergeKey key;
+							// roundf, NOT lrintf. GDScript's round() rounds half
+							// AWAY FROM ZERO; lrintf follows the current FPU
+							// mode, which defaults to half-to-EVEN. A vertex
+							// sitting exactly on a half-grid boundary then
+							// lands in a different cell in each path, and the
+							// two merges disagreed by 7 vertices out of 275,973
+							// - small, but two implementations of one thing
+							// should agree exactly or the fast one cannot be
+							// checked against the slow one.
+							key.x = (int32_t)roundf(wx * inv_w);
+							key.y = (int32_t)roundf(wy * inv_w);
+							key.z = (int32_t)roundf(wz * inv_w);
+							key.c = ckey;
+							auto it = wmap.find(key);
+							if (it != wmap.end()) { remap[vi] = it->second; continue; }
+							wmap.emplace(key, (uint32_t)(ov.size() / 3));
+						}
+						const uint32_t idx = (uint32_t)(ov.size() / 3);
+						const float nx = rd_f32(pn + (size_t)vi * 12 + 0);
+						const float ny = rd_f32(pn + (size_t)vi * 12 + 4);
+						const float nz = rd_f32(pn + (size_t)vi * 12 + 8);
+						float rx = bx0 * nx + by0 * ny + bz0 * nz;
+						float ry = bx1 * nx + by1 * ny + bz1 * nz;
+						float rz = bx2 * nx + by2 * ny + bz2 * nz;
+						const float len = sqrtf(rx * rx + ry * ry + rz * rz);
+						if (len > 1e-8f) { rx /= len; ry /= len; rz /= len; }
+						else { rx = 0.0f; ry = 1.0f; rz = 0.0f; }
+						ov.push_back(wx); ov.push_back(wy); ov.push_back(wz);
+						on.push_back(rx); on.push_back(ry); on.push_back(rz);
+						oc.push_back(cr); oc.push_back(cg);
+						oc.push_back(cb); oc.push_back(ca);
+						remap[vi] = idx;
+					}
+					if (ic == 0) {
+						for (uint32_t vi = 0; vi < vc; ++vi) oi.push_back(remap[vi]);
+					} else {
+						for (uint32_t j = 0; j + 2 < ic; j += 3) {
+							const uint32_t a = rd_u32(pi + (size_t)j * 4);
+							const uint32_t b2 = rd_u32(pi + (size_t)(j + 1) * 4);
+							const uint32_t c = rd_u32(pi + (size_t)(j + 2) * 4);
+							if (a >= vc || b2 >= vc || c >= vc) continue;
+							const uint32_t ra = remap[a], rb = remap[b2], rc2 = remap[c];
+							// Welding collapses corners wherever detail was
+							// finer than the grid. A zero-area triangle still
+							// costs index bandwidth and a rasteriser reject.
+							if (ra == rb || rb == rc2 || ra == rc2) continue;
+							oi.push_back(ra); oi.push_back(rb); oi.push_back(rc2);
+						}
+					}
+				}
+			}
+
+			if (ok && !ov.empty()) {
+				const uint32_t out_vc = (uint32_t)(ov.size() / 3);
+				const uint32_t out_ic = (uint32_t)oi.size();
+				const int64_t total = 8 + (int64_t)out_vc * 24
+						+ (int64_t)out_vc * 4 + (int64_t)out_ic * 4;
+				GDExtensionInt rc = 0;
+				const void *rargs[1] = { &total };
+				pba_resize(&out, rargs, &rc, 1);
+				uint8_t *dp = pba_index(&out, 0);
+				if (dp) {
+					size_t o = 0;
+					memcpy(dp + o, &out_vc, 4); o += 4;
+					memcpy(dp + o, &out_ic, 4); o += 4;
+					memcpy(dp + o, ov.data(), (size_t)out_vc * 12); o += (size_t)out_vc * 12;
+					memcpy(dp + o, on.data(), (size_t)out_vc * 12); o += (size_t)out_vc * 12;
+					memcpy(dp + o, oc.data(), (size_t)out_vc * 4);  o += (size_t)out_vc * 4;
+					if (out_ic) memcpy(dp + o, oi.data(), (size_t)out_ic * 4);
+				}
+			}
+		}
+		get_destructor(GDEXTENSION_VARIANT_TYPE_PACKED_BYTE_ARRAY)(&src);
+	}
+	get_variant_from(GDEXTENSION_VARIANT_TYPE_PACKED_BYTE_ARRAY)(ret, &out);
+	get_destructor(GDEXTENSION_VARIANT_TYPE_PACKED_BYTE_ARRAY)(&out);
+}
+
+
 static void bind_method(const char *class_name, const char *method_name,
 		GDExtensionClassMethodCall call, GDExtensionVariantType ret_type,
 		int argc, const GDExtensionVariantType *arg_types) {
@@ -392,6 +625,15 @@ static void initialize(void *, GDExtensionInitializationLevel level) {
 			GDEXTENSION_VARIANT_TYPE_STRING, 0, nullptr);
 	bind_method("BF6Oodle", "find", call_find,
 			GDEXTENSION_VARIANT_TYPE_INT, 4, a_find);
+
+	// The cell merge. Named for what it does rather than for Oodle, because it
+	// has nothing to do with compression - it lives in this extension only
+	// because this is where the build already is, and a second one-function DLL
+	// would be a second thing to build and ship for no gain.
+	static const GDExtensionVariantType a_merge[1] = {
+		GDEXTENSION_VARIANT_TYPE_PACKED_BYTE_ARRAY };
+	bind_method("BF6Oodle", "merge_cell", call_merge_cell,
+			GDEXTENSION_VARIANT_TYPE_PACKED_BYTE_ARRAY, 1, a_merge);
 }
 
 static void deinitialize(void *, GDExtensionInitializationLevel) {}
