@@ -264,6 +264,9 @@ func _ph_forward(name: String, ms: float) -> void:
 # The reference figures are deliberately included. A number with nothing to
 # compare it to is not a diagnosis, and nobody reading a stranger's log knows
 # what "9,951 depot scopes" is supposed to be.
+# Captured while the partition index phase runs; walk.stats loses it afterwards.
+var _catalog_names := 0
+
 const REF_EBX := 450884
 const REF_RES := 260328
 const REF_NAMES := 818517
@@ -277,7 +280,7 @@ func install_report() -> PackedStringArray:
 	# are the same values the mount note prints, so the two can never disagree.
 	var ebx := int(src.ebx.size())
 	var res := int(src.res.size())
-	var names := int(walk.stats.get("catalog", 0)) if walk != null else 0
+	var names := _catalog_names
 	var scopes := int(_depot_bundles.size())
 	if ebx == 0 and res == 0:
 		return out
@@ -653,10 +656,18 @@ func open_map(map: String, game_dir := "", progress := Callable()) -> bool:
 	var idx_cached := idx_ticks == 0
 	if not idx_cached:
 		read_was_cold = true
+	# KEPT, because walk.stats does not survive the walk.
+	#
+	# The install fingerprint read this same key later and got 0, then printed
+	# "catalogue names 0, reference 818517, 0.0% <-- LOW" on a completely healthy
+	# install - a false alarm telling people to verify a game that is fine. The
+	# walk replaces its stats when it runs, and on the cached path the
+	# replacement has no "catalog" entry at all.
+	_catalog_names = int(walk.stats.get("catalog", 0))
 	note_phase("partition index", Time.get_ticks_msec() - t,
 		int(walk.stats.get("guid_index", 0)), "partitions",
 		FROM_CACHE if idx_cached else FROM_INSTALL,
-		"%d names in the catalogue" % int(walk.stats.get("catalog", 0)))
+		"%d names in the catalogue" % _catalog_names)
 	t = Time.get_ticks_msec()
 
 	# WHICH BUNDLES OWN A DEPOT, handed to the walk BEFORE it runs so every row
