@@ -3192,6 +3192,17 @@ func _lighting_subs_enabled(on: bool) -> void:
 # contents: no placement walk, no terrain composite. Map Context is the master
 # switch for everything that does.
 func _wants_map_layers() -> bool:
+	# ANY of them, not just the master switch. Original map objects and the
+	# skyline are built FROM the placement walk and can be on while the master
+	# flag reads false - a real session logged "terrain=false objects=true" and
+	# got nothing, twice, because this returned false and the open skipped the
+	# walk.
+	if mapctx_objects != null and mapctx_objects.button_pressed:
+		return true
+	if mapctx_backdrop != null and mapctx_backdrop.button_pressed:
+		return true
+	if mapctx_water != null and mapctx_water.button_pressed:
+		return true
 	return mapctx_on != null and mapctx_on.button_pressed
 
 
@@ -3261,7 +3272,18 @@ func _mapctx_rebuild() -> void:
 # and both callers go through it. ensure_placements returns immediately when the
 # walk has already run, so this costs nothing on the common path.
 func _apply_with_placements(r: Node, on: bool, objs: bool, tex, bd: bool, wt: bool) -> String:
-	if on and mapctx != null and mapctx.game_source != null \
+	# GATED ON WHAT CONSUMES THE WALK, which is the objects and the skyline.
+	#
+	# This read `if on`, and `on` is the flag the log prints as "terrain". A user
+	# switching Original map objects on with the terrain off produced
+	# "terrain=false objects=true", the guard never fired, and the build grouped
+	# an empty row set into "0 prop groups, 0 skyline groups, 0 placements" -
+	# the same failure this function was added to prevent, for a second time,
+	# because I gated it on the wrong flag.
+	#
+	# objs and bd are the two layers built FROM walk rows. Nothing else needs
+	# them, and ensure_placements returns immediately once the walk has run.
+	if (objs or bd) and mapctx != null and mapctx.game_source != null \
 			and not mapctx.game_source.placements_ready:
 		await _ensure_placements_async(mapctx.game_source)
 	return mapctx.apply(r, on, objs, tex, bd, wt)
