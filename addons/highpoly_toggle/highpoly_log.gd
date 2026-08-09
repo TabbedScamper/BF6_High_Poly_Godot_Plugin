@@ -133,6 +133,16 @@ static func human_bytes(n: int) -> String:
 static func err_code(what: String, code: int) -> void:
 	error("%s: %s (code %d)" % [what, error_string(code), code])
 
+# Force the write-through buffer to disk. Routine lines batch twenty at a time,
+# which is right for a busy loop and wrong for the moment before a freeze: the
+# last thing written before an editor is force-quit is exactly the line that
+# says where it froze.
+static func flush() -> void:
+	if _fh != null:
+		_fh.flush()
+		_since_flush = 0
+
+
 static func lines() -> Array: return _lines
 static func error_count() -> int: return _errors
 static func warning_count() -> int: return _warnings
@@ -190,6 +200,12 @@ static func header() -> String:
 		"Godot      %s" % Engine.get_version_info().get("string", "?"),
 		"OS         %s %s" % [OS.get_name(), OS.get_version()],
 		"video      %s" % RenderingServer.get_video_adapter_name(),
+		# THE REST OF THE MACHINE. We were recording the GPU's name and nothing
+		# else, and every resource complaint we get is unanswerable without the
+		# rest: "it maxed out my RAM at 13 GB" means a crash on a 16 GB machine
+		# and nothing at all on a 64 GB one. Joined into one entry because the
+		# surrounding literal cannot splice an array.
+		"\n".join(HighpolyVitals.machine()),
 		# Scoped explicitly: the old header said "errors 0 warnings 0" while the
 		# renderer was logging thousands of its own, which reads as "nothing
 		# went wrong" when the truth was "we are not the one complaining".
@@ -317,6 +333,11 @@ static func save() -> String:
 	# here it also carries what the package expects at that spot and whether the
 	# files are present, which is the difference between a report and a
 	# diagnosis. Never let this stop the log being written.
-	f.store_string(body + "\n" + _markers_section() + "\n")
+	# Memory, freezes and disk speed ride along for the same reason the markers
+	# do: the log is the thing that actually gets sent. Every one of those three
+	# has cost a round of asking the user to go and read a number off Task
+	# Manager for us, and none of them was ever in the file we already had.
+	f.store_string(body + "\n" + HighpolyVitals.report() + "\n"
+		+ _markers_section() + "\n")
 	f.close()
 	return ProjectSettings.globalize_path(path)

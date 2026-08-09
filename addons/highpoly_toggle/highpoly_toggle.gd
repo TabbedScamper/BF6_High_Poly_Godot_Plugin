@@ -1561,6 +1561,14 @@ All of it is read from your own Battlefield 6 installation."
 		# added around them measure in microseconds and are keyed by frame, so a
 		# tick that lands badly once in twenty shows up as a hitch rather than
 		# being averaged into nothing.
+		# FIRST, before anything else in the tick can add to the delay it is
+		# measuring. This timer is the only thing in the plugin that can see a
+		# main-thread freeze: it is a 0.5 s Timer on the editor's main loop, so
+		# if it fires four minutes late, the main thread was gone for four
+		# minutes. That is the freeze a user reported as "it stalled hard on
+		# terrain colours", and it left no trace in the log at all, because a
+		# phase is only recorded once it finishes.
+		HighpolyVitals.sample()
 		HighpolyProfile.begin("panel heartbeat")
 		var _tt := Time.get_ticks_msec()
 		# The read's clock, ticked here rather than by the worker. The stages that
@@ -1656,6 +1664,11 @@ All of it is read from your own Battlefield 6 installation."
 			HighpolyCollision.refresh_transforms()
 			HighpolyProfile.end("collision overlay follow")
 		HighpolyProfile.end("panel heartbeat"))
+	# Every "it hangs when I do X" report needs to know what was switched on,
+	# and not one of them has ever carried it. Registered rather than snapshotted
+	# so the log records the state at SAVE time, which is the state the person
+	# is describing.
+	HighpolyVitals.set_settings_probe(_settings_snapshot)
 	dock.add_child(mapctx_timer); mapctx_timer.start()
 	_edited_root = EditorInterface.get_edited_scene_root()
 
@@ -1690,6 +1703,47 @@ All of it is read from your own Battlefield 6 installation."
 		_soft_applied = true
 		_apply_ui(_ui)
 	_startup.call_deferred()
+
+
+# THE STATE OF THE PANEL, for a saved log.
+#
+# Reports arrive as "it locked up", "it went to 16 GB", "the props are white",
+# and every one of them depends on which layers were on and how far the render
+# distance was pushed. We have been reconstructing that by asking. Every control
+# is null-guarded: the log must save from any state, including a half-built dock
+# after a failed reload.
+func _settings_snapshot() -> PackedStringArray:
+	var out := PackedStringArray()
+	var yn := func(b: Button) -> String:
+		return "unavailable" if b == null else ("ON" if b.button_pressed else "off")
+	if mode_btn != null and mode_btn.selected >= 0:
+		out.append("%-22s %s" % ["detail mode",
+			mode_btn.get_item_text(mode_btn.selected)])
+	out.append("%-22s %s" % ["map context", yn.call(mapctx_on)])
+	out.append("%-22s %s" % ["map objects", yn.call(mapctx_objects)])
+	out.append("%-22s %s" % ["skyline", yn.call(mapctx_backdrop)])
+	out.append("%-22s %s" % ["water", yn.call(mapctx_water)])
+	out.append("%-22s %s" % ["fx", yn.call(mapctx_fx)])
+	out.append("%-22s %s" % ["lighting", yn.call(mapctx_light)])
+	out.append("%-22s %s" % ["  sdfgi + ssao", yn.call(mapctx_gi)])
+	out.append("%-22s %s" % ["  sun shadows", yn.call(mapctx_shadows)])
+	out.append("%-22s %s" % ["  map lights", yn.call(mapctx_maplights)])
+	out.append("%-22s %s" % ["cull placed objects", yn.call(mapctx_optimize)])
+	out.append("%-22s %s" % ["collision overlay", yn.call(col_chk)])
+	if mapctx_range != null:
+		# Stated with its meaning, because the top of this slider is the setting
+		# that turns every performance question into a different question: at
+		# maximum, nothing is culled by distance at all.
+		var r := int(mapctx_range.value)
+		out.append("%-22s %s" % ["render distance",
+			"objects OFF" if r <= 0
+			else ("MAXIMUM, no distance culling" if r >= int(mapctx_range.max_value)
+			else "%d m" % r)])
+	if mapctx_variant != null and mapctx_variant.selected > 0:
+		out.append("%-22s %s" % ["gamemode variant",
+			mapctx_variant.get_item_text(mapctx_variant.selected)])
+	return out
+
 
 func _exit_tree() -> void:
 	# The clean-exit marker. Its ABSENCE next session is what says the editor
@@ -3506,6 +3560,16 @@ func _ensure_game_source(map: String, gen: int = -1) -> bool:
 	# time; it was going somewhere nobody looks.
 	gs.log_fn = func(s: String) -> void: Log.info(s)
 	gs.surface_cache = "%s/%s" % [HighpolyMapContext.CACHE, map]
+	# Let a saved log attribute memory to us instead of leaving it to inference.
+	# The reader's caches are the thing that reaches 13.8 GB, and until now the
+	# only way anyone learned that was by running our harness, which no user
+	# does.
+	HighpolyVitals.set_cache_probe(func() -> Dictionary:
+		return gs.cache_stats() if gs != null else {})
+	# Rates describe THIS map's read. Left accumulating, a second map opened in
+	# the same session would average its warm cache into the first map's cold
+	# read and flatter a slow disk into looking fine.
+	BF6Cas.io_reset()
 	# Cold is the ~90 s case, and it has to be decided BEFORE the read: the whole
 	# point of saying "this takes a couple of minutes" is saying it first.
 	#
@@ -3518,9 +3582,14 @@ func _ensure_game_source(map: String, gen: int = -1) -> bool:
 	_read_begin(map, not _map_read_before(map))
 	var ok_g: bool = await gs.open_async(dock, map, "",
 		func(stage: String, done: int, total: int):
+			# The same string the panel is showing, kept where the freeze
+			# detector can name it. If the editor stops here, the log now says
+			# WHICH stage it stopped in rather than going quiet.
+			HighpolyVitals.crumb("reading %s: %s" % [map, stage])
 			_read_stage_set(stage, done, total)
 			lbl.text = "%s: %s" % [map, stage])
 	_read_end()
+	HighpolyVitals.crumb("idle, the read has finished")
 	_gs_opening = false
 	if gen >= 0 and gen != _mapctx_gen:
 		return false

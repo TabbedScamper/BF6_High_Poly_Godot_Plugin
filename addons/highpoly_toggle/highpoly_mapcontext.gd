@@ -4176,6 +4176,18 @@ func _build_props_async(props_root: Node3D, entries: Array, dir: String,
 # a ~BUILD_REPORT_EVERY-mesh cadence so the Output panel isn't flooded.
 func _report_progress(final := false) -> void:
 	build_progress.emit(_build_done, _build_total)
+	# The build's own breadcrumb, so a freeze during the object pass says so
+	# rather than being attributed to whatever ran before it. tick_long rate
+	# limits itself, so calling it per mesh costs a dictionary lookup.
+	if not final:
+		HighpolyVitals.crumb("building map objects")
+		HighpolyVitals.tick_long("building map objects", _build_done, _build_total)
+	else:
+		# Hand the breadcrumb back. Left pointing at the build, a freeze that
+		# happened later - flying the camera, say - would be reported against a
+		# phase that finished minutes earlier, which is worse than no attribution
+		# at all because it reads as evidence.
+		HighpolyVitals.crumb("idle, nothing building")
 	var msg: String
 	if final:
 		msg = "%s, %d object meshes" % [_build_status_base, _build_props]

@@ -419,6 +419,37 @@ func build_report() -> PackedStringArray:
 	if n_geom_miss == 0 and asks > 0:
 		out.append("  NOTE: every mesh came from a cache. These per-mesh costs are")
 		out.append("  NOT what a first open pays. Delete user://bf6_geom to measure that.")
+
+	# WHY SOME OF IT DREW WHITE, as a count rather than as a marker at a time.
+	#
+	# Every one of these was already being tallied and none of them was ever
+	# printed. A user marks three white props by hand and we investigate three
+	# props; the number that matters is whether it is three surfaces or three
+	# thousand, and whether they failed for the same reason - and that decides
+	# whether it is their install (see the fingerprint above) or our reader.
+	var no_key := int(tex_stats.get("no_key", 0))
+	var no_dep := int(tex_stats.get("no_depot", 0))
+	var mats := int(tex_stats.get("materials", 0))
+	var fell := int(tex_stats.get("var_fallback", 0))
+	if no_key + no_dep + fell > 0:
+		var tried := maxi(1, mats + no_key + no_dep)
+		out.append("")
+		out.append("SURFACES THAT COULD NOT BE DRESSED  (these draw WHITE)")
+		out.append("  %-34s %8d   %5.1f%% of %d"
+			% ["no record in the depot", no_key,
+			   100.0 * no_key / float(tried), tried])
+		out.append("  %-34s %8d   %5.1f%%"
+			% ["no depot for the scope at all", no_dep,
+			   100.0 * no_dep / float(tried)])
+		out.append("  %-34s %8d" % ["dressed successfully", mats])
+		if fell > 0:
+			# Not white, but wrong: the base paint instead of the livery. Worth
+			# separating, because it looks like a texture bug and is not one.
+			out.append("  %-34s %8d   drew in base paint, not their variant"
+				% ["variation had no record", fell])
+		out.append("  A large count here with a LOW line in the install")
+		out.append("  fingerprint above is the game install, not this plugin:")
+		out.append("  a record that is not on the disk cannot be read off it.")
 	return out
 
 
@@ -1155,6 +1186,22 @@ func terrain_surface(cache_dir: String, force := false,
 	_surface_cached = false
 	if src == null or cache_dir == "":
 		return {}
+	# EVERY STAGE BELOW NOW REPORTS WHILE IT RUNS, not only when it ends.
+	#
+	# This whole function is main-thread work, so a user who stalls inside it
+	# freezes the editor: the panel stops repainting, the heartbeat stops
+	# firing, and note_phase - which records a phase when it FINISHES - records
+	# nothing for a phase that has not finished. One user sat here for four and
+	# a half minutes and their log contained a blank gap where the answer was.
+	#
+	# Wrapped once here rather than at each progress.call site, so a stage added
+	# later is covered without anyone remembering to.
+	var _panel := progress
+	progress = func(stage: String, done: int, total: int) -> void:
+		HighpolyVitals.crumb(stage)
+		HighpolyVitals.tick_long(stage, done, total)
+		if _panel.is_valid():
+			_panel.call(stage, done, total)
 	var dir_splat := "%s/splat" % cache_dir
 	var meta_path := "%s/layers.json" % dir_splat
 	if not force and FileAccess.file_exists(meta_path) \
