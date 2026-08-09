@@ -501,6 +501,18 @@ func build_report() -> PackedStringArray:
 			% ["no depot for the scope at all", no_dep,
 			   100.0 * no_dep / float(tried)])
 		out.append("  %-34s %8d" % ["dressed successfully", mats])
+		# These WOULD have drawn white. Counted separately, and by which fallback
+		# answered, so the rescue cannot quietly hide how often the walk hands
+		# the dressing code the wrong scope.
+		var fb_ship := int(tex_stats.get("scope_shipping", 0))
+		var fb_sib := int(tex_stats.get("scope_sibling", 0))
+		if fb_ship + fb_sib > 0:
+			out.append("  %-34s %8d   would have drawn white"
+				% ["  rescued by another scope", fb_ship + fb_sib])
+			out.append("  %-34s %8d   the bundle that ships the mesh"
+				% ["    of those, shipping bundle", fb_ship])
+			out.append("  %-34s %8d   a sibling subworld of the level"
+				% ["    a level sibling", fb_sib])
 		if fell > 0:
 			# Not white, but wrong: the base paint instead of the livery. Worth
 			# separating, because it looks like a texture bug and is not one.
@@ -4523,8 +4535,14 @@ func _dress(am: ArrayMesh, keys: Array, scope: String, var_hash := 0) -> void:
 		return
 	_dressed.append([am, keys, scope, var_hash, _dress_name])
 	var _t := Time.get_ticks_usec()
+	# The bundle that shipped this mesh, as a second place to look when the
+	# walk's scope has no record. See the note in _dress_only.
+	var alt := _scope_of(_dress_name) if _dress_name != "" else ""
+	if alt == scope:
+		alt = ""
 	for i in range(mini(keys.size(), am.get_surface_count())):
-		var mat = material_for(_mkey(keys[i]), scope, var_hash, _mpal(keys[i]))
+		var mat = _material_any(_mkey(keys[i]), scope, alt, var_hash,
+			_mpal(keys[i]))
 		if mat != null:
 			am.surface_set_material(i, mat)
 	t_mat += Time.get_ticks_usec() - _t
@@ -4612,7 +4630,8 @@ func invalidate_materials(only: Array = []) -> Dictionary:
 			continue
 		meshes += 1
 		surfaces += (am as ArrayMesh).get_surface_count()
-		_dress_only(am as ArrayMesh, row[1] as Array, str(row[2]), int(row[3]))
+		_dress_only(am as ArrayMesh, row[1] as Array, str(row[2]), int(row[3]),
+			str(row[4]) if row.size() > 4 else "")
 	_dressed = live
 	return {"meshes": meshes, "surfaces": surfaces, "gone": gone,
 		"ms": Time.get_ticks_msec() - t0}
@@ -4620,10 +4639,76 @@ func invalidate_materials(only: Array = []) -> Dictionary:
 
 # _dress without the bookkeeping, so re-dressing does not grow the list it is
 # iterating.
-func _dress_only(am: ArrayMesh, keys: Array, scope: String, var_hash: int) -> void:
+# Depot scopes belonging to the same level as `scope`.
+#
+# A level ships several subworlds side by side - default_event, winter_event,
+# the gameplay layers, the level's own bundle - and a placement's shader records
+# do not always live in the one the walk reached it through. The marked London
+# plane tree on MP_Aftermath was walked under default_event and all three of its
+# surfaces have their records in winter_event, a seasonal sibling.
+#
+# Computed once per level directory. On MP_Aftermath that is 72 scopes, and only
+# surfaces that have already failed twice ever look at them.
+var _sib_scopes := {}
+
+func _siblings_of(scope: String) -> Array:
+	var dir := scope.get_base_dir()
+	if dir == "":
+		return []
+	if _sib_scopes.has(dir):
+		return _sib_scopes[dir]
+	var out: Array = []
+	for k in _depot_bundles.keys():
+		var s := str(k)
+		if s != scope and s.begins_with(dir + "/"):
+			out.append(s)
+	_sib_scopes[dir] = out
+	return out
+
+
+# The material for one surface, trying the scopes in order of authority:
+# the walk's, then the bundle that ships the mesh, then the level's siblings.
+# Returns null only when none of them holds a record.
+func _material_any(state_key: int, scope: String, alt: String, var_hash: int,
+		pal: PackedInt32Array) -> Variant:
+	var mat = material_for(state_key, scope, var_hash, pal)
+	if mat != null:
+		return mat
+	if alt != "":
+		mat = material_for(state_key, alt, var_hash, pal)
+		if mat != null:
+			tex_stats["scope_shipping"] = \
+				int(tex_stats.get("scope_shipping", 0)) + 1
+			return mat
+	for s in _siblings_of(scope):
+		mat = material_for(state_key, str(s), var_hash, pal)
+		if mat != null:
+			tex_stats["scope_sibling"] = \
+				int(tex_stats.get("scope_sibling", 0)) + 1
+			return mat
+	return null
+
+
+func _dress_only(am: ArrayMesh, keys: Array, scope: String, var_hash: int,
+		res_name := "") -> void:
+	# THE BUNDLE THAT SHIPPED THE MESH, as a second place to look.
+	#
+	# The scope comes from the WALK - the subworld that mounted the prefab - and
+	# that is usually right and occasionally is not. A London plane tree on
+	# MP_Aftermath was walked under .../default_event, which is a real depot and
+	# holds no record for the tree's surfaces, so all three drew white. The
+	# resource itself ships in .../mp_aftermath, whose depot does hold them.
+	#
+	# res_bundle records who shipped each resource at mount time, so the right
+	# answer was already in hand. Tried only when the walk's scope produces
+	# nothing: the walk stays authoritative, this is a fallback, not a
+	# replacement.
+	var alt := _scope_of(res_name) if res_name != "" else ""
+	if alt == scope:
+		alt = ""
 	for i in range(mini(keys.size(), am.get_surface_count())):
-		var mat = material_for(_mkey(keys[i]), scope, var_hash, _mpal(keys[i]))
-		am.surface_set_material(i, mat)
+		am.surface_set_material(i, _material_any(_mkey(keys[i]), scope, alt,
+			var_hash, _mpal(keys[i])))
 
 
 # What this mesh WOULD look like under `scope`, as a string: the identity of the
