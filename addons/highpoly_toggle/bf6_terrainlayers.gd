@@ -59,6 +59,12 @@ var layers: Array = []               # per index: {textures:{}, tiling, smoothne
 var surface_key := 0
 var record_offset := -1
 var resolve_rate := 0.0
+# What the offset search cost and how much of the buffer it had to look at.
+# Recorded because this search froze a user's editor for 2 m 34 s and the log
+# could only say that it happened, not how close it came or how much work it
+# did. A future report should be able to say whether the fix held.
+var scan_ms := 0
+var scan_candidates := 0
 
 
 # -> true when the whole chain closes on this level.
@@ -113,7 +119,35 @@ func load(src, level: String, pidx: Dictionary) -> bool:
 		return false
 	record_offset = -1
 	resolve_rate = 0.0
+	var t_scan := Time.get_ticks_msec()
+	# TWO PASSES, because the one-pass version froze the editor for two and a
+	# half minutes on the installs that need this code to be fast.
+	#
+	# The old loop tested all `declared` keys at every 4-byte offset and broke
+	# out only on a 100% match. On an install where the offset CAN be pinned
+	# that break comes early and the cost is invisible. On an install where it
+	# cannot, there is no break at all: it grinds the whole buffer at `declared`
+	# dictionary lookups per offset, on the main thread, and the editor is gone
+	# for minutes.
+	#
+	# So the two failures we have been treating as separate are one failure. The
+	# users who report "the terrain textures are corrupt" are exactly the users
+	# for whom this never reaches 100%, and therefore exactly the users for whom
+	# it never breaks early. Measured from a user's log: 2 m 34 s here, then
+	# 5.7 s, on a map whose palette then came out unusable.
+	#
+	# PASS 1 filters on the FIRST record only. If all `declared` keys resolve at
+	# an offset then that offset's first key resolves too, so no possible winner
+	# is discarded - the filter is a superset of the answer, not a heuristic.
+	# One lookup per offset instead of `declared` of them.
+	var cands: Array = []
 	for off in range(12, lg.size() - declared * STRIDE + 1, 4):
+		if depot.key_to_record.has(lg.decode_u64(off + 20)):
+			cands.append(off)
+	# PASS 2 is the original test, run only on what survived. A 64-bit key
+	# colliding with this depot by chance is vanishingly unlikely, so this list
+	# is short on every install, including the ones that never find a match.
+	for off in cands:
 		var hit := 0
 		for i in range(declared):
 			if depot.key_to_record.has(lg.decode_u64(off + i * STRIDE + 20)):
@@ -124,6 +158,18 @@ func load(src, level: String, pidx: Dictionary) -> bool:
 			record_offset = off
 		if hit == declared:
 			break
+	scan_ms = Time.get_ticks_msec() - t_scan
+	scan_candidates = cands.size()
+	if cands.is_empty():
+		# Distinct from a partial fit, and a stronger statement: not one offset
+		# in the whole table resolved even its first record. That is a depot
+		# that does not describe this level's layer graphs at all, rather than a
+		# record layout we failed to locate.
+		error = ("terrain layer palette UNUSABLE - this level's layer graphs "
+			+ "match NOTHING in its shader depot (no offset resolved even one "
+			+ "record, %d records looked for, scan took %d ms). The ground will "
+			+ "draw without its layer materials.") % [declared, scan_ms]
+		return false
 	if record_offset < 0 or resolve_rate < 1.0:
 		# §9.1 makes the 100% requirement the thing that pins the offset. A
 		# partial fit is not a partial answer, it is the wrong offset.
@@ -137,10 +183,12 @@ func load(src, level: String, pidx: Dictionary) -> bool:
 		# The usual cause is a game version whose record layout this search
 		# cannot pin, NOT missing files, and those are different fixes.
 		error = ("terrain layer palette UNUSABLE - the record table offset "
-			+ "could not be pinned (best fit %.1f%%, needs 100%%). Usually a "
+			+ "could not be pinned (best fit %.1f%% of %d records over %d "
+			+ "candidate offsets, needs 100%%; scan took %d ms). Usually a "
 			+ "game version whose layout differs from what this reader "
 			+ "expects, rather than missing files. The ground will draw "
-			+ "without its layer materials.") % (resolve_rate * 100.0)
+			+ "without its layer materials.") % [resolve_rate * 100.0,
+				declared, scan_candidates, scan_ms]
 		return false
 
 	# --- what each layer binds ------------------------------------------------

@@ -1320,7 +1320,11 @@ func terrain_surface(cache_dir: String, force := false,
 		return {}
 	note_phase("ground: layer palette", Time.get_ticks_msec() - t0,
 		pal.layers.size(), "layers", FROM_INSTALL,
-		"the level's layer graph chain")
+		# The offset search inside this phase is what froze a user's editor for
+		# 2 m 34 s. Carrying its cost on the SUCCESS path too, so a log can show
+		# the fix holding rather than only showing it failing.
+		"layer graph chain; offset search %d ms over %d candidates"
+			% [pal.scan_ms, pal.scan_candidates])
 
 	# ---- the splat -----------------------------------------------------------
 	t0 = Time.get_ticks_msec()
