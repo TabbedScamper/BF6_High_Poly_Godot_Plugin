@@ -729,6 +729,10 @@ func open_map(map: String, game_dir := "", progress := Callable()) -> bool:
 		if progress.is_valid():
 			progress.call(ST_GROUND, 0, 0)
 		var sf := terrain_surface(surface_cache, false, progress)
+		# WHAT THE OPEN ALREADY TRIED, so map_data does not try it again on the
+		# main thread. See the note on _surface_tried.
+		_surface_tried = surface_cache
+		_surface_failed = sf.is_empty()
 		if not _surface_cached:
 			read_was_cold = true
 		note_phase("terrain surface", Time.get_ticks_msec() - t,
@@ -1032,7 +1036,16 @@ func _build_map_data(cache_dir: String) -> Dictionary:
 		t = Time.get_ticks_msec()
 		# The ground's appearance: colour map, layer palette, splat. The
 		# expensive one, and skipped outright once the map's cache holds it.
-		var sf := terrain_surface(cache_dir)
+		# Skip the retry the open already proved cannot work. Deterministic: same
+		# cache dir, same install, same code, so a second attempt returns the
+		# same nothing - it just spends minutes of frozen editor doing it.
+		var sf := {} as Dictionary
+		if _surface_failed and _surface_tried == cache_dir:
+			_say("game source: the ground had no usable surface on the open, so "
+				+ "map_data is NOT compositing it a second time (that retry is "
+				+ "what froze the editor with every progress bar at zero)")
+		else:
+			sf = terrain_surface(cache_dir)
 		if not sf.is_empty():
 			out["surface"] = sf
 		# A SECOND ASK, under its own name. open_map already built this on the
@@ -1041,9 +1054,11 @@ func _build_map_data(cache_dir: String) -> Dictionary:
 		# warm one and make the composite look free.
 		note_phase("map data: surface re-ask", Time.get_ticks_msec() - t,
 			int(sf.get("slices", 0)), "layer slices",
-			FROM_CACHE if _surface_cached else FROM_INSTALL,
+			FROM_CACHE if _surface_cached else FROM_MEMORY,
 			"already built by the open" if _surface_cached
-				else "the open did not build it, so it was composited here")
+				else ("SKIPPED: the open already failed to build it"
+					if _surface_failed and _surface_tried == cache_dir
+					else "the open did not build it, so it was composited here"))
 		t = Time.get_ticks_msec()
 		# ORDER MATTERS: the roads are draped on the heightfield terrain() just
 		# composited, so they cannot be built before it.
@@ -1208,6 +1223,23 @@ const LAYER_TEX_DIM := 512             # per-slice detail textures; all slices m
 # one, and it is invisible from the outside because both return the same
 # dictionary.
 var _surface_cached := false
+# WHICH cache dir the open already composited a surface for, and whether that
+# attempt failed.
+#
+# THIS IS THE WHOLE "IT FROZE AND THE BARS SAT AT 0%" MECHANISM.
+#
+# open_map builds the ground on a WorkerThreadPool task, behind a progress bar,
+# and map_data's later call was designed to "find the cache and cost nothing".
+# That holds only while the build SUCCEEDS. When it fails - a layer palette that
+# will not resolve, say - layers.json is never written, so map_data finds no
+# cache and composites the entire ground again: colour map, palette search,
+# splat. On the MAIN thread. With no progress callback passed at all.
+#
+# So the editor freezes, every bar stays where it was, and the log goes quiet,
+# all from one silent retry. And the retry cannot succeed: same inputs, same
+# code, same answer. It is pure cost.
+var _surface_tried := ""
+var _surface_failed := false
 
 
 func terrain_surface(cache_dir: String, force := false,

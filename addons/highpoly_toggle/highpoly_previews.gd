@@ -26,7 +26,19 @@ var _pending: Dictionary = {}        # name (or legacy path) -> true
 var _orig: Dictionary = {}           # proxy path -> stock Texture2D
 var _ours: Dictionary = {}           # texture instance id -> true (icons we set)
 var _swapped: bool = false
-var _gs_id: int = 0                  # the game source the cached icons came from
+# WHICH INSTALL the cached icons came from, not which game-source OBJECT.
+#
+# This was the object's instance id, and switching map tabs threw every
+# high-poly icon in the Object Library away. Opening a map builds a NEW
+# HighpolyGameSource, so the id changed on every switch and the whole cache was
+# dropped - on the reasoning below, which is right about the bake-to-install
+# transition and wrong about map A to map B.
+#
+# An icon is per OBJECT, not per map: the same crate renders identically
+# whichever level is open. What genuinely invalidates an icon is the source
+# behind it changing kind (no install -> install) or the install itself moving,
+# and the game folder captures both while being stable across map switches.
+var _gs_id: String = ""
 var _timer: Timer
 var _queue: Array = []               # names waiting for a local render
 var _busy := false
@@ -250,8 +262,14 @@ func _refresh_body() -> void:
 	# read it stops being. Without this the browser keeps serving the half-res
 	# distance copy for the rest of the session, and only the props the level
 	# happens to contain have an icon at all.
-	var gsid: int = HighpolyLib.game_source.get_instance_id() \
-		if HighpolyLib.game_source != null else 0
+	# Keyed on the INSTALL, so switching map tabs keeps the icons it has. See the
+	# note on _gs_id.
+	var gsid := ""
+	var _gsrc = HighpolyLib.game_source
+	if _gsrc != null:
+		gsid = "install"
+		if _gsrc.src != null:
+			gsid = str(_gsrc.src.game)
 	if gsid != _gs_id:
 		_gs_id = gsid
 		_cache.clear()
