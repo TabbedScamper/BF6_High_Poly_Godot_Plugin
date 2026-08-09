@@ -105,6 +105,10 @@ var catalogue_mount := false
 # existing, and callers that care should say so rather than reporting "the game
 # has no prefab for this".
 var catalogue_ready := false
+# True once the LEVEL's own placements have been walked. Detail Mode does not
+# need them, so an open for Detail Mode alone leaves this false and the map
+# context asks for them when it is switched on.
+var placements_ready := false
 
 # Where terrain_surface writes, when the caller wants the ground built as part of
 # the open rather than in the middle of the build. Empty = do not build it here.
@@ -325,19 +329,37 @@ func install_report() -> PackedStringArray:
 			out.append("                      databases; the wrong one resolves")
 			out.append("                      to wrong layouts rather than failing)")
 	out.append("  game folder        %s" % src.game)
-	out.append("  A big shortfall here is not a plugin bug: it means the game")
-	out.append("  itself is missing content, and nothing can be drawn from")
-	out.append("  records that are not on your disk. Verify or repair the game")
-	out.append("  install if these read low.")
+	# WHICH MOUNT THIS DESCRIBES. The reference figures are for a mount of every
+	# level, and the open now mounts only the level being read - the placeable
+	# catalogue arrives afterwards, on a worker. Comparing a level mount against
+	# the all-levels reference reports a healthy install as 49% and flags it LOW,
+	# which is the same false alarm that already sent one person off to verify a
+	# game that was fine. Say what is being counted, and only compare when the
+	# comparison means something.
+	if not catalogue_ready:
+		out.append("  mount              THIS LEVEL ONLY so far. The rest of the")
+		out.append("                     placeable catalogue is still loading, so")
+		out.append("                     these counts are EXPECTED to be lower")
+		out.append("                     than the reference and nothing here is")
+		out.append("                     evidence of a problem yet.")
+	else:
+		out.append("  A big shortfall here is not a plugin bug: it means the game")
+		out.append("  itself is missing content, and nothing can be drawn from")
+		out.append("  records that are not on your disk. Verify or repair the game")
+		out.append("  install if these read low.")
 	for row in [["EBX entries", ebx, REF_EBX], ["resources", res, REF_RES],
 			["catalogue names", names, REF_NAMES],
 			["depot scopes", scopes, REF_SCOPES]]:
 		var have := int(row[1])
 		var want := int(row[2])
 		var pct := 100.0 * float(have) / maxf(float(want), 1.0)
-		out.append("  %-18s %10d   reference %10d   %5.1f%%%s"
-			% [row[0], have, want, pct,
-			   "   <-- LOW" if pct < 90.0 else ""])
+		if not catalogue_ready:
+			out.append("  %-18s %10d   (level mount; no reference yet)"
+				% [row[0], have])
+		else:
+			out.append("  %-18s %10d   reference %10d   %5.1f%%%s"
+				% [row[0], have, want, pct,
+				   "   <-- LOW" if pct < 90.0 else ""])
 	return out
 
 
@@ -512,6 +534,68 @@ func print_build_report() -> void:
 		_say(line)
 
 
+# WALK THE LEVEL'S PLACEMENTS, for a map-context layer being switched on after
+# an open that did not need them.
+#
+# Blocking, and meant to be called from a worker: it is the ~49 s cold traversal
+# that used to run on every open whether or not anything was going to draw the
+# map. Safe to call more than once.
+#
+# Everything downstream of the walk is keyed off it, so map_data has to be
+# dropped: its group placements were computed from an empty row set.
+func ensure_placements(progress := Callable()) -> bool:
+	if placements_ready:
+		return true
+	if src == null or walk == null:
+		return false
+	var t := Time.get_ticks_msec()
+	if progress.is_valid():
+		progress.call(ST_WALK, 0, 0)
+		walk.progress = func(found: int, _seen: int):
+			progress.call(ST_WALK, found, 0)
+	if not walk.run_cached(level):
+		error = str(walk.stats.get("error", "the placement walk produced nothing"))
+		return false
+	placements_ready = true
+	var cached: bool = bool(walk.stats.get("from_cache", false))
+	note_phase("placement walk", Time.get_ticks_msec() - t, walk.rows.size(),
+		"placements", FROM_CACHE if cached else FROM_INSTALL,
+		"%d light entities, walked when the map layer was switched on"
+			% walk.ents.size())
+	# Anything derived from an empty walk is wrong now.
+	drop_map_data()
+	_say("game source: walked %d placements for the map layers"
+		% walk.rows.size())
+	return true
+
+
+# COMPOSITE THE GROUND, for a map layer switched on after an open that skipped it.
+#
+# Same reason this lives in the open rather than in map_data: it is about a
+# minute of BC7 decoding and page compositing the first time a map is seen, and
+# map_data runs on the MAIN thread. Called from the same worker as
+# ensure_placements so it stays off it.
+func ensure_ground(cache_dir: String, progress := Callable()) -> bool:
+	if cache_dir == "" or src == null:
+		return false
+	if surface_cache == cache_dir and _surface_tried == cache_dir:
+		return not _surface_failed
+	surface_cache = cache_dir
+	var t := Time.get_ticks_msec()
+	if progress.is_valid():
+		progress.call(ST_GROUND, 0, 0)
+	var sf := terrain_surface(cache_dir, false, progress)
+	_surface_tried = cache_dir
+	_surface_failed = sf.is_empty()
+	note_phase("terrain surface", Time.get_ticks_msec() - t,
+		int(sf.get("slices", 0)), "layer slices",
+		FROM_CACHE if _surface_cached else FROM_INSTALL,
+		"built when the terrain layer was switched on")
+	# map_data may already hold a version of this map with no ground in it.
+	drop_map_data()
+	return not sf.is_empty()
+
+
 # THE PLACEABLE CATALOGUE, added after the map is already on screen.
 #
 # Blocking, and meant to be called from a worker: it is the 85 s cold sweep of
@@ -631,7 +715,11 @@ static func geom_epoch() -> int:
 # means "done is a running count, not a fraction" — the walk knows how many
 # placements it has found but nothing knows how many there will be, and a
 # denominator we would have to invent is worse than none.
-func open_map(map: String, game_dir := "", progress := Callable()) -> bool:
+# `want` names the MAP-CONTEXT work. {"placements": false} opens the install for
+# skinning the objects the user placed and nothing else, which is all Detail Mode
+# needs. Absent means build everything, so existing callers are unchanged.
+func open_map(map: String, game_dir := "", progress := Callable(),
+		want := {}) -> bool:
 	error = ""
 	level = map.to_lower()
 	timings.clear()
@@ -758,22 +846,34 @@ func open_map(map: String, game_dir := "", progress := Callable()) -> bool:
 		src.res.size(), "res names", FROM_MEMORY,
 		"%d depot scopes found" % _depot_bundles.size())
 	t = Time.get_ticks_msec()
-	if progress.is_valid():
-		progress.call(ST_WALK, 0, 0)
-		walk.progress = func(found: int, _seen: int):
-			progress.call(ST_WALK, found, 0)
-	if not walk.run_cached(level):
-		error = str(walk.stats.get("error", "the placement walk produced nothing"))
-		return false
-	var walk_cached: bool = bool(walk.stats.get("from_cache", false))
-	if not walk_cached:
-		read_was_cold = true
-	# Per ROW rather than per partition: rows are what the build consumes, and
-	# the cold walk is 50 s for ~48k of them, so the per-row figure is the one
-	# that can be compared against a change to the traversal.
-	note_phase("placement walk", Time.get_ticks_msec() - t, walk.rows.size(),
-		"placements", FROM_CACHE if walk_cached else FROM_INSTALL,
-		"%d light entities" % walk.ents.size())
+	# THE WALK IS MAP-CONTEXT WORK, and it is skipped when nothing is going to
+	# draw the map.
+	#
+	# It traverses the LEVEL's own placements - 38,226 of them on Aftermath, 49 s
+	# cold - to answer "what does this map contain and where". Skinning the
+	# objects the USER placed does not need any of that: those resolve through
+	# the partition index and the depot scopes above, both of which are already
+	# built. Someone who only switches Detail Mode to High-Poly was paying for
+	# the whole map anyway, and watching a progress bar talk about placements
+	# they never asked for.
+	if bool(want.get("placements", true)):
+		if progress.is_valid():
+			progress.call(ST_WALK, 0, 0)
+			walk.progress = func(found: int, _seen: int):
+				progress.call(ST_WALK, found, 0)
+		if not walk.run_cached(level):
+			error = str(walk.stats.get("error", "the placement walk produced nothing"))
+			return false
+		placements_ready = true
+		var walk_cached: bool = bool(walk.stats.get("from_cache", false))
+		if not walk_cached:
+			read_was_cold = true
+		# Per ROW rather than per partition: rows are what the build consumes, and
+		# the cold walk is 50 s for ~48k of them, so the per-row figure is the one
+		# that can be compared against a change to the traversal.
+		note_phase("placement walk", Time.get_ticks_msec() - t, walk.rows.size(),
+			"placements", FROM_CACHE if walk_cached else FROM_INSTALL,
+			"%d light entities" % walk.ents.size())
 	t = Time.get_ticks_msec()
 	_geom_open()
 	# The geometry cache directory carries GEOM_EPOCH, so a bump orphans every
@@ -858,7 +958,7 @@ var _prog_done := 0
 var _prog_total := 0
 
 
-func open_async(host: Node, map: String, game_dir := "",
+func open_async(host: Node, map: String, game_dir := "", want := {},
 		progress := Callable()) -> bool:
 	_open_done = false
 	_open_result = false
@@ -870,7 +970,8 @@ func open_async(host: Node, map: String, game_dir := "",
 			func(stage: String, done: int, total: int):
 				_prog_stage = stage
 				_prog_done = done
-				_prog_total = total)
+				_prog_total = total,
+			want)
 		_open_done = true
 	var tid := WorkerThreadPool.add_task(task, true, "bf6 game source open")
 	var last := ""

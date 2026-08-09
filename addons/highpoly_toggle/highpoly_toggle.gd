@@ -3186,6 +3186,53 @@ func _lighting_subs_enabled(on: bool) -> void:
 	if mapctx_fill: mapctx_fill.editable = on
 
 
+# Is anything that draws the MAP switched on?
+#
+# Detail Mode skins the objects YOU placed and needs none of the map's own
+# contents: no placement walk, no terrain composite. Map Context is the master
+# switch for everything that does.
+func _wants_map_layers() -> bool:
+	return mapctx_on != null and mapctx_on.button_pressed
+
+
+# Walk the level's placements if a map layer needs them and the open skipped it.
+# On a worker, behind the same read panel the open uses, because it is ~49 s cold.
+func _ensure_placements_async(gs) -> bool:
+	var map: String = mapctx.map_of(EditorInterface.get_edited_scene_root())
+	var ground := "%s/%s" % [HighpolyMapContext.CACHE, map]
+	if gs == null or (gs.placements_ready and gs.surface_cache == ground):
+		return gs != null
+	_read_begin(map, false)
+	HighpolyVitals.crumb("walking the map's placements")
+	var done := [false]
+	var okv := [false]
+	var tid := WorkerThreadPool.add_task(func() -> void:
+		var relay := func(stage: String, d: int, t: int):
+			_prog_relay = [stage, d, t]
+		okv[0] = gs.ensure_placements(relay)
+		# The ground too, on this same worker. map_data would otherwise composite
+		# it on the main thread, which is a minute of frozen editor.
+		gs.ensure_ground(ground, relay)
+		done[0] = true, true, "bf6 placement walk")
+	while not done[0]:
+		if get_tree() == null:
+			break
+		if not _prog_relay.is_empty():
+			_read_stage_set(str(_prog_relay[0]), int(_prog_relay[1]),
+				int(_prog_relay[2]))
+		await get_tree().process_frame
+	WorkerThreadPool.wait_for_task_completion(tid)
+	_prog_relay = []
+	_read_end()
+	HighpolyVitals.crumb("idle, nothing building")
+	return okv[0]
+
+
+# Written by the walk worker, read by the frame pump. Same reasoning as the
+# game source's own relay: a Label may not be touched off the main thread.
+var _prog_relay: Array = []
+
+
 func _mapctx_rebuild() -> void:
 	# rebuild with current toggles, no re-download (e.g. terrain detail changed)
 	if not mapctx_on.button_pressed: return
@@ -3602,7 +3649,15 @@ func _ensure_game_source(map: String, gen: int = -1) -> bool:
 	# exactly where the answer should have been. The table existed the whole
 	# time; it was going somewhere nobody looks.
 	gs.log_fn = func(s: String) -> void: Log.info(s)
-	gs.surface_cache = "%s/%s" % [HighpolyMapContext.CACHE, map]
+	# ONLY BUILD THE GROUND IF SOMETHING IS GOING TO DRAW IT.
+	#
+	# surface_cache was set unconditionally, so every open composited the terrain
+	# colour map, layer palette and splat - about 28 s cold - including for
+	# somebody who only switched Detail Mode to High-Poly and never asked for a
+	# map layer at all. Empty means "do not build it here"; Extended Terrain
+	# builds it when it is switched on.
+	gs.surface_cache = ("%s/%s" % [HighpolyMapContext.CACHE, map]) \
+		if _wants_map_layers() else ""
 	# Let a saved log attribute memory to us instead of leaving it to inference.
 	# The reader's caches are the thing that reaches 13.8 GB, and until now the
 	# only way anyone learned that was by running our harness, which no user
@@ -3623,7 +3678,10 @@ func _ensure_game_source(map: String, gen: int = -1) -> bool:
 	# has a decoded ground on disk has been read on this machine before, which is
 	# the same question in a form that can be answered from a file test.
 	_read_begin(map, not _map_read_before(map))
+	# The placement walk is the map's own contents. Detail Mode skins what YOU
+	# placed and needs none of it, so it is not walked unless a map layer is on.
 	var ok_g: bool = await gs.open_async(dock, map, "",
+		{"placements": _wants_map_layers()},
 		func(stage: String, done: int, total: int):
 			# The same string the panel is showing, kept where the freeze
 			# detector can name it. If the editor stops here, the log now says
@@ -3736,6 +3794,16 @@ func _mapctx_changed() -> void:
 	#
 	# A later arrival waits for the one in flight rather than starting its own.
 	await _ensure_game_source(map, gen)
+	# THE MAP'S OWN CONTENTS, walked now if an earlier open did not need them.
+	#
+	# An open made for Detail Mode alone skips the placement walk, because
+	# skinning what YOU placed does not need to know what the LEVEL contains.
+	# Switching a map layer on is the moment it does, and everything downstream -
+	# props, skyline, lights, the group placements - reads from that walk, so it
+	# has to complete before the build starts rather than during it.
+	if _wants_map_layers() and mapctx != null and mapctx.game_source != null:
+		if not mapctx.game_source.placements_ready:
+			await _ensure_placements_async(mapctx.game_source)
 	if gen != _mapctx_gen:
 		# A newer toggle superseded this one while the install was being read.
 		# Correct, and utterly invisible: the click appears to do nothing.
