@@ -4866,14 +4866,38 @@ func material_for(state_key: int, scope: String, var_hash := 0,
 		# through the wrap's own alpha, which is a better approximation of a real
 		# vinyl wrap; this is the first order of it, and the difference will show
 		# on wraps that do not cover the whole shell.
-		var wrap = _texture_for(slots.get("wrap"), false)
+		# THE WRAP GOES ON THE BODY ONLY. The reference implementation is explicit
+		# about why (impl/pipeline/member_mesh.py, the carpaint branch):
+		#
+		#   secondary member (door/hood/trunk): its UV0 islands do NOT share the
+		#   body's wrap layout - decals land as garbage. Solid family paint only.
+		#
+		# Reported as "the liveries are showing up now but they are not mapped
+		# correctly", which is exactly that: a police stripe authored for the
+		# shell's unwrap, sampled through a door's own unrelated unwrap.
+		#
+		# Body and member are told apart by name. The family meshes end at their
+		# index - com_carsuv_01_mesh - and every separate panel carries a part
+		# after it: com_carsuv_01_door_frontright_mesh, com_metrobus_01_wreck_
+		# roof_mesh. So a name that does not end in its index is a member.
+		var wrap = _texture_for(slots.get("wrap"), false) if _is_body_member() else null
 		if wrap != null:
 			cm.albedo_texture = wrap
 			# The body constant is often near-black (0.0199 on the police SUV),
 			# which would multiply the livery down to nothing. Where a wrap is
 			# present it is the surface, so the constant stops being a tint.
+			#
+			# NOT WHAT THE REFERENCE DOES, and worth saying: it composites the
+			# wrap over a paint colour taken from the variant's own vst bake
+			# (median of the lit pixels - police white, taxi yellow) using the
+			# wrap's alpha, so paint shows wherever the wrap does not cover.
+			# White is the stand-in until that bake is read; it is right for a
+			# wrap that covers the shell and wrong for one that does not.
 			cm.albedo_color = Color(1, 1, 1)
 			tex_stats["carpaint_wrap"] = int(tex_stats.get("carpaint_wrap", 0)) + 1
+		elif slots.has("wrap"):
+			tex_stats["carpaint_wrap_skipped"] = \
+				int(tex_stats.get("carpaint_wrap_skipped", 0)) + 1
 		var nm2 = _texture_for(slots.get("normal", slots.get("normal_vt")), true)
 		if nm2 != null:
 			cm.normal_enabled = true
@@ -5478,6 +5502,27 @@ static func _mpal(v) -> PackedInt32Array:
 # them carries a body colour — which matters because a carpaint record has NO
 # albedo texture at all, so before this the shell fell through to Godot's
 # default and every car on the map was white.
+# Is the mesh being dressed the vehicle's BODY, rather than a door, hood, roof
+# or other separate panel?
+#
+# The family meshes end at their index - com_carsuv_01_mesh, com_metrobus_01_mesh
+# - and every separate member carries a part name after it:
+# com_carsuv_01_door_frontright_mesh, com_metrobus_01_wreck_roof_mesh. So the
+# test is whether the name, with "_mesh" removed, ends in a numeric index.
+#
+# Only the body's UV0 matches the wrap sheet's layout. A member sampled through
+# the body's wrap gets a stripe across the wrong place.
+func _is_body_member() -> bool:
+	if _dress_name == "":
+		return true          # unknown: behave as before rather than silently drop it
+	var stem := _dress_name.get_file().trim_suffix("_mesh")
+	var bits := stem.split("_")
+	if bits.is_empty():
+		return true
+	var last := str(bits[bits.size() - 1])
+	return last.is_valid_int()
+
+
 func _carpaint_of(slots: Dictionary, consts: Dictionary):
 	if not slots.has("carpaint_flakes"):
 		return null
