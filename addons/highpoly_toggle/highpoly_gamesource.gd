@@ -450,6 +450,35 @@ func build_report() -> PackedStringArray:
 		out.append("  A large count here with a LOW line in the install")
 		out.append("  fingerprint above is the game install, not this plugin:")
 		out.append("  a record that is not on the disk cannot be read off it.")
+
+	# WHAT THE TEXTURES WEIGH, AND WHAT SHAPE THEY ARE.
+	#
+	# tex_dims has been counting every decoded texture by size, format, chunk
+	# and mip state since it was written, and tex_stats["bytes"] has been adding
+	# up what they cost. Neither was ever printed. A user reported textures that
+	# "looked really corrupt" alongside 13 GB of RAM, and the two questions that
+	# separates - is a format decoding wrong, and are these simply enormous -
+	# were both already answered in memory and thrown away.
+	var tbytes := int(tex_stats.get("bytes", 0))
+	if tbytes > 0 or not tex_dims.is_empty():
+		out.append("")
+		out.append("TEXTURES DECODED")
+		out.append("  %-34s %8d   %s"
+			% ["decoded this session", int(tex_stats.get("decoded", 0)),
+			   HighpolyLog.human_bytes(tbytes)])
+		var tfail := int(tex_stats.get("failed", 0))
+		out.append("  %-34s %8d%s" % ["failed to decode", tfail,
+			"   <-- these draw as whatever was last bound" if tfail > 0 else ""])
+		if not tex_dims.is_empty():
+			# The biggest families only. The full table runs to hundreds of rows
+			# and the point is which handful dominate.
+			var shapes: Array = []
+			for k in tex_dims.keys():
+				shapes.append([str(k), int(tex_dims[k])])
+			shapes.sort_custom(func(a, b): return int(a[1]) > int(b[1]))
+			out.append("  most common shapes (size, format, chunk, mips):")
+			for r in shapes.slice(0, mini(shapes.size(), 8)):
+				out.append("  %-34s %8d" % [str((r as Array)[0]), int((r as Array)[1])])
 	return out
 
 
