@@ -1652,6 +1652,24 @@ All of it is read from your own Battlefield 6 installation."
 		# copy here silently stops matching and this safety net quietly dies.
 		if mapctx and mapctx.is_build_done():
 			jobs.clear_activity(mapctx.build_job)
+			# THE CPU IMAGE POOL, RECOVERED IF THE BUILD DID NOT DO IT ITSELF.
+			#
+			# Those images are only needed while uploading, and they are the
+			# single largest thing the plugin holds: a CPU copy of every texture
+			# in the build, alongside the GPU texture it was uploaded to. The
+			# build releases them when both lanes finish, but that release is
+			# gated on a set that an aborted or errored build can leave stale -
+			# and then several GB sits there for the rest of the session with
+			# nothing able to reclaim it, because the pool is static.
+			#
+			# Costs one dictionary size check twice a second when idle.
+			if int(HighpolyBcTex.pool_stats().get("images", 0)) > 0:
+				var _freed: Dictionary = HighpolyBcTex.pool_stats()
+				HighpolyBcTex.release_images()
+				Log.info("released %d CPU texture images (%.0f MB) left over "
+					% [int(_freed.get("images", 0)),
+					   float(_freed.get("image_mb", 0.0))]
+					+ "after the build finished")
 		HighpolyProfiler.span("panel tick: total", Time.get_ticks_msec() - _tt)
 		# collision overlays follow objects the user moves/rescales
 		#

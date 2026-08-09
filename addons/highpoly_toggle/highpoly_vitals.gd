@@ -312,6 +312,27 @@ static func report() -> String:
 			if not bool(cs.get("evicts", false)):
 				out.append("  These do not evict. They are released when you switch")
 				out.append("  maps, or when every layer is switched off.")
+	# THE SHARED TEXTURE POOLS, which the line above knows nothing about.
+	#
+	# These are static and live in a different file, so every memory report we
+	# have produced attributed only the reader's own caches and silently omitted
+	# the biggest holder in the plugin. _pool keeps a CPU Image and _tex_pool a
+	# GPU texture under the SAME key, so a texture that is in both is paid for
+	# twice, and being static they survive a map switch.
+	var ps := HighpolyBcTex.pool_stats()
+	if int(ps.get("images", 0)) > 0 or int(ps.get("textures", 0)) > 0:
+		out.append("")
+		out.append("  THE SHARED TEXTURE POOLS (not counted above)")
+		out.append("  %-22s %10d   about %.0f MB   <-- CPU side, droppable"
+			% ["decoded images", int(ps.get("images", 0)),
+			   float(ps.get("image_mb", 0.0))])
+		out.append("  %-22s %10d   about %.0f MB"
+			% ["uploaded textures", int(ps.get("textures", 0)),
+			   float(ps.get("texture_mb_est", 0.0))])
+		if int(ps.get("images", 0)) > 0:
+			out.append("  A non-zero image count after a build has finished means")
+			out.append("  the CPU copies were never dropped. They are only needed")
+			out.append("  while uploading.")
 	else:
 		out.append("  Cache figures unavailable: the dock did not register a probe.")
 

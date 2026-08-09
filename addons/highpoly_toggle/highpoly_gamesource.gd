@@ -3507,6 +3507,20 @@ func release_caches() -> Dictionary:
 	_sky_cache.clear()
 	_water_look_cache.clear()
 	_decal_tex_cache.clear()
+	# _dressed WAS MISSING, and it is the one that made the mesh half of this a
+	# lie. It holds [ArrayMesh, keys, scope, variation, name] for every mesh ever
+	# dressed, so clearing _mesh_by_sig above freed nothing: every one of the
+	# 7,222 meshes this function then REPORTED as released was still strongly
+	# referenced from here. Written from a shorter list than
+	# invalidate_materials() keeps, which is where the rest of these came from.
+	_dressed.clear()
+	_keys_for.clear()
+	_group_meta.clear()
+	_mask_cache.clear()
+	_mask_cut.clear()
+	_tint_mask_cache.clear()
+	_smooth_cache.clear()
+	_litpack_cache.clear()
 	# Windows will often hold the freed pages rather than returning them to the
 	# OS, so Task Manager can stay high while this genuinely worked. Judge it by
 	# Performance.MEMORY_STATIC and VRAM, not by RSS.
@@ -3543,8 +3557,18 @@ func cache_stats() -> Dictionary:
 		# 4 bytes/px is the honest upper bound for the RGBA8 we decode to; a
 		# compressed texture is less, so this over-reports rather than flatters.
 		tex_bytes += px * 4
-		if t2 is ImageTexture and (t2 as ImageTexture).get_image() != null:
-			pass  # deliberately not read: see the note above
+		# THERE WAS A get_image() HERE, doing precisely what the note above says
+		# must never happen, inside a `pass` that made it look inert. It is not
+		# inert: the call is what forces the readback, and the discarded result
+		# is only the result. On 2,402 textures that is a full CPU copy of the
+		# entire set, allocated at the exact moment we are measuring memory.
+		#
+		# Two paths made it costly rather than merely wasteful. release_caches()
+		# calls this FIRST, so a map switch did the readback at peak memory
+		# immediately before freeing - the same map switch that was reported
+		# reaching 16 GB. And the panel's memory report calls it on log save,
+		# where nothing is freed afterwards at all, so the users most likely to
+		# hit this are exactly the users who sent us a log.
 	mips = 0
 	var meshes := 0
 	var surfaces := 0

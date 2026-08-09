@@ -122,9 +122,59 @@ static func release_all() -> void:
 	_pool_mx.unlock()
 
 
+# Bytes for one image, from its dimensions and format.
+#
+# NEVER get_data(): that returns a COPY, so measuring a few thousand images
+# would allocate a second copy of every one of them - which is the failure this
+# measurement exists to find. Block-compressed sizes are exact; anything else
+# falls back to 4 bytes per pixel, which over-reports rather than flatters.
+static func _img_bytes(w: int, h: int, fmt: int) -> int:
+	var px := maxi(1, w) * maxi(1, h)
+	match fmt:
+		Image.FORMAT_DXT1, Image.FORMAT_RGTC_R:
+			return px / 2                     # 4 bpp of a block, 0.5 B/px
+		Image.FORMAT_DXT3, Image.FORMAT_DXT5, Image.FORMAT_RGTC_RG, \
+		Image.FORMAT_BPTC_RGBA:
+			return px                         # 1 B/px
+		Image.FORMAT_L8, Image.FORMAT_R8:
+			return px
+		Image.FORMAT_LA8, Image.FORMAT_RG8:
+			return px * 2
+		Image.FORMAT_RGB8:
+			return px * 3
+		_:
+			return px * 4
+
+
+# WHAT THE SHARED POOLS HOLD, which nothing outside this file could see.
+#
+# HighpolyGameSource.cache_stats() reports its own caches and knows nothing
+# about these two, so every memory report we have ever produced was blind to
+# the largest single holder in the plugin: _pool keeps a CPU Image and
+# _tex_pool a GPU texture for the SAME key, and on a full Dumbo build that is
+# thousands of textures held twice.
+#
+# Reported in bytes as well as counts, because "3,486 textures" does not tell
+# anyone whether that is a rounding error or several gigabytes.
 static func pool_stats() -> Dictionary:
 	_pool_mx.lock()
+	var img_bytes := 0
+	for k in _pool.keys():
+		var im = _pool[k]
+		if im is Image:
+			img_bytes += _img_bytes((im as Image).get_width(),
+				(im as Image).get_height(), int((im as Image).get_format()))
+	var tex_bytes := 0
+	for k in _tex_pool.keys():
+		var tx = _tex_pool[k]
+		if tx is Texture2D:
+			# The texture's own format is not reachable without a readback, so
+			# this is the 4 B/px upper bound by the same convention as above.
+			tex_bytes += (tx as Texture2D).get_width() \
+				* (tx as Texture2D).get_height() * 4
 	var d := {"images": _pool.size(), "textures": _tex_pool.size(),
+		"image_mb": snappedf(img_bytes / 1048576.0, 0.1),
+		"texture_mb_est": snappedf(tex_bytes / 1048576.0, 0.1),
 		"hits": _pool_hits, "misses": _pool_misses}
 	_pool_mx.unlock()
 	return d
