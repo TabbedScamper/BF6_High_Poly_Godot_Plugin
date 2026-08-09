@@ -102,11 +102,16 @@ static func _dress(gs, m, scopes: Array) -> void:
 		var nm := am.surface_get_name(i)
 		if nm == "":
 			continue
-		var bits := nm.split("@")
-		var key := int(bits[0])
-		var vh := int(bits[1]) if bits.size() > 1 else 0
+		# THE PART AFTER "@" IS THE PALETTE, NOT A VARIATION HASH. A surface is
+		# named "<state key>@<colour table entries>", so int() on "0,1" gave 0
+		# and the palette was discarded - harmless on a single-entry surface,
+		# and on a multi-entry one it asks the record about entries the surface
+		# does not use. Found on the vehicles, which were copied from here and
+		# came out grey; fixed in both.
+		var key: int = gs._mkey(nm)
+		var pal: PackedInt32Array = gs._mpal(nm)
 		for sc in scopes:
-			var mat = gs.material_for(key, str(sc), vh)
+			var mat = gs.material_for(key, str(sc), 0, pal)
 			if mat != null:
 				am.surface_set_material(i, mat)
 				break

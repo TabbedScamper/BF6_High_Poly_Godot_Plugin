@@ -138,6 +138,13 @@ static func build(gs, key: String) -> Node3D:
 	if m == null:
 		HighpolyLog.warn("vehicle %s: %s did not build" % [key, res])
 		return null
+	# The bundle that SHIPPED the mesh goes on the end of the scope list. The
+	# hull's record is not always in a bundle named after the vehicle - on the
+	# Abrams the shell surface found nothing among the 21 scopes naming
+	# "abrams" and drew with no material at all, which is the grey. Same fix as
+	# the white tree: res_bundle knows who shipped it.
+	if scope != "" and not scopes.has(scope):
+		scopes.append(scope)
 	_dress(gs, m, scopes)
 	var root := Node3D.new()
 	root.name = "HP_Vehicle_%s" % nm
@@ -172,11 +179,22 @@ static func _dress(gs, m, scopes: Array) -> void:
 		var nm := am.surface_get_name(i)
 		if nm == "":
 			continue
-		var bits := nm.split("@")
-		var skey := int(bits[0])
-		var vh := int(bits[1]) if bits.size() > 1 else 0
+		# THE PART AFTER "@" IS THE PALETTE, NOT A VARIATION HASH.
+		#
+		# A surface is named "<state key>@<colour table entries>" - "7778057341
+		# 684822587@0,1" - and this read the entries as a variation hash. int()
+		# on "0,1" is 0, so the hash came out right by accident on every
+		# single-entry surface and the PALETTE WAS THROWN AWAY on every
+		# multi-entry one. Those are exactly the surfaces that came back with no
+		# material at all: the Abrams hull, the Marauder body, the F22 fuselage.
+		# Reported as "all of the vehicles are showing up grey".
+		#
+		# The reader already has the two parsers the props path uses. This is the
+		# same bug in highpoly_weapon.gd, which is where it was copied from.
+		var skey: int = gs._mkey(nm)
+		var pal: PackedInt32Array = gs._mpal(nm)
 		for sc in scopes:
-			var mat = gs.material_for(skey, str(sc), vh)
+			var mat = gs.material_for(skey, str(sc), 0, pal)
 			if mat != null:
 				am.surface_set_material(i, mat)
 				break
