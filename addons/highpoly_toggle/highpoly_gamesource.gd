@@ -1191,6 +1191,47 @@ func _md_fill(cache_dir: String, need: Dictionary, out: Dictionary) -> void:
 			+ int(phases["fx points"]["ms"])
 
 
+# WHICH SWITCHABLE LAYER A PLACEMENT BELONGS TO, from the subworld it came out
+# of. "" means always on.
+#
+# A level ships its content in subworlds side by side, and the walk records which
+# one each placement came from. Measured on MP_Aftermath, by prop instances:
+#
+#   sub_art_00..12          ~32,000   the map itself
+#   default_event             2,001   the normal-season dressing
+#   winter_event              1,770   the SEASONAL dressing
+#   _layers_gameplay/*          ~250   per gamemode: conquest, domination, rush,
+#                                     sabotage, kingofthehill, teamdeathmatch...
+#   aftermathgauntlet*, squadobliteration
+#
+# Everything after default_event is content that should only appear when its
+# season or gamemode is chosen, and all of it was being drawn at once. Two of
+# the props a user marked are this: "these should only show up during the winter
+# mode" and "these should only show up in certain game modes".
+#
+# THE MACHINERY TO HIDE THEM ALREADY EXISTED and was fed by prop_layers.json,
+# produced by a miner that no longer exists (task #37). _active_variant_layers
+# already defaults to {"default_event": true}, so returning the subworld's leaf
+# name here is all it needs: art and the level's own bundle return "" and stay
+# visible, default_event matches the default set, and everything else is hidden
+# until its layer is picked.
+func layer_of_scope(scope: String) -> String:
+	if scope == "":
+		return ""
+	var leaf := scope.get_file()
+	var dir := scope.get_base_dir()
+	# The level's own bundle: .../mp_aftermath/mp_aftermath
+	if leaf == level or leaf == dir.get_file():
+		return ""
+	# The art subworlds ARE the map.
+	if leaf.begins_with("sub_art_"):
+		return ""
+	# World and content layers are not switchable dressing.
+	if dir.ends_with("_layers_world") or dir.ends_with("_layers_content"):
+		return ""
+	return leaf
+
+
 func _build_map_data(cache_dir: String, need := {}) -> Dictionary:
 	var t_group := Time.get_ticks_msec()
 	var by_mesh := {}
@@ -1277,7 +1318,8 @@ func _build_map_data(cache_dir: String, need := {}) -> Dictionary:
 
 	var props: Array = []
 	for k in by_mesh:
-		props.append({"mesh": k, "xf": Array(by_mesh[k] as PackedFloat32Array)})
+		props.append({"mesh": k, "xf": Array(by_mesh[k] as PackedFloat32Array),
+			"layer": layer_of_scope(str((_group_meta[k] as Array)[1]))})
 	var backdrop: Array = []
 	for k in by_bd:
 		backdrop.append({"mesh": k, "xf": Array(by_bd[k] as PackedFloat32Array)})

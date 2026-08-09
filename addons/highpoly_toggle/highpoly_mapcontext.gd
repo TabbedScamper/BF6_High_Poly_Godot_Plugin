@@ -4017,6 +4017,16 @@ func _build_props_async(props_root: Node3D, entries: Array, dir: String,
 			var dest: Node3D = props_root
 			if _is_fx_card(mesh, str(e.get("mesh", ""))):
 				dest = _fx_cards_group(props_root)
+			# THE SUBWORLD THIS GROUP CAME FROM, when the reader supplied one.
+			#
+			# Groups are keyed by (mesh, scope, variation), so every instance in
+			# one entry shares a subworld and the whole entry belongs to one
+			# layer - simpler than the per-instance table prop_layers.json used
+			# to carry, and available without the miner that produced it.
+			#
+			# "" means always on and keeps the entry in the base group.
+			elif str(e.get("layer", "")) != "":
+				dest = _variant_group(props_root, str(e["layer"]))
 			if em.is_empty():
 				# every mesh of a split prop, or the split drops what the
 				# 255-surface cap used to drop
