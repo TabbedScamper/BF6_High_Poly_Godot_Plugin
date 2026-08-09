@@ -1487,7 +1487,37 @@ func _active_variant_layers(mode: String) -> Dictionary:
 		act = {}
 		for l in mm.get("show_layers", ["default_event"]):
 			act[str(l)] = true
+		return act
+	# NO MODE MAP: the selection IS a layer name.
+	#
+	# _mode_map came from prop_layers.json, written by a miner that no longer
+	# exists, so it is empty on every map - and with it empty this function
+	# returned "default_event only" for every mode, which meant picking a mode
+	# changed nothing at all. The layers are now discovered from the subworlds
+	# the placements came out of, so the honest reading of "winter_event" or
+	# "rush" is: show the normal dressing AND that layer.
+	#
+	# Additive, which is what highpoly_gamemode.gd's own header says these are:
+	# "modes share all scenery in BF6 - these are ADDITIVE gameplay markers, not
+	# prop swaps".
+	if mode != "" and mode != "Off":
+		act[mode] = true
 	return act
+
+
+# The switchable layers this map actually has, from the placements themselves.
+#
+# Available as soon as map data is loaded, so the dropdown can be filled before
+# anything is built. Sorted, and the always-on entries ("") are not layers.
+func available_layers() -> Array:
+	var out := {}
+	for e in (_data.get("props", []) as Array):
+		var l := str((e as Dictionary).get("layer", ""))
+		if l != "" and l != "default_event":
+			out[l] = true
+	var a: Array = out.keys()
+	a.sort()
+	return a
 
 func _variant_key_visible(key: String, act: Dictionary) -> bool:
 	for part in key.split(","):

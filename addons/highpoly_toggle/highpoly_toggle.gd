@@ -3423,7 +3423,21 @@ func _open_shader_dialog() -> void:
 func _variant_row_update(objects_on: bool) -> void:
 	if mapctx_variant_row == null: return
 	var r := EditorInterface.get_edited_scene_root()
+	# THE MAP'S OWN LAYERS, when there is no mined mode file.
+	#
+	# This asked HighpolyGamemode.modes(), which reads gamemode_markers.json -
+	# written by a miner that no longer exists. The list came back empty on
+	# every map, so `show` was always false and the whole row was HIDDEN. Not
+	# greyed out, not empty: absent. Which is why the game mode could not be
+	# selected at all.
+	#
+	# The layers are discovered from the subworlds the placements came out of,
+	# so the map can list its own: winter_event, rush, domination, sabotage and
+	# the rest. When the marker file does come back it wins, because it also
+	# carries the spawns and objectives this cannot.
 	var mds: Array = HighpolyGamemode.modes(mapctx.map_of(r)) if objects_on else []
+	if objects_on and mds.is_empty():
+		mds = mapctx.available_layers()
 	var show := objects_on and not mds.is_empty()
 	mapctx_variant_row.visible = show
 	if not show:
