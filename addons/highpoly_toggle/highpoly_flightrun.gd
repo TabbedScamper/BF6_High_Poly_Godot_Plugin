@@ -576,6 +576,23 @@ static func run(host: Node, dock: Node, mapctx: Node) -> bool:
 				}
 			_phase_end()
 
+			# BANK THE MEASUREMENT BEFORE THE OPTIONAL EXPERIMENT.
+			#
+			# Everything below is extra: an HLOD bake that is not part of what a
+			# user experiences and is not what this run was asked to measure. It
+			# is also a long main-thread operation with no heartbeat, so the
+			# harness sees silence, calls it a hang and kills the editor -
+			# throwing away a completed flight because a bolt-on afterwards took
+			# too long. That is exactly what happened on the run this comment was
+			# written for: build 138 s, flight 57 s, both fine, and the report
+			# came back with frames = 0 and outcome "hang".
+			#
+			# So the report is written HERE, with what has already been measured,
+			# and written again at the end if the extra work finishes.
+			_rep["valid"] = true
+			_rep["partial"] = true
+			_rep["engine"] = _engine()
+			_bank_report()
 			var mapname := str(_cfg["map"])
 			_rep["hlod_install"] = HighpolyHlod.bake_and_install(
 				mapctx._cells, 12, 1.0, "user://mapcontext/%s" % mapname,
@@ -1164,7 +1181,24 @@ static func _abort(tree: SceneTree, why: String) -> bool:
 	return false
 
 
+# Write what has been measured so far, so a later hang cannot destroy it.
+#
+# Deliberately not _finish: that also drains the log, stamps totals and quits.
+# This is the same file, written early, and _finish overwrites it with the
+# complete version if the run gets that far.
+static func _bank_report() -> void:
+	var out := str(_cfg.get("out", "user://perfrun.json"))
+	var f := FileAccess.open(out, FileAccess.WRITE)
+	if f != null:
+		_rep["spans_ms"] = _spans
+		f.store_string(JSON.stringify(_rep, " "))
+		f.close()
+		_say("perfrun: banked a partial report to %s"
+			% ProjectSettings.globalize_path(out))
+
+
 static func _finish(tree: SceneTree, code: int) -> void:
+	_rep["partial"] = false
 	_spans[_phase] = Time.get_ticks_msec() - _phase_t
 	_drain_log()
 	_rep["spans_ms"] = _spans

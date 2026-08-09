@@ -168,10 +168,29 @@ var build_materials := true
 
 # Largest texture edge to load. 0 loads whatever the game ships, which for
 # Dumbo is 8.2 GB of mostly-2K BC7 for one map — against 460 MB for all of its
-# geometry. 1024 takes the embedded chunk instead of the streamed one, which
-# costs a byte range rather than a decompress, and is the same ceiling the
-# packaged .bctex set was published at.
-var texture_max_dim := 1024
+# geometry. A cap takes the embedded chunk instead of the streamed one, which
+# costs a byte range rather than a decompress.
+#
+# THE SINGLE BIGGEST LEVER ON VIDEO MEMORY, measured in the real editor on
+# MP_Aftermath with everything on except FX and nothing distance-culled:
+#
+#            video memory   of which textures   frames under 60   1% low
+#   1024        6834 MB           5050 MB            25.33%        13.1
+#    512        5356 MB           3574 MB            25.26%        13.0
+#
+# 512 gives back 1.5 GB of video memory and costs NOTHING measurable in frame
+# rate: median 4.41 ms against 4.40, p99 66.8 against 67.1. It costs visible
+# detail and nothing else.
+#
+# That is worth taking because the CARD is what kills the editor. 6834 MB on an
+# 8 GB card is 85%, and the plugin's own tripwire fires at 6144; 5356 MB is 67%
+# and leaves room for the SDK's own scene. Godot does not survive a card running
+# out of memory, it closes.
+#
+# It is a setting because the right answer depends on the card. Read at open, so
+# changing it takes effect on the next map.
+const TEX_DIM_SETTING := "highpoly/texture_max_dim"
+var texture_max_dim := 512
 
 # WHERE THE OPEN GOES, per phase, in ms. There is no point optimising this
 # without it: the three phases have completely different fixes (a mount is
@@ -721,6 +740,12 @@ static func geom_epoch() -> int:
 func open_map(map: String, game_dir := "", progress := Callable(),
 		want := {}) -> bool:
 	error = ""
+	# Read here rather than at construction, so a change takes effect on the next
+	# map rather than needing the editor restarted.
+	if ProjectSettings.has_setting(TEX_DIM_SETTING):
+		var v := int(ProjectSettings.get_setting(TEX_DIM_SETTING))
+		if v == 0 or (v >= 64 and v <= 8192):
+			texture_max_dim = v
 	level = map.to_lower()
 	timings.clear()
 	phases.clear()
