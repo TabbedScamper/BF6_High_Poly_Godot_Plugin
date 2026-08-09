@@ -48,7 +48,8 @@ static func manifest_url() -> String:
 
 # GET with retry/backoff — the public r2.dev host throttles rapid bursts, so a
 # single failed attempt (403/429/5xx) is usually transient.
-static func _fetch(http: HTTPRequest, url: String) -> PackedByteArray:
+static func _fetch(http: HTTPRequest, url: String,
+		headers := PackedStringArray()) -> PackedByteArray:
 	# Every fetch in the plugin funnels through here, so this is the one place
 	# worth setting. HTTPRequest.use_threads defaults to false, which services
 	# the socket from _process on the MAIN thread: downloads then run at the rate
@@ -70,7 +71,7 @@ static func _fetch(http: HTTPRequest, url: String) -> PackedByteArray:
 			state["done"] = true
 			state["res"] = [r, c, h, b]
 		http.request_completed.connect(on_done, CONNECT_ONE_SHOT)
-		var rq := http.request(url)
+		var rq := http.request(url, headers)
 		if rq != OK:
 			Log.warn("Could not start download of %s: %s" % [url, error_string(rq)])
 			if http.request_completed.is_connected(on_done):
@@ -105,9 +106,24 @@ static func _fetch(http: HTTPRequest, url: String) -> PackedByteArray:
 			continue
 		var res: Array = state["res"]
 		# res = [result, response_code, headers, body]
+		# WHAT THE SERVER ACTUALLY SAID, kept for the caller.
+		#
+		# An empty return means "no usable body" and nothing else, so every
+		# caller had to describe the failure as "could not reach" - which is a
+		# lie when the host answered immediately with a 404. That exact wording
+		# would have sent someone checking their internet connection over a
+		# private repository.
+		_last_status = int(res[1])
+		_last_body = res[3]
 		if res[0] == HTTPRequest.RESULT_SUCCESS and res[1] == 200:
 			return res[3]
 	return PackedByteArray()
+
+
+# The HTTP status of the most recent _fetch, and its body even when it failed.
+# 0 means the request never got an answer at all.
+static var _last_status := 0
+static var _last_body := PackedByteArray()
 
 # GET straight to disk. Same retry/stall behaviour as _fetch, but the bytes go
 # to a file instead of a PackedByteArray, so a 300 MB model costs no RAM.
@@ -226,19 +242,102 @@ static func is_newer_version(remote: String, local: String) -> bool:
 		if r[i] != l[i]: return r[i] > l[i]
 	return false
 
-# Check the registry for a newer plugin. cb.call(new_version, notes) — new_version
-# is "" when already up to date (or the check failed; fail-quiet by design).
-static func check_plugin_update(host: Node, cb: Callable) -> void:
-	var base := manifest_url().get_base_dir() + "/"
-	var http := HTTPRequest.new(); host.add_child(http)
-	var body := await _fetch(http, base + "plugin/plugin-version.json")
+# GITHUB RELEASES AS THE SOURCE OF TRUTH FOR "IS THERE A NEWER ONE".
+#
+# The releases already carry everything the check needs - a version in the tag,
+# the notes in the body, and the zip as an asset - so there is nothing to publish
+# separately and nothing that can drift out of step with what people actually
+# download. The old path needed plugin-version.json and the zip uploaded to a
+# bucket by hand, in that order, and a mismatch between them sent every client
+# to a 404.
+#
+# THE REPO MUST BE PUBLIC. api.github.com answers 404, not 403, for a private
+# repo to an unauthenticated caller - indistinguishable from "no releases yet" -
+# so the failure is reported rather than swallowed. No token is used or wanted:
+# an update check must not need credentials from the person being updated.
+const GITHUB_REPO := "TabbedScamper/BF6_High_Poly_Godot_Plugin"
+const GITHUB_LATEST := "https://api.github.com/repos/%s/releases/latest"
+const ZIP_ASSET := "highpoly_toggle.zip"
+const GITHUB_SETTING := "highpoly/github_repo"
+
+# Where the last check found the zip. Held so the download uses the asset that
+# belongs to the version that was offered, rather than re-deriving a URL and
+# possibly fetching a different build.
+static var _zip_url := ""
+
+
+static func github_repo() -> String:
+	if ProjectSettings.has_setting(GITHUB_SETTING):
+		var s := str(ProjectSettings.get_setting(GITHUB_SETTING))
+		if s != "":
+			return s
+	return GITHUB_REPO
+
+
+# -> {version, notes, zip} or {} with `error` explaining why not.
+static func github_latest(host: Node) -> Dictionary:
+	var http := HTTPRequest.new()
+	host.add_child(http)
+	# GitHub rejects a request with no User-Agent. Godot sends one, but naming
+	# ourselves means their rate-limit logs can tell this plugin apart from
+	# every other Godot project on the same address.
+	var body := await _fetch(http, GITHUB_LATEST % github_repo(),
+		PackedStringArray(["User-Agent: bf6-highpoly-preview",
+			"Accept: application/vnd.github+json"]))
 	http.queue_free()
-	var info: Variant = JSON.parse_string(body.get_string_from_utf8()) if not body.is_empty() else null
+	if body.is_empty():
+		# Distinguish the three, because they need three different fixes.
+		if _last_status == 0:
+			return {"error": "no answer from api.github.com (offline, or a "
+				+ "firewall blocking it)"}
+		if _last_status == 404:
+			return {"error": "api.github.com returned 404 for %s. An anonymous "
+				% github_repo() + "check gets 404 for a PRIVATE repository just "
+				+ "as it does for one with no releases, so the usual cause is "
+				+ "that the repository is not public."}
+		if _last_status == 403:
+			return {"error": "api.github.com returned 403, which is normally its "
+				+ "rate limit (60 checks an hour per address). It will work "
+				+ "again shortly."}
+		return {"error": "api.github.com returned HTTP %d" % _last_status}
+	var info: Variant = JSON.parse_string(body.get_string_from_utf8())
 	if not (info is Dictionary):
-		cb.call("", ""); return
-	var remote := str(info.get("version", ""))
+		return {"error": "github returned something that is not a release"}
+	var d: Dictionary = info
+	if d.has("message") and not d.has("tag_name"):
+		# 404 here means private OR no releases, and those need different fixes.
+		return {"error": "github says: %s (a PRIVATE repo answers 404 to an "
+			% str(d["message"]) + "anonymous check, so this is what a private "
+			+ "repo looks like as well as an empty one)"}
+	var tag := str(d.get("tag_name", ""))
+	var ver := tag.trim_prefix("v")
+	var zip := ""
+	for a in (d.get("assets", []) as Array):
+		if str((a as Dictionary).get("name", "")) == ZIP_ASSET:
+			zip = str((a as Dictionary).get("browser_download_url", ""))
+			break
+	if ver == "":
+		return {"error": "the latest release has no tag"}
+	if zip == "":
+		return {"error": "release %s has no %s attached" % [tag, ZIP_ASSET]}
+	return {"version": ver, "notes": str(d.get("body", "")), "zip": zip}
+
+
+# Check for a newer plugin. cb.call(new_version, notes) — new_version is "" when
+# already up to date or the check failed.
+static func check_plugin_update(host: Node, cb: Callable) -> void:
+	var got := await github_latest(host)
+	if got.has("error"):
+		# Said out loud rather than failing quiet. An updater that silently does
+		# nothing is indistinguishable from one that has nothing to offer, and
+		# this one was broken for every user for two releases without a word.
+		HighpolyLog.warn("update check failed: %s" % str(got["error"]))
+		cb.call("", "")
+		return
+	var remote := str(got.get("version", ""))
 	if remote != "" and is_newer_version(remote, plugin_version()):
-		cb.call(remote, str(info.get("notes", "")))
+		_zip_url = str(got.get("zip", ""))
+		cb.call(remote, str(got.get("notes", "")))
 	else:
 		cb.call("", "")
 
@@ -285,10 +384,22 @@ static func sweep_removed() -> int:
 	return n
 
 static func update_plugin(host: Node, status: Callable) -> bool:
-	var base := manifest_url().get_base_dir() + "/"
+	# The asset the CHECK found, not a URL rebuilt here. Deriving it a second
+	# time is how a client ends up downloading a different build from the one it
+	# was told about.
+	var url := _zip_url
+	if url == "":
+		var got := await github_latest(host)
+		if got.has("error"):
+			status.call("Update failed: %s" % str(got["error"]))
+			return false
+		url = str(got.get("zip", ""))
 	var http := HTTPRequest.new(); host.add_child(http)
 	status.call("Downloading plugin update…")
-	var body := await _fetch(http, base + "plugin/highpoly_toggle.zip")
+	# browser_download_url redirects to GitHub's asset host; HTTPRequest follows
+	# up to max_redirects, which is 8 by default.
+	var body := await _fetch(http, url,
+		PackedStringArray(["User-Agent: bf6-highpoly-preview"]))
 	http.queue_free()
 	if body.is_empty():
 		status.call("Plugin update download failed"); return false
