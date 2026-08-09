@@ -3830,6 +3830,28 @@ func release_caches() -> Dictionary:
 	_tint_mask_cache.clear()
 	_smooth_cache.clear()
 	_litpack_cache.clear()
+	# THE TWO THAT MADE CLEARING THE OTHERS POINTLESS.
+	#
+	# _mat_by_look and _emissive_mats hold MATERIALS, and a material holds its
+	# textures. So dropping _tex_cache and _mat_cache above freed nothing at all
+	# while these still referenced the same objects: measured, release_caches
+	# gave back 1,617 MB of a 4,379 MB build and the rest was here.
+	#
+	# Everything else on this list is the same mistake in smaller print - a
+	# dictionary added next to the code that fills it, never added to the code
+	# that empties it. Compiled from the member list rather than from memory,
+	# because that is how the first seven got missed.
+	_mat_by_look.clear()
+	_emissive_mats.clear()
+	_res_for.clear()
+	_var_live.clear()
+	_sec_keys.clear()
+	_hidden_cache.clear()
+	_pal_canon_cache.clear()
+	_scatter_cache.clear()
+	_obj_lights.clear()
+	_water_sim.clear()
+	_hm.clear()
 	# Windows will often hold the freed pages rather than returning them to the
 	# OS, so Task Manager can stay high while this genuinely worked. Judge it by
 	# Performance.MEMORY_STATIC and VRAM, not by RSS.
