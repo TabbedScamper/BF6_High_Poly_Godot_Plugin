@@ -421,6 +421,42 @@ static func _nofit_for(key: String) -> bool:
 	# and the weapon, for the same reason: a rifle is not the shape of the
 	# pickup marker it stands on, so the fitter's veto has no claim on it
 	if HighpolyWeapon.weapon_for(key) != "": return true
+	# NOR ANYTHING READ OUT OF THE GAME, which is now every prop.
+	#
+	# The fitter predates the install reader. It existed because models arrived
+	# from a build pipeline whose orientation and scale could not be trusted, so
+	# the proxy's bounding box was the only reference available. That is no
+	# longer true: an object read from the game carries the game's own transform.
+	#
+	# MEASURED, on this install, proxy box against model box:
+	#
+	#   BarrierStoneBlock_01_A   1.280 1.200 1.280 -> 1.280 1.200 1.280
+	#   AirfieldBlastBarrier_01  4.054 4.081 4.252 -> 4.055 4.082 4.254
+	#   AmmoChest_Small_Lid_01   0.527 0.124 0.580 -> 0.527 0.124 0.581
+	#
+	# Three decimal places. The model does not need fitting because it is already
+	# right.
+	#
+	# And where the boxes DISAGREE the fitter has no correct answer to give,
+	# because the disagreement is the PROXY being a simplified blockout rather
+	# than the model being wrong:
+	#
+	#   ACModule_02  proxy 2.097 1.388 1.144   model 2.769 1.407 1.628
+	#   ACModule_04  proxy 0.852 0.730 0.857   model 1.148 0.725 0.979
+	#
+	# Both have a Y that agrees within 1.4% - the model is the right way up - and
+	# are simply larger in X and Z where the proxy omits detail that sticks out.
+	# The spread across the three ratios lands just over the 1.35 threshold (1.404
+	# and 1.355), the permutation search runs, and it answers by swapping an axis
+	# away and shrinking the model 19% and 12%. On ACModule_04 the Y it discards
+	# matched to 0.7%.
+	#
+	# So on install-sourced props the fitter is a no-op at best and a
+	# quiet corruption at worst, and its veto is worse still: it would throw away
+	# a correct model because the SDK's stand-in is coarse. A model that resolves
+	# to the wrong asset is a bug in the resolution chain, to be fixed there,
+	# not something a bounding box should be papering over.
+	if game_source != null and game_source.has_object(key): return true
 	if use_legacy:
 		var side := "%s/%s/%s.json" % [LEGACY_DIR, key, key]
 		if FileAccess.file_exists(side):
