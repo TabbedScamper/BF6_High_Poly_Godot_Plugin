@@ -55,6 +55,21 @@ static var _peak_vram_at := ""
 static var _sys_low := -1.0      # least system memory left, in MB
 static var _first_static := -1.0
 
+# THE MACHINE WE HAVE TO FIT ON, stated as numbers rather than as a hope.
+#
+# 32 GB of system RAM and an 8 GB card. The editor is not the only thing running
+# on that machine, so the budget below is what WE may hold, not what exists:
+# Windows and the SDK's own scene are already several GB before the plugin
+# allocates anything, and a card that reaches its limit does not report an error,
+# it takes Godot down with it.
+const BUDGET_HEAP_MB := 8192.0
+const BUDGET_VRAM_MB := 6144.0
+
+static var _peak_gpu_ms := 0.0
+static var _peak_cpu_ms := 0.0
+static var _peak_draws := 0
+static var _frames := 0
+static var _sum_gpu_ms := 0.0
 static var _stalls: Array = []   # [{ms, crumb, at}]
 static var _timeline: Array = [] # [{sec, static_mb, vram_mb, sys_free_mb, crumb}]
 static var _last_row := -TIMELINE_SECS
@@ -179,6 +194,28 @@ static func sample() -> void:
 	if vr > _peak_vram:
 		_peak_vram = vr
 		_peak_vram_at = crumb_now()
+
+	# --- CPU and GPU --------------------------------------------------------
+	# The renderer's OWN measurement of the 3D viewport, not a guess from frame
+	# rate: viewport_get_measured_render_time_gpu is what the engine timed the
+	# card doing. Editor-only, and it is the number that says whether a card is
+	# the limit or the main thread is.
+	_frames += 1
+	var cpu_ms := Performance.get_monitor(Performance.TIME_PROCESS) * 1000.0
+	if cpu_ms > _peak_cpu_ms:
+		_peak_cpu_ms = cpu_ms
+	var draws := int(Performance.get_monitor(
+		Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME))
+	if draws > _peak_draws:
+		_peak_draws = draws
+	if Engine.is_editor_hint():
+		var vp := EditorInterface.get_editor_viewport_3d(0)
+		if vp != null:
+			var g := RenderingServer.viewport_get_measured_render_time_gpu(
+				vp.get_viewport_rid())
+			_sum_gpu_ms += g
+			if g > _peak_gpu_ms:
+				_peak_gpu_ms = g
 	# "free", NOT "available". On Windows those are AvailPhys and AvailPageFile,
 	# and the second is physical plus the page file: this machine reports 127 GB
 	# installed and 240 GB "available", which as a RAM figure is nonsense and
@@ -290,6 +327,32 @@ static func report() -> String:
 			warn = "   <-- close to the limit"
 		out.append("  %-22s %10.0f MB%s"
 			% ["lowest free RAM", _sys_low, warn])
+
+	# --- the target machine -------------------------------------------------
+	out.append("")
+	out.append("  AGAINST THE TARGET MACHINE  (32 GB system RAM, 8 GB card)")
+	out.append("  The budget is what WE may hold, not what the machine has:")
+	out.append("  Windows and the SDK's own scene are already several GB before")
+	out.append("  this plugin allocates anything, and a card that reaches its")
+	out.append("  limit does not report an error, it takes Godot down with it.")
+	var heap_ok := _peak_static <= BUDGET_HEAP_MB
+	var vram_ok := _peak_vram <= BUDGET_VRAM_MB
+	out.append("  %-22s %8.0f MB  of %6.0f MB   %s"
+		% ["peak heap", _peak_static, BUDGET_HEAP_MB,
+		   "OK" if heap_ok else "OVER by %.0f MB" % (_peak_static - BUDGET_HEAP_MB)])
+	if _peak_vram > 0.0:
+		out.append("  %-22s %8.0f MB  of %6.0f MB   %s"
+			% ["peak video memory", _peak_vram, BUDGET_VRAM_MB,
+			   "OK" if vram_ok else "OVER by %.0f MB"
+					% (_peak_vram - BUDGET_VRAM_MB)])
+	if _peak_gpu_ms > 0.0:
+		out.append("  %-22s %8.2f ms  (mean %.2f ms over %d samples)"
+			% ["worst GPU frame", _peak_gpu_ms,
+			   _sum_gpu_ms / maxf(1.0, float(_frames)), _frames])
+	out.append("  %-22s %8.2f ms" % ["worst main-thread frame", _peak_cpu_ms])
+	out.append("  %-22s %8d" % ["worst draw calls", _peak_draws])
+	if not heap_ok or not vram_ok:
+		out.append("  THIS SESSION WOULD NOT HAVE FIT on the target machine.")
 
 	# --- our caches ---------------------------------------------------------
 	# The point of the section: separating "the editor is using 13 GB" from
