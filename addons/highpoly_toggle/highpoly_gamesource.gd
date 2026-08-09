@@ -4843,6 +4843,37 @@ func material_for(state_key: int, scope: String, var_hash := 0,
 	if cp != null:
 		var cm := StandardMaterial3D.new()
 		cm.albedo_color = _srgb_of((cp as Array)[0] as Color)
+		# THE LIVERY, which the depot has been handing us all along.
+		#
+		# A carpaint shell binds no colour sheet by design - the body is the
+		# constant above - so a police car, an ambulance and a taxi all came out
+		# as flat paint. But the record ALSO binds a `wrap` sheet naming the
+		# livery outright:
+		#
+		#   wrap=t_com_carsuv_wrap_policeusny_01.ebx
+		#
+		# SLOT_WRAP was declared in bf6_depot.gd and read by nothing in the whole
+		# plugin, so that texture was resolved, named in the diagnostic, and
+		# thrown away. Four of the eleven props a user marked are this: "police
+		# car does not have its livery", "supposed to have a custom decal",
+		# "supposed to have a custom livery/decal", "ambulance is supposed to
+		# have a livery".
+		#
+		# Used as the albedo over the body colour. That is the honest simple
+		# reading: the wrap IS the car's visible surface where it covers, and
+		# albedo_color still multiplies it, so an unwrapped area keeps the paint.
+		# The reference pipeline layers it as a decal with the paint showing
+		# through the wrap's own alpha, which is a better approximation of a real
+		# vinyl wrap; this is the first order of it, and the difference will show
+		# on wraps that do not cover the whole shell.
+		var wrap = _texture_for(slots.get("wrap"), false)
+		if wrap != null:
+			cm.albedo_texture = wrap
+			# The body constant is often near-black (0.0199 on the police SUV),
+			# which would multiply the livery down to nothing. Where a wrap is
+			# present it is the surface, so the constant stops being a tint.
+			cm.albedo_color = Color(1, 1, 1)
+			tex_stats["carpaint_wrap"] = int(tex_stats.get("carpaint_wrap", 0)) + 1
 		var nm2 = _texture_for(slots.get("normal", slots.get("normal_vt")), true)
 		if nm2 != null:
 			cm.normal_enabled = true
