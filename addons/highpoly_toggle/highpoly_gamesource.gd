@@ -893,7 +893,13 @@ func open_map(map: String, game_dir := "", progress := Callable(),
 	# cost another 50 s to learn something the first walk went straight past.
 	for g in LIGHT_TYPES:
 		walk.want_types[str(g)] = "light"
-	walk.want_fields = LIGHT_FIELDS
+	# AND THE ENVIRONMENT DECAL VOLUMES, for the same reason: soot under a burn
+	# barrel, graffiti on a wall and the light splash a gobo fixture paints are
+	# all placed by exactly this traversal. Their texture resolves later through
+	# the ShaderBlockDepot of the scope the walk records on each entity.
+	for g in EDV_TYPES:
+		walk.want_types[str(g)] = "edv"
+	walk.want_fields = LIGHT_FIELDS + EDV_FIELDS
 	# Always the install: the type layouts are read out of bf6.exe on every open
 	# and the only caches BF6Types keeps are in-memory ones, so this row never
 	# goes warm and there is no point looking for a cache that is not there.
@@ -1228,7 +1234,7 @@ func map_data_would_build(cache_dir := "", want := {}) -> bool:
 # lights wanted, and only the missing section is built - so nothing is lost by
 # not building it up front, which is what makes this safe to skip rather than
 # merely cheaper.
-const MD_OPTIONAL := ["lights", "fx", "water"]
+const MD_OPTIONAL := ["lights", "fx", "water", "edv"]
 
 func map_data(cache_dir := "", want := {}) -> Dictionary:
 	var need := _md_need(want)
@@ -1249,7 +1255,7 @@ func map_data(cache_dir := "", want := {}) -> Dictionary:
 
 func _md_need(want: Dictionary) -> Dictionary:
 	if want.is_empty():
-		return {"lights": true, "fx": true, "water": true}
+		return {"lights": true, "fx": true, "water": true, "edv": true}
 	var d := {}
 	for k in MD_OPTIONAL:
 		d[k] = bool(want.get(k, false))
@@ -1285,6 +1291,18 @@ func _md_fill(cache_dir: String, need: Dictionary, out: Dictionary) -> void:
 		_md_built["water"] = true
 		note_phase("water", Time.get_ticks_msec() - t_w, w.size(), "bodies",
 			FROM_INSTALL, "the level's water partition")
+	if bool(need.get("edv", false)) and not _md_built.has("edv"):
+		# In memory like water, not a file like lights: the builder runs while
+		# this source is alive either way, and the sheets resolve through
+		# decal_sheet() at build time. The key is written even when the answer
+		# is empty - the records come off the already-run walk, so a re-ask
+		# could never find more than this one did.
+		var t_e := Time.get_ticks_msec()
+		var recs := _edv_records()
+		out["edv"] = recs
+		_md_built["edv"] = true
+		note_phase("decal volumes", Time.get_ticks_msec() - t_e, recs.size(),
+			"volumes", FROM_MEMORY, "from the walk's collected entities")
 	if phases.has("lights") and phases.has("fx points"):
 		timings["lights + fx"] = int(phases["lights"]["ms"]) \
 			+ int(phases["fx points"]["ms"])
@@ -3406,6 +3424,47 @@ const LIGHT_FIELDS: Array = [F_COLOR, F_INTENSITY, F_ATTEN_RADIUS,
 	0x1E84390E, 0x54C21171, 0x77933D85, 0x89872D33, 0xCEFB1F0D, 0xF97D7309]
 
 
+# ---------------------------------------------------------------------------
+# ENVIRONMENT DECAL VOLUMES (task #52): soot, graffiti, floor markings, gobo
+# light splashes - projected boxes placed by the same walk as everything else.
+#
+# HOW A VOLUME FINDS ITS TEXTURE, measured on retail mp_capstone rather than
+# taken from the fleet's write-up (which claimed the template partition carries
+# the texture - it does not: the template has ZERO imports and an empty Shader
+# struct). The real chain:
+#
+#   volume's Template import -> guid index -> decalvol_*/edv_* template EBX
+#   -> the template's unnamed u64 field 0x4A98C1F8
+#   -> that u64 IS a ShaderBlockDepot state key, present in the depot of the
+#      SUBWORLD SCOPE that mounted the volume (verified by key-table membership:
+#      decalvol_sootnoisy_triprojected_c's key sits in area_01's depot,
+#      edv_gobolight_fluorescentlamp's in area_04/05/06's)
+#   -> textures_for(key) -> the decal_ca / decal_nrm slots the prop-decal
+#      family already decodes (RGB colour, A coverage).
+#
+# So the volume needs exactly what _collect already records: its composed world
+# transform, its scope, and the fields below. The box extents ride the
+# transform's basis as scale (measured 0.7..11.8 m axis lengths on capstone).
+const EDV_TYPES := {
+	"d67bc416-8540-47d7-8aae-e01c50f1b8c1": "EnvironmentDecalVolumeData",
+	"47d78540-ae8a-1ce0-50f1-b8c137f95afb": "EnvironmentDecalVolumeData",
+}
+# The template type's guid pair, compared raw against instance_type() when the
+# template partition is opened - names are not resolved there.
+const EDV_TEMPLATE_TYPES: Array = [
+	"d084b894-08af-902e-d29a-460fecbea4fb",
+	"902e08af-9ad2-0f46-ecbe-a4fb5acee8bd",
+]
+const F_EDV_TEMPLATE := 0xA9AC5095   # import PointerRef to the template EBX
+const F_EDV_ENABLE := 0x48C97D5E     # authored off stays off
+const F_EDV_ALPHA := 0x40B21230      # per-instance opacity
+const F_EDV_CULL := 0xC3B610EC       # OverrideTemplateCullingDistance, metres
+const F_EDVT_KEY := 0x4A98C1F8       # the template's depot state key (u64)
+
+const EDV_FIELDS: Array = [F_EDV_TEMPLATE, F_EDV_ENABLE, F_EDV_ALPHA,
+	F_EDV_CULL]
+
+
 # The schema highpoly_lighting.set_map_lights already reads, written into the
 # map cache. Deliberately the same FILE as the download path used: the light
 # builder is 150 lines of Godot-side work — culling, distance fade, the spot
@@ -3502,6 +3561,152 @@ func lights(cache_dir: String) -> int:
 	_say("game source: %d lights (%d spot, %d omni)"
 		% [out.size(), spots, out.size() - spots])
 	return out.size()
+
+
+# ---------------------------------------------------------------------------
+# ENVIRONMENT DECAL VOLUMES, read off the walk's collected entities. See the
+# chain documented at EDV_TYPES. Returns records the map context turns into
+# Decal nodes; textures are fetched at build time through decal_sheet(), so the
+# records stay pure data.
+# ---------------------------------------------------------------------------
+# template partition (lower, no .ebx) -> {"key": int, "name": leaf} or null.
+# Null is cached too: a template that cannot be read once cannot be read
+# per-instance either, and capstone places one template 22 times.
+var _edv_tpl_cache := {}
+
+
+func _edv_template(ptr):
+	if not (ptr is Dictionary):
+		return null
+	var path := str((ptr as Dictionary).get("path", ""))
+	if path == "" or path == "<not indexed>":
+		# The pointer decoded before the guid index was warm; the import guid
+		# still names the partition.
+		var g := str((ptr as Dictionary).get("import", ""))
+		var nm = walk.gi.get(g) if walk != null else null
+		if nm == null:
+			return null
+		path = str(nm)
+	var key := path.to_lower().trim_suffix(".ebx")
+	if _edv_tpl_cache.has(key):
+		return _edv_tpl_cache[key]
+	var info = null
+	var e = walk.open_ebx(key)
+	if e != null:
+		for i in range((e as BF6Ebx).exported_instance_count):
+			if not EDV_TEMPLATE_TYPES.has((e as BF6Ebx).instance_type(i)):
+				continue
+			var rec: Dictionary = (e as BF6Ebx).read_instance(i)
+			var sk = rec.get(F_EDVT_KEY)
+			# The key is a u64 the depot table stores verbatim; GDScript holds
+			# it as a (possibly negative) 64-bit int and BF6Depot compares it
+			# the same way, so no masking here (see BF6Depot.key_hex).
+			if (sk is int or sk is float) and int(sk) != 0:
+				info = {"key": int(sk), "name": key.get_file()}
+			break
+	_edv_tpl_cache[key] = info
+	return info
+
+
+func _edv_records() -> Array:
+	if walk == null or walk.ents.is_empty():
+		return []
+	var out: Array = []
+	var seen := 0
+	var no_tpl := 0      # template unreadable or without a state key
+	var no_depot := 0    # the entity's scope owns no depot
+	var no_rec := 0      # depot present but the key has no record there
+	var no_sheet := 0    # record resolves but binds neither decal slot
+	for e in walk.ents:
+		if not (e is Dictionary):
+			continue
+		var ent: Dictionary = e
+		if str(ent.get("tag", "")) != "edv":
+			continue
+		seen += 1
+		var f: Dictionary = ent.get("f", {})
+		if f.get(F_EDV_ENABLE) == false:
+			continue
+		var info = _edv_template(f.get(F_EDV_TEMPLATE))
+		if info == null:
+			no_tpl += 1
+			continue
+		var scope := str(ent.get("scope", ""))
+		var pair = _depot_for(scope)
+		if pair == null:
+			no_depot += 1
+			continue
+		var dep: BF6Depot = pair[0]
+		var skey := int(info["key"])
+		if not dep.key_to_record.has(skey):
+			no_rec += 1
+			continue
+		var slots: Dictionary = dep.textures_for(skey, pair[1])
+		slots.erase("constants")
+		# WHICH SHEET, AND WHAT IT MEANS. Measured across capstone's 24 distinct
+		# templates (test_edvslots.gd), the family decides the binding:
+		#   graffiti/checkpoint/dirt   decal_ca + decal_nrm     a real colour sheet
+		#   ashdust                    the *_ca sheet arrives in the WRAP slot
+		#   gobolight                  the fixture's *_e emissive plane - the
+		#                              light pattern itself, in an unnamed slot
+		#   soot/plaster/dust noisy    ONLY t_3dperlinnoise - the smudge is
+		#                              shader-computed, colour from constants
+		# So: prefer decal_ca, then classify the unnamed slots by the bound
+		# texture's NAME rather than by more slot hashes - the suffix convention
+		# (_ca colour, _e emissive, _nms normal) holds install-wide.
+		var kind := ""
+		var ca = slots.get("decal_ca")
+		var nrm = slots.get("decal_nrm")
+		if ca != null:
+			kind = "albedo"
+		else:
+			var emit = null
+			var noise = null
+			for k in slots.keys():
+				var nm = walk.gi.get(str(slots[k]))
+				if nm == null:
+					continue
+				var leaf := str(nm).get_file().to_lower().trim_suffix(".ebx")
+				if leaf.ends_with("_ca"):
+					ca = slots[k]
+				elif leaf.ends_with("_e"):
+					emit = slots[k]
+				elif leaf.contains("noise"):
+					noise = slots[k]
+			if ca != null:
+				kind = "albedo"
+			elif emit != null:
+				kind = "emit"
+				ca = emit
+			elif noise != null:
+				kind = "smudge"
+				ca = noise
+		if ca == null:
+			no_sheet += 1
+			continue
+		var xf: Array = ent["xf"]
+		out.append({
+			"xf": xf,
+			"kind": kind,
+			"ca": str(ca),
+			"nrm": str(nrm) if nrm != null else "",
+			"alpha": clampf(float(f.get(F_EDV_ALPHA, 1.0)), 0.0, 1.0),
+			"cull": float(f.get(F_EDV_CULL, 0.0)),
+			"tpl": str(info["name"]),
+		})
+	if seen > 0:
+		_say(("game source: %d decal volumes (%d placeable; dropped: "
+			+ "%d template, %d no depot, %d no record, %d no sheet)")
+			% [seen, out.size(), no_tpl, no_depot, no_rec, no_sheet])
+	return out
+
+
+# The build-time texture fetch for a record's "ca"/"nrm" guid. Public because
+# the map context calls it per distinct sheet while it builds the Decal nodes.
+func decal_sheet(file_guid: String):
+	if file_guid == "":
+		return null
+	return _decal_sheet(file_guid, false)
 
 
 # ---------------------------------------------------------------------------
@@ -4048,7 +4253,13 @@ func object_rows(portal_name: String) -> Array:
 		# and nothing is built unless a caller asks.
 		for gd in LIGHT_TYPES:
 			_obj_walk.want_types[str(gd)] = "light"
-		_obj_walk.want_fields = LIGHT_FIELDS
+		# Kept in step with the level walk's collector set: a lamp fixture
+		# dropped into a scene carries the same embedded decal volume it
+		# carries on the map, and two walkers with different field lists is
+		# how one of them silently loses a collector later.
+		for gd in EDV_TYPES:
+			_obj_walk.want_types[str(gd)] = "edv"
+		_obj_walk.want_fields = LIGHT_FIELDS + EDV_FIELDS
 	_obj_walk.rows.clear()
 	_obj_walk.ents.clear()
 	_obj_walk.walk(str(ref), BF6Walk.IDENT, {}, 0)

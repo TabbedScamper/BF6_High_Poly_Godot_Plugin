@@ -1479,6 +1479,7 @@ func _load_data(map: String) -> bool:
 		# switched on, so this costs nothing later.
 		_data = game_source.map_data("%s/%s" % [CACHE, map], {
 			"lights": want_lights, "fx": want_fx, "water": _show_water,
+			"edv": _show_objects,
 		})
 		# AFTER map_data, not before: the stride is derived from the terrain
 		# metadata, and map_data is what produces it. Setting drape_step from a
@@ -3746,6 +3747,7 @@ func _apply_body(root: Node, enabled: bool, show_objects: bool, tex = true,
 			_build_props_async(props_root, entries, dir, textured, orange, _build_gen)   # fire-and-forget
 		else:
 			_apply_radius()
+		_add_env_decals(props_root)
 
 	var objs := ""
 	if show_objects:
@@ -5206,6 +5208,7 @@ func ensure_layer(root: Node, layer: String, tex_mode: int) -> bool:
 				_build_props_async(props_root, pe, dir, textured, flat, _build_gen)
 			else:
 				_apply_radius()
+			_add_env_decals(props_root)
 			return true
 	return false
 
@@ -5397,6 +5400,165 @@ func set_objects_shown(root: Node, on: bool, tex_mode := -1) -> bool:
 	if on:
 		_apply_radius()                # re-cull for wherever the camera is now
 	return true
+
+
+# ---------------------------------------------------------------------------
+# ENVIRONMENT DECAL VOLUMES (task #52): the game's soot, graffiti, floor
+# markings and gobo light splashes, as Godot Decal nodes under the Props layer.
+#
+# They ride "Original map objects" rather than their own chip: a graffiti
+# piece belongs to the wall it is sprayed on and a light splash to the lamp
+# that casts it, so decals without their props would float in the air and
+# props without their decals are merely less detailed. Hiding Props hides
+# these with it, and the salvage path re-parents them with the subtree.
+#
+# The volume's box extents ride its transform's basis as scale (measured
+# 0.7..11.8 m axis lengths on capstone), so the Decal node takes the walk
+# matrix verbatim - the same conversion every prop uses - and a unit `size`.
+# EDV_SIZE and EDV_PROJ_AXIS carry the two authored-convention answers; both
+# were measured against known volumes (see test_edv.gd) rather than assumed.
+# ---------------------------------------------------------------------------
+const EDV_MAX_DECALS := 2048        # runaway guard, logged when it trips
+# The projection depth floor, metres. A wall graffiti volume is authored
+# 0.01 m thin - it sits ON the wall plane - and a Decal box that shallow
+# reaches nothing once the wall mesh is a centimetre away. Projecting
+# +-0.3 m through the authored plane hits the surface without bleeding
+# through to the far side of ordinary walls.
+const EDV_MIN_DEPTH := 0.6
+
+# The shader-computed smudge families have no colour sheet - the game mixes a
+# constant with 3D perlin noise. A flat family colour under the noise sheet's
+# coverage is the honest preview of that: right hue, right footprint, less
+# procedural detail. Keyed on the template name.
+static func _edv_smudge_color(tpl: String) -> Color:
+	if tpl.contains("soot"):
+		return Color(0.05, 0.05, 0.05)
+	if tpl.contains("plaster"):
+		return Color(0.82, 0.79, 0.72)
+	return Color(0.35, 0.30, 0.25)      # dust / ash / generic dirt
+
+
+# noise sheet guid + family colour -> a small RGBA sheet whose alpha is the
+# noise, cached so 22 soot volumes build one image.
+var _edv_smudge_cache := {}
+
+func _edv_smudge_sheet(guid: String, col: Color):
+	var key := "%s|%s" % [guid, col.to_html(false)]
+	if _edv_smudge_cache.has(key):
+		return _edv_smudge_cache[key]
+	var out = null
+	var tex = game_source.decal_sheet(guid)
+	var img: Image = (tex as Texture2D).get_image() if tex is Texture2D else null
+	if img != null:
+		var c := img.duplicate() as Image
+		if not c.is_compressed() or c.decompress() == OK:
+			c.convert(Image.FORMAT_RGBA8)
+			var w := c.get_width()
+			var h := c.get_height()
+			for y in range(h):
+				for x in range(w):
+					var n := c.get_pixel(x, y).r
+					# Soft threshold: the middle of the noise range fades in,
+					# so the smudge has a noisy edge rather than a square one.
+					var a := clampf((n - 0.30) / 0.45, 0.0, 1.0)
+					c.set_pixel(x, y, Color(col.r, col.g, col.b, a * a))
+			c.generate_mipmaps()
+			out = ImageTexture.create_from_image(c)
+	_edv_smudge_cache[key] = out
+	return out
+
+
+func _add_env_decals(parent: Node3D) -> void:
+	var recs: Variant = _data.get("edv", null) if _data is Dictionary else null
+	if recs == null and game_source != null:
+		# Built before this section existed, or objects were off when the map
+		# data was mined. One ask fills just this section.
+		if ensure_section("edv"):
+			recs = _data.get("edv", null)
+	if not (recs is Array) or (recs as Array).is_empty():
+		return
+	if game_source == null:
+		# The packaged-placements path has no live reader to fetch sheets
+		# through; decals are an install-sourced feature.
+		return
+	var holder := Node3D.new()
+	holder.name = "EnvDecals"
+	parent.add_child(holder)
+	holder.owner = null
+	var sheets := {}                  # ca guid -> Texture2D or null
+	var built := 0
+	var no_sheet := 0
+	for r in recs:
+		if not (r is Dictionary):
+			continue
+		if built >= EDV_MAX_DECALS:
+			Log.info("map context: decal volumes capped at %d (map has %d)"
+				% [EDV_MAX_DECALS, (recs as Array).size()])
+			break
+		var rec: Dictionary = r
+		var ca := str(rec.get("ca", ""))
+		if ca == "":
+			no_sheet += 1
+			continue
+		var kind := str(rec.get("kind", "albedo"))
+		var tpl := str(rec.get("tpl", ""))
+		var tex
+		if kind == "smudge":
+			tex = _edv_smudge_sheet(ca, _edv_smudge_color(tpl))
+		else:
+			tex = sheets.get(ca, false)
+			if tex is bool:
+				tex = game_source.decal_sheet(ca)
+				sheets[ca] = tex
+		if tex == null:
+			no_sheet += 1
+			continue
+		var b: Array = rec.get("xf", [])
+		if b.size() < 4:
+			continue
+		# The basis rows carry the box's FULL extents as scale (measured: the
+		# schoolhouse graffiti reads 1.2-4.5 m wide, exactly mural-sized; the
+		# half-extent reading would double a 4.5 m piece past its wall). The
+		# rotation and the size are split apart so the paper-thin projection
+		# axis can take the depth floor without skewing the rotation.
+		var rt: Vector3 = b[0]
+		var up: Vector3 = b[1]
+		var fw: Vector3 = b[2]
+		var lr := rt.length()
+		var lu := up.length()
+		var lf := fw.length()
+		if lr < 1e-4 or lf < 1e-4:
+			continue
+		var nu := (up / lu) if lu > 1e-3 else (fw / lf).cross(rt / lr).normalized()
+		var d := Decal.new()
+		d.transform = Transform3D(Basis(rt / lr, nu, fw / lf), b[3] as Vector3)
+		d.size = Vector3(lr, maxf(lu, EDV_MIN_DEPTH), lf)
+		# A gobo sheet IS the light pattern the fixture paints on the floor.
+		# As albedo it would print a DARK lamp-shaped patch; as emission it
+		# glows, which is what the game draws.
+		if kind == "emit":
+			d.texture_emission = tex
+			d.emission_energy = 1.0
+		else:
+			d.texture_albedo = tex
+			d.albedo_mix = 1.0
+		var a := clampf(float(rec.get("alpha", 1.0)), 0.0, 1.0)
+		if a < 1.0:
+			d.modulate = Color(1, 1, 1, a)
+		# The authored culling distance, as a fade: the game stops drawing the
+		# volume past it, and matching that keeps 1,204 markings on Subsurface
+		# from all being live at once.
+		var cull := float(rec.get("cull", 0.0))
+		if cull > 1.0:
+			d.distance_fade_enabled = true
+			d.distance_fade_begin = cull * 0.8
+			d.distance_fade_length = cull * 0.2
+		holder.add_child(d)
+		d.owner = null
+		built += 1
+	Log.info("map context: %d decal volumes placed (%d sheets, %d without a readable sheet)"
+		% [built, sheets.size(), no_sheet])
+
 
 # Fast path for the Backdrops toggle, same contract as set_objects_shown():
 # flip the already-built skyline layer instead of rebuilding the overlay.
