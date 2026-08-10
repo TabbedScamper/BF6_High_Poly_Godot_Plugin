@@ -1795,6 +1795,11 @@ const CMAP_VERSION := 2
 #   5  the colour map targets 1 m per texel (large maps bake at 8192), and
 #      layers.json carries "linked" so the near-field window can rasterise
 #      street materials without reloading the palette.
+# (The palette now also accepts texture params behind UNKNOWN slot hashes,
+# classified by name suffix. Measured on mp_aftermath it changes NOTHING -
+# the computed layers' records bind only packed noise/mask sheets - so the
+# version deliberately does NOT bump for it: a fleet-wide rebake must buy
+# something visible. Fresh bakes pick the acceptance up for free.)
 const SPLAT_VERSION := 5
 # Per-slice detail textures; all slices must match. 1024 rather than 512: the
 # game's layer sheets are mostly 1024+, and at 512 the close-up ground was a

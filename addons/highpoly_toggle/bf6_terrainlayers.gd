@@ -258,16 +258,44 @@ func load(src, level: String, pidx: Dictionary) -> bool:
 				var pd: Dictionary = p
 				var n32 := int(pd["name32"])
 				if int(pd["type_hash"]) == BF6Depot.TH_TEXTURE:
-					if (pd["refs"] as Array).is_empty() or not SLOTS.has(n32):
+					if (pd["refs"] as Array).is_empty():
 						continue
-					var role: Array = SLOTS[n32]
 					var guid: String = ((pd["refs"] as Array)[0] as Array)[1]
 					var nm := str(pidx.get(guid, "")).trim_suffix(".ebx")
 					if nm == "":
 						continue
 					# The pixels are the RES of the same path with `.ebx`
 					# dropped; the partition index names the EBX.
-					(lay["textures"] as Dictionary)["%s_%s" % [role[0], role[1]]] = nm
+					if SLOTS.has(n32):
+						var role: Array = SLOTS[n32]
+						(lay["textures"] as Dictionary)["%s_%s" % [role[0], role[1]]] = nm
+					else:
+						# AN UNKNOWN SLOT IS NOT AN ABSENT TEXTURE. The slot
+						# table only names the hashes that have been measured,
+						# and skipping the rest silently is how a layer that
+						# binds real sheets reads as "shader-computed" - the
+						# environment decal templates hid their sheets the
+						# same way. Classify by the texture's own name
+						# suffix, the convention that held install-wide there:
+						# _cv is a colour sheet, _nhs a normal, _ao occlusion.
+						var leaf := nm.get_file().to_lower()
+						var kind := ""
+						# _ncs would pass an ends_with("_cs") test and it is a
+						# PACKED sheet (noise/normal channels), not a colour -
+						# painted as albedo it comes out the wrong hue entirely.
+						if leaf.ends_with("_ncs"):
+							kind = ""
+						elif leaf.ends_with("_cv") or leaf.ends_with("_ca") \
+								or leaf.ends_with("_cs"):
+							kind = "cv"
+						elif leaf.ends_with("_nhs") or leaf.ends_with("_nm") \
+								or leaf.ends_with("_nmo"):
+							kind = "nhs"
+						elif leaf.ends_with("_ao"):
+							kind = "ao"
+						if kind != "":
+							var kk := "u%08x_%s" % [n32, kind]
+							(lay["textures"] as Dictionary)[kk] = nm
 				else:
 					var raw = pd["raw"]
 					if raw == null:
@@ -284,13 +312,17 @@ func load(src, level: String, pidx: Dictionary) -> bool:
 	return true
 
 
-# The albedo of a layer, preferring the primary material set.
+# The albedo of a layer, preferring the primary material set; a colour sheet
+# behind an unmeasured slot hash (u..._cv) is a real sheet all the same.
 func albedo_of(i: int) -> String:
 	if i < 0 or i >= layers.size():
 		return ""
 	var t: Dictionary = (layers[i] as Dictionary)["textures"]
 	for k in ["a_cv", "b_cv", "c_cv"]:
 		if t.has(k):
+			return str(t[k])
+	for k in t.keys():
+		if str(k).ends_with("_cv"):
 			return str(t[k])
 	return ""
 
@@ -301,6 +333,9 @@ func normal_of(i: int) -> String:
 	var t: Dictionary = (layers[i] as Dictionary)["textures"]
 	for k in ["a_nhs", "b_nhs", "c_nhs"]:
 		if t.has(k):
+			return str(t[k])
+	for k in t.keys():
+		if str(k).ends_with("_nhs"):
 			return str(t[k])
 	return ""
 
