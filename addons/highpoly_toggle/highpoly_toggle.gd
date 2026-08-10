@@ -227,30 +227,19 @@ func _mode() -> int:
 func _textured() -> bool:
 	return Modes.textured(mode_btn.get_selected_id()) if mode_btn else true
 
-# True on every rung except the one that fetches nothing at all — OR whenever
-# the open map's data is already on disk.
+# True on every rung except "Low-Poly (what you export)". THE MODE IS THE ONLY
+# INPUT, deliberately.
 #
-# The gate exists so nothing starts a download the user did not ask for. It was
-# written as "the mode must be one that downloads", which was the same thing
-# back when the only way to have map data was to fetch it. It is not the same
-# thing now: data can be installed locally, and in that case turning a layer on
-# downloads nothing at all. The old rule locked the whole Map Context section
-# against data sitting right there in the cache.
-#
-# Checked against the OPEN map rather than "any map is cached", so the message
-# still fires correctly when you switch to a map you have not got.
+# This used to also return true whenever the open map's data was already on
+# disk — a download-era mercy: back then the gate existed so nothing FETCHED
+# without being asked, and data sitting in the cache made the fetch moot. But
+# nothing downloads any more, and the escape had a worse consequence than the
+# kindness it bought: after one High-Poly session every map HAS data, so
+# dropping back to Low-Poly never re-greyed the chips — they sat lit on the
+# export rung, whose whole promise is "only what the SDK ships". The rung's
+# meaning is the gate now, not the cost of honouring a click.
 func _ctx_allowed() -> bool:
-	if mode_btn != null and Modes.downloads(mode_btn.get_selected_id()):
-		return true
-	# map_of() reads the identity off the edited scene root's name, so it is
-	# known BEFORE anything is applied. mapctx._map is only set during apply,
-	# and using it here would be circular: you could not turn a layer on until
-	# you had already turned one on.
-	if mapctx != null:
-		var m: String = MapContextScript.map_of(EditorInterface.get_edited_scene_root())
-		if m != "" and mapctx.has_data(m):
-			return true
-	return false
+	return mode_btn != null and Modes.downloads(mode_btn.get_selected_id())
 
 # Say what the current mode is SHOWING, in the status line.
 #

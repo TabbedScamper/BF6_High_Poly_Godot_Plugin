@@ -45,8 +45,10 @@ import probe_tung_terrain as T       # noqa: E402
 import probe_tung_colormap as CM     # noqa: E402
 
 PAYLOAD = 149297     # xs=265 inline node payload (heights + section + density)
-PAGE = 4356
+PAGE = 4356          # per-map: tungsten 4356, eastwood 2592 (fleet table)
 TILE = 17424
+PAGE_BY_LEVEL = {"mp_eastwood": 2592, "mp_tungsten": 4356, "mp_granite": 4356}
+TAILS = (0, 17424, 34848, 85024)   # possible colour-tile trailers after block-2
 
 
 def hf_nodes(d, off, size, h):
@@ -105,6 +107,7 @@ def main():
     bykey = {n["key"]: n for n in dirnodes}
 
     # census: how many chunks carry k=2 payloads (expected ~= External block-2)
+    page = PAGE_BY_LEVEL.get(level, PAGE)
     k2chunks = 0
     for n in dirnodes:
         if n["g0"] is None:
@@ -113,12 +116,9 @@ def main():
         if not os.path.isfile(p):
             continue
         sz = os.path.getsize(p)
-        for k in (0, 1, 2):
-            r = sz - k * PAYLOAD
-            if r >= 0 and r % PAGE in (0, (2 * TILE) % PAGE):
-                # 2*TILE = 34848 = 8*PAGE, so tiles fold into pages: r % PAGE == 0
-                pass
-        if sz >= 2 * PAYLOAD and (sz - 2 * PAYLOAD) % PAGE == 0:
+        if sz >= 2 * PAYLOAD and any(
+                (sz - 2 * PAYLOAD - t) >= 0 and (sz - 2 * PAYLOAD - t) % page == 0
+                for t in TAILS):
             k2chunks += 1
     print("chunks whose size decomposes with TWO height payloads: %d" % k2chunks)
 
@@ -137,14 +137,16 @@ def main():
         if not os.path.isfile(p):
             continue
         buf = C.read(p)
-        if len(buf) < 2 * PAYLOAD or (len(buf) - 2 * PAYLOAD) % PAGE:
+        page = PAGE_BY_LEVEL.get(level, PAGE)
+        if len(buf) < 2 * PAYLOAD:
             print("  key 0x%X: chunk has no second payload (size %d)" % (key, len(buf)))
             continue
-        # tiles, when present, are the LAST 2*17,424; block-2 sits before them.
-        # 2*TILE == 8*PAGE so size alone cannot distinguish "2 tiles" from
-        # "8 more pages": pick the candidate whose interior u16s scale into the
-        # node's own stored AABB Y band (dry texels hold the band floor, so a
-        # correct slice is ~100% in-band; tiles/pages are not).
+        # tiles, when present, are LAST; block-2 sits after the pages, before
+        # the tiles. Trailer size is per-node (0/17424/34848/85024) and some
+        # trailers alias page multiples, so pick the candidate whose interior
+        # u16s scale into the node's own stored AABB Y band (dry texels hold
+        # the band floor, so a correct slice is ~100% in-band; tiles/pages are
+        # not).
         lo16 = int((mn[1] - 0.5) / wy2 * 65536)
         hi16 = int((mx[1] + 0.5) / wy2 * 65536)
 
@@ -153,9 +155,14 @@ def main():
             pick = [g[(j + 4) * xs + (i + 4)]
                     for j in range(0, xs - 8, 13) for i in range(0, xs - 8, 13)]
             return sum(1 for v in pick if lo16 <= v <= hi16) / float(len(pick))
-        cands = [len(buf) - PAYLOAD]
-        if len(buf) >= 2 * PAYLOAD + 2 * TILE:
-            cands.append(len(buf) - 2 * TILE - PAYLOAD)
+        cands = []
+        for t in TAILS:
+            off = len(buf) - t - PAYLOAD
+            if off >= PAYLOAD and (off - PAYLOAD) % page == 0:
+                cands.append(off)
+        if not cands:
+            print("  key 0x%X: no aligned candidate (size %d)" % (key, len(buf)))
+            continue
         off2 = max(cands, key=inband)
         g0 = grid_of(buf[0:PAYLOAD], xs)
         g2 = grid_of(buf[off2:off2 + PAYLOAD], xs)
