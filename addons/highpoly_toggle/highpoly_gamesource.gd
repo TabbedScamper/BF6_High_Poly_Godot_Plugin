@@ -1319,14 +1319,38 @@ func layer_of_scope(scope: String) -> String:
 		return ""
 	var leaf := scope.get_file()
 	var dir := scope.get_base_dir()
-	# The level's own bundle: .../mp_aftermath/mp_aftermath
-	if leaf == level or leaf == dir.get_file():
+	# The level's own bundle: .../mp_aftermath/mp_aftermath. RESTRICTED to
+	# non-gameplay paths: on MP_Abbasid the gameplay layers live at
+	# _layers_gameplay/<x>/<x>, where leaf == dir-name is the LAYOUT, not the
+	# level bundle - the unrestricted rule made conquest/rush/testlevelmode
+	# always-visible there (docs/MAP-ABBASID.md, task #77).
+	if leaf == level:
 		return ""
-	# The art subworlds ARE the map.
-	if leaf.begins_with("sub_art_"):
+	if leaf == dir.get_file() and not dir.contains("_layers_gameplay"):
 		return ""
-	# World and content layers are not switchable dressing.
-	if dir.ends_with("_layers_world") or dir.ends_with("_layers_content"):
+	# The art subworlds ARE the map, and so are whole world AREAS: Abbasid's
+	# area_02_subworld sits at the level root with 263 objects of plain map -
+	# classifying it as switchable dressing hid a whole district by default
+	# (the user's "missing props" marks).
+	if leaf.begins_with("sub_art_") or leaf.begins_with("area_"):
+		return ""
+	if dir.ends_with("_layers_world"):
+		# GAMEMODE DRESSING HIDES HERE TOO. Abbasid files eight
+		# <mode>_subworld layers under _layers_world, where the blanket ""
+		# drew Rush barriers and Payload dressing in every mode (the user's
+		# "gamemode props showing" marks). Only names that carry a KNOWN mode
+		# token become mode layers - an unrecognised subworld stays visible,
+		# because wrongly hiding map content is the worse failure.
+		if leaf.ends_with("_subworld"):
+			var stem := leaf.trim_suffix("_subworld")
+			for tok in ["conquest", "rush", "breakthrough", "domination",
+					"teamdeathmatch", "kingofthehill", "sabotage", "payload",
+					"obliteration", "gunmaster", "freeforall", "escalation",
+					"attrition", "gauntlet", "squaddm", "strikepoint"]:
+				if stem.contains(str(tok)):
+					return stem
+		return ""
+	if dir.ends_with("_layers_content"):
 		return ""
 	return leaf
 
