@@ -342,6 +342,20 @@ static func load_external_glb(user_path: String) -> PackedScene:
 	if scene == null:
 		return null
 	_fix_importer_meshes(scene, scene)
+	# A CORRUPT FILE IS DELETED, NOT TOLERATED. A truncated cache write can
+	# leave a GLB that parses but carries a mesh surface with EMPTY vertex
+	# data. Reading such a surface's arrays errors and hands back [], and
+	# feeding that onward took a user's editor down with signal 11 - on every
+	# preview build, same file, every session, which is what "it crashes very
+	# often" looks like from the outside. These files are OUR derived cache
+	# and rebuild from the install on demand, so deleting is the heal.
+	if _scene_mesh_broken(scene):
+		HighpolyLog.error(("%s parses but carries an empty mesh surface - the "
+			+ "cached file is corrupt. It was deleted and rebuilds from your "
+			+ "game install on demand.") % user_path.get_file())
+		scene.free()
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(user_path))
+		return null
 	compress_scene_textures(scene)
 	var ps := PackedScene.new()
 	if ps.pack(scene) != OK:
@@ -416,15 +430,46 @@ static func compress_scene_textures(root: Node, tangents := true, textures := tr
 		for c in n.get_children():
 			stack.append(c)
 
+# A cached GLB whose mesh carries a surface with no vertex data. An empty
+# surface draws nothing, so a mesh that has one is a broken file, not a lean
+# one - and reading its arrays is what crashed a user's editor (signal 11 in
+# _ensure_tangents, godot-crash-2026-08-10_17-32-14.log). Checked through
+# surface_get_array_len, which reads a stored count and never asks the
+# rendering server to build arrays from the broken surface.
+static func _scene_mesh_broken(root: Node) -> bool:
+	var stack: Array = [root]
+	while not stack.is_empty():
+		var n: Node = stack.pop_back()
+		if n is MeshInstance3D and (n as MeshInstance3D).mesh is ArrayMesh:
+			var am := (n as MeshInstance3D).mesh as ArrayMesh
+			for i in range(am.get_surface_count()):
+				if am.surface_get_array_len(i) <= 0:
+					return true
+		for c in n.get_children():
+			stack.append(c)
+	return false
+
+
 # Rebuild any surface that has a normal-mapped material but no tangent array.
 # SurfaceTool.generate_tangents = MikkTSpace, one-time per model per session.
+#
+# EVERY SURFACE READ IS GUARDED. surface_get_arrays on an empty-vertex
+# surface errors and returns [] - a SIZE-ZERO array, not the 13-slot one -
+# so the unguarded arr[Mesh.ARRAY_TANGENT] was an out-of-bounds read, and
+# pushing the same [] into add_surface_from_arrays is the road that ended in
+# signal 11. The loader deletes corrupt files before they get here, but this
+# function is also reached through scenes that never went through the loader,
+# so it must hold on its own.
 static func _ensure_tangents(mesh: ArrayMesh) -> ArrayMesh:
 	var needs := false
 	for i in range(mesh.get_surface_count()):
+		if mesh.surface_get_array_len(i) <= 0:
+			continue
 		var m := mesh.surface_get_material(i)
 		if m is BaseMaterial3D and (m as BaseMaterial3D).normal_texture != null:
 			var arr := mesh.surface_get_arrays(i)
-			if arr[Mesh.ARRAY_TANGENT] == null and arr[Mesh.ARRAY_TEX_UV] != null \
+			if arr.size() > Mesh.ARRAY_TANGENT and arr[Mesh.ARRAY_TANGENT] == null \
+					and arr[Mesh.ARRAY_TEX_UV] != null \
 					and arr[Mesh.ARRAY_NORMAL] != null:
 				needs = true
 				break
@@ -432,8 +477,12 @@ static func _ensure_tangents(mesh: ArrayMesh) -> ArrayMesh:
 		return mesh
 	var out := ArrayMesh.new()
 	for i in range(mesh.get_surface_count()):
+		if mesh.surface_get_array_len(i) <= 0:
+			continue               # an empty surface draws nothing; drop it
 		var m := mesh.surface_get_material(i)
 		var arr := mesh.surface_get_arrays(i)
+		if arr.size() < Mesh.ARRAY_MAX or arr[Mesh.ARRAY_VERTEX] == null:
+			continue               # unreadable surface: dropping beats crashing
 		var has_nm: bool = m is BaseMaterial3D and (m as BaseMaterial3D).normal_texture != null
 		if has_nm and arr[Mesh.ARRAY_TANGENT] == null and arr[Mesh.ARRAY_TEX_UV] != null \
 				and arr[Mesh.ARRAY_NORMAL] != null:
