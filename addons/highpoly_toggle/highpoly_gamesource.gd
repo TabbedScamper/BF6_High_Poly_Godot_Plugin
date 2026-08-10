@@ -5689,6 +5689,27 @@ func material_for(state_key: int, scope: String, var_hash := 0,
 		# after it: com_carsuv_01_door_frontright_mesh, com_metrobus_01_wreck_
 		# roof_mesh. So a name that does not end in its index is a member.
 		var wrap = _texture_for(slots.get("wrap"), false) if _is_body_member() else null
+		# A MEMBER with a wrap-bearing record (door, hood, trunk) takes SOLID
+		# paint - its UV0 does not share the body's wrap layout - but the
+		# paint is the LIVERY's ground colour, not the carpaint constant. The
+		# reference (member_mesh.py) reads the dominant lit colour of the
+		# variant's vst bake; the wrap sheet's own dominant lit colour is the
+		# same answer from data already in hand - ambulance and police white,
+		# taxi yellow - where the constant is a near-black 0.02..0.36 that
+		# painted every door primer-grey against a white liveried body. That
+		# contrast is the user's MP_Aftermath marker: "livery is correct but
+		# the mapping doesnt match the model" (task #32; measured by
+		# software-rasterising the wrap through every texcoord channel -
+		# tools/test_uv32.gd - the body maps correctly through UV0 and the
+		# doors are the only mismatch left).
+		var member_painted := false
+		if wrap == null and slots.has("wrap"):
+			var mp = _wrap_paint_of(slots.get("wrap"))
+			if mp is Color:
+				cm.albedo_color = mp
+				member_painted = true
+				tex_stats["carpaint_member_paint"] = \
+					int(tex_stats.get("carpaint_member_paint", 0)) + 1
 		if wrap != null:
 			cm.albedo_texture = wrap
 			# The body constant is often near-black (0.0199 on the police SUV),
@@ -5703,7 +5724,7 @@ func material_for(state_key: int, scope: String, var_hash := 0,
 			# wrap that covers the shell and wrong for one that does not.
 			cm.albedo_color = Color(1, 1, 1)
 			tex_stats["carpaint_wrap"] = int(tex_stats.get("carpaint_wrap", 0)) + 1
-		elif slots.has("wrap"):
+		elif slots.has("wrap") and not member_painted:
 			tex_stats["carpaint_wrap_skipped"] = \
 				int(tex_stats.get("carpaint_wrap_skipped", 0)) + 1
 		var nm2 = _texture_for(slots.get("normal", slots.get("normal_vt")), true)
@@ -6346,6 +6367,62 @@ func _carpaint_of(slots: Dictionary, consts: Dictionary):
 	if s is PackedByteArray and (s as PackedByteArray).size() >= 4:
 		smooth = clampf((s as PackedByteArray).decode_float(0), 0.0, 1.0)
 	return [body, smooth]
+
+
+# The wrap's DOMINANT lit colour - the livery's ground paint. A member panel
+# (door, hood, trunk) cannot wear the wrap itself (its UV0 islands do not
+# share the wrap layout), so it takes solid paint, and this is the paint the
+# game family shows: white for an ambulance or police car, yellow for a taxi.
+#
+# A true mode rather than a median: the ambulance wrap is roughly half red,
+# and a per-channel median across a near-even split blends toward pink. Lit
+# pixels bucket to a coarse 4-bit grid, the most populous bucket wins, and the
+# answer is the average of exactly the pixels in it. Cached per sheet; a
+# vehicle family asks once and its doors, hood and trunk all reuse it.
+var _wrap_paint_cache := {}
+
+
+func _wrap_paint_of(file_guid):
+	if file_guid == null or str(file_guid) == "":
+		return null
+	var k := str(file_guid)
+	if _wrap_paint_cache.has(k):
+		return _wrap_paint_cache[k]
+	var out = null
+	var tex = _texture_for(file_guid, false, TINT_MASK_PROBE_DIM)
+	var an0 = walk.gi.get(k) if walk != null else null
+	if an0 != null:
+		var an := str(an0).to_lower().trim_suffix(".ebx")
+		_tex_cache.erase("%s@%d" % [an, TINT_MASK_PROBE_DIM])
+	var img: Image = (tex as Texture2D).get_image() if tex is Texture2D else null
+	if img != null:
+		var c := img.duplicate() as Image
+		if not c.is_compressed() or c.decompress() == OK:
+			c.convert(Image.FORMAT_RGBA8)
+			var buckets := {}          # 12-bit rgb key -> [count, r, g, b]
+			for y in range(c.get_height()):
+				for x in range(c.get_width()):
+					var p := c.get_pixel(x, y)
+					if p.a < 0.5 or maxf(p.r, maxf(p.g, p.b)) < 0.35:
+						continue
+					var bk := (int(p.r * 15.0) << 8) \
+						| (int(p.g * 15.0) << 4) | int(p.b * 15.0)
+					var acc: Array = buckets.get(bk, [0, 0.0, 0.0, 0.0])
+					acc[0] += 1
+					acc[1] += p.r
+					acc[2] += p.g
+					acc[3] += p.b
+					buckets[bk] = acc
+			var best: Array = []
+			for bk in buckets:
+				var acc2: Array = buckets[bk]
+				if best.is_empty() or int(acc2[0]) > int(best[0]):
+					best = acc2
+			if not best.is_empty() and int(best[0]) >= 32:
+				var n := float(best[0])
+				out = Color(best[1] / n, best[2] / n, best[3] / n)
+	_wrap_paint_cache[k] = out
+	return out
 
 
 # The three slots the material actually reads, in a fixed order. Deliberately

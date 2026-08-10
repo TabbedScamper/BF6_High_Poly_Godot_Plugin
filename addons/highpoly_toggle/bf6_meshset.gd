@@ -327,6 +327,21 @@ func read_lod(d: PackedByteArray, lod := 0, chunk := PackedByteArray(),
 			for i in range(vcount):
 				uvs[i] = Vector2(src[i * c], src[i * c + 1])
 
+		# THE SECOND CHANNEL TOO. UV0 tiles across many units; the later channel
+		# is the per-object bake unwrap that fits 0..1, and it is what a
+		# vehicle's *_unique livery/detail sheet and a carpaint wrap are
+		# authored against. Shipping only set 0 is why an ambulance wore its
+		# livery with tiling coordinates - the right texture in the wrong
+		# places (task #32). Godot has exactly one spare channel (UV2), so the
+		# second declared set is the one that rides along.
+		var uv2 := PackedVector2Array()
+		if uv_sets.size() > 1:
+			var src2: PackedFloat32Array = uv_sets[1][0]
+			var c2: int = uv_sets[1][1]
+			uv2.resize(vcount)
+			for i in range(vcount):
+				uv2[i] = Vector2(src2[i * c2], src2[i * c2 + 1])
+
 		var normals := PackedVector3Array()
 		if nrm_comps >= 3:
 			normals.resize(vcount)
@@ -359,6 +374,7 @@ func read_lod(d: PackedByteArray, lod := 0, chunk := PackedByteArray(),
 		# section still needs to know which depot record dresses it, and
 		# re-parsing the file to find out would be absurd.
 		out.append({"material": s["material"], "verts": verts, "uvs": uvs,
+					"uv2": uv2,
 					"normals": normals, "indices": idx,
 					"uv_sets": uv_sets.size(),
 					"state_key": s.get("state_key", 0),
