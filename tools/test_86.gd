@@ -26,8 +26,8 @@ func _init() -> void:
 		print("  virt %2d: layer=%s m/repeat=%.1f smooth=%s" % [32 + i,
 			str(r.get("layer")), float(r.get("metres_per_repeat", 0.0)),
 			str(r.get("smoothness"))])
-	if int(meta.get("splat_v", 0)) != 6 or vrows.is_empty():
-		print("FAIL no virtual rows at v6")
+	if int(meta.get("splat_v", 0)) < 6 or vrows.is_empty():
+		print("FAIL no virtual rows at v6+")
 		fails += 1
 	var idx := Image.load_from_file(ProjectSettings.globalize_path("user://v86/splat/idx.png"))
 	idx.convert(Image.FORMAT_RGBA8)

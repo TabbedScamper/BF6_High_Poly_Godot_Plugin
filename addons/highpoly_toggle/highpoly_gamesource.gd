@@ -1801,7 +1801,11 @@ const CMAP_VERSION := 2
 #      instead of one global 4 m tile. 87% of aftermath's ground stopped
 #      being one texture for it. The palette also accepts texture params
 #      behind unknown slot hashes, classified by name suffix.
-const SPLAT_VERSION := 6
+#   7  the generic slope-fallback ground is picked by MATERIAL CLASS, not by
+#      coverage: aftermath's biggest textured layer is cobblestone, and with
+#      the virtual slices tiling the generic ground everywhere the seabed
+#      came out as bricks. Natural surfaces only; architectural ones barred.
+const SPLAT_VERSION := 7
 # Per-slice detail textures; all slices must match. 1024 rather than 512: the
 # game's layer sheets are mostly 1024+, and at 512 the close-up ground was a
 # quarter of the detail the install holds. The loader compresses the slices to
@@ -2455,29 +2459,54 @@ func _layer_image(res_name: String, _is_normal: bool) -> Image:
 #
 # CLIFF is the highest-covering rock/gravel/stone layer, or the second-placed
 # layer when the map has none.
-func _write_fallback_layers(pal, by_area: Array, out_dir: String) -> void:
-	var ground := -1
-	var cliff := -1
-	for l in by_area:
-		var i := int(l)
-		var nm: String = pal.albedo_of(i)
-		if nm == "" or nm.contains("defaulttexture") or nm.contains("debug"):
-			continue
-		if ground < 0:
-			ground = i
-			continue
-		if cliff < 0 and (nm.contains("rock") or nm.contains("gravel")
-				or nm.contains("stone") or nm.contains("cliff")):
-			cliff = i
-	if cliff < 0:
+# THE GENERIC GROUND MUST BE A NATURAL SURFACE. It used to be the top
+# textured layer by coverage, and on mp_aftermath that is COBBLESTONE - and
+# because every computed layer tiles the generic ground (the virtual slices
+# made that most of the map), the city AND the seabed under its ocean came
+# out as bricks. The words are picked in priority order so "grass" beats
+# "sand" when both exist, and the architectural surfaces are barred from
+# both roles outright: a cobble cliff is as wrong as a cobble seabed.
+const FB_NATURAL := ["grass", "dirt", "soil", "mud", "sand", "forest",
+	"meadow", "moss", "snow", "gravel"]
+const FB_HARD := ["rock", "cliff", "scree", "rubble", "gravel", "stone"]
+const FB_EXCLUDE := ["cobble", "asphalt", "concrete", "tile", "brick",
+	"paving", "pavement", "curb", "defaulttexture", "debug"]
+
+
+func _fb_pick(pal, by_area: Array, words: Array, not_this: int) -> int:
+	for w in words:
 		for l in by_area:
-			if int(l) != ground and pal.albedo_of(int(l)) != "":
-				cliff = int(l)
-				break
+			var i := int(l)
+			if i == not_this:
+				continue
+			var nm: String = pal.albedo_of(i)
+			if nm == "":
+				continue
+			var leaf := nm.get_file().to_lower()
+			var barred := false
+			for e in FB_EXCLUDE:
+				if leaf.contains(e):
+					barred = true
+					break
+			if barred:
+				continue
+			if leaf.contains(str(w)):
+				return i
+	return -1
+
+
+func _write_fallback_layers(pal, by_area: Array, out_dir: String) -> void:
+	var ground := _fb_pick(pal, by_area, FB_NATURAL, -1)
+	if ground < 0:
+		# nothing natural on this map: any non-barred textured layer at all
+		ground = _fb_pick(pal, by_area, [""], -1)
+	var cliff := _fb_pick(pal, by_area, FB_HARD, ground)
 	if ground < 0:
 		return
 	if cliff < 0:
 		cliff = ground
+	_say("game source: slope fallback ground=%s cliff=%s" % [
+		pal.albedo_of(ground).get_file(), pal.albedo_of(cliff).get_file()])
 	for pair in [[ground, "ground"], [cliff, "cliff"]]:
 		var li: int = pair[0]
 		var tag: String = pair[1]
