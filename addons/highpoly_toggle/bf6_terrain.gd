@@ -431,20 +431,32 @@ func composite(size := 4096) -> Dictionary:
 			continue
 		# The node's own samples run from `border` to `xs-1-border` inclusive;
 		# everything outside that is the neighbour's, repeated.
+		#
+		# BILINEAR, not nearest. The pyramid is concentric - 8 m/sample covers
+		# the whole map while the fine tiers only cover the centre
+		# (fleet-measured: 0.5 m over just 0.4-0.7% of the map) - so away from
+		# the middle a coarse node is upsampled 4-16x into this grid, and
+		# nearest turned every outskirt slope into 8 m stair steps.
 		var s0 := border
 		var s1 := xs - 1 - border
 		var ssp := float(maxi(1, s1 - s0))
 		for gz in range(z0, z1):
 			var fz: float = float(gz - z0) / float(maxi(1, z1 - z0 - 1)) if z1 - z0 > 1 else 0.0
-			var sy: int = clampi(s0 + int(round(fz * ssp)), 0, xs - 1)
+			var sfy: float = clampf(float(s0) + fz * ssp, 0.0, float(xs - 1))
+			var sy0: int = mini(int(sfy), xs - 2)
+			var tz: float = sfy - float(sy0)
 			for gx in range(x0, x1):
 				var fx: float = float(gx - x0) / float(maxi(1, x1 - x0 - 1)) if x1 - x0 > 1 else 0.0
-				var sx: int = clampi(s0 + int(round(fx * ssp)), 0, xs - 1)
-				var si := (sy * xs + sx) * 2
-				if si + 1 >= v.size():
+				var sfx: float = clampf(float(s0) + fx * ssp, 0.0, float(xs - 1))
+				var sx0: int = mini(int(sfx), xs - 2)
+				var tx: float = sfx - float(sx0)
+				var r0 := (sy0 * xs + sx0) * 2
+				var r1 := r0 + xs * 2
+				if r1 + 3 >= v.size():
 					continue
-				var di := (gz * size + gx) * 2
-				out[di] = v[si]
-				out[di + 1] = v[si + 1]
+				var h0 := lerpf(float(v.decode_u16(r0)), float(v.decode_u16(r0 + 2)), tx)
+				var h1 := lerpf(float(v.decode_u16(r1)), float(v.decode_u16(r1 + 2)), tx)
+				out.encode_u16((gz * size + gx) * 2,
+					clampi(int(round(lerpf(h0, h1, tz))), 0, 65535))
 	return {"data": out, "size": size, "min": lo, "max": hi,
 		"world_size_y": world_size_y, "nodes": with_vals.size()}

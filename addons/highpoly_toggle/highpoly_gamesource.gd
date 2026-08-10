@@ -1591,7 +1591,9 @@ static func _terrain_key(res: PackedByteArray) -> String:
 	var head := res.slice(0, mini(65536, n))
 	var tail := res.slice(maxi(0, n - 65536), n)
 	# The GLOBAL hash(): PackedByteArray carries no .hash() method of its own.
-	return "%d:%d:%d" % [n, hash(head), hash(tail)]
+	# +h2: bilinear composite + the block-8 hole mask (2026-08-10) - the
+	# suffix retires every nearest-sampled, hole-less cache in the field.
+	return "%d:%d:%d+h2" % [n, hash(head), hash(tail)]
 
 
 func terrain(cache_dir: String) -> Dictionary:
@@ -1670,6 +1672,28 @@ func terrain(cache_dir: String) -> Dictionary:
 	var lo: Vector3 = g["min"]
 	var hi: Vector3 = g["max"]
 	DirAccess.make_dir_recursive_absolute(cache_dir)
+	# THE HOLE MASK RIDES ALONG. Block 8 is the game's own terrain-suppression
+	# raster (bit 0 clear = the ground is cut away because mesh city-ground -
+	# sidewalks, plazas, whole blocks - replaces it). Skipping it draws our
+	# terrain up through the sidewalks. Rasterised once at ~2 m (native is
+	# ~1.93 m) and cached beside the heights.
+	var b8 := t.find_block(res, 8)
+	if not b8.is_empty():
+		var mk := BF6MaterialTree.new()
+		if mk.parse_mask(b8):
+			var hr := mk.hole_raster(4097)
+			var cut := 0
+			for i in range(hr.size()):
+				if hr[i] == 0:
+					cut += 1
+				hr[i] *= 255
+			var him := Image.create_from_data(4097, 4097, false, Image.FORMAT_L8, hr)
+			him.save_png("%s/holes_game.png" % cache_dir)
+			_say("game source: terrain hole mask - %.2f%% of the map is "
+				% (100.0 * cut / hr.size())
+				+ "game-suppressed ground (sidewalk/plaza cuts)")
+		else:
+			_say("game source: terrain hole mask - %s" % mk.error)
 	var path := "%s/height_game.r16" % cache_dir
 	var f := FileAccess.open(path, FileAccess.WRITE)
 	if f == null:
@@ -2679,14 +2703,30 @@ func roads() -> Mesh:
 			var t1 := float(rec["tiling1"])
 			if absf(t1) < 1e-3:
 				t1 = t0
+			# THE RECORD'S AABB-Y IS THE DRAPE BAND, verified fleet-wide
+			# 2026-08-10 (96% of records track it within 0.15 m; 9 aftermath /
+			# 11 dumbo / 23 abbasid records are ELEVATED - authored on rooftops
+			# and decks, 13-17% bit-exact flat planes). Terrain-only draping
+			# put aftermath's rooftop tennis court 10.9 m down inside its
+			# building; clamping the sampled ground into the band puts every
+			# street exactly where it was and lifts the elevated records onto
+			# their decks.
+			var ylo := float((rec["aabb_min"] as Vector3).y)
+			var yhi := float((rec["aabb_max"] as Vector3).y)
 			for i in range(n):
 				var x := vs[i * 8]
 				var z := vs[i * 8 + 1]
-				verts.push_back(Vector3(x, _height_at(x, z) + ROAD_Y_BIAS, z))
+				verts.push_back(Vector3(x,
+					clampf(_height_at(x, z), ylo, yhi) + ROAD_Y_BIAS, z))
+				# TEXTURE X IS ACROSS, TEXTURE Y IS ALONG. The art is authored
+				# with the road's length running down the sheet, so the stored
+				# across-u samples texture x and along-v samples texture y.
+				# The transposed emit drew every stripe 90 degrees off -
+				# user-verified on the live map, which outranks any notation.
 				if planar:
-					uvs.push_back(Vector2(z / t0, x / t1))
+					uvs.push_back(Vector2(x / t1, z / t0))
 				else:
-					uvs.push_back(Vector2(vs[i * 8 + 3], vs[i * 8 + 2]))
+					uvs.push_back(Vector2(vs[i * 8 + 2], vs[i * 8 + 3]))
 				# Vertex RGBA rides along; alpha is the authored edge fade
 				# (mud strips feathering into the ground).
 				cols.push_back(Color(vs[i * 8 + 4], vs[i * 8 + 5],

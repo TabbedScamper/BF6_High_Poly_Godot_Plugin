@@ -83,6 +83,72 @@ func parse(b7: PackedByteArray) -> bool:
 	return true
 
 
+# Block 8 — the MASK tree. Same node grammar as block 7 but the stream starts
+# at +0x28 and there is no pair footer. Decoded 2026-08-10: it is the terrain
+# HOLE mask. Texels carry four near-identical boolean planes; 15 = terrain
+# present, bit 0 CLEAR = terrain suppressed — the game cuts the ground away
+# where mesh city-ground replaces it (91% of aftermath's 502 sidewalk/curb
+# instances sit inside the clear region, enrichment x505; native texel
+# ~1.93 m). A rebuild that skips this mask draws terrain through sidewalks.
+func parse_mask(b8: PackedByteArray) -> bool:
+	error = ""
+	nodes.clear()
+	pairs = PackedInt32Array()
+	background = 0
+	if b8.size() < 0x28:
+		error = "block 8 shorter than its header"
+		return false
+	_d = b8
+	dim = int(b8.decode_u32(0x00))
+	world_min = Vector2(b8.decode_float(0x08), b8.decode_float(0x0C))
+	world_max = Vector2(b8.decode_float(0x10), b8.decode_float(0x14))
+	node_count = int(b8.decode_u32(0x18))
+	levels = int(b8.decode_u32(0x20))
+	if dim <= 0 or dim > 4096:
+		error = "implausible raster dim %d" % dim
+		return false
+	_p = 0x28
+	return _node(3, 0)
+
+
+# The hole mask as size*size bytes over the tree's world bounds, deepest node
+# wins: 1 = terrain present, 0 = suppressed (bit 0 of the texel value).
+func hole_raster(size: int) -> PackedByteArray:
+	var out := PackedByteArray()
+	out.resize(size * size)
+	out.fill(1)
+	var span := world_max - world_min
+	if span.x <= 0.0 or span.y <= 0.0:
+		return out
+	var order: Array = nodes.duplicate()
+	order.sort_custom(func(a, b): return int(a["depth"]) < int(b["depth"]))
+	for n in order:
+		var nd: Dictionary = n
+		var b: Array = bounds_of(int(nd["key"]), world_min, world_max)
+		var lo: Vector2 = b[0]
+		var hi: Vector2 = b[1]
+		var x0 := clampi(int(floor((lo.x - world_min.x) / span.x * size)), 0, size)
+		var x1 := clampi(int(ceil((hi.x - world_min.x) / span.x * size)), 0, size)
+		var z0 := clampi(int(floor((lo.y - world_min.y) / span.y * size)), 0, size)
+		var z1 := clampi(int(ceil((hi.y - world_min.y) / span.y * size)), 0, size)
+		if x1 <= x0 or z1 <= z0:
+			continue
+		var rows: PackedByteArray = nd["rows"]
+		var rw := maxf(hi.x - lo.x, 1e-6)
+		var rh := maxf(hi.y - lo.y, 1e-6)
+		for gz in range(z0, z1):
+			var wz := world_min.y + (float(gz) + 0.5) / float(size) * span.y
+			var sy := clampi(int(clampf((wz - lo.y) / rh, 0.0, 1.0)
+				* float(dim - 1)), 0, dim - 1) * dim
+			var drow := gz * size
+			for gx in range(x0, x1):
+				var wx := world_min.x + (float(gx) + 0.5) / float(size) * span.x
+				var sx := clampi(int(clampf((wx - lo.x) / rw, 0.0, 1.0)
+					* float(dim - 1)), 0, dim - 1)
+				out[drow + gx] = int(rows[sy + sx]) & 1
+	return out
+
+
 func _node(key: int, depth: int) -> bool:
 	if _p + 2 > _d.size():
 		error = "node %d flags past the end" % key
