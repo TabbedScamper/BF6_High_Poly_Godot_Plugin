@@ -1148,6 +1148,12 @@ All of it is read from your own Battlefield 6 installation."
 	_gate(mapctx_on, "The extended terrain")
 	_gate(mapctx_backdrop, "The distant skyline")
 	_gate(mapctx_water, "The water")
+	# Roads and Grass ride the extended terrain, so they are gated with it.
+	# Roads had the _locked() snap-back in its handler from day one but was
+	# never REGISTERED here, so on the Low-Poly rung it looked pressable and
+	# then did nothing a user could see.
+	_gate(mapctx_roads, "The roads and paths")
+	_gate(mapctx_grass, "The ground clutter")
 	_gate(mapctx_objects, "The level's own objects")
 	_gate(mapctx_fx, "The level's effects")
 	_gate(mapctx_light, "The game lighting")
