@@ -670,18 +670,42 @@ func upgrade_catalogue(progress := Callable()) -> bool:
 	# The depot scope index is derived from the resource names, and there are now
 	# more of them. Rebuilt rather than appended so it cannot disagree with the
 	# mount it describes.
-	_depot_bundles.clear()
+	#
+	# BUILT PRIVATELY, PUBLISHED ON THE MAIN THREAD. This runs on the catalogue
+	# worker, and the old clear()-and-regrow mutated _depot_bundles IN PLACE
+	# while the main thread iterates it - _siblings_of does exactly that on
+	# every twice-failed surface, and a user's crash log caught signal 11 there
+	# during the on-load apply of their placed pieces (godot-crash-2026-08-10_
+	# 01-44-24.log). Same rule and same reason as BF6Source._publish. The
+	# derived caches go in the SAME swap: _obj_cache because objects that did
+	# not resolve before may resolve now, and _sib_scopes because its sibling
+	# lists were computed from the OLD depot set and nothing else ever reset it.
+	var nb := {}
 	for rn in src.res.keys():
 		var n := str(rn)
 		var at := n.find(SHADERSTATE)
 		if at > 0 and n.find("shaderblockdepot", at) > 0:
-			_depot_bundles[n.substr(0, at)] = n
-	if walk != null:
-		for d in _depot_bundles:
-			walk.scope_index[str(d)] = str(d)
-	# Objects that did not resolve before may resolve now, so nothing may keep a
-	# "this does not exist" answer from the level-only mount.
-	_obj_cache.clear()
+			nb[n.substr(0, at)] = n
+	var pub_done := [false]
+	var publish := func() -> void:
+		_depot_bundles = nb
+		if walk != null:
+			var si: Dictionary = walk.scope_index.duplicate()
+			for d in nb:
+				si[str(d)] = str(d)
+			walk.scope_index = si
+		_obj_cache = {}
+		_sib_scopes = {}
+		pub_done[0] = true
+	if OS.get_thread_caller_id() == OS.get_main_thread_id():
+		publish.call()
+	else:
+		publish.call_deferred()
+		# The catalogue caller pumps frames while waiting for this worker, so
+		# the deferred publish runs within a frame or two; nothing on the main
+		# thread hard-blocks on this task, so this cannot deadlock.
+		while not pub_done[0]:
+			OS.delay_msec(1)
 	note_phase("catalogue mount", Time.get_ticks_msec() - t, src.ebx.size(),
 		"ebx", FROM_CACHE if from_cache else FROM_INSTALL,
 		"every level's archives, %d depot scopes" % _depot_bundles.size())
