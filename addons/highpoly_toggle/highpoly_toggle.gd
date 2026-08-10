@@ -357,7 +357,7 @@ func _apply_bf6_gate() -> void:
 	if dock == null or not is_instance_valid(dock):
 		return
 	for c in dock.get_children():
-		if c == bf6_row or not (c is CanvasItem):
+		if c == bf6_row or c.has_meta("bf6_gate_exempt") or not (c is CanvasItem):
 			continue
 		(c as CanvasItem).modulate.a = 1.0 if _bf6_ok else 0.35
 		gate_interactive(c, _bf6_ok, _bf6_disabled_was)
@@ -524,10 +524,18 @@ func _enter_tree() -> void:
 	_build_bf6_gate()
 
 	# plugin self-update: hidden unless the registry advertises a newer version
+	#
+	# EXEMPT FROM THE BF6 GATE, both update rows. The gate exists so nothing
+	# tries to read a game that is not there - but updating the plugin reads
+	# GitHub and the staging lane, not the install. Gated, it locked out the
+	# one user who most needs an update: someone whose install is not being
+	# DETECTED yet, waiting on exactly the autodetect fix an update carries.
 	update_btn = Button.new()
 	update_btn.visible = false
 	update_btn.pressed.connect(_do_plugin_update)
-	dock.add_child(_centred(update_btn))
+	var up_row := _centred(update_btn)
+	up_row.set_meta("bf6_gate_exempt", true)
+	dock.add_child(up_row)
 
 	banner = Label.new()
 	banner.visible = false
@@ -577,7 +585,9 @@ func _enter_tree() -> void:
 	check_btn.text = "Check for updates"
 	check_btn.tooltip_text = "Applies a plugin update without restarting the editor: staged updates are copied in first, then any plugin script that changed on disk is reloaded in place. Press it when you are told a fix is ready; it refuses while something is building, so it is always safe to press."
 	check_btn.pressed.connect(_check_updates_now)
-	dock.add_child(_centred(check_btn))
+	var ck_row := _centred(check_btn)
+	ck_row.set_meta("bf6_gate_exempt", true)   # see update_btn: updates must
+	dock.add_child(ck_row)                     # work with no install detected
 
 	dock.add_child(job_row)      # takes the button's place while anything downloads
 
