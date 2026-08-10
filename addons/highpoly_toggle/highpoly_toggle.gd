@@ -1859,6 +1859,11 @@ All of it is read from your own Battlefield 6 installation."
 		_soft_applied = true
 		_apply_ui(_ui)
 	_startup.call_deferred()
+	# ASK GITHUB ONCE ON OPEN. _check_plugin_update existed, worked, and was
+	# called by NOTHING - the update button could never appear, which a user
+	# proved by releasing v2.3.0 and watching no panel offer it. Deferred so
+	# the dock is in the tree before the HTTP node parents to it.
+	call_deferred("_check_plugin_update")
 
 
 # THE STATE OF THE PANEL, for a saved log.
@@ -2456,6 +2461,13 @@ func _hot_reload() -> bool:
 
 func _check_updates_now() -> void:
 	check_btn.disabled = true
+	# THE BUTTON SAYS "Check for updates", SO CHECK GITHUB. This call was only
+	# ever wired to nothing (see _enter_tree); the button applied staged files
+	# and reloaded local changes but never asked the releases API, so a fresh
+	# release sat invisible until an editor restart - and then still invisible,
+	# because the startup check was not wired either. Announced, so pressing
+	# the button says "up to date" or "vX.Y.Z is available" instead of nothing.
+	_check_plugin_update(true)
 	# STAGED UPDATES FIRST. Mid-session fixes cannot be written into res://
 	# (the editor hot-reloads changed scripts underneath running code - the
 	# "Bad address index" crash), so they land in user://highpoly/staged and
@@ -3376,12 +3388,19 @@ func _do_purge(map: String, info: Dictionary, was_open: bool) -> void:
 	_refresh_storage()
 
 # ---------- plugin self-update ----------
-func _check_plugin_update() -> void:
+# `announce` makes the outcome visible on the status line - the manual
+# button's press must say something either way, where the silent startup
+# check only reveals the update button when there is one.
+func _check_plugin_update(announce := false) -> void:
 	HighpolyUpdater.check_plugin_update(dock, func(new_version: String, _notes: String):
-		if new_version != "" and update_btn != null:
+		if new_version != "" and is_instance_valid(update_btn):
 			update_btn.text = "Update Plugin to v%s" % new_version
 			update_btn.tooltip_text = "A newer version of this plugin is available. One click installs it; restart the editor afterwards."
-			update_btn.visible = true)
+			update_btn.visible = true
+		if announce and is_instance_valid(lbl):
+			lbl.text = ("v%s is available - press Update Plugin above" % new_version) \
+				if new_version != "" \
+				else "Plugin is up to date (v%s)" % HighpolyUpdater.plugin_version())
 
 func _do_plugin_update() -> void:
 	update_btn.disabled = true
