@@ -1576,13 +1576,52 @@ func _terrain_shader_mat(map: String) -> ShaderMaterial:
 func set_colormap_strength(v: float) -> String:
 	colormap_strength = clampf(v, 0.0, 1.0)
 	colormap_enabled = colormap_strength > 0.005
-	if _tmat_live != null and is_instance_valid(_tmat_live):
-		_tmat_live.set_shader_parameter("use_colormap",
-			_cmap_bound and colormap_enabled)
-		_tmat_live.set_shader_parameter("cmap_strength", colormap_strength)
+	var m := _live_terrain_mat()
+	if m != null:
+		# The material itself says whether a colour map was ever bound - a
+		# cached flag would be one more thing to go stale across a reload,
+		# and the first slider drag after one proved that it does.
+		var has_cm = m.get_shader_parameter("colormap") != null
+		m.set_shader_parameter("use_colormap", has_cm and colormap_enabled)
+		m.set_shader_parameter("cmap_strength", colormap_strength)
+		_tmat_live = m
+	if m == null:
+		return "Ground photo set to %d%% - shows when Extended Terrain is on" \
+			% int(round(colormap_strength * 100.0))
 	if not colormap_enabled:
 		return "Ground photo off - the ground is the game's layers and detail only"
 	return "Ground photo at %d%%" % int(round(colormap_strength * 100.0))
+
+
+# The terrain material actually ON SCREEN. The cached reference goes stale
+# across panel reopens and hot reloads - a fresh map-context instance holds
+# _tmat_live null while the OLD material still shades the ground, which is
+# exactly how the slider's first outing changed nothing. Every extended
+# terrain chunk shares the one ShaderMaterial, so finding any chunk finds
+# the material; matched by our shader instance, or by the shader's own code
+# when the static holding the instance was itself reset by a reload.
+func _live_terrain_mat() -> ShaderMaterial:
+	if _tmat_live != null and is_instance_valid(_tmat_live):
+		return _tmat_live
+	var r := EditorInterface.get_edited_scene_root()
+	if r == null:
+		return null
+	var ctx := r.get_node_or_null(NODE)
+	if ctx == null:
+		return null
+	var stack: Array = [ctx]
+	while not stack.is_empty():
+		var n: Node = stack.pop_back()
+		if n is MeshInstance3D:
+			var mo := (n as MeshInstance3D).material_override
+			if mo is ShaderMaterial:
+				var sh := (mo as ShaderMaterial).shader
+				if sh != null and (sh == _tshader
+						or sh.code.contains("splat_idx")):
+					return mo as ShaderMaterial
+		for c in n.get_children():
+			stack.append(c)
+	return null
 
 # READ FROM THE GAME INSTEAD OF THE DOWNLOAD.
 #
