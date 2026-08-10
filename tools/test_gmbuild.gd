@@ -27,11 +27,23 @@ func _init() -> void:
 	gs.log_fn = func(_s: String) -> void: pass
 	gs.catalogue_mount = false
 	var t := Time.get_ticks_msec()
-	if not gs.open_map(map, "", Callable(), {"placements": false}):
+	# placements ON, so the mine can be checked for not disturbing them
+	if not gs.open_map(map, "", Callable(), {"placements": true}):
 		print("FAIL open_map: %s" % str(gs.error))
 		quit(1)
 		return
 	print("   mount %.1f s" % ((Time.get_ticks_msec() - t) / 1000.0))
+
+	# THE MAP'S PLACEMENT LIST MUST COME OUT UNCHANGED.
+	#
+	# BF6Walk.walk() appends to `rows`, and gs.walk.rows is what map_data() turns
+	# into every prop on screen. Mining on the shared walker poured the gameplay
+	# subworlds into the map's own placements - and from a worker thread, while
+	# the main thread was reading it. The miner has its own walker now; this is
+	# the check that says so.
+	var rows_before: int = gs.walk.rows.size()
+	var ents_before: int = gs.walk.ents.size()
+	var wants_before: int = gs.walk.want_types.size()
 
 	t = Time.get_ticks_msec()
 	var n := HighpolyGmMine.mine_to_disk(gs, str(gs.level), map)
@@ -45,6 +57,9 @@ func _init() -> void:
 		FileAccess.get_file_as_string(HighpolyGamemode.data_path(map)))
 	print("   schema v%d, %d bytes" % [int(d.get("v", 0)),
 		FileAccess.open(HighpolyGamemode.data_path(map), FileAccess.READ).get_length()])
+	ck("placements untouched", gs.walk.rows.size(), rows_before)
+	ck("collected entities untouched", gs.walk.ents.size(), ents_before)
+	ck("the want list is not swapped", gs.walk.want_types.size(), wants_before)
 	ck("schema is current", int(d.get("v", 0)), HighpolyGamemode.SCHEMA)
 	ck("dropdown lists them", HighpolyGamemode.modes(map).size(), n)
 	ck("usable() agrees", HighpolyGamemode.usable(map), true)

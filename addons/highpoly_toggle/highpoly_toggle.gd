@@ -113,6 +113,11 @@ var mapctx_variant: OptionButton
 # The per-tick heal below needs it, and resolving it there would re-parse the
 # mined JSON several times a second for a value that only changes on a click.
 var _gm_key := ""
+# How long the gamemode mine is allowed before it is treated as dead. Measured
+# at 3.4 s on MP_Aftermath with the level mounted; 90 s is far enough above that
+# to survive a slow drive and still short enough that nobody waits out a
+# session for a worker that died on its first line.
+const MINE_TIMEOUT_MS := 90000
 # Set when a heal ran and still produced no node - the dropdown is showing a
 # layer name with no mined mode behind it, so retrying every tick would just
 # rebuild nothing forever. Cleared whenever the selection or the map changes.
@@ -3848,9 +3853,23 @@ func _ensure_game_source(map: String, gen: int = -1) -> bool:
 	# what made a first open take three and a half minutes before anything could
 	# be drawn. Added on a worker instead, additively, so the map is on screen
 	# and being worked on while it lands.
-	_upgrade_catalogue_async(gs)
-	_mine_gamemodes_async(gs, map)
+	# MINE FIRST, THEN THE CATALOGUE, one after the other rather than both at
+	# once. These were started back to back and neither was awaited, so both ran
+	# on workers at the same time - and the catalogue sweep INSERTS into
+	# gs.src.ebx while the mine iterates it. Growing a Dictionary under another
+	# thread's iterator is not something to leave to luck, and when the mine died
+	# of it there was nothing to see: the failure is silent (see below).
+	#
+	# The mine takes about 3 s and only needs this level's partitions, which the
+	# level mount already has; the catalogue is 85 s cold and is for OTHER
+	# levels' objects. Running the short one first costs the long one nothing.
+	_gamemodes_then_catalogue(gs, map)
 	return true
+
+
+func _gamemodes_then_catalogue(gs, map: String) -> void:
+	await _mine_gamemodes_async(gs, map)
+	_upgrade_catalogue_async(gs)
 
 
 # THE MODE MARKERS, mined from the install on a worker.
@@ -3875,20 +3894,44 @@ func _mine_gamemodes_async(gs, map: String) -> void:
 		return
 	if HighpolyGamemode.usable(map):
 		return
+	# The one read that has to touch gs.src.ebx, taken here on the main thread
+	# so the worker never iterates a Dictionary anything else might grow.
+	var roots: Array = HighpolyGmMine.roots_of(gs, str(gs.level))
+	if roots.is_empty():
+		HighpolyLog.warn("gamemode markers: %s has no _layers_gameplay partitions "
+			% map + "in the mount, so there are no modes to mine")
+		return
 	var done := [false]
 	var n := [0]
 	var tid := WorkerThreadPool.add_task(func() -> void:
-		n[0] = HighpolyGmMine.mine_to_disk(gs, str(gs.level), map)
+		n[0] = HighpolyGmMine.mine_to_disk(gs, str(gs.level), map, roots)
 		done[0] = true, true, "bf6 gamemode markers")
+	# A FAILED WORKER USED TO HANG HERE FOREVER, SILENTLY.
+	#
+	# done[0] is set by the last line of the task, so a GDScript error anywhere
+	# inside it leaves the flag false and this loop awaiting frames for the rest
+	# of the session: no file, no dropdown, no warning, nothing in the log to
+	# say the mine had even been attempted. That is what "users are not getting
+	# gamemode data" looked like. Bounded now, and it says so.
+	var t0 := Time.get_ticks_msec()
 	while not done[0]:
 		if get_tree() == null:
-			break
+			return
+		if Time.get_ticks_msec() - t0 > MINE_TIMEOUT_MS:
+			HighpolyLog.warn(("gamemode markers: the miner did not finish within "
+				+ "%d s and has been given up on. No modes will be offered for %s. "
+				+ "This means the worker stopped early - the Output panel will "
+				+ "carry the script error.") % [MINE_TIMEOUT_MS / 1000, map])
+			return
 		await get_tree().process_frame
 	WorkerThreadPool.wait_for_task_completion(tid)
 	if n[0] > 0:
 		# The dropdown lists what this just produced, so it has to be asked
 		# again - the same timing mistake that kept the row hidden before.
 		_variant_row_update(mapctx_objects != null and mapctx_objects.button_pressed)
+	else:
+		HighpolyLog.warn("gamemode markers: nothing mined for %s from %d gameplay "
+			% [map, roots.size()] + "partition(s), so the Variant list stays empty")
 	return
 
 

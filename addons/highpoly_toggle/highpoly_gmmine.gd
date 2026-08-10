@@ -114,14 +114,20 @@ const CAPTURE_MAX_AREA := 1500.0
 const SPAWN_CLAIM_RADIUS := 30.0
 
 
-# -> {v, modes: {name: {objects: [...]}}}, or {} when nothing mined.
-static func mine(gs, level: String) -> Dictionary:
-	if gs == null or gs.walk == null:
-		return {}
+# The partitions to walk, as a plain Array.
+#
+# SEPARATE FROM mine() ON PURPOSE, so the caller can take this snapshot on the
+# MAIN thread before handing the mine to a worker. It is the one step that has
+# to iterate gs.src.ebx, and the placeable-catalogue sweep inserts into that
+# same Dictionary from another worker - iterating a Dictionary while another
+# thread grows it is not safe, and this is a read the caller can do first.
+static func roots_of(gs, level: String) -> Array:
+	if gs == null or gs.src == null:
+		return []
 	var pre := "%s/_layers_gameplay/" % _level_dir(gs, level)
 	if pre == "/_layers_gameplay/":
-		return {}
-	var roots: Array = []
+		return []
+	var out: Array = []
 	for k in gs.src.ebx.keys():
 		var s := str(k)
 		if not s.begins_with(pre):
@@ -133,46 +139,66 @@ static func mine(gs, level: String) -> Dictionary:
 				skip = true
 				break
 		if not skip:
-			roots.append(s)
-	roots.sort()
+			out.append(s)
+	out.sort()
+	return out
 
-	# Ask the walk for THESE TYPES AND NOTHING ELSE for the duration of the
-	# mine, then put its want list back. The level walk's own result is keyed on
-	# that list and a changed one would invalidate its cache.
+
+# -> {v, modes: {name: {objects: [...]}}}, or {} when nothing mined.
+static func mine(gs, level: String, roots: Array = []) -> Dictionary:
+	if gs == null or gs.walk == null:
+		return {}
+	var pre := "%s/_layers_gameplay/" % _level_dir(gs, level)
+	if pre == "/_layers_gameplay/":
+		return {}
+	if roots.is_empty():
+		roots = roots_of(gs, level)
+	if roots.is_empty():
+		return {}
+
+	# A WALKER OF ITS OWN, never the game source's.
 	#
-	# REPLACED, not added to. Adding left the caller's own wants in place, and
-	# the caller wants lights and FX heatzones: the first mined file carried
-	# 1,116 lights - 540 of them in conquest alone, from
-	# lf_com_emptyspotlight_firebarel_01 and pf_heatzone - which is 690 KB of a
-	# 815 KB file describing objects no mode has any use for.
-	var saved: Dictionary = gs.walk.want_types
-	var saved_all: bool = gs.walk.want_all_fields
-	gs.walk.want_types = TYPES.duplicate()
-	gs.walk.want_all_fields = true
+	# BF6Walk.walk() APPENDS TO `rows`, and gs.walk.rows is the map's placement
+	# list - the thing map_data() turns into every prop on screen. Mining on the
+	# shared walker therefore poured the gameplay subworlds' placements into the
+	# map's own, and did it FROM A WORKER THREAD while the main thread was
+	# reading that same array to build the map. It also swapped want_types out
+	# from under whatever else was mid-walk.
+	#
+	# The rule was already written down, on _obj_walk in highpoly_gamesource.gd:
+	# "what must not be shared is `rows`, because assembling an object in the
+	# middle of a level walk would append members to the map's placement list."
+	# Same reason, same fix - share the indexes, which are read-only here, and
+	# nothing else.
+	var w := BF6Walk.new(gs.src, gs.types)
+	w.by_name = gs.walk.by_name
+	w.gi = gs.walk.gi
+	w.scope_index = gs.walk.scope_index
+	w.want_types = TYPES.duplicate()
+	# EVERY field of a collected entity, because the values this needs - a
+	# polygon's Points, an OBB's HalfExtents - have no name hash we can look up.
+	w.want_all_fields = true
 
 	var modes := {}
 	for r in roots:
-		var mode := _mode_of(r.substr(pre.length()))
+		var mode := _mode_of(str(r).substr(pre.length()))
 		if mode == "" or not _is_mode(mode):
 			continue
-		var ref = gs.walk.resolve_name(r)
+		var ref = w.resolve_name(str(r))
 		if ref == null:
 			continue
-		gs.walk.ents.clear()
-		gs.walk.walk(ref, BF6Walk.IDENT, {}, 0)
-		if gs.walk.ents.is_empty():
+		w.ents.clear()
+		w.rows.clear()             # this walker's rows are a by-product; drop them
+		w.walk(ref, BF6Walk.IDENT, {}, 0)
+		if w.ents.is_empty():
 			continue
 		if not modes.has(mode):
 			modes[mode] = {"objects": []}
 		var objs: Array = (modes[mode] as Dictionary)["objects"]
-		for e in gs.walk.ents:
+		for e in w.ents:
 			var o := _object_of(e as Dictionary)
 			if not o.is_empty():
 				objs.append(o)
-
-	gs.walk.want_types = saved
-	gs.walk.want_all_fields = saved_all
-	gs.walk.ents.clear()
 
 	var out := {}
 	for k in modes:
@@ -436,8 +462,8 @@ static func _nearest(caps: Array, p: Vector3):
 
 
 # Write it where HighpolyGamemode.data_path expects. Returns how many modes.
-static func mine_to_disk(gs, level: String, map: String) -> int:
-	var d := mine(gs, level)
+static func mine_to_disk(gs, level: String, map: String, roots: Array = []) -> int:
+	var d := mine(gs, level, roots)
 	if d.is_empty():
 		return 0
 	var p: String = OUT % map
