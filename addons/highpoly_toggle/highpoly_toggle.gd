@@ -2376,6 +2376,15 @@ func _hot_reload() -> bool:
 		var _gs = mapctx.game_source if mapctx != null else null
 		if _gs != null and _gs.has_method("refresh_water"):
 			_gs.refresh_water()
+		# The scene's Water node was built from the PRE-reload answer, so a
+		# refreshed answer is invisible until the layer rebuilds. If it is on,
+		# re-fire its own handler (deferred: this runs inside the reload) so a
+		# water fix reaches the screen without a manual off/on - the exact step
+		# users skip, reasonably, after pressing a button called "updates".
+		if mapctx_water != null and mapctx_water.button_pressed:
+			(func():
+				if mapctx_water != null and is_instance_valid(mapctx_water):
+					mapctx_water.toggled.emit(true)).call_deferred()
 	Log.info("Reloaded %d file(s) in place: %s" % [names.size(), ", ".join(names)])
 	match what:
 		"code":

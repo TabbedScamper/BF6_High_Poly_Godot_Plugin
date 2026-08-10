@@ -1198,6 +1198,15 @@ func map_data_would_build(cache_dir := "", want := {}) -> bool:
 	for k in MD_OPTIONAL:
 		if bool(need.get(k, true)) and not _md_built.has(k):
 			return true
+	# WATER RE-ASKS WHEN THE ANSWER WAS "NONE". The key is only written when
+	# water is FOUND, so "built, but no key" is indistinguishable from "asked
+	# before the reader could find it" - and that exact shape is how a water
+	# fix reached a user's editor and did nothing until a restart (twice now:
+	# the aftermath partition miss, then the block-2 river). The cost of the
+	# re-ask on a genuinely waterless map is one partition parse and one
+	# find_block, on the worker, only when the user toggles Water on.
+	if bool(need.get("water", false)) and not _map_data.has("water"):
+		return true
 	return false
 
 
@@ -1265,7 +1274,10 @@ func _md_fill(cache_dir: String, need: Dictionary, out: Dictionary) -> void:
 		_md_built["fx"] = true
 		note_phase("fx points", Time.get_ticks_msec() - t, int(out["fx"]),
 			"emitters", FROM_INSTALL, "emitter graph read per distinct effect")
-	if bool(need.get("water", false)) and not _md_built.has("water"):
+	if bool(need.get("water", false)) \
+			and (not _md_built.has("water") or not out.has("water")):
+		# The second clause is the re-ask: see map_data_would_build. An empty
+		# earlier answer must not outlive the code that produced it.
 		var t_w := Time.get_ticks_msec()
 		var w := water()
 		if not w.is_empty():
