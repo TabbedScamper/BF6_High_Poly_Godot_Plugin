@@ -97,16 +97,49 @@ static func verify(path: String) -> Dictionary:
 	return r
 
 
+# Steam's own install root, from its registry keys. The candidate list only
+# knew C:\Program Files (x86)\Steam, so a Steam living on another drive -
+# common where C: is a small system SSD, and how a real user's working
+# install on D: read as "Battlefield 6 not detected" - autodetected nothing.
+# The registry says where Steam actually is; its libraryfolders.vdf then
+# names every library on every drive. reg.exe value NAMES are not localised,
+# so the parse is safe on any Windows language.
+static func _steam_root() -> String:
+	for args in [
+			["query", "HKCU\\Software\\Valve\\Steam", "/v", "SteamPath"],
+			["query", "HKLM\\SOFTWARE\\WOW6432Node\\Valve\\Steam",
+				"/v", "InstallPath"]]:
+		var out := []
+		if OS.execute("reg", args, out) != 0 or out.is_empty():
+			continue
+		for line in str(out[0]).split("\n"):
+			var at := line.findn("REG_SZ")
+			if at < 0:
+				continue
+			var p := line.substr(at + 6).strip_edges().replace("\\", "/")
+			if p != "" and DirAccess.dir_exists_absolute(p):
+				return p
+	return ""
+
+
 # The best guess available without asking: whatever was saved, then the usual
-# install locations, then every Steam library listed in libraryfolders.vdf.
+# install locations, then Steam's registry-located root and every library
+# listed in its libraryfolders.vdf - which is what finds a game on D: or E:.
 static func autodetect() -> String:
 	var s := saved()
 	if s != "" and bool(verify(s)["ok"]):
 		return s
 	var seen: Array[String] = []
 	seen.assign(CANDIDATES)
-	var vdf := "C:/Program Files (x86)/Steam/steamapps/libraryfolders.vdf"
-	if FileAccess.file_exists(vdf):
+	var vdfs: Array[String] = [
+		"C:/Program Files (x86)/Steam/steamapps/libraryfolders.vdf"]
+	var sr := _steam_root()
+	if sr != "":
+		seen.append(sr.path_join("steamapps/common/Battlefield 6"))
+		vdfs.append(sr.path_join("steamapps/libraryfolders.vdf"))
+	for vdf in vdfs:
+		if not FileAccess.file_exists(vdf):
+			continue
 		var txt := FileAccess.get_file_as_string(vdf)
 		var re := RegEx.create_from_string('"path"\\s+"([^"]+)"')
 		for m in re.search_all(txt):
