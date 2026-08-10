@@ -32,8 +32,13 @@ func _init() -> void:
 		print("FAIL surface bake returned {}")
 		quit(1)
 		return
-	if int(meta.get("splat_v", 0)) != 4:
-		print("FAIL splat_v is %s, wanted 4" % str(meta.get("splat_v")))
+	if int(meta.get("splat_v", 0)) != 5:
+		print("FAIL splat_v is %s, wanted 5" % str(meta.get("splat_v")))
+		fails += 1
+	var cm := Image.load_from_file(ProjectSettings.globalize_path("user://hdtest/colormap.png"))
+	print("colormap.png: %dx%d  [8 km map at 1 m/texel = 8192]" % [cm.get_width(), cm.get_height()])
+	if cm.get_width() != 8192:
+		print("FAIL colour map is not 8192 on an 8 km map")
 		fails += 1
 	var idx := Image.load_from_file(ProjectSettings.globalize_path("user://hdtest/splat/idx.png"))
 	print("idx.png: %dx%d  [8 km map at 2 m/texel = 4096]" % [idx.get_width(), idx.get_height()])
@@ -65,6 +70,44 @@ func _init() -> void:
 		% [imgs.size(), e, ta.get_layers(), imgs[0].get_format() if imgs.size() > 0 else -1])
 	if e != OK or ta.get_layers() != imgs.size() or imgs.is_empty():
 		print("FAIL compressed Texture2DArray did not build")
+		fails += 1
+	# 5. the near-field window recomposites from the same pages, off-cache
+	var t1 := Time.get_ticks_msec()
+	var w: Dictionary = gs.terrain_window("user://hdtest", 0.0, 0.0)
+	print("terrain_window at (0,0) in %.1f s" % ((Time.get_ticks_msec() - t1) / 1000.0))
+	if w.is_empty():
+		print("FAIL the window returned {} on a map with a fresh v5 bake")
+		fails += 1
+	else:
+		var wi: Image = w["idx"]
+		var ww: Image = w["w"]
+		print("window: idx %dx%d, w %dx%d, box (%.0f, %.0f) size %.0f"
+			% [wi.get_width(), wi.get_height(), ww.get_width(), ww.get_height(),
+				float(w["x0"]), float(w["z0"]), float(w["size"])])
+		if wi.get_width() != 2048:
+			print("FAIL window raster is not 2048")
+			fails += 1
+		# sanity: a real share of window texels must resolve to a slice
+		var got_tex := 0
+		var got_any := 0
+		var wd: PackedByteArray = wi.get_data()
+		var wwd: PackedByteArray = ww.get_data()
+		for i in range(0, wd.size(), 4 * 97):    # stride-sample ~43k texels
+			if wwd[i] > 0:
+				got_any += 1
+				if wd[i] != 255:
+					got_tex += 1
+		print("window coverage: %d sampled texels carry weight, %d resolve to a slice"
+			% [got_any, got_tex])
+		if got_any == 0 or got_tex == 0:
+			print("FAIL the window carries no resolvable ground")
+			fails += 1
+	# and a second, offset window must exercise the recentre path
+	var t2 := Time.get_ticks_msec()
+	var w2: Dictionary = gs.terrain_window("user://hdtest", 700.0, -500.0)
+	print("second window in %.1f s (state reused)" % ((Time.get_ticks_msec() - t2) / 1000.0))
+	if w2.is_empty():
+		print("FAIL the second window failed")
 		fails += 1
 	print("ALL OK" if fails == 0 else "%d FAILED" % fails)
 	quit(1 if fails else 0)

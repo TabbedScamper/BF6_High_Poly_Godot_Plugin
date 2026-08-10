@@ -1030,6 +1030,14 @@ uniform sampler2D colormap : source_color, filter_linear_mipmap_anisotropic, rep
 uniform vec4 cmap_bounds;                // xmin, zmin, sizeX, sizeZ (world)
 uniform bool use_colormap = false;
 uniform float cmap_strength = 1.0;
+// THE NEAR-FIELD WINDOW: the same splat data recomposited around the camera
+// at 0.5 m per texel (the whole-map raster stops at 2 m; the ceiling is VRAM,
+// the game's pages go finer). Blended over the far result inside its bounds
+// with a feathered edge, and recentred from a worker as the camera moves.
+uniform int near_on = 0;
+uniform vec4 near_bounds;                // x0, z0, size, feather (world metres)
+uniform sampler2D near_idx : filter_nearest, repeat_disable;
+uniform sampler2D near_w : filter_nearest, repeat_disable;
 varying vec3 wpos;
 varying vec3 wnorm;
 void vertex() {
@@ -1058,6 +1066,39 @@ void splat_texel(ivec2 t, vec2 wxz, vec3 fb_a, vec3 fb_n,
 			nacc += wi * texture(layer_nrm, vec3(luv, float(id))).rgb;
 		} else {
 			acc += wi * fb_a;      // unpackaged layer: slope fallback
+			nacc += wi * fb_n;
+		}
+		tot += wi;
+	}
+	if (tot > 0.01) {
+		oa = acc / tot;
+		on = nacc / tot;
+	} else {
+		oa = fb_a;
+		on = fb_n;
+	}
+}
+// The same exact blend against the NEAR window's rasters. A duplicate rather
+// than a parameter because the shading language cannot pass samplers.
+void splat_texel_n(ivec2 t, vec2 wxz, vec3 fb_a, vec3 fb_n,
+		out vec3 oa, out vec3 on) {
+	ivec2 ts = textureSize(near_idx, 0);
+	t = clamp(t, ivec2(0), ts - ivec2(1));
+	vec4 sid = texelFetch(near_idx, t, 0) * 255.0;
+	vec4 sw = texelFetch(near_w, t, 0);
+	vec3 acc = vec3(0.0);
+	vec3 nacc = vec3(0.0);
+	float tot = 0.0;
+	for (int i = 0; i < 4; i++) {
+		float wi = sw[i];
+		if (wi < 0.004) { continue; }
+		int id = int(sid[i] + 0.5);
+		if (id < splat_slices) {
+			vec2 luv = wxz / max(layer_scale[id], 0.01);
+			acc += wi * texture(layer_alb, vec3(luv, float(id))).rgb;
+			nacc += wi * texture(layer_nrm, vec3(luv, float(id))).rgb;
+		} else {
+			acc += wi * fb_a;
 			nacc += wi * fb_n;
 		}
 		tot += wi;
@@ -1108,6 +1149,29 @@ void fragment() {
 			splat_texel(t00 + ivec2(1, 1), wpos.xz, fb_alb, fb_nrm, a11, n11);
 			det = mix(mix(a00, a10, fr.x), mix(a01, a11, fr.x), fr.y);
 			nrm = mix(mix(n00, n10, fr.x), mix(n01, n11, fr.x), fr.y);
+		}
+		// the near window, feather-blended over the far result inside its box
+		if (near_on == 1) {
+			vec2 nuv = (wpos.xz - near_bounds.xy) / near_bounds.z;
+			if (nuv.x > 0.0 && nuv.x < 1.0 && nuv.y > 0.0 && nuv.y < 1.0) {
+				vec2 ntsz = vec2(textureSize(near_idx, 0));
+				vec2 nfp = nuv * ntsz - 0.5;
+				ivec2 nt0 = ivec2(floor(nfp));
+				vec2 nfr = fract(nfp);
+				vec3 b00; vec3 m00; vec3 b10; vec3 m10;
+				vec3 b01; vec3 m01; vec3 b11; vec3 m11;
+				splat_texel_n(nt0, wpos.xz, fb_alb, fb_nrm, b00, m00);
+				splat_texel_n(nt0 + ivec2(1, 0), wpos.xz, fb_alb, fb_nrm, b10, m10);
+				splat_texel_n(nt0 + ivec2(0, 1), wpos.xz, fb_alb, fb_nrm, b01, m01);
+				splat_texel_n(nt0 + ivec2(1, 1), wpos.xz, fb_alb, fb_nrm, b11, m11);
+				vec3 ndet = mix(mix(b00, b10, nfr.x), mix(b01, b11, nfr.x), nfr.y);
+				vec3 nnrm = mix(mix(m00, m10, nfr.x), mix(m01, m11, nfr.x), nfr.y);
+				float fe = max(near_bounds.w / near_bounds.z, 0.001);
+				float edge = min(min(nuv.x, 1.0 - nuv.x), min(nuv.y, 1.0 - nuv.y));
+				float m = smoothstep(0.0, fe, edge);
+				det = mix(det, ndet, m);
+				nrm = mix(nrm, nnrm, m);
+			}
 		}
 	}
 	// THE GROUND IS THE GAME'S OWN MATERIALS, and nothing else.
@@ -1164,6 +1228,21 @@ static var _tile_cache: Dictionary = {}    # tile name -> Texture2D (null = no t
 static var _splat_cache: Dictionary = {}   # map -> Dictionary ({} = none)
 var _splat_active := false                 # last _terrain_shader_mat had splat data
 var _splat_n := 0                          # its texture-array slice count
+# ---------- the near-field detail window (camera-following ground LOD) -----
+# The whole-map splat raster stops at 2 m per texel (VRAM); the game's pages
+# go finer. A 1 km window around the camera is recomposited at 0.5 m per texel
+# on a worker and blended over the far raster by the shader. Recentres are
+# throttled and single-flight, and the composite runs entirely off the main
+# thread - the only main-thread work is two 16 MB texture uploads when one
+# lands, which is a frame's worth of transfer, not a stall.
+var _tmat_live: ShaderMaterial = null      # the live terrain material, or null
+var _near_center := Vector2.INF            # centre of the applied window
+var _near_flight := false                  # a recomposite is on the worker
+var _near_last_ms := 0
+var _near_fail := false                    # the map gave {} once - stop asking
+const NEAR_RECENTER_M := 256.0             # recentre after this much drift
+const NEAR_MIN_INTERVAL_MS := 3000
+const NEAR_FEATHER_M := 24.0               # blend band at the window's edge
 # With splat shading the extended terrain (which spans the WHOLE footprint,
 # including under the SDK bowl) becomes the ground truth.
 #
@@ -1463,6 +1542,12 @@ func _terrain_shader_mat(map: String) -> ShaderMaterial:
 			m.set_shader_parameter("layer_scale", sp["scales"])
 		_splat_active = true
 		_splat_n = int(sp["slices"])
+	# The live material, held so the near-field window can update its uniforms
+	# from the tick without rebuilding anything. A new material (new apply, new
+	# map) starts with the window off until the first recomposite lands.
+	_tmat_live = m
+	_near_center = Vector2.INF
+	_near_fail = false
 	return m
 
 # READ FROM THE GAME INSTEAD OF THE DOWNLOAD.
@@ -5860,3 +5945,56 @@ func tick() -> void:
 	if _active and _scatter != null and _scatter.active:
 		var cam := _editor_cam()
 		if cam: _scatter.tick(cam.global_transform.origin)
+	_tick_near()
+
+
+# Recentre the near-field ground window when the camera has drifted, from the
+# same half-second tick everything else follows the camera on. Gated hard:
+# never while anything builds (swapping reads under a live build is the crash
+# class the staging lane exists for), never before the placeable catalogue's
+# one-time swap has landed, one task in flight at most.
+func _tick_near() -> void:
+	if not _active or not _splat_active or _tmat_live == null:
+		return
+	if game_source == null or not bool(game_source.catalogue_ready):
+		return
+	if _near_flight or _near_fail or _building:
+		return
+	if not HighpolyVitals.crumb_is_idle():
+		return
+	var now := Time.get_ticks_msec()
+	if now - _near_last_ms < NEAR_MIN_INTERVAL_MS:
+		return
+	var cam := _editor_cam()
+	if cam == null:
+		return
+	var p := cam.global_transform.origin
+	var c := Vector2(p.x, p.z)
+	if _near_center.x != INF and c.distance_to(_near_center) < NEAR_RECENTER_M:
+		return
+	_near_flight = true
+	_near_last_ms = now
+	var dir := "%s/%s" % [CACHE, _map]
+	var gs = game_source
+	var mat := _tmat_live
+	WorkerThreadPool.add_task(func():
+		var w: Dictionary = gs.terrain_window(dir, c.x, c.y)
+		_near_apply.call_deferred(w, mat, c))
+
+
+func _near_apply(w: Dictionary, mat: ShaderMaterial, c: Vector2) -> void:
+	_near_flight = false
+	if w.is_empty():
+		# No usable bake for a window (old cache version, or a map without
+		# splat data at all). Asking again every tick would re-pay the failed
+		# open forever; the next apply resets this.
+		_near_fail = true
+		return
+	if mat == null or not is_instance_valid(mat) or mat != _tmat_live:
+		return                         # the map or material changed mid-flight
+	mat.set_shader_parameter("near_idx", ImageTexture.create_from_image(w["idx"]))
+	mat.set_shader_parameter("near_w", ImageTexture.create_from_image(w["w"]))
+	mat.set_shader_parameter("near_bounds", Vector4(float(w["x0"]),
+		float(w["z0"]), float(w["size"]), NEAR_FEATHER_M))
+	mat.set_shader_parameter("near_on", 1)
+	_near_center = c

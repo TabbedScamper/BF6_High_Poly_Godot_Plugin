@@ -254,8 +254,13 @@ static func bounds_of(key: int, root_lo: Vector2, root_hi: Vector2) -> Array:
 #
 # -> PackedByteArray of `size*size` layer indices, 255 where nothing resolved.
 # ---------------------------------------------------------------------------
+# `rect_min`/`rect_size`: rasterise only this world window - the near-field
+# detail window needs the street materials at its own density or the streets
+# inside it would drop back to painted layers alone (see bf6_splat.composite's
+# twin note).
 func rasterize(size: int, base_list_for: Callable, full_list: Array,
-		linked_list: Array) -> PackedByteArray:
+		linked_list: Array, rect_min := Vector2.INF,
+		rect_size := 0.0) -> PackedByteArray:
 	var out := PackedByteArray()
 	out.resize(size * size)
 	out.fill(255)
@@ -263,6 +268,10 @@ func rasterize(size: int, base_list_for: Callable, full_list: Array,
 	if span.x <= 0.0 or span.y <= 0.0:
 		error = "block 7 has an empty world bounds"
 		return out
+	var org := world_min
+	if rect_min.x != INF and rect_size > 0.0:
+		org = rect_min
+		span = Vector2(rect_size, rect_size)
 	var order: Array = nodes.duplicate()
 	order.sort_custom(func(a, b): return int(a["depth"]) < int(b["depth"]))
 	for n in order:
@@ -279,19 +288,29 @@ func rasterize(size: int, base_list_for: Callable, full_list: Array,
 		var b: Array = bounds_of(key, world_min, world_max)
 		var lo: Vector2 = b[0]
 		var hi: Vector2 = b[1]
-		var x0 := clampi(int(floor((lo.x - world_min.x) / span.x * size)), 0, size)
-		var x1 := clampi(int(ceil((hi.x - world_min.x) / span.x * size)), 0, size)
-		var z0 := clampi(int(floor((lo.y - world_min.y) / span.y * size)), 0, size)
-		var z1 := clampi(int(ceil((hi.y - world_min.y) / span.y * size)), 0, size)
+		if hi.x <= org.x or hi.y <= org.y \
+				or lo.x >= org.x + span.x or lo.y >= org.y + span.y:
+			continue               # node entirely outside the window
+		var x0 := clampi(int(floor((lo.x - org.x) / span.x * size)), 0, size)
+		var x1 := clampi(int(ceil((hi.x - org.x) / span.x * size)), 0, size)
+		var z0 := clampi(int(floor((lo.y - org.y) / span.y * size)), 0, size)
+		var z1 := clampi(int(ceil((hi.y - org.y) / span.y * size)), 0, size)
 		if x1 <= x0 or z1 <= z0:
 			continue
 		var rows: PackedByteArray = nd["rows"]
+		# By WORLD position within the node, not by index within the clipped
+		# raster rect - the two only agree while nothing clips, and a window
+		# clips every node it crosses.
+		var rw := maxf(hi.x - lo.x, 1e-6)
+		var rh := maxf(hi.y - lo.y, 1e-6)
 		for gz in range(z0, z1):
-			var fz := float(gz - z0) / float(maxi(1, z1 - z0 - 1)) if z1 - z0 > 1 else 0.0
+			var wz := org.y + (float(gz) + 0.5) / float(size) * span.y
+			var fz := clampf((wz - lo.y) / rh, 0.0, 1.0)
 			var sy := clampi(int(fz * float(dim - 1)), 0, dim - 1) * dim
 			var drow := gz * size
 			for gx in range(x0, x1):
-				var fx := float(gx - x0) / float(maxi(1, x1 - x0 - 1)) if x1 - x0 > 1 else 0.0
+				var wx := org.x + (float(gx) + 0.5) / float(size) * span.x
+				var fx := clampf((wx - lo.x) / rw, 0.0, 1.0)
 				var l := int(lut[int(rows[sy + clampi(int(fx * float(dim - 1)), 0, dim - 1)]) & 0xF])
 				if l >= 0 and l < 255:
 					out[drow + gx] = l

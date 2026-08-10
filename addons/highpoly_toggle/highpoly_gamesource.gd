@@ -1761,7 +1761,20 @@ static func _surface_res_for(world_size: float) -> int:
 	while side < want and side < SURFACE_RES_MAX:
 		side *= 2
 	return side
-const COLOR_RES := 4096                # colour map side (~2 m per texel on a 8 km map)
+# The colour map targets 1 m per texel the same way the splat raster targets
+# 2 m (see _surface_res_for): a 4 km map stays at 4096, an 8 km map doubles to
+# 8192. Affordable where the splat raster is not, because the loader S3TC
+# compresses it - 8192 lands at ~45 MB resident where the splat pair at the
+# same side would be half a gigabyte of raw RGBA it must stay.
+const COLOR_RES_MIN := 4096
+const COLOR_RES_MAX := 8192
+
+static func _color_res_for(world_size: float) -> int:
+	var want := int(world_size / 1.0)
+	var side := COLOR_RES_MIN
+	while side < want and side < COLOR_RES_MAX:
+		side *= 2
+	return side
 # Bumped whenever the colour map is DECODED differently, so an existing cache
 # is rebuilt instead of serving the previous interpretation forever.
 #   1  a red/blue swap that turned out to be wrong and was reverted
@@ -1779,7 +1792,10 @@ const CMAP_VERSION := 2
 #      river nodes. See MAP-TUNGSTEN.md §U.
 #   4  the raster targets 2 m per texel (large maps bake at 4096, not 2048)
 #      and the layer slices doubled to 1024 px - same reader, sharper bake.
-const SPLAT_VERSION := 4
+#   5  the colour map targets 1 m per texel (large maps bake at 8192), and
+#      layers.json carries "linked" so the near-field window can rasterise
+#      street materials without reloading the palette.
+const SPLAT_VERSION := 5
 # Per-slice detail textures; all slices must match. 1024 rather than 512: the
 # game's layer sheets are mostly 1024+, and at 512 the close-up ground was a
 # quarter of the detail the install holds. The loader compresses the slices to
@@ -1897,8 +1913,9 @@ func terrain_surface(cache_dir: String, force := false,
 		_say("game source: terrain surface — %s" % (sp.error if sp.error != "" else t.error))
 		return {}
 	var fetch := func(g): return src.get_chunk(str(g))
-	# The raster side for THIS map, from its world span (see _surface_res_for).
+	# The raster sides for THIS map, from its world span (see _surface_res_for).
 	var sres := _surface_res_for(sp.root_max.x - sp.root_min.x)
+	var cres := _color_res_for(sp.root_max.x - sp.root_min.x)
 
 	DirAccess.make_dir_recursive_absolute(dir_splat)
 	DirAccess.make_dir_recursive_absolute("%s/terrain_layers" % cache_dir)
@@ -1921,14 +1938,14 @@ func terrain_surface(cache_dir: String, force := false,
 			progress.call(ST_COLOUR, done, total))
 	var t_read := Time.get_ticks_msec() - t0
 	t0 = Time.get_ticks_msec()
-	var cmap := sp.assemble_colors(tiles, COLOR_RES)
+	var cmap := sp.assemble_colors(tiles, cres)
 	var t_asm := Time.get_ticks_msec() - t0
 	t0 = Time.get_ticks_msec()
 	if cmap != null:
 		cmap.save_png("%s/colormap.png" % cache_dir)
 	var t_write := Time.get_ticks_msec() - t0
 	_say("game source: terrain colour map, %d tiles, %dx%d (read %.1fs, assemble %.1fs, write %.1fs)"
-		% [tiles.size(), COLOR_RES, COLOR_RES, t_read / 1000.0, t_asm / 1000.0,
+		% [tiles.size(), cres, cres, t_read / 1000.0, t_asm / 1000.0,
 		   t_write / 1000.0])
 	# THREE SEPARATE COSTS, kept apart. Reading the tiles is CAS I/O plus a BC7
 	# decode per tile, assembling is a blit into one 4096 image, and writing is a
@@ -1937,7 +1954,7 @@ func terrain_surface(cache_dir: String, force := false,
 	note_phase("ground: colour tiles read", t_read, tiles.size(), "tiles",
 		FROM_INSTALL, "BC7 decode per tile out of the streaming tree")
 	note_phase("ground: colour assemble", t_asm, tiles.size(), "tiles",
-		FROM_MEMORY, "into one %dx%d image" % [COLOR_RES, COLOR_RES])
+		FROM_MEMORY, "into one %dx%d image" % [cres, cres])
 	note_phase("ground: colour PNG write", t_write, 1, "file", FROM_MEMORY,
 		"colormap.png")
 
@@ -1993,13 +2010,8 @@ func terrain_surface(cache_dir: String, force := false,
 		var mt := BF6MaterialTree.new()
 		t0 = Time.get_ticks_msec()
 		if mt.parse(b7):
-			var linked: Array = []
-			for l in pal.layers:
-				if int((l as Dictionary)["link"]) >= 0:
-					linked.append(int((l as Dictionary)["index"]))
-			linked.sort()
 			base = mt.rasterize(sres, func(k): return sp.base_list(k),
-				sp.full_list(), linked)
+				sp.full_list(), _linked_of(pal))
 			var t_base := Time.get_ticks_msec() - t0
 			_say("game source: terrain base field, %d pairs, %d nodes, %.1fs"
 				% [mt.pairs.size(), mt.nodes.size(), t_base / 1000.0])
@@ -2172,7 +2184,12 @@ func terrain_surface(cache_dir: String, force := false,
 			"size": sp.root_max.x - sp.root_min.x},
 		"cmap_v": CMAP_VERSION,
 		"splat_v": SPLAT_VERSION,
-		"colormap": {"file": "colormap.png", "res": COLOR_RES,
+		# The linked-layer list, persisted so the near-field window can
+		# rasterise the street materials without reloading the palette (the
+		# palette's offset search is the expensive part, and the window runs
+		# per camera move).
+		"linked": _linked_of(pal),
+		"colormap": {"file": "colormap.png", "res": cres,
 			"x0": sp.root_min.x, "z0": sp.root_min.y,
 			"size": sp.root_max.x - sp.root_min.x,
 			# The Z span under its own name: the shader's cmap_bounds used the X
@@ -2199,6 +2216,158 @@ func terrain_surface(cache_dir: String, force := false,
 		% [int(comp["pages"]), per_layer.size(), written,
 		   100.0 * float(out_of_slice) / float(maxi(1, sres * sres))])
 	return meta
+
+
+# The palette layers that resolve through a link, persisted into layers.json
+# so the near-field window can rasterise streets without reloading the palette.
+static func _linked_of(pal) -> Array:
+	var out: Array = []
+	for l in pal.layers:
+		if int((l as Dictionary)["link"]) >= 0:
+			out.append(int((l as Dictionary)["index"]))
+	out.sort()
+	return out
+
+
+# ---------------------------------------------------------------------------
+# THE NEAR-FIELD DETAIL WINDOW - high definition where the camera is.
+#
+# The whole-footprint raster tops out at 2 m per texel, and that ceiling is
+# VRAM, not data: the game's own weight pages are ~1 m or finer, dropped to
+# whatever one flat raster can afford. This recomposites JUST a window around
+# the camera from the same pages at 0.5 m per texel - four times the whole-map
+# raster, eight times the pre-v4 look - and the shader blends it over the far
+# raster inside its bounds. The map context recenters it from a worker task as
+# the camera moves, so nothing here may touch the scene or block a frame.
+#
+# The parsed tree state is kept per source: parsing block 1 and detecting the
+# page layout once costs the same as the bake paid, and paying it per recenter
+# would put seconds where a quarter of one belongs.
+# ---------------------------------------------------------------------------
+const NEAR_RES := 2048
+const NEAR_SPAN := 1024.0              # metres the window covers (0.5 m/texel)
+
+var _win_state = null                  # Dictionary, or false after a failed open
+
+
+func _window_state(cache_dir: String):
+	if _win_state != null:
+		return _win_state if _win_state is Dictionary else null
+	_win_state = false
+	var meta_path := "%s/splat/layers.json" % cache_dir
+	if not FileAccess.file_exists(meta_path):
+		return null
+	var meta: Variant = JSON.parse_string(FileAccess.get_file_as_string(meta_path))
+	if not (meta is Dictionary) \
+			or int((meta as Dictionary).get("splat_v", 0)) != SPLAT_VERSION:
+		return null                    # window density must match the bake's lut
+	var pick := ""
+	for rn in src.res.keys():
+		var n := str(rn)
+		if n.contains("streamingtree") and n.to_lower().contains(level):
+			pick = n
+			break
+	if pick == "":
+		return null
+	var res := src.get_res(pick)
+	if res.is_empty():
+		return null
+	var t := BF6Terrain.new()
+	var b1 := t.find_block(res, 1)
+	if b1.is_empty():
+		return null
+	var sp := BF6Splat.new()
+	if not sp.parse(b1):
+		return null
+	var chunks := t.read_chunk_directory(res)
+	if chunks.is_empty() or not sp.detect_layout(chunks):
+		return null
+	# The SAME palette->slice mapping the bake wrote, reconstructed from its
+	# slice rows: a window remapped through a different lut would paint the
+	# right ground with the wrong textures inside the window only.
+	var lut := PackedByteArray()
+	lut.resize(256)
+	lut.fill(255)
+	var rows: Array = (meta as Dictionary).get("layers", [])
+	for s in range(rows.size()):
+		var li := int((rows[s] as Dictionary).get("layer", -1))
+		if li >= 0 and li < 256:
+			lut[li] = s
+	# THE FAR RASTER IS THE SEED. idx_raw.png + w.png are the bake's complete
+	# pre-remap coverage - every coarse page AND the street materials, already
+	# merged - so a window upsamples its region of them (a C++ image op) and
+	# only the pages FINER than the far raster's density are composited on
+	# top. Without this seed every coarse record repainted the whole window
+	# through a per-texel insert, 32 s a window; with it a window is the fine
+	# pages alone.
+	var fi := Image.load_from_file(
+		ProjectSettings.globalize_path("%s/splat/idx_raw.png" % cache_dir))
+	var fw := Image.load_from_file(
+		ProjectSettings.globalize_path("%s/splat/w.png" % cache_dir))
+	if fi == null or fw == null or fi.get_width() != fw.get_width():
+		return null
+	fi.convert(Image.FORMAT_RGBA8)     # the composite arrays are 4 bytes/texel
+	fw.convert(Image.FORMAT_RGBA8)
+	var wj: Dictionary = (meta as Dictionary).get("world", {})
+	_win_state = {"t": t, "sp": sp, "chunks": chunks, "lut": lut,
+		"far_idx": fi, "far_w": fw, "far_res": fi.get_width(),
+		"wx0": float(wj.get("x0", sp.root_min.x)),
+		"wz0": float(wj.get("z0", sp.root_min.y)),
+		"wsize": float(wj.get("size", sp.root_max.x - sp.root_min.x))}
+	return _win_state
+
+
+# One recomposited window, centred as near (cx, cz) as the footprint allows.
+# Returns {idx: Image, w: Image, x0, z0, size} or {} when the map has no
+# usable splat bake. Safe on a worker thread; creates Images, never Textures.
+func terrain_window(cache_dir: String, cx: float, cz: float) -> Dictionary:
+	var st = _window_state(cache_dir)
+	if st == null:
+		return {}
+	var sp: BF6Splat = st["sp"]
+	var span := sp.root_max - sp.root_min
+	if span.x <= NEAR_SPAN or span.y <= NEAR_SPAN:
+		return {}                      # the far raster already outresolves us
+	var half := NEAR_SPAN * 0.5
+	var x0 := clampf(cx - half, sp.root_min.x, sp.root_max.x - NEAR_SPAN)
+	var z0 := clampf(cz - half, sp.root_min.y, sp.root_max.y - NEAR_SPAN)
+	var wmin := Vector2(x0, z0)
+	var fetch := func(g): return src.get_chunk(str(g))
+	var t0 := Time.get_ticks_msec()
+	# Seed from the far raster's window region (C++ ops - milliseconds): it
+	# already holds every coarse page and the street materials, merged.
+	var far_res := int(st["far_res"])
+	var wsize := float(st["wsize"])
+	var fx := int((x0 - float(st["wx0"])) / wsize * float(far_res))
+	var fz := int((z0 - float(st["wz0"])) / wsize * float(far_res))
+	var fspan := maxi(1, int(NEAR_SPAN / wsize * float(far_res)))
+	fx = clampi(fx, 0, far_res - fspan)
+	fz = clampi(fz, 0, far_res - fspan)
+	var seed_i := (st["far_idx"] as Image).get_region(Rect2i(fx, fz, fspan, fspan))
+	var seed_w := (st["far_w"] as Image).get_region(Rect2i(fx, fz, fspan, fspan))
+	seed_i.resize(NEAR_RES, NEAR_RES, Image.INTERPOLATE_NEAREST)
+	seed_w.resize(NEAR_RES, NEAR_RES, Image.INTERPOLATE_NEAREST)
+	# Only the pages FINER than the far raster's texel: everything coarser is
+	# already in the seed, texel for texel.
+	var max_span := (wsize / float(far_res)) * float(BF6Splat.PAGE_SIDE)
+	var comp := sp.composite(st["chunks"], fetch, NEAR_RES, Callable(),
+		wmin, NEAR_SPAN, seed_i.get_data(), seed_w.get_data(), max_span)
+	if comp.is_empty():
+		return {}
+	var idx: PackedByteArray = comp["idx"]
+	var wgt: PackedByteArray = comp["w"]
+	var lut: PackedByteArray = st["lut"]
+	for i in range(idx.size()):
+		idx[i] = 255 if wgt[i] == 0 else lut[idx[i]]
+	_say("game source: near window recomposited at (%.0f, %.0f) in %.1f s"
+		% [x0 + half, z0 + half, (Time.get_ticks_msec() - t0) / 1000.0])
+	return {
+		"idx": Image.create_from_data(NEAR_RES, NEAR_RES, false,
+			Image.FORMAT_RGBA8, idx),
+		"w": Image.create_from_data(NEAR_RES, NEAR_RES, false,
+			Image.FORMAT_RGBA8, wgt),
+		"x0": x0, "z0": z0, "size": NEAR_SPAN,
+	}
 
 
 # One layer texture, decoded from the game and squared off to LAYER_TEX_DIM.

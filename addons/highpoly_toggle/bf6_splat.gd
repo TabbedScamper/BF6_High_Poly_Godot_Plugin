@@ -737,18 +737,45 @@ static func depth_of(key: int) -> int:
 # -> {"idx": PackedByteArray (4 layer indices per texel),
 #     "w": PackedByteArray (4 weights), "pages": int, "layers": {index: texels}}
 # ---------------------------------------------------------------------------
+# `rect_min`/`rect_size`: rasterise only this world window instead of the whole
+# footprint - the near-field detail window samples the SAME pages at a finer
+# texel density (the pages are denser than any whole-map raster can afford to
+# be, so a window recovers real data, not upsampling). Records outside the
+# window are skipped, which is what makes a window recomposite cheap enough to
+# follow the camera.
+# `seed_idx`/`seed_w`: start from these arrays instead of empty ones, and
+# `max_span`: skip records whose world rect is wider than this. Together they
+# are what makes a camera-following window affordable: the far raster already
+# holds every coarse record's contribution (and the street materials), so the
+# window seeds from an upsample of it and merges ONLY the pages finer than the
+# far raster could keep. Without the filter, every coarse record repainted the
+# whole 4M-texel window through a per-texel insert - measured 32 s a window;
+# fine-only is the same picture for a fraction of the work.
 func composite(dir: Dictionary, fetch: Callable, size: int,
-		progress := Callable()) -> Dictionary:
-	var idx := PackedByteArray(); idx.resize(size * size * 4)
-	var wgt := PackedByteArray(); wgt.resize(size * size * 4)
+		progress := Callable(), rect_min := Vector2.INF,
+		rect_size := 0.0, seed_idx := PackedByteArray(),
+		seed_w := PackedByteArray(), max_span := 0.0) -> Dictionary:
+	var idx := PackedByteArray()
+	var wgt := PackedByteArray()
+	if seed_idx.size() == size * size * 4 and seed_w.size() == size * size * 4:
+		idx = seed_idx
+		wgt = seed_w
+	else:
+		idx.resize(size * size * 4)
+		wgt.resize(size * size * 4)
 	var span: Vector2 = root_max - root_min
 	if span.x <= 0.0 or span.y <= 0.0:
 		error = "block 1 has an empty world bounds"
 		return {}
+	var org := root_min
+	if rect_min.x != INF and rect_size > 0.0:
+		org = rect_min
+		span = Vector2(rect_size, rect_size)
 	var order: Array = nodes.duplicate()
 	order.sort_custom(func(x, y): return int(x["depth"]) < int(y["depth"]))
 	var decoded := 0
 	var seen := 0
+	var windowed := rect_min.x != INF and rect_size > 0.0
 	for n in order:
 		var nd: Dictionary = n
 		seen += 1
@@ -756,6 +783,23 @@ func composite(dir: Dictionary, fetch: Callable, size: int,
 			progress.call(seen, order.size())
 		if int(nd["pages"]) <= 0:
 			continue
+		# A windowed composite must not FETCH pages it will not paint - the
+		# page reads are the cost, and a 1 km window intersects a couple of
+		# percent of an 8 km map's nodes. Checked on the records' rects,
+		# which are in hand before any page is touched.
+		if windowed:
+			var hit := false
+			for r0 in nd["records"]:
+				var lo0: Vector2 = (r0 as Dictionary)["min"]
+				var hi0: Vector2 = (r0 as Dictionary)["max"]
+				if max_span > 0.0 and (hi0.x - lo0.x) > max_span:
+					continue
+				if hi0.x > org.x and hi0.y > org.y \
+						and lo0.x < org.x + span.x and lo0.y < org.y + span.y:
+					hit = true
+					break
+			if not hit:
+				continue
 		var pages: Array = node_pages(nd, dir, fetch)
 		if pages.is_empty():
 			continue
@@ -764,25 +808,39 @@ func composite(dir: Dictionary, fetch: Callable, size: int,
 			var pi := int(rd["page"])
 			if pi < 0 or pi >= pages.size():
 				continue
+			var lo: Vector2 = rd["min"]
+			var hi: Vector2 = rd["max"]
+			if max_span > 0.0 and (hi.x - lo.x) > max_span:
+				continue               # coarser than the seed already holds
+			if hi.x <= org.x or hi.y <= org.y \
+					or lo.x >= org.x + span.x or lo.y >= org.y + span.y:
+				continue               # record entirely outside the window
 			var page := decode_page(pages[pi], page_size)
 			if page.size() < PAGE_SIDE * PAGE_SIDE:
 				continue
 			decoded += 1
-			var lo: Vector2 = rd["min"]
-			var hi: Vector2 = rd["max"]
-			var x0 := clampi(int(floor((lo.x - root_min.x) / span.x * size)), 0, size - 1)
-			var x1 := clampi(int(ceil((hi.x - root_min.x) / span.x * size)), 0, size)
-			var z0 := clampi(int(floor((lo.y - root_min.y) / span.y * size)), 0, size - 1)
-			var z1 := clampi(int(ceil((hi.y - root_min.y) / span.y * size)), 0, size)
+			var x0 := clampi(int(floor((lo.x - org.x) / span.x * size)), 0, size - 1)
+			var x1 := clampi(int(ceil((hi.x - org.x) / span.x * size)), 0, size)
+			var z0 := clampi(int(floor((lo.y - org.y) / span.y * size)), 0, size - 1)
+			var z1 := clampi(int(ceil((hi.y - org.y) / span.y * size)), 0, size)
 			if x1 <= x0 or z1 <= z0:
 				continue
 			var layer := int(rd["layer"]) & 0xFF
+			# The page is addressed by the texel's WORLD position inside the
+			# record's own rect, not by its index inside the raster rect. The
+			# two matched while the raster rect never clipped; with a window,
+			# every record crossing the edge clips, and the index mapping
+			# would squeeze the whole page into the clipped remainder.
+			var rw := maxf(hi.x - lo.x, 1e-6)
+			var rh := maxf(hi.y - lo.y, 1e-6)
 			for gz in range(z0, z1):
-				var fz := float(gz - z0) / float(maxi(1, z1 - z0 - 1)) if z1 - z0 > 1 else 0.0
+				var wz := org.y + (float(gz) + 0.5) / float(size) * span.y
+				var fz := clampf((wz - lo.y) / rh, 0.0, 1.0)
 				var row := clampi(int(fz * float(PAGE_SIDE - 1)), 0, PAGE_SIDE - 1) * PAGE_SIDE
 				var drow := gz * size
 				for gx in range(x0, x1):
-					var fx := float(gx - x0) / float(maxi(1, x1 - x0 - 1)) if x1 - x0 > 1 else 0.0
+					var wx := org.x + (float(gx) + 0.5) / float(size) * span.x
+					var fx := clampf((wx - lo.x) / rw, 0.0, 1.0)
 					var w := int(page[row + clampi(int(fx * float(PAGE_SIDE - 1)), 0, PAGE_SIDE - 1)])
 					if w > 0:
 						_insert(idx, wgt, (drow + gx) * 4, layer, w)

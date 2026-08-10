@@ -507,7 +507,18 @@ func mount(level := "", progress := Callable(), use_cache := true,
 
 # Every entry is already a CAS coordinate, so a read is a path join and a
 # seek — no TOC body, no segment-list walk, nothing cached to go stale.
+#
+# ONE READER AT A TIME, across threads. The near-field ground window reads
+# chunks from a worker while the main thread may read for a toggle the user
+# just pressed. The only shared mutation on this path is _path_cache, but a
+# racing Dictionary insert can corrupt the table itself, and serialising the
+# whole segment read keeps the decompressor single-file too. A segment read is
+# milliseconds, so contention interleaves rather than stalls.
+var _read_mx := Mutex.new()
+
+
 func _read_seg(seg: Array, allow_raw := false) -> PackedByteArray:
+	_read_mx.lock()
 	var key := int(seg[0]) * 1000 + int(seg[1])
 	var p = _path_cache.get(key)
 	if p == null:
@@ -515,8 +526,11 @@ func _read_seg(seg: Array, allow_raw := false) -> PackedByteArray:
 		_path_cache[key] = p
 	if p == "":
 		error = "no cas file for install chunk %d index %d" % [seg[0], seg[1]]
+		_read_mx.unlock()
 		return PackedByteArray()
-	return _cas.read(p, int(seg[2]), int(seg[3]), allow_raw)
+	var out := _cas.read(p, int(seg[2]), int(seg[3]), allow_raw)
+	_read_mx.unlock()
+	return out
 
 
 func get_ebx(name: String) -> PackedByteArray:
