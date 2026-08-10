@@ -1075,7 +1075,7 @@ void vertex() {
 // tiling at its own authored rate. Reads the uniforms directly - the shading
 // language does not take sampler parameters, and it does not need to.
 void splat_texel(ivec2 t, vec2 wxz, vec3 fb_a, vec3 fb_n,
-		out vec3 oa, out vec3 on, out float orr) {
+		out vec3 oa, out vec3 on, out float orr, out float oph) {
 	ivec2 ts = textureSize(splat_idx, 0);
 	t = clamp(t, ivec2(0), ts - ivec2(1));
 	vec4 sid = texelFetch(splat_idx, t, 0) * 255.0;
@@ -1083,6 +1083,7 @@ void splat_texel(ivec2 t, vec2 wxz, vec3 fb_a, vec3 fb_n,
 	vec3 acc = vec3(0.0);
 	vec3 nacc = vec3(0.0);
 	float racc = 0.0;
+	float pacc = 0.0;
 	float tot = 0.0;
 	for (int i = 0; i < 4; i++) {
 		float wi = sw[i];
@@ -1106,6 +1107,7 @@ void splat_texel(ivec2 t, vec2 wxz, vec3 fb_a, vec3 fb_n,
 				                (wxz.y - cmap_bounds.y) / cmap_bounds.w);
 				if (vcu.x >= 0.0 && vcu.x <= 1.0 && vcu.y >= 0.0 && vcu.y <= 1.0) {
 					vbase = texture(colormap, vcu).rgb;
+					pacc += wi;    // this share is ALREADY photo-coloured
 				}
 			}
 			acc += wi * (vbase * clamp(dl * 2.0, 0.4, 1.6));
@@ -1122,16 +1124,18 @@ void splat_texel(ivec2 t, vec2 wxz, vec3 fb_a, vec3 fb_n,
 		oa = acc / tot;
 		on = nacc / tot;
 		orr = racc / tot;
+		oph = pacc / tot;
 	} else {
 		oa = fb_a;
 		on = fb_n;
 		orr = 0.92;
+		oph = 0.0;
 	}
 }
 // The same exact blend against the NEAR window's rasters. A duplicate rather
 // than a parameter because the shading language cannot pass samplers.
 void splat_texel_n(ivec2 t, vec2 wxz, vec3 fb_a, vec3 fb_n,
-		out vec3 oa, out vec3 on, out float orr) {
+		out vec3 oa, out vec3 on, out float orr, out float oph) {
 	ivec2 ts = textureSize(near_idx, 0);
 	t = clamp(t, ivec2(0), ts - ivec2(1));
 	vec4 sid = texelFetch(near_idx, t, 0) * 255.0;
@@ -1139,6 +1143,7 @@ void splat_texel_n(ivec2 t, vec2 wxz, vec3 fb_a, vec3 fb_n,
 	vec3 acc = vec3(0.0);
 	vec3 nacc = vec3(0.0);
 	float racc = 0.0;
+	float pacc = 0.0;
 	float tot = 0.0;
 	for (int i = 0; i < 4; i++) {
 		float wi = sw[i];
@@ -1158,6 +1163,7 @@ void splat_texel_n(ivec2 t, vec2 wxz, vec3 fb_a, vec3 fb_n,
 				                (wxz.y - cmap_bounds.y) / cmap_bounds.w);
 				if (vcu.x >= 0.0 && vcu.x <= 1.0 && vcu.y >= 0.0 && vcu.y <= 1.0) {
 					vbase = texture(colormap, vcu).rgb;
+					pacc += wi;    // this share is ALREADY photo-coloured
 				}
 			}
 			acc += wi * (vbase * clamp(dl * 2.0, 0.4, 1.6));
@@ -1174,10 +1180,12 @@ void splat_texel_n(ivec2 t, vec2 wxz, vec3 fb_a, vec3 fb_n,
 		oa = acc / tot;
 		on = nacc / tot;
 		orr = racc / tot;
+		oph = pacc / tot;
 	} else {
 		oa = fb_a;
 		on = fb_n;
 		orr = 0.92;
+		oph = 0.0;
 	}
 }
 void fragment() {
@@ -1191,6 +1199,7 @@ void fragment() {
 	vec3 det = fb_alb;
 	vec3 nrm = fb_nrm;
 	float rough = 0.92;
+	float photo_done = 0.0;
 	if (splat_slices > 0 || virt_count > 0) {
 		// EXACT LAYER BLEND, BILINEAR ACROSS TEXELS. The index texture cannot
 		// be filtered (a blend of table indices is garbage), so the old path
@@ -1214,13 +1223,15 @@ void fragment() {
 			vec3 a00; vec3 n00; vec3 a10; vec3 n10;
 			vec3 a01; vec3 n01; vec3 a11; vec3 n11;
 			float r00; float r10; float r01; float r11;
-			splat_texel(t00, wpos.xz, fb_alb, fb_nrm, a00, n00, r00);
-			splat_texel(t00 + ivec2(1, 0), wpos.xz, fb_alb, fb_nrm, a10, n10, r10);
-			splat_texel(t00 + ivec2(0, 1), wpos.xz, fb_alb, fb_nrm, a01, n01, r01);
-			splat_texel(t00 + ivec2(1, 1), wpos.xz, fb_alb, fb_nrm, a11, n11, r11);
+			float p00; float p10; float p01; float p11;
+			splat_texel(t00, wpos.xz, fb_alb, fb_nrm, a00, n00, r00, p00);
+			splat_texel(t00 + ivec2(1, 0), wpos.xz, fb_alb, fb_nrm, a10, n10, r10, p10);
+			splat_texel(t00 + ivec2(0, 1), wpos.xz, fb_alb, fb_nrm, a01, n01, r01, p01);
+			splat_texel(t00 + ivec2(1, 1), wpos.xz, fb_alb, fb_nrm, a11, n11, r11, p11);
 			det = mix(mix(a00, a10, fr.x), mix(a01, a11, fr.x), fr.y);
 			nrm = mix(mix(n00, n10, fr.x), mix(n01, n11, fr.x), fr.y);
 			rough = mix(mix(r00, r10, fr.x), mix(r01, r11, fr.x), fr.y);
+			photo_done = mix(mix(p00, p10, fr.x), mix(p01, p11, fr.x), fr.y);
 		}
 		// the near window, feather-blended over the far result inside its box
 		if (near_on == 1) {
@@ -1233,19 +1244,22 @@ void fragment() {
 				vec3 b00; vec3 m00; vec3 b10; vec3 m10;
 				vec3 b01; vec3 m01; vec3 b11; vec3 m11;
 				float q00; float q10; float q01; float q11;
-				splat_texel_n(nt0, wpos.xz, fb_alb, fb_nrm, b00, m00, q00);
-				splat_texel_n(nt0 + ivec2(1, 0), wpos.xz, fb_alb, fb_nrm, b10, m10, q10);
-				splat_texel_n(nt0 + ivec2(0, 1), wpos.xz, fb_alb, fb_nrm, b01, m01, q01);
-				splat_texel_n(nt0 + ivec2(1, 1), wpos.xz, fb_alb, fb_nrm, b11, m11, q11);
+				float g00; float g10; float g01; float g11;
+				splat_texel_n(nt0, wpos.xz, fb_alb, fb_nrm, b00, m00, q00, g00);
+				splat_texel_n(nt0 + ivec2(1, 0), wpos.xz, fb_alb, fb_nrm, b10, m10, q10, g10);
+				splat_texel_n(nt0 + ivec2(0, 1), wpos.xz, fb_alb, fb_nrm, b01, m01, q01, g01);
+				splat_texel_n(nt0 + ivec2(1, 1), wpos.xz, fb_alb, fb_nrm, b11, m11, q11, g11);
 				vec3 ndet = mix(mix(b00, b10, nfr.x), mix(b01, b11, nfr.x), nfr.y);
 				vec3 nnrm = mix(mix(m00, m10, nfr.x), mix(m01, m11, nfr.x), nfr.y);
 				float nrough = mix(mix(q00, q10, nfr.x), mix(q01, q11, nfr.x), nfr.y);
+				float nphoto = mix(mix(g00, g10, nfr.x), mix(g01, g11, nfr.x), nfr.y);
 				float fe = max(near_bounds.w / near_bounds.z, 0.001);
 				float edge = min(min(nuv.x, 1.0 - nuv.x), min(nuv.y, 1.0 - nuv.y));
 				float m = smoothstep(0.0, fe, edge);
 				det = mix(det, ndet, m);
 				nrm = mix(nrm, nnrm, m);
 				rough = mix(rough, nrough, m);
+				photo_done = mix(photo_done, nphoto, m);
 			}
 		}
 	}
@@ -1279,7 +1293,12 @@ void fragment() {
 		if (cuv.x >= 0.0 && cuv.x <= 1.0 && cuv.y >= 0.0 && cuv.y <= 1.0) {
 			vec3 cm = texture(colormap, cuv).rgb;
 			float dl = dot(det, vec3(0.3333));
-			det = mix(det, cm * clamp(0.75 + 0.5 * dl, 0.5, 1.2), cmap_strength);
+			// The computed layers already wear the photo as their albedo, so
+			// the slider's global mix excludes that share - without this the
+			// photo applied TWICE on most of a city map and the slider read
+			// as a doubler instead of a tuner.
+			det = mix(det, cm * clamp(0.75 + 0.5 * dl, 0.5, 1.2),
+				cmap_strength * (1.0 - photo_done));
 		}
 	}
 	ALBEDO = clamp(det, 0.0, 1.0);
