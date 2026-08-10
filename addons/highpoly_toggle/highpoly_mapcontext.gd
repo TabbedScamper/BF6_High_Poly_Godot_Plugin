@@ -5086,7 +5086,7 @@ func _build_terrain_from_heightmap(dir: String, meta: Dictionary) -> Node3D:
 	# v4 = the block-8 hole mask cuts the ground where the game cuts it
 	# (sidewalks, plazas, whole mesh-floored blocks), and the heights behind
 	# it are bilinear-composited.
-	var cache := "%s/terrain_ck%d_s%d_v4.res" % [dir, TERRAIN_CHUNKS, step]
+	var cache := "%s/terrain_ck%d_s%d_v5.res" % [dir, TERRAIN_CHUNKS, step]
 	if ResourceLoader.exists(cache):
 		var cached: Variant = ResourceLoader.load(cache)
 		if cached is PackedScene:
@@ -5151,8 +5151,10 @@ func _build_terrain_from_heightmap(dir: String, meta: Dictionary) -> Node3D:
 	DirAccess.remove_absolute("%s/terrain_s%d.res" % [dir, step])   # legacy single-mesh cache
 	# v1 chunk cache: same chunking, inside-out winding â€” reclaim the space
 	DirAccess.remove_absolute("%s/terrain_ck%d_s%d.res" % [dir, TERRAIN_CHUNKS, step])
-	# v3: no hole mask, nearest-sampled heights
+	# v3: no hole mask, nearest-sampled heights. v4: the mask cut the streets
+	# too and left voids where the road surface was.
 	DirAccess.remove_absolute("%s/terrain_ck%d_s%d_v3.res" % [dir, TERRAIN_CHUNKS, step])
+	DirAccess.remove_absolute("%s/terrain_ck%d_s%d_v4.res" % [dir, TERRAIN_CHUNKS, step])
 	return troot
 
 func _heightmap_mesh(raw: PackedByteArray, res: int, step: int, meta: Dictionary,
