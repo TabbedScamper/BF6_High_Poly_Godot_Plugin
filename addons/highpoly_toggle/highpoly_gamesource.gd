@@ -1159,6 +1159,24 @@ func map_data_ready(cache_dir := "") -> bool:
 	return _map_data_key == cache_dir and not _map_data.is_empty()
 
 
+# Would map_data(cache_dir, want) do real work, or return the stored answer?
+#
+# The dock asks this before deciding whether to spend a worker task and a read
+# panel on the call. It must give the same answer map_data itself would reach:
+# a missing base build is work, and so is any wanted optional section that has
+# not been built yet - that is the lazy fill, and it is just as capable of
+# freezing the main thread as the first build (mining water alone was measured
+# in the tens of seconds).
+func map_data_would_build(cache_dir := "", want := {}) -> bool:
+	if _map_data_key != cache_dir or _map_data.is_empty():
+		return true
+	var need := _md_need(want)
+	for k in MD_OPTIONAL:
+		if bool(need.get(k, true)) and not _md_built.has(k):
+			return true
+	return false
+
+
 # BUILD ONLY WHAT THE LAYERS THAT ARE ON ACTUALLY NEED.
 #
 # This used to build all of it, every time, whatever was switched on. A user's
@@ -1398,14 +1416,16 @@ func _build_map_data(cache_dir: String, need := {}) -> Dictionary:
 		var hm := terrain(cache_dir)
 		if not hm.is_empty():
 			out["heightmap"] = hm
-		# NO CACHE AT ALL, and that is the point of saying so here. The
-		# heightfield is composited out of the streaming tree and written to
-		# height_game.r16 on EVERY open, warm or cold, because nothing ever reads
-		# that file back in place of doing the work. It is the largest thing left
-		# on a warm open and it is invisible in a table that only prints seconds.
+		# Composited from the streaming tree the first time, read back from
+		# height_game.r16 after that - terrain() fingerprints the tree res, so a
+		# game patch recomposites and anything else is a file read. This row is
+		# where "every open pays 30 s" used to hide.
+		var _hm_cached := bool(hm.get("from_cache", false))
 		note_phase("ground: heightfield", Time.get_ticks_msec() - t,
-			int(hm.get("res", 0)), "samples per side", FROM_INSTALL,
-			"composited and written on every open, never read back")
+			int(hm.get("res", 0)), "samples per side",
+			FROM_CACHE if _hm_cached else FROM_INSTALL,
+			"read back from height_game.r16" if _hm_cached
+				else "composited from the streaming tree and written for next time")
 		t = Time.get_ticks_msec()
 		# The ground's appearance: colour map, layer palette, splat. The
 		# expensive one, and skipped outright once the map's cache holds it.
@@ -1484,6 +1504,18 @@ func _build_map_data(cache_dir: String, need := {}) -> Dictionary:
 #
 # Written to the map cache because the builder takes a FILE. That is a file
 # derived from the player's install, not a download.
+# The heightfield cache's fingerprint: the streaming-tree res's size plus a
+# hash of its first and last 64 KB. Hashing the whole res would also work; the
+# sampled form is kept because the res can be tens of MB and the two ends catch
+# both a re-authored header and appended data, which is how these grow.
+static func _terrain_key(res: PackedByteArray) -> String:
+	var n := res.size()
+	var head := res.slice(0, mini(65536, n))
+	var tail := res.slice(maxi(0, n - 65536), n)
+	# The GLOBAL hash(): PackedByteArray carries no .hash() method of its own.
+	return "%d:%d:%d" % [n, hash(head), hash(tail)]
+
+
 func terrain(cache_dir: String) -> Dictionary:
 	if src == null:
 		return {}
@@ -1498,6 +1530,42 @@ func terrain(cache_dir: String) -> Dictionary:
 	var res := src.get_res(pick)
 	if res.is_empty():
 		return {}
+	# READ THE FILE BACK INSTEAD OF REDOING THE WORK. The composite below walks
+	# ~264 nodes and assembles an 8193^2 grid - ~30 s of the main-thread freeze
+	# that followed every apply, paid on EVERY open because height_game.r16 was
+	# written and never read. The fingerprint is the streaming-tree res itself
+	# (size + head/tail sample), so a game patch that changes the terrain
+	# invalidates the cache and a reinstall to the same content does not. get_res
+	# is already paid either way - it is the line above - so a hit costs one
+	# 128 MB file read against a 30 s composite.
+	var r16_path := "%s/height_game.r16" % cache_dir
+	var meta_path := "%s/height_game.json" % cache_dir
+	var hm_key := _terrain_key(res)
+	if FileAccess.file_exists(r16_path) and FileAccess.file_exists(meta_path):
+		var mv: Variant = JSON.parse_string(FileAccess.get_file_as_string(meta_path))
+		if mv is Dictionary and str((mv as Dictionary).get("key", "")) == hm_key:
+			var md := mv as Dictionary
+			var side := int(md.get("res", 0))
+			var bytes := FileAccess.get_file_as_bytes(r16_path)
+			# The length check is the corruption guard: a partial write from a
+			# crashed session must fall through to the composite, not ship a
+			# short grid the mesh builder would index off the end of.
+			if side > 0 and bytes.size() == side * side * 2:
+				_hm = {"data": bytes, "res": side,
+					"min": float(md.get("world_min", 0.0)),
+					"max": float(md.get("world_max", 0.0)), "base": 0.0,
+					"scale": float(md.get("scale", 0.0))}
+				_say("game source: terrain %dx%d read back from the cache" % [side, side]
+					+ " (the install's streaming tree is unchanged)")
+				return {
+					"file": "height_game.r16",
+					"res": side,
+					"world_min": float(md.get("world_min", 0.0)),
+					"world_max": float(md.get("world_max", 0.0)),
+					"base": 0.0,
+					"scale": float(md.get("scale", 0.0)),
+					"from_cache": true,
+				}
 	var t := BF6Terrain.new()
 	var blk := t.find_block(res, BF6Terrain.BLOCK_HEIGHTS)
 	if blk.is_empty() or not t.read_block_header(blk) or not t.walk_nodes(blk):
@@ -1531,6 +1599,15 @@ func terrain(cache_dir: String) -> Dictionary:
 		return {}
 	f.store_buffer(g["data"])
 	f.close()
+	# The read-back's fingerprint, written beside the grid. The r16 alone cannot
+	# say which install produced it, and serving stale heights after a game patch
+	# would put every draped road underground with nothing naming the cause.
+	var mf := FileAccess.open(meta_path, FileAccess.WRITE)
+	if mf != null:
+		mf.store_string(JSON.stringify({"key": hm_key, "res": int(g["size"]),
+			"world_min": lo.x, "world_max": hi.x,
+			"scale": float(g["world_size_y"])}))
+		mf.close()
 	# KEPT IN MEMORY as well as written, because the roads need it. Decal
 	# vertices carry world X and Z and no Y at all — they are draped on the
 	# terrain — so building them means sampling this exact grid with this exact

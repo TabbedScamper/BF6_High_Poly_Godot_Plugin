@@ -261,7 +261,7 @@ func _ctx_allowed() -> bool:
 func _mode_hint() -> String:
 	match (mode_btn.get_selected_id() if mode_btn else MODE_SDK):
 		MODE_SDK:
-			return ": showing only what the SDK ships, and nothing downloads on this setting"
+			return ": showing only what the SDK ships; your game install is not read on this setting"
 		MODE_LIGHT:
 			return ": your pieces are what you export, and the level around them is real but untextured"
 		_:
@@ -289,7 +289,7 @@ func _gate(c: Control, what: String, back := 0) -> Control:
 	if c == null: return c
 	c.set_meta("gate_what", what)
 	c.set_meta("gate_back", back)
-	c.tooltip_text += "\n\nNeeds a download, so it is unavailable on \"Low-Poly (what you export)\"."
+	c.tooltip_text += "\n\nNeeds to read your game install, so it is unavailable on \"Low-Poly (what you export)\" — that setting shows only what the SDK ships."
 	_gated.append(c)
 	return c
 
@@ -585,7 +585,7 @@ func _enter_tree() -> void:
 
 	check_btn = Button.new()
 	check_btn.text = "Check for updates"
-	check_btn.tooltip_text = "Checks for newly fixed models straight away. This happens by itself every hour, so you rarely need to press it."
+	check_btn.tooltip_text = "Applies a plugin update without restarting the editor: any plugin script that changed on disk is reloaded in place. This also happens by itself every hour, so you rarely need to press it."
 	check_btn.pressed.connect(_check_updates_now)
 	dock.add_child(_centred(check_btn))
 
@@ -991,9 +991,12 @@ All of it is read from your own Battlefield 6 installation."
 		if _locked(mapctx_fx): return
 		var _r := EditorInterface.get_edited_scene_root()
 		# Same as the map lights: the build skips mining FX emitters when this
-		# layer is off, so switching it on is where they get mined.
+		# layer is off, so switching it on is where they get mined - on a
+		# worker, or the first press freezes the editor for the whole mine
+		# with nothing on screen saying why (task #75).
 		if v and mapctx != null:
 			mapctx.want_fx = true
+			await _ensure_mapdata_async(mapctx.game_source, {"fx": true})
 			mapctx.ensure_section("fx")
 		# the level's flipbook cards are drawn as props, so they follow this
 		# switch too rather than arriving unbidden with the map objects
@@ -1083,8 +1086,13 @@ All of it is read from your own Battlefield 6 installation."
 		# switching it on is the moment to make sure they exist. set_map_lights
 		# reads the file map_data writes and never asks map_data for it, so
 		# without this the layer would come on to nothing.
+		# ON A WORKER FIRST. ensure_section is a synchronous map_data ask, and
+		# a first mine of a section is main-thread freeze territory (task #75:
+		# "64 s of a 74 s terrain-only apply" in a user's log). After the worker
+		# has mined it, ensure_section is a dictionary lookup.
 		if v and mapctx != null:
 			mapctx.want_lights = true
+			await _ensure_mapdata_async(mapctx.game_source, {"lights": true})
 			mapctx.ensure_section("lights")
 		lbl.text = await LightingScript.set_map_lights(_r,
 				v and mapctx_light.button_pressed, mapctx.map_of(_r),
@@ -1230,11 +1238,11 @@ All of it is read from your own Battlefield 6 installation."
 	var purge_row := HBoxContainer.new(); host.add_child(purge_row)
 	purge_maps = OptionButton.new()
 	purge_maps.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	purge_maps.tooltip_text = "Maps you have downloaded. Deleting one frees its space; anything it shares with another downloaded map is kept."
+	purge_maps.tooltip_text = "Maps with a local cache built from your game install. Deleting one frees its space; anything it shares with another cached map is kept."
 	purge_row.add_child(purge_maps)
 	purge_btn = Button.new()
 	purge_btn.text = "Delete"
-	purge_btn.tooltip_text = "Frees this map's space on your PC. Safe to do, because it downloads again the next time you open that map."
+	purge_btn.tooltip_text = "Frees this map's cache on your PC. Safe to do, because it is rebuilt from your game install the next time you open that map — the rebuild takes a minute or two, not a download."
 	purge_btn.pressed.connect(_purge_selected)
 	purge_row.add_child(purge_btn)
 
@@ -1242,7 +1250,7 @@ All of it is read from your own Battlefield 6 installation."
 	# arrive by paths no single map owns), or when you just want to start over.
 	var reset_btn := Button.new()
 	reset_btn.text = "Reset everything"
-	reset_btn.tooltip_text = "Deletes everything downloaded: all maps, all scenery and the whole model library. Also puts this panel back to its defaults. Safe to do, because everything downloads again on demand."
+	reset_btn.tooltip_text = "Deletes every local cache: all maps, all scenery and every rendered icon. Also puts this panel back to its defaults and closes the reader, so the next map open starts cold. Safe to do, because everything is rebuilt from your game install on demand."
 	reset_btn.pressed.connect(_reset_everything)
 	host.add_child(_centred(reset_btn))
 
@@ -1373,7 +1381,7 @@ All of it is read from your own Battlefield 6 installation."
 	# all that is needed to find the meshes there.
 	var mark_fix := Button.new()
 	mark_fix.text = "Refresh marked props"
-	mark_fix.tooltip_text = "Rebuilds the materials of the map-context meshes nearest your markers, using the currently loaded plugin code. Press Check for updates first if the code changed."
+	mark_fix.tooltip_text = "Rebuilds the materials of the map-context meshes nearest your markers, using the currently loaded plugin code. If the plugin was just updated, press Check for updates first so the rebuild runs the new code."
 	mark_fix.pressed.connect(func():
 		var r := EditorInterface.get_edited_scene_root()
 		if r == null:
@@ -3175,10 +3183,10 @@ func _purge_selected() -> void:
 Also frees %d high-poly model(s) only %s uses (%s)." % [
 			hp_n, map, _human_size(int(info.get("hp_bytes", 0)))]
 	if int(info.get("shared", 0)) > 0:
-		txt += "\n%d object(s) are shared with other downloaded maps and are kept, so deleting this one never breaks another." % int(info.get("shared", 0))
+		txt += "\n%d object(s) are shared with other cached maps and are kept, so deleting this one never breaks another." % int(info.get("shared", 0))
 	if open_map == map:
 		txt += "\n\nThis is the map you have open, so the borrowed scenery around it will disappear."
-	txt += "\n\nThis is always safe: everything downloads again when you need it."
+	txt += "\n\nThis is always safe: it is all rebuilt from your game install when you need it again."
 	var dlg := ConfirmationDialog.new()
 	dlg.dialog_text = txt
 	dlg.ok_button_text = "Delete"
@@ -3310,7 +3318,7 @@ func _do_purge(map: String, info: Dictionary, was_open: bool) -> void:
 	if previews: previews.rescan_context()
 	if EditorInterface.get_edited_scene_root() != null:
 		await _apply_scene()
-	lbl.text = "%s purged. About %s freed, and it re-downloads on demand." % [map,
+	lbl.text = "%s purged. About %s freed; it rebuilds from your game install on demand." % [map,
 		_human_size(int(info.get("map_bytes", 0)) + int(info.get("excl_bytes", 0)))]
 	_refresh_storage()
 
@@ -3586,7 +3594,64 @@ func _apply_with_placements(r: Node, on: bool, objs: bool, tex, bd: bool, wt: bo
 	if (objs or bd) and mapctx != null and mapctx.game_source != null \
 			and not mapctx.game_source.placements_ready:
 		await _ensure_placements_async(mapctx.game_source)
+	# THE MAP DATA TOO, for the same reason and with the same gate apply uses
+	# (need_data = terrain or objects or backdrop or water). apply() calls
+	# map_data on the MAIN thread, and the first ask decodes the heightfield,
+	# drapes the roads and mines any wanted section - the 35-44 s freezes the
+	# stall table blamed on "idle" (task #91). Mining it here on a worker turns
+	# apply's own call into a dictionary return. The want dict must be the one
+	# apply will pass, or apply's ask still lazily fills the difference on the
+	# main thread - which is why the wants are synced first.
+	if (on or objs or bd or wt) and mapctx != null and mapctx.game_source != null:
+		_mapctx_sync_wants()
+		await _ensure_mapdata_async(mapctx.game_source,
+			{"lights": mapctx.want_lights, "fx": mapctx.want_fx, "water": wt})
 	return mapctx.apply(r, on, objs, tex, bd, wt)
+
+
+# One worker task around game_source.map_data, behind the same read panel the
+# open uses. Serialised: a second toggle while one is mining waits its turn
+# rather than racing the first into the game source's caches.
+var _md_mining := false
+
+func _ensure_mapdata_async(gs, want: Dictionary) -> void:
+	if gs == null or mapctx == null:
+		return
+	var map: String = mapctx.map_of(EditorInterface.get_edited_scene_root())
+	if map == "":
+		return
+	var dir := "%s/%s" % [HighpolyMapContext.CACHE, map]
+	while _md_mining:
+		if get_tree() == null:
+			return
+		await get_tree().process_frame
+	if not gs.map_data_would_build(dir, want):
+		return
+	_md_mining = true
+	_read_begin(map, false)
+	HighpolyVitals.crumb("reading %s: terrain, roads and map layers" % map)
+	var done := [false]
+	var tid := WorkerThreadPool.add_task(func() -> void:
+		var relay := func(stage: String, d: int, t: int):
+			_prog_relay = [stage, d, t]
+		# ensure_ground first when the open skipped it: map_data's surface
+		# re-ask would otherwise composite the splat inside this same task
+		# with no per-stage progress.
+		gs.ensure_ground(dir, relay)
+		gs.map_data(dir, want)
+		done[0] = true, true, "bf6 map data mine")
+	while not done[0]:
+		if get_tree() == null:
+			break
+		if not _prog_relay.is_empty():
+			_read_stage_set(str(_prog_relay[0]), int(_prog_relay[1]),
+				int(_prog_relay[2]))
+		await get_tree().process_frame
+	WorkerThreadPool.wait_for_task_completion(tid)
+	_prog_relay = []
+	_read_end()
+	HighpolyVitals.crumb("idle, nothing building")
+	_md_mining = false
 
 
 

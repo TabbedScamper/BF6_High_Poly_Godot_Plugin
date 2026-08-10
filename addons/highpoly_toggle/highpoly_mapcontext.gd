@@ -3245,7 +3245,24 @@ static func mark_never_casts(g: GeometryInstance3D) -> void:
 # `backdrop` defaults OFF so the teardown calls â€” apply(r, false, false, false),
 # used to free the overlay â€” cannot accidentally build a skyline on their way
 # out. Every call that wants layers passes what its toggles actually say.
+# SAY WHAT IS RUNNING BEFORE IT RUNS. The stall table names the crumb that was
+# current when a block STARTED, and apply() never set one - so its 30-44 s of
+# main-thread map_data (heightfield decode, road drape, section mining) was
+# reported as "frozen during: idle, nothing building", which reads as a hang
+# while doing nothing and sent the diagnosis chasing the renderer. The idle
+# crumb is restored only if no builder took over: the props/skyline builders
+# apply() launches set their own crumbs after this returns, and stamping idle
+# over one of those would re-arm the same lie in the other direction.
 func apply(root: Node, enabled: bool, show_objects: bool, tex = true,
+		backdrop := false, water := false) -> String:
+	HighpolyVitals.crumb("applying the map context")
+	var verdict := _apply_body(root, enabled, show_objects, tex, backdrop, water)
+	if HighpolyVitals.crumb_now() == "applying the map context":
+		HighpolyVitals.crumb("idle, nothing building")
+	return verdict
+
+
+func _apply_body(root: Node, enabled: bool, show_objects: bool, tex = true,
 		backdrop := false, water := false) -> String:
 	# The phase table covers ONE apply and the builds it launches. Reset here
 	# rather than per build: the two builders run concurrently and the terrain,
@@ -3441,7 +3458,11 @@ func apply(root: Node, enabled: bool, show_objects: bool, tex = true,
 		if not textured: return "Map Context off"
 		return "Map Context off (the SDK's ground texture is yours to control)"
 	if not have_data:
-		return "%s not downloaded (hit Reload map data)" % map
+		# The two ways to land here: no reader (the install path is wrong or was
+		# never set) or a reader for a different map. Neither is "not downloaded"
+		# - nothing downloads - and the old text also named a button ("Reload map
+		# data") that no longer exists.
+		return "%s could not be read from your game install - check the Battlefield 6 folder in Storage" % map
 
 	# --- terrain + backdrop: "Show map context" ---
 	var bd_ok := 0; var bd_total := 0
@@ -4528,7 +4549,7 @@ func purge_everything() -> int:
 	# for exactly this and was only ever called on panel teardown.
 	if job_queue != null and job_queue.has_method("reset"):
 		job_queue.reset()
-	Log.info("Reset: removed all downloaded data (%d bytes freed)" % freed)
+	Log.info("Reset: removed every local cache (%d bytes freed); the next map open reads the install cold" % freed)
 	return freed
 
 
