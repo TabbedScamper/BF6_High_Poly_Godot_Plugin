@@ -71,6 +71,7 @@ func rescan_context() -> void:
 	_cache.clear()
 	_pending.clear()
 	_queue.clear()
+	_needs_render.clear()      # a ctx bake changes the tag, so the PNG path changes
 
 # THE GAME FIRST, exactly as the library resolves a placed prop.
 #
@@ -141,12 +142,14 @@ func clear_cache() -> void:
 	# The written-off set goes too: whatever changed on disk is exactly the
 	# thing that could give a source to an item that had none.
 	_nosrc.clear()
+	_needs_render.clear()
 
 # a specific model was re-downloaded: just its thumb goes stale
 func invalidate(nm: String) -> void:
 	_cache.erase(nm)
 	_pending.erase(nm)
 	_nosrc.erase(nm)
+	_needs_render.erase(nm)
 
 # SUSPECT IN THE 2-SECOND STALL. Fitting frame time against draw calls on a
 # worst-case flight leaves 48 residual outliers of 70-145 ms that rendering does
@@ -175,6 +178,19 @@ var _lists_found_at := 0
 # from disk on every 2 s tick for the whole session; see the note where it is
 # filled. Cleared wherever a source could newly appear.
 var _nosrc: Dictionary = {}
+
+# Keys that HAVE a source but no thumbnail on disk yet.
+#
+# RENDERING IS THE BUTTON'S JOB AND NOBODY ELSE'S. The 2 s timer used to render
+# whatever the Object Library was showing, a SubViewport frame at a time, which
+# is the hitch "Build object previews" was added to move somewhere visible - and
+# it did not stop the timer, so the hitch carried on happening anyway. The timer
+# still SERVES icons (memory, then the on-disk PNG), because that costs a file
+# read and is the whole point of the cache; what it no longer does is make a new
+# picture. An item with no PNG is written off here so it is not re-statted every
+# 2 s, exactly like _nosrc, and cleared wherever the thumbnail PATH could change:
+# the two dictionaries answer different questions and both have to be dropped.
+var _needs_render: Dictionary = {}
 
 # How long to wait before searching again when the last search found NOTHING.
 # A hit is validated cheaply and reused indefinitely, but a miss has nothing to
@@ -254,6 +270,7 @@ func _refresh_body() -> void:
 		_cache.clear()
 		_pending.clear()
 		_queue.clear()
+		_needs_render.clear()   # the mode is part of the PNG name: new path, ask again
 	# THE INSTALL OPENING IS ALSO A CHANGE OF WHAT AN ICON SHOULD BE.
 	#
 	# The in-memory cache is keyed by NAME, so it cannot tell a picture rendered
@@ -275,6 +292,7 @@ func _refresh_body() -> void:
 		_cache.clear()
 		_pending.clear()
 		_queue.clear()
+		_needs_render.clear()   # the install arriving changes the tag the same way
 	HighpolyStore.ctx_scan()
 	var ks := HighpolyLib.known()
 	if ks.is_empty():
@@ -330,7 +348,7 @@ func _refresh_body() -> void:
 						_orig[str(md.path)] = cur   # remember the stock icon
 					il.set_item_icon(i, _cache[key])
 					_swapped = true
-			elif not _pending.has(key):
+			elif not _pending.has(key) and not _needs_render.has(key):
 				_pending[key] = true
 				if HighpolyLib.use_legacy:
 					EditorInterface.get_resource_previewer().queue_resource_preview(
@@ -414,6 +432,12 @@ func _render_one(nm: String) -> void:
 		if img != null:
 			_finish(nm, ImageTexture.create_from_image(img))
 			return
+	# No PNG for this item. Making one is a main-thread SubViewport render, so it
+	# happens only when the user asked for it - build_all sets `building`.
+	if not building:
+		_needs_render[nm] = true
+		_pending.erase(nm)
+		return
 	# Deliberately NOT HighpolyStore.load_scene(): that caches under the proxy
 	# name, so a map-context mesh loaded through it would be served later as the
 	# library model for the same name. Thumbnails are cached as PNGs anyway, so
@@ -482,16 +506,19 @@ func _finish(nm: String, tex: Texture2D) -> void:
 # ---------------------------------------------------------------------------
 # BUILD EVERY ICON, ON PURPOSE, WITH SOMETHING TO WATCH.
 #
-# The 2-second timer renders whatever the Object Library happens to be showing.
-# That keeps icons current, and it is the wrong shape for a first run: it fires
-# while you are working, each render assembles an object out of the install and
-# spends a SubViewport frame on it, and what you get is a hitch every couple of
-# seconds from something you never asked for and cannot see the end of.
+# THIS IS THE ONLY PLACE A THUMBNAIL IS RENDERED.
 #
-# This does the whole set when asked. Everything it renders lands in the same
-# on-disk thumbnail cache the timer checks FIRST, so afterwards the timer finds
-# a PNG for every icon and renders nothing at all. The hitching stops because
-# the work is finished, not because it was suppressed.
+# The 2-second timer used to render whatever the Object Library happened to be
+# showing. Each render assembles an object out of the install and spends a
+# SubViewport frame on it, on the main thread, while you are working - a hitch
+# every couple of seconds from something nobody asked for and could not see the
+# end of. This button was added to move that work somewhere visible, but it did
+# not stop the timer, so the hitch went on happening beside it.
+#
+# Now the timer only SERVES pictures: from memory, else from the on-disk PNG.
+# Making a new one happens here and nowhere else (`_render_one` returns early
+# unless `building`). Everything rendered lands in that same on-disk cache, so
+# a second press finds a PNG for every icon and renders nothing.
 #
 # `progress` is called as (done, total). Set cancel_build to stop it.
 var cancel_build := false
@@ -503,6 +530,10 @@ func build_all(progress := Callable()) -> Dictionary:
 		return {"error": "a build is already running"}
 	building = true
 	cancel_build = false
+	# Everything written off as "no picture yet" is exactly what this was pressed
+	# to make, and each one it renders lands in _cache, so the timer serves them
+	# from memory afterwards without a second look at the disk.
+	_needs_render.clear()
 	var names: Array = HighpolyLib.known().keys()
 	names.sort()                       # deterministic, so stopping and resuming
 	var total := names.size()           # covers the same ground in the same order

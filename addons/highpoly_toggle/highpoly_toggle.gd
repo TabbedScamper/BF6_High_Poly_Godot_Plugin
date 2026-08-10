@@ -699,19 +699,20 @@ All of it is read from your own Battlefield 6 installation."
 
 	# BUILD THE OBJECT LIBRARY'S ICONS ON PURPOSE, RATHER THAN BY AMBUSH.
 	#
-	# They are rendered by a 2-second timer, for whatever the library is showing
-	# at the time. Each one assembles the object out of the install and spends a
-	# SubViewport frame on it, so what a user experiences is the editor hitching
-	# every couple of seconds, indefinitely, with nothing on screen to say what
-	# is happening or when it will stop.
+	# They USED to be rendered by a 2-second timer, for whatever the library was
+	# showing at the time. Each one assembles the object out of the install and
+	# spends a SubViewport frame on it, so what a user experienced was the editor
+	# hitching every couple of seconds, indefinitely, with nothing on screen to
+	# say what was happening or when it would stop - and adding this button did
+	# not stop it, it just put a second copy of the work somewhere visible.
 	#
-	# The renders are cached to disk and the timer reads that cache first, so
-	# doing them all up front does not add work - it moves it somewhere visible
-	# and finishes it. After this runs the timer finds a PNG for every icon and
-	# renders nothing.
+	# The timer now only SERVES icons, from memory or from the on-disk PNG. This
+	# button is the only thing that renders one. Anything never built keeps the
+	# SDK's stock icon, which is the honest answer for a picture that does not
+	# exist yet.
 	previews_btn = Button.new()
 	previews_btn.text = "Build object previews"
-	previews_btn.tooltip_text = "Renders an icon for every object in the library, once, with a progress bar. They are rendered anyway - a few at a time, whenever the library shows something new - which is what makes the editor hitch every couple of seconds. Doing them all now moves that work somewhere you can watch it and ends it: the icons are cached to disk, so nothing is rendered again."
+	previews_btn.tooltip_text = "Renders an icon for every object in the library, with a progress bar. This is the only thing that renders them: nothing is drawn in the background while you work, so anything not built yet keeps the SDK's own icon. The icons are cached to disk and survive restarts, so a second press only covers what is new."
 	previews_btn.pressed.connect(_build_previews)
 	host.add_child(previews_btn)
 
@@ -2480,6 +2481,19 @@ func _centred(b: Button) -> Button:
 # reading it. Appended line by line rather than rebuilt, because rebuilding an
 # 800-line view on every message is what makes a log panel stutter.
 func _log_line(lvl: int, msg: String) -> void:
+	# THE READER LOGS FROM A WORKER THREAD, AND THIS IS EDITOR UI.
+	#
+	# HighpolyLog._add calls this sink wherever it is called from, and the ground
+	# build runs on a WorkerThreadPool task: ensure_ground -> terrain_surface ->
+	# BF6Splat.composite -> its progress lambda -> tick_long -> info -> here. Godot
+	# refuses append_text/add_theme_color_override off the main thread, so the
+	# panel silently missed those lines and the engine log filled with 42 errors
+	# our own report counted as zero - it counts what goes THROUGH the logger, and
+	# these were the logger failing. call_deferred is the documented remedy and is
+	# safe to call from any thread.
+	if OS.get_thread_caller_id() != OS.get_main_thread_id():
+		_log_line.call_deferred(lvl, msg)
+		return
 	if log_view == null or not is_instance_valid(log_view): return
 	var col := "#ffffffb0"
 	if lvl == Log.Level.WARN: col = "#ffc061"

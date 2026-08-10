@@ -46,6 +46,7 @@ static var _t0 := 0
 static var _last_beat := 0
 static var _crumb := "starting up"
 static var _crumb_at := 0
+static var _crumb_is_idle := false
 static var _crumb_lock := Mutex.new()
 
 static var _peak_static := 0.0
@@ -126,8 +127,15 @@ static func set_settings_probe(c: Callable) -> void: _settings_probe = c
 # heartbeat reads this from the main thread. A String assignment across threads
 # is a refcount race, and the symptom would be a crash in the diagnostic code -
 # which is a uniquely bad place to have one.
+#
+# A crumb that starts with IDLE says the work is OVER, not that a phase called
+# "idle" is running. Every site that reports finishing uses this prefix, and the
+# heartbeat below relies on it to tell "gone quiet mid-phase" (worth a line)
+# from "finished and waiting for you" (not).
+const IDLE := "idle"
 static func crumb(what: String) -> void:
 	_crumb_lock.lock()
+	_crumb_is_idle = what.begins_with(IDLE)
 	# Only a CHANGE restarts the clock. These are called once per tile and per
 	# mesh with the same label, and resetting on every call would make the age
 	# permanently zero - which is the one number that makes a stall legible
@@ -137,6 +145,13 @@ static func crumb(what: String) -> void:
 		_crumb_at = Time.get_ticks_msec()
 		_long_last.erase(what)
 	_crumb_lock.unlock()
+
+
+static func crumb_is_idle() -> bool:
+	_crumb_lock.lock()
+	var i := _crumb_is_idle
+	_crumb_lock.unlock()
+	return i
 
 
 static func crumb_now() -> String:
@@ -259,8 +274,14 @@ static func sample() -> void:
 	# it is on a worker thread the editor stays responsive so no stall is
 	# recorded either. Then the log simply goes quiet, which is the failure
 	# mode this whole file exists to end.
+	# An IDLE crumb must not arm this. The crumb keeps its timestamp after the
+	# work that set it is over, so an idle age grows without bound and this
+	# printed "still working: idle, nothing building, 10 m 53 s so far" every
+	# 30 s at a flat heap - a self-contradicting line that reads as a hang when
+	# the plugin had finished ten minutes earlier. What is worth reporting is a
+	# phase that is STILL RUNNING and has gone quiet; idle is the opposite.
 	var age := crumb_age_ms()
-	if age >= 30000:
+	if age >= 30000 and not crumb_is_idle():
 		var c := crumb_now()
 		if int(_long_last.get(c, 0)) < now - LONG_PHASE_MS * 3:
 			_long_last[c] = now
