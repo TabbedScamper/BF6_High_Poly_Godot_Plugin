@@ -2849,6 +2849,26 @@ func water() -> Array:
 			if first.has("sim"):
 				hf["sim"] = first["sim"]
 		out.append(hf)
+	if out.is_empty():
+		# SAY WHICH KIND OF NOTHING. The fleet measured ten maps with no water
+		# entity at all, and two more (battery, contaminated) whose sea is
+		# ordinary backdrop GEOMETRY placed from the level root - present in
+		# the walk, drawn by the Backdrops layer, invisible to this reader by
+		# design. "Water shows nothing" is correct on all of them, but the two
+		# reasons deserve two sentences, because one of them has a chip the
+		# user can press.
+		var sea := 0
+		if walk != null:
+			for row in walk.rows:
+				var mn := str((row as Dictionary).get("mesh", "")).get_file()
+				if mn.contains("oceanplane") or mn.contains("water"):
+					sea += 1
+		if sea > 0:
+			_say(("game source: no water entity - this map's sea/water is %d "
+				+ "scenery mesh(es); the Backdrops layer draws them") % sea)
+		else:
+			_say("game source: this map ships no water at all - an empty Water "
+				+ "layer is the correct answer, not a failure")
 	return out
 
 

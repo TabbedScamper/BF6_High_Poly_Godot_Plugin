@@ -844,7 +844,7 @@ All of it is read from your own Battlefield 6 installation."
 	mc_chips.add_child(mapctx_backdrop)
 
 	mapctx_water = Theme_.chip("Water")
-	mapctx_water.tooltip_text = "The rivers, harbours and sea the real level has, at the real height, so you can see what your build sits above. Speed of the ripples follows the water setting in Configure Shaders, where zero holds it still. Maps with no water body simply have nothing to show."
+	mapctx_water.tooltip_text = "The rivers, harbours and sea the real level has, at the real height, so you can see what your build sits above. Rivers and lakes that live inside the terrain data are built as real surfaces with their own water level. Speed of the ripples follows the water setting in Configure Shaders, where zero holds it still. Some maps ship no water body at all, and a few (Battery, Contaminated) build their sea as ordinary scenery instead: the Backdrops layer draws those."
 	mapctx_water.toggled.connect(func(v: bool):
 		if _locked(mapctx_water): return
 		var r0 := EditorInterface.get_edited_scene_root()
