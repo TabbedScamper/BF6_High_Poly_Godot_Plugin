@@ -4728,6 +4728,22 @@ func _material_any(state_key: int, scope: String, alt: String, var_hash: int,
 			tex_stats["scope_sibling"] = \
 				int(tex_stats.get("scope_sibling", 0)) + 1
 			return mat
+	# A FOURTH TIER — ANY DEPOT OF THIS LEVEL — WAS TRIED HERE AND REMOVED.
+	#
+	# The reasoning was good: a surface whose key none of the three tiers holds
+	# gets NO MATERIAL AT ALL (_dress only calls surface_set_material when the
+	# lookup returned something), and the recorded Dumbo measurement says 213 of
+	# 214 absent keys turn up in another subworld's depot of the same level.
+	#
+	# It fired ZERO times over 900 meshes and 1,852 surfaces on MP_Aftermath,
+	# and it did not rescue com_billboard_sign's bare face, which is the prop
+	# that prompted it. The shipping and sibling tiers above were already
+	# catching those cases (5 and 3 hits on the same sample). What is left bare
+	# is 22 surfaces on 13 meshes — 1.19% — and they are curbs, a cinematic
+	# helicopter, a killcam-only C4 and a light blocker: assets with no material
+	# record anywhere, not assets we are failing to look up.
+	#
+	# tools/probe_bare.gd is that measurement, if the question comes back.
 	return null
 
 

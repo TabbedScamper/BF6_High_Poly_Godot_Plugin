@@ -182,6 +182,45 @@ static func _placements(map: String) -> Array:
 	return (d as Dictionary).get("props", [])
 
 
+# THE SAME ANSWER, FROM THE SOURCE THAT IS ALREADY OPEN.
+#
+# placements.json is written by the packaged pipeline and a user may simply not
+# have one - four real markers on MP_Aftermath all came back "UNKNOWN: no
+# placements are cached for this map, so there is nothing to compare against",
+# which is a useless report about a map whose 38,226 placements were sitting in
+# memory at the time, listed in the same log two screens further up.
+#
+# So ask the walk. It knows more than the file did: as well as which meshes are
+# here it knows the SUBWORLD each came from, which is what decides whether a
+# prop is gated to a game mode - and "this should only show for some game modes"
+# is a note nobody can act on without it.
+static func _expected_live(gs, pt: Vector3) -> Dictionary:
+	if gs == null or gs.walk == null:
+		return {}
+	var meshes := {}          # name -> instances nearby
+	var layers := {}          # name -> the variant layer that gates it
+	var near := {}            # name -> distance of the nearest one
+	for r in gs.walk.rows:
+		var row: Dictionary = r
+		var xf = row.get("xf")
+		if not (xf is Array) or (xf as Array).size() < 4:
+			continue
+		var o: Vector3 = (xf as Array)[3]
+		var d := o.distance_to(pt)
+		if d > RADIUS:
+			continue
+		var nm := str(row.get("mesh", "")).get_file().trim_suffix(".ebx")
+		meshes[nm] = int(meshes.get(nm, 0)) + 1
+		if not near.has(nm) or d < float(near[nm]):
+			near[nm] = d
+			layers[nm] = gs.layer_of_scope(str(row.get("scope", "")))
+	var inst := 0
+	for m in meshes:
+		inst += int(meshes[m])
+	return {"meshes": meshes, "missing": [], "instances": inst,
+		"layers": layers, "near": near, "live": true}
+
+
 static func _expected(props: Array, pt: Vector3, cache_dir: String) -> Dictionary:
 	"""What the package puts within RADIUS of pt, and whether we hold the files."""
 	var meshes: Dictionary = {}     # name -> instances nearby
@@ -264,18 +303,26 @@ static func report(root: Node, map: String) -> String:
 	if marks.is_empty():
 		return ""
 	var props := _placements(map)
+	var gs = HighpolyLib.game_source
+	var from_source: bool = props.is_empty() and gs != null and gs.walk != null \
+		and not gs.walk.rows.is_empty()
 	var cache := "user://mapcontext/_props"
 	var out := PackedStringArray()
 	out.append("")
 	out.append("".rpad(60, "-"))
 	out.append("PROBLEM MARKERS: %d on %s" % [marks.size(), map])
-	if props.is_empty():
-		out.append("(no placements.json cached for this map, so the expected-mesh")
-		out.append(" lookup below is empty rather than meaningful)")
+	if from_source:
+		out.append("(read from the open game source, %d placements - there is no"
+			% gs.walk.rows.size())
+		out.append(" placements.json for this map, which is not a problem)")
+	elif props.is_empty():
+		out.append("(no placements.json cached for this map AND no game source")
+		out.append(" open, so the expected-mesh lookup below is empty)")
 	out.append("".rpad(60, "-"))
 	for m in marks:
 		var pt: Vector3 = m["pos"]
-		var ex := _expected(props, pt, cache)
+		var ex := _expected_live(gs, pt) if from_source \
+			else _expected(props, pt, cache)
 		var meshes: Dictionary = ex["meshes"]
 		var missing: Array = ex["missing"]
 		out.append("")
@@ -308,10 +355,11 @@ static func report(root: Node, map: String) -> String:
 			# something false about their data ten times over, and each one
 			# would have sent someone looking for a traversal bug that is not
 			# there. Say which of the three it is.
-			if props.is_empty():
+			if props.is_empty() and not from_source:
 				out.append("    VERDICT   UNKNOWN: no placements are cached for this")
-				out.append("              map, so there is nothing to compare against.")
-				out.append("              Build the map context once, then re-mark.")
+				out.append("              map and no game source is open, so there is")
+				out.append("              nothing to compare against. Build the map")
+				out.append("              context once, then re-mark.")
 			elif live.is_empty():
 				out.append("    VERDICT   UNKNOWN: the map-context layer is off, so")
 				out.append("              nothing was built here to inspect.")
@@ -340,12 +388,30 @@ static func report(root: Node, map: String) -> String:
 			out.append("              So the data and the draw are both fine and the")
 			out.append("              gap is narrower than this 14 m radius: say which")
 			out.append("              OBJECT is absent and I can name its mesh")
-		# the nearest few by name, so a reader can tell WHAT should be there
+		# WHAT IS HERE, NEAREST FIRST, AND WHAT GATES IT.
+		#
+		# Sorted by distance rather than alphabetically: a note is about the
+		# thing you were looking at, and the thing you were looking at is the
+		# near one. The gating layer is printed beside it because half of these
+		# notes are about visibility - "this should only show for some game
+		# modes" cannot be answered without knowing which layer, if any, a prop
+		# already belongs to.
 		var names: Array = meshes.keys()
-		names.sort()
-		out.append("    nearby    %s" % ", ".join(
-			PackedStringArray(names.slice(0, 6))))
-		if names.size() > 6:
-			out.append("              ... and %d more" % (names.size() - 6))
+		if ex.has("near"):
+			var near: Dictionary = ex["near"]
+			names.sort_custom(func(a, b): return float(near[a]) < float(near[b]))
+		else:
+			names.sort()
+		var layers: Dictionary = ex.get("layers", {})
+		out.append("    nearby")
+		for nm in names.slice(0, 8):
+			var lay := str(layers.get(nm, ""))
+			out.append("       %6s  %-44s %s" % [
+				("%.1f m" % float((ex.get("near", {}) as Dictionary).get(nm, 0.0))
+					if ex.has("near") else ""),
+				str(nm).left(44),
+				("gated by %s" % lay) if lay != "" else "always shown"])
+		if names.size() > 8:
+			out.append("       ... and %d more" % (names.size() - 8))
 	out.append("")
 	return "\n".join(out)
