@@ -98,3 +98,68 @@ not reproduced.
     tools/probe_palette.gd     every palette entry: albedo, slots, tiling, link
     tools/probe_layerdepot.gd  which depot holds each layer's key
     tools/probe_layerslots.gd  every parameter of the textureless layers
+
+---
+
+# MP_Tungsten: the same fault, harder, and where the river went
+
+Tungsten reads worse than MP_Aftermath:
+
+    terrain splat — 11968 pages over 27 layers, 3 textured slices,
+                    99% of ground on a shader-computed layer
+
+| layer | texture | texels |
+|---|---|---|
+| 30 | `t_wum_ls_gravel_01_a_cv` | 216,310 |
+| 9 | `t_cas_asphaltedge_01_cv` | 172,882 |
+| 11 | `t_cas_grasstuftspline_01_tungsten_cv` | 8,159 |
+
+Three textures for a whole map. "The terrain is all one colour" is literally
+true: 99% of it is the flat colour map with no detail layer at all.
+
+## The river is not missing — it was never geometry
+
+Three separate things were checked, and all three say the same thing.
+
+**The decals carry no water.** All 613 terrain-decal records group into 20
+materials and not one of them names a water texture
+(`tools/probe_decalmats.gd`):
+
+    149 recs  t_cas_road_graveldirt_tungsten_01
+     99 recs  t_cas_erosiongravel_02
+     95 recs  t_cas_roadmud_01_tungsten        <- the "mud where the river is"
+     50 recs  t_cas_tiretracks_01
+
+That mud is a genuine road decal, correctly drawn. A problem marker dropped on
+the river reported `on _MAP_CONTEXT/Roads`, which confirms it from the other
+direction: the surface being looked at IS the decal layer. (It selects the whole
+thing because Roads is one mesh with one surface per material group.)
+
+**The water plane is a puddle with no material.**
+`com_tungsten_simplewaterplane_01` is placed once, at y 85.9, inside the terrain
+range - and it builds as a 1 m unit quad, so its placement scale of 4.27 x 8.66
+makes it about 4 x 9 m. Its one surface resolves **no material at all**, the
+same class of miss as `com_billboard_sign`'s bare face.
+
+**The river itself is an ECS runtime prefab.** The map carries
+`_layers_world/river` and `_layers_world/riversplines_backdrop`, and what is
+inside them is:
+
+    river                        1  LayerData
+    river_ecsprefab_ecsprefab    1  EcsRuntimePrefabAsset
+                                 1  EcsComponentSegment
+
+No geometry, no placements, no textures. The river is assembled at runtime by
+the same ECS system that holds conquest's objective logic (see
+GAMEMODE-MINER.md) - which is why nothing arrives with Original map objects and
+nothing can: there is nothing in the level data to place.
+
+The ocean surface `water()` does find - one plane, 4096 x 4096 m at **y = 0** -
+sits at least 65 m below the lowest ground on this map, so even that is built
+and buried. Whether y = 0 is authored or a misread of the other water shader
+variant's field offsets is still open.
+
+## Tools
+
+    tools/probe_decalmats.gd   every terrain-decal group with its textures
+    tools/probe_water.gd       what water() finds, and every watery partition
