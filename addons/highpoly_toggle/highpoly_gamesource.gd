@@ -1809,7 +1809,12 @@ const CMAP_VERSION := 2
 #      a 1-texel apron (byte-identical to the neighbour on 400/400 adjacent
 #      pairs), and stretching all 66 across the record scaled every painted
 #      shape by 66/64 and shifted paint up to a page texel at node edges.
-const SPLAT_VERSION := 8
+#   9  block-7 base pairs index the MAP-GLOBAL no-page list, not the block-1
+#      ancestor node's subset: a nibble into a subset names the wrong layer,
+#      which erased mp_aftermath's street asphalt from the base field
+#      entirely (fleet-measured present; ours 0). With it the streets, the
+#      cobble and the concrete tile come back as real textured ground.
+const SPLAT_VERSION := 9
 # Per-slice detail textures; all slices must match. 1024 rather than 512: the
 # game's layer sheets are mostly 1024+, and at 512 the close-up ground was a
 # quarter of the detail the install holds. The loader compresses the slices to
@@ -2025,7 +2030,8 @@ func terrain_surface(cache_dir: String, force := false,
 		t0 = Time.get_ticks_msec()
 		if mt.parse(b7):
 			base = mt.rasterize(sres, func(k): return sp.base_list(k),
-				sp.full_list(), _linked_of(pal))
+				sp.full_list(), _linked_of(pal), Vector2.INF, 0.0,
+				sp.global_base_list())
 			var t_base := Time.get_ticks_msec() - t0
 			_say("game source: terrain base field, %d pairs, %d nodes, %.1fs"
 				% [mt.pairs.size(), mt.nodes.size(), t_base / 1000.0])
@@ -2069,7 +2075,7 @@ func terrain_surface(cache_dir: String, force := false,
 				continue
 			BF6Splat._insert(idx0, wgt0, o, bl, 255 - s_tex)
 			placed += 1
-		_say("game source: terrain base field placed on %.0f%% of texels"
+		_say("game source: terrain base field placed on %.2f%% of texels"
 			% (100.0 * float(placed) / float(maxi(1, base.size()))))
 
 	var per_layer := {}

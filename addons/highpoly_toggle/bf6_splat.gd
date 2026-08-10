@@ -1018,6 +1018,14 @@ func base_list(key: int) -> Array:
 	return []
 
 
+# The MAP-GLOBAL no-page layer list, ascending - TERRAIN.md 8's fallback for
+# a raster node whose own base list is empty.
+func global_base_list() -> Array:
+	var out: Array = (layer_usage()["base"] as Dictionary).keys()
+	out.sort()
+	return out
+
+
 # The layers a map paints with, and the ones it can use as a base.
 #
 # §5.1: a record whose bit8 is SET has no stored page and full coverage — the

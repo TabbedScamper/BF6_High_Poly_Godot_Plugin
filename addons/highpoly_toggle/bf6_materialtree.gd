@@ -258,9 +258,15 @@ static func bounds_of(key: int, root_lo: Vector2, root_hi: Vector2) -> Array:
 # detail window needs the street materials at its own density or the streets
 # inside it would drop back to painted layers alone (see bf6_splat.composite's
 # twin note).
+# `global_base`: the MAP-GLOBAL no-page layer list, ascending. TERRAIN.md 8's
+# practical fallback, previously unimplemented: "a raster node with an empty
+# base list uses the map-global no-page layer list." Without it, every node
+# whose block-7 key finds no block-1 base records resolved its base-kind
+# pairs to nothing - on mp_aftermath that erased the street asphalt entirely
+# (fleet-measured L08 at 3.9%, ours at 0%).
 func rasterize(size: int, base_list_for: Callable, full_list: Array,
 		linked_list: Array, rect_min := Vector2.INF,
-		rect_size := 0.0) -> PackedByteArray:
+		rect_size := 0.0, global_base: Array = []) -> PackedByteArray:
 	var out := PackedByteArray()
 	out.resize(size * size)
 	out.fill(255)
@@ -272,12 +278,40 @@ func rasterize(size: int, base_list_for: Callable, full_list: Array,
 	if rect_min.x != INF and rect_size > 0.0:
 		org = rect_min
 		span = Vector2(rect_size, rect_size)
+	# THE BACKGROUND DOES NOT OVERWRITE. Aftermath authors its street asphalt
+	# at COARSE tree levels; the finer nodes above them are almost entirely
+	# background texels, and letting those overwrite erased every street from
+	# the final raster while the pooled per-node counts still matched the
+	# fleet's measured 3.9% exactly - which is what proved the decode right
+	# and the overwrite wrong. A finer node's background texel means "nothing
+	# to refine here", so it only ever paints onto texels nothing has claimed.
+	var bg_layer := -1
+	if background != 0:
+		var bg_lists := {0: full_list,
+			1: global_base if not global_base.is_empty() else full_list,
+			2: linked_list}
+		for v in range(pairs.size()):
+			if int(pairs[v]) == background:
+				bg_layer = resolve(v, bg_lists)
+				break
 	var order: Array = nodes.duplicate()
 	order.sort_custom(func(a, b): return int(a["depth"]) < int(b["depth"]))
 	for n in order:
 		var nd: Dictionary = n
 		var key := int(nd["key"])
-		var lists := {0: full_list, 1: base_list_for.call(key), 2: linked_list}
+		# THE GLOBAL LIST WINS. TERRAIN.md 8 words kind-1 as "the node's base
+		# list", but the reference decoder indexes the MAP-GLOBAL no-page
+		# list - and it is the one validated visually against three maps'
+		# street grids and numerically against aftermath's shares. Our
+		# block-7-key -> block-1 ancestor walk can land on a node whose base
+		# records are a SUBSET, and a nibble into a subset names the wrong
+		# layer: that is precisely how aftermath's street asphalt (pair
+		# nibble 4 -> global list[4] = L08) resolved to nothing here while
+		# the pooled global-list count matched the fleet to the decimal.
+		var nb: Array = global_base
+		if nb.is_empty():
+			nb = base_list_for.call(key)
+		var lists := {0: full_list, 1: nb, 2: linked_list}
 		# One resolve per DISTINCT texel value rather than per texel: the values
 		# are 4-bit, so there are at most 16 answers for a whole 256x256 node and
 		# resolving each of the 65,536 separately is the same answer 4,000 times.
@@ -312,8 +346,11 @@ func rasterize(size: int, base_list_for: Callable, full_list: Array,
 				var wx := org.x + (float(gx) + 0.5) / float(size) * span.x
 				var fx := clampf((wx - lo.x) / rw, 0.0, 1.0)
 				var l := int(lut[int(rows[sy + clampi(int(fx * float(dim - 1)), 0, dim - 1)]) & 0xF])
-				if l >= 0 and l < 255:
-					out[drow + gx] = l
+				if l < 0 or l >= 255:
+					continue
+				if l == bg_layer and out[drow + gx] != 255:
+					continue           # background never overwrites a claim
+				out[drow + gx] = l
 	return out
 
 
