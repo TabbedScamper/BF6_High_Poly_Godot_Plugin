@@ -212,14 +212,30 @@ func _load_cache(p: String) -> bool:
 	f.close()
 	if typeof(d) != TYPE_DICTIONARY or not d.has("ebx"):
 		return false
+	# Same main-thread publish rule as mount_rest, for the same use-after-free:
+	# the catalogue-upgrade path runs THIS on a worker while the map on screen
+	# reads the current dictionaries. get_var built fresh dictionaries, so the
+	# only unsafe instant is the member swap - hand it to the main thread.
+	var st: Dictionary = d["stats"]
+	st["from_cache"] = true
+	if OS.get_thread_caller_id() == OS.get_main_thread_id():
+		_adopt_cache(d, st)
+	else:
+		_pub_done = false
+		_adopt_cache.call_deferred(d, st)
+		while not _pub_done:
+			OS.delay_msec(1)
+	return true
+
+
+func _adopt_cache(d: Dictionary, st: Dictionary) -> void:
 	ebx = d["ebx"]
 	res = d["res"]
 	chunks = d["chunks"]
 	chunk_seg = d["chunk_seg"]
 	res_bundle = d.get("res_bundle", {})
-	stats = d["stats"]
-	stats["from_cache"] = true
-	return true
+	stats = st
+	_pub_done = true
 
 
 func _save_cache(p: String) -> void:
@@ -370,6 +386,45 @@ func mount_rest(progress := Callable(), use_cache := true) -> bool:
 	var n_cseg := chunk_seg.duplicate()
 	var sw := _sweep(paths, progress, 0, {"ebx": n_ebx, "res": n_res,
 		"res_bundle": n_rb, "chunks": n_chunks, "chunk_seg": n_cseg})
+	# PUBLISHED ON THE MAIN THREAD, and the worker waits for it. The reference
+	# swap is safe for a reader already HOLDING the old Dictionary - but the
+	# instant of the swap itself races a main-thread `.get()` that is taking its
+	# reference at that moment: the old dictionary's refcount can hit zero
+	# between the reader fetching the member and securing it, which is a
+	# use-after-free. A user's crash log caught exactly that - signal 11 inside
+	# src.res_bundle.get() from _scope_of while this sweep was finishing.
+	# Handing the five assignments to the main thread closes the window: the
+	# main thread cannot read a member while it is itself running the swap.
+	_publish(n_ebx, n_res, n_rb, n_chunks, n_cseg, t0)
+	# Saved under the ALL-LEVELS key, because the state now equals what an
+	# all-levels mount would have produced. The next session's upgrade then loads
+	# it in one go instead of sweeping again.
+	if use_cache and _sig != "":
+		_save_cache(_cache_path_scoped(_level, _sig, true))
+	return int(sw["opened"]) > 0
+
+
+# The five-assignment publish plus the stats rows, run on the main thread even
+# when the build ran on a worker. `stats` gets the same treatment because
+# inserting a new key can rehash it under a concurrent reader too.
+var _pub_done := false
+
+func _publish(n_ebx: Dictionary, n_res: Dictionary, n_rb: Dictionary,
+		n_chunks: Dictionary, n_cseg: Dictionary, t0: int) -> void:
+	if OS.get_thread_caller_id() == OS.get_main_thread_id():
+		_publish_body(n_ebx, n_res, n_rb, n_chunks, n_cseg, t0)
+		return
+	_pub_done = false
+	_publish_body.call_deferred(n_ebx, n_res, n_rb, n_chunks, n_cseg, t0)
+	# The callers of mount_rest pump frames while waiting for the task, so the
+	# deferred call runs within a frame or two; this loop cannot deadlock
+	# because nothing on the main thread hard-blocks on this worker.
+	while not _pub_done:
+		OS.delay_msec(1)
+
+
+func _publish_body(n_ebx: Dictionary, n_res: Dictionary, n_rb: Dictionary,
+		n_chunks: Dictionary, n_cseg: Dictionary, t0: int) -> void:
 	ebx = n_ebx
 	res = n_res
 	res_bundle = n_rb
@@ -378,12 +433,7 @@ func mount_rest(progress := Callable(), use_cache := true) -> bool:
 	stats["ms_rest"] = Time.get_ticks_msec() - t0
 	stats["ebx"] = ebx.size()
 	stats["res"] = res.size()
-	# Saved under the ALL-LEVELS key, because the state now equals what an
-	# all-levels mount would have produced. The next session's upgrade then loads
-	# it in one go instead of sweeping again.
-	if use_cache and _sig != "":
-		_save_cache(_cache_path_scoped(_level, _sig, true))
-	return int(sw["opened"]) > 0
+	_pub_done = true
 
 
 # Is the catalogue already here, from a cache written by an earlier session?

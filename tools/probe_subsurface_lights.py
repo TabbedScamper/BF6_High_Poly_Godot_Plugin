@@ -128,7 +128,10 @@ def main():
                     type=tn, xf=lt or IDENT,
                     intensity=rec.get("Intensity"),
                     radius=rec.get("AttenuationRadius"),
-                    unit=rec.get("LightUnit"), color=col, cone=cone))
+                    unit=rec.get("LightUnit"), color=col, cone=cone,
+                    diff=bool(rec.get("AffectDiffuse")),
+                    spec=bool(rec.get("AffectSpecular")),
+                    radio=bool(rec.get("AffectRadiosity"))))
             elif is_vol:
                 lt = lt_parse(rec.get("Transform"))
                 ent["vols"].append(dict(type=tn, xf=lt or IDENT))
@@ -240,6 +243,16 @@ def main():
             inten[L["unit"]] += 1
         print("   AttenuationRadius min/med/max  %.1f / %.1f / %.1f   LightUnit counts %s"
               % (rad[0], rad[len(rad) // 2], rad[-1], dict(inten)))
+        flags = collections.Counter(
+            (L["diff"], L["spec"], L["radio"]) for L in wl)
+        print("   (AffectDiffuse, AffectSpecular, AffectRadiosity) combos: %s"
+              % {k: v for k, v in flags.most_common()})
+        direct = [L for L in wl if L["diff"] or L["spec"]]
+        print("   lights contributing DIRECT shading (diffuse or specular): %d of %d"
+              % (len(direct), len(wl)))
+        ity = sorted(L["intensity"] or 0 for L in wl)
+        print("   Intensity min/med/p90/max  %.0f / %.0f / %.0f / %.0f"
+              % (ity[0], ity[len(ity) // 2], ity[int(len(ity) * 0.9)], ity[-1]))
 
         # density: grid-bucket then worst neighbourhoods
         for R in (10.0, 25.0, 150.0):

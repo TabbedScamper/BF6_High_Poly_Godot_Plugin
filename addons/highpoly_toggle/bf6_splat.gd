@@ -26,13 +26,22 @@ const NO_PAGE_FLAG := 0x0100         # §5.1 bit8: IgnoreMask layer, no stored p
 const RECORD := 33
 const HEADER := 0x3D
 const PAGE_SIZES := [2592, 4356, 5184]
-# §5.3 tile sizes: side² × 16/16 bytes of BC7. 85024 is deliberately NOT here:
-# it is a 67600 + 17424 MIP PAIR trailer (survey-style), not a tile, and the
-# old entry decoded it as a 260² image with 17,424 bytes too many. A map whose
-# residuals decompose to neither pure size now fails detect_layout LOUDLY with
-# the residual list in the error — which is the right outcome until a mip-pair
-# map is actually observed in the Portal set and its tile order established.
-const TILE_SIZES := {4624: 68, 17424: 132, 67600: 260}
+# §5.3 tile sizes -> side. 8712 is 132² BC1 (MP_Portal_Sand; 33×33 blocks of
+# 8 bytes — not even 16-divisible, so it cannot be a BC7 tile), the rest are
+# BC7. 85024 is deliberately NOT here: it is a 67600 + 17424 MIP PAIR trailer
+# (survey-style), not a tile, and the old entry decoded it as a 260² image
+# with 17,424 bytes too many. A map whose residuals decompose to no known size
+# fails detect_layout LOUDLY with the residual list in the error.
+const TILE_SIZES := {4624: 68, 17424: 132, 67600: 260, 8712: 132}
+# Candidate order for the decomposition, LARGEST FIRST, and that is
+# load-bearing: 17424 = 2 × 8712, so every two-tile BC7 trailer (Tungsten's
+# 34848) also divides by the BC1 size — tried smallest-first, the BC1 branch
+# would steal every BC7 map. A larger size can never divide a smaller one, so
+# descending order is unambiguous for the sizes above.
+const TILE_ORDER := [67600, 17424, 8712, 4624]
+# Which Godot format decodes a tile of that byte size.
+const TILE_FMTS := {4624: Image.FORMAT_BPTC_RGBA, 17424: Image.FORMAT_BPTC_RGBA,
+	67600: Image.FORMAT_BPTC_RGBA, 8712: Image.FORMAT_DXT1}
 const PAGE_SIDE := 66                # every codec decodes to this
 
 var error := ""
@@ -45,6 +54,7 @@ var nodes: Array = []                # {key, depth, min, max, records, pages}
 var page_size := 0
 var tile_bytes := 0
 var tile_side := 0
+var tile_fmt := Image.FORMAT_BPTC_RGBA   # BC7 everywhere but Portal_Sand (BC1)
 var consumed := 0
 
 # §14 item 2 is open: the colour TILES in a paired chunk are proven to be in
@@ -183,12 +193,30 @@ const CHILD_Z := [0, 0, 1, 1]
 const PREFIXES := [0, 39919, 149297, 189216, 298594]
 # residual -> trailer bytes (k × tile_bytes), filled by detect_layout.
 var _trailer := {}
+# residuals whose trailer is the 85,024-byte MIP PAIR (a 260² tile with its
+# 132² mip after it — MAP-EASTWOOD.md measured 19 such nodes beside 133 plain
+# 132² ones IN THE SAME MAP). The colour slice there is the pair's LAST
+# tile_bytes: the small mip, which matches the scale of the map's other tiles.
+var _mip := {}
+# Model B (constant non-tile trailer, MAP-CONTAMINATED.md's 936): the constant,
+# or -1 when model A fit.
+var _tail_const := -1
+# True when neither the primary nor the paired chunks yielded a tile size: the
+# map ships no colour raster we recognise. The splat still builds.
+var no_colour := false
 
 
 func detect_layout(dir: Dictionary) -> bool:
 	error = ""
 	_trailer.clear()
+	_mip.clear()
+	_tail_const = -1
+	no_colour = false
 	# --- the page size: fewest distinct residuals, none negative -------------
+	# Residuals are weighted by NODE COUNT so the outlier tolerance below can
+	# reason in nodes: MAP-SUBSURFACE.md found 8 of 107 chunks carrying a
+	# variable extra payload no algebra fits, and a fit test over distinct
+	# values alone would let those 8 veto the model for the other 99.
 	var best_ps := 0
 	var best_resid := {}
 	for ps in PAGE_SIZES:
@@ -209,7 +237,7 @@ func detect_layout(dir: Dictionary) -> bool:
 				# pages that do not fit their own chunk: this page size is too big
 				ok = false
 				break
-			resid[r] = true
+			resid[r] = int(resid.get(r, 0)) + 1
 		if not ok or resid.is_empty():
 			continue
 		if best_ps == 0 or resid.size() < best_resid.size():
@@ -219,31 +247,101 @@ func detect_layout(dir: Dictionary) -> bool:
 		error = "no page size fits the per-node chunk sizes"
 		return false
 	page_size = best_ps
-	# --- the tile size: every residual must decompose ------------------------
-	# Smallest tile first: a coarser tile that happens to divide a residual
-	# would mask the true one, but the sizes here do not divide each other and
-	# the prefix constraint disambiguates in practice (Tungsten's 34848 trailer
-	# fails 4624 on every prefix and is exactly 2 × 17424).
+	var total := 0
+	for r in best_resid.keys():
+		total += int(best_resid[r])
+	# --- MODEL A: the trailer is k colour tiles ------------------------------
+	# Tried before model B because B (a constant) can partially fit tile maps.
+	# A ≥90% node fit accepts, so a handful of irregular chunks (Subsurface's
+	# 8) lose their own tile and pages without vetoing the whole map.
 	tile_bytes = 0
-	for tb in TILE_SIZES.keys():
+	var best_fit := 0
+	for tb in TILE_ORDER:
 		var t_of := {}
-		var fits := true
+		var t_mip := {}
+		var okn := 0
 		for r in best_resid.keys():
 			var k := _tiles_in(int(r), int(tb))
-			if k < 0:
-				fits = false
-				break
-			t_of[int(r)] = k * int(tb)
-		if fits:
+			if k >= 0:
+				t_of[int(r)] = k * int(tb)
+				okn += int(best_resid[r])
+			elif int(tb) == 17424 and _mip_fits(int(r)):
+				t_of[int(r)] = 85024
+				t_mip[int(r)] = true
+				okn += int(best_resid[r])
+		if okn * 10 >= total * 9 and okn > best_fit:
+			best_fit = okn
 			tile_bytes = int(tb)
 			tile_side = int(TILE_SIZES[tb])
+			tile_fmt = int(TILE_FMTS[tb])
 			_trailer = t_of
-			break
-	if tile_bytes <= 0:
-		error = ("page size %d fits but no tile size decomposes its residuals %s"
+			_mip = t_mip
+	if tile_bytes > 0:
+		return true
+	# --- MODEL B: the trailer is a CONSTANT, and it is not a tile ------------
+	# MAP-CONTAMINATED.md: every primary chunk ends in the same 936 bytes of an
+	# unknown raster, and the colour tiles live ONLY in the paired chunks. The
+	# constant is whatever value `residual − prefix` agrees on across ≥90% of
+	# nodes; the colour tile size then comes from the paired trailers below.
+	var cand := {}
+	for r in best_resid.keys():
+		for p in PREFIXES:
+			var c := int(r) - int(p)
+			if c >= 0:
+				cand[c] = int(cand.get(c, 0)) + int(best_resid[r])
+	var best_c := -1
+	var best_cn := 0
+	for c in cand.keys():
+		if int(cand[c]) > best_cn:
+			best_cn = int(cand[c])
+			best_c = int(c)
+	if best_c < 0 or best_cn * 10 < total * 9:
+		error = ("page size %d fits but no trailer model covers its residuals %s"
 			% [page_size, str(best_resid.keys())])
 		return false
+	_tail_const = best_c
+	for r in best_resid.keys():
+		for p in PREFIXES:
+			if int(r) - int(p) == best_c:
+				_trailer[int(r)] = best_c
+				break
+	# The colour tile's size and codec, from the paired trailers: four child
+	# tiles each, so a quarter of the paired remainder names the tile.
+	for key in dir.keys():
+		var ed: Dictionary = dir[key]
+		if str(ed["paired"]) == "":
+			continue
+		var kids_pages := 0
+		var known := true
+		for i in range(4):
+			var sib = _by_key.get((int(key) << 4) | i)
+			if sib == null:
+				known = false
+				break
+			kids_pages += int((sib as Dictionary)["pages"])
+		if not known:
+			continue
+		var tp := int(ed["paired_size"]) - kids_pages * page_size \
+			if ed.has("paired_size") else -1
+		if tp > 0 and tp % 4 == 0 and TILE_SIZES.has(tp / 4):
+			tile_bytes = tp / 4
+			tile_side = int(TILE_SIZES[tile_bytes])
+			tile_fmt = int(TILE_FMTS[tile_bytes])
+			break
+	if tile_bytes <= 0:
+		# No colour anywhere is a legal outcome: the weight pages and layers
+		# still decode, so the surface builds without a colour map rather than
+		# failing outright. tile_bytes 0 makes color_tiles return empty.
+		no_colour = true
 	return true
+
+
+# Does `residual` decompose as a prefix plus the 260²+132² mip pair?
+func _mip_fits(residual: int) -> bool:
+	for p in PREFIXES:
+		if residual - int(p) == 85024:
+			return true
+	return false
 
 
 # How many tiles a residual holds under `tb`, or -1 if no prefix decomposes it.
@@ -274,6 +372,18 @@ func _trailer_bytes(primary_size: int, pages: int) -> int:
 		return -1
 	if _trailer.has(r):
 		return int(_trailer[r])
+	# On-demand decomposition mirrors the model detect_layout settled on:
+	# constant tail, mip pair, or k tiles - in that order of specificity.
+	if _tail_const >= 0:
+		for p in PREFIXES:
+			if r - int(p) == _tail_const:
+				_trailer[r] = _tail_const
+				return _tail_const
+		return -1
+	if tile_bytes == 17424 and _mip_fits(r):
+		_trailer[r] = 85024
+		_mip[r] = true
+		return 85024
 	var k := _tiles_in(r, tile_bytes)
 	if k < 0:
 		return -1
@@ -322,6 +432,36 @@ func color_tiles(dir: Dictionary, fetch: Callable,
 		if data.size() < trailer:
 			continue
 		var start := data.size() - trailer
+		var resid := data.size() * 0      # keep typed int
+		resid = int(ed["primary_size"]) - int(nd["pages"]) * page_size
+		if _mip.has(resid):
+			# The 85,024-byte mip pair: a 260² tile with its 132² mip AFTER it.
+			# The colour slice is the small mip - the same 132² scale as the
+			# map's plain tiles - and a signature scan must not run here: every
+			# 17,424-byte window of the big tile is itself valid BC7, so the
+			# scan would happily return a quarter of the wrong-resolution image.
+			start = data.size() - tile_bytes
+		elif trailer > tile_bytes:
+			# WHICH tile of a multi-tile trailer is the colour is decided by
+			# SIGNATURE, not position. On Tungsten the colour tile is first and
+			# the second is a degenerate raster, but MAP-CAPSTONE.md shows that
+			# reading is not a law (its single tile makes first and last
+			# coincide), so a position rule is one unstudied map from wrong.
+			var best_off := 0
+			var best_frac := -1.0
+			var off := 0
+			while off + tile_bytes <= trailer:
+				var f := _mode47_frac(data, start + off)
+				if f > best_frac:
+					best_frac = f
+					best_off = off
+				off += tile_bytes
+			start += best_off
+		# The same absolute floor the paired pass applies: exact decomposition
+		# puts the boundary in the right place, but on a map whose trailer is
+		# something new this refuses to ship page bytes as a picture.
+		if not _tile_looks_real(data, start):
+			continue
 		out[int(nd["key"])] = data.slice(start, start + tile_bytes)
 	for key in dir.keys():
 		var ed: Dictionary = dir[key]
@@ -345,6 +485,30 @@ func color_tiles(dir: Dictionary, fetch: Callable,
 		if trailer < tile_bytes * 4:
 			continue
 		var base := data.size() - trailer
+		# Same signature rule for the paired trailer: the four children's colour
+		# tiles are grouped with the second raster's four after them on
+		# Tungsten, but which GROUP is the colour is decided by testing the
+		# first tile of each group of four, not by trusting the order.
+		if trailer >= tile_bytes * 8:
+			var best_g := 0
+			var best_frac := -1.0
+			var g := 0
+			while (g + 4) * tile_bytes <= trailer:
+				var f := _mode47_frac(data, base + g * tile_bytes)
+				if f > best_frac:
+					best_frac = f
+					best_g = g
+				g += 4
+			base += best_g * tile_bytes
+		# ABSOLUTE gate, not just relative: on MP_Plaza the paired chunks hold
+		# the DESCENDANT nodes' weight pages and no tiles at all, so the
+		# "trailer" computed from the four direct children's counts is really
+		# deeper pages - and slicing it ships weight pages as colour. Real
+		# tiles measure far above these floors (BC7 modes 4-7: >=0.64 on the
+		# mode-1-heavy Badlands, ~1.0 elsewhere; BC1 c0>c1: 0.99 on
+		# Contaminated) and page data far below (<=0.14 both codecs).
+		if not _tile_looks_real(data, base):
+			continue
 		for slot in range(4):
 			var ck := (int(key) << 4) | (3 - slot)
 			if out.has(ck):
@@ -352,6 +516,44 @@ func color_tiles(dir: Dictionary, fetch: Callable,
 			out[ck] = data.slice(base + slot * tile_bytes,
 				base + (slot + 1) * tile_bytes)
 	return out
+
+
+# The fraction of a tile's BC7 blocks in modes 4-7 (byte0 low nibble clear,
+# byte0 nonzero). Image tiles measure 0.86-1.00 across studied maps; the
+# degenerate second raster is mode-0-3 and measures ~0. Sampled every fourth
+# block: the two populations are far enough apart that 272 blocks of a 132
+# tile settle it, and this runs per tile on a 1,000-tile map.
+# Is the tile at `start` a plausible colour raster for the map's codec?
+# Thresholds sit in the wide gap between measured populations (see the call
+# site); a tile that fails is weight-page data wearing a tile-sized coat.
+func _tile_looks_real(d: PackedByteArray, start: int) -> bool:
+	if tile_fmt == Image.FORMAT_DXT1:
+		# BC1: opaque blocks order their two RGB565 endpoints c0 > c1. Colour
+		# tiles are ~99% ordered; page bytes land near 14%.
+		var ordered := 0
+		var n := 0
+		var b := start
+		while b + 8 <= d.size() and n < 512:
+			if d.decode_u16(b) > d.decode_u16(b + 2):
+				ordered += 1
+			n += 1
+			b += 32
+		return n > 0 and float(ordered) / float(n) >= 0.6
+	return _mode47_frac(d, start) >= 0.4
+
+
+static func _mode47_frac(d: PackedByteArray, start: int) -> float:
+	var hits := 0
+	var n := 0
+	var b := start
+	var end := start + (d.size() - start)
+	while b + 16 <= end and n < 512:
+		var b0 := int(d[b])
+		if b0 != 0 and (b0 & 0x0F) == 0:
+			hits += 1
+		n += 1
+		b += 64
+	return float(hits) / maxf(1.0, float(n))
 
 
 # ---------------------------------------------------------------------------
@@ -603,7 +805,7 @@ func assemble_colors(tiles: Dictionary, size: int) -> Image:
 	var apron := 2
 	for k in keys:
 		var bc := Image.create_from_data(tile_side, tile_side, false,
-			Image.FORMAT_BPTC_RGBA, tiles[k])
+			tile_fmt, tiles[k])
 		if bc == null or bc.decompress() != OK:
 			continue
 		bc.convert(Image.FORMAT_RGBA8)
