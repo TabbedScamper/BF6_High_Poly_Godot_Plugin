@@ -749,6 +749,28 @@ static func geom_epoch() -> int:
 # `want` names the MAP-CONTEXT work. {"placements": false} opens the install for
 # skinning the objects the user placed and nothing else, which is all Detail Mode
 # needs. Absent means build everything, so existing callers are unchanged.
+# WHICH STAGE FAILED, AND WHAT THE MACHINE HAD LEFT WHEN IT DID.
+#
+# "could not read <map> from the install" was one message covering five
+# completely different failures - no install, the mount, no bf6.exe, the type
+# database, the placement walk - and it named none of them. A user reporting it
+# for one map could not be answered at all, because the same sentence is
+# printed whether their game is missing that map's archives or whether the
+# editor simply had no memory left to mount them.
+#
+# The free-memory figure is here because that second case is real and looks
+# identical from outside: the read allocates while it mounts, and a machine
+# down to its last few hundred MB fails somewhere in the middle of that with
+# whatever error the failing allocation happened to produce. A report that says
+# "mounting the level's archives" next to "410 MB free" answers itself.
+static func _fail(stage: String, why: String) -> String:
+	var mem := OS.get_memory_info()
+	var free_mb := int(mem.get("free", 0)) / 1048576
+	var heap_mb := int(OS.get_static_memory_usage()) / 1048576
+	return "%s: %s  [%d MB RAM free, %d MB held by the editor]" % [
+		stage, why, free_mb, heap_mb]
+
+
 func open_map(map: String, game_dir := "", progress := Callable(),
 		want := {}) -> bool:
 	error = ""
@@ -767,7 +789,7 @@ func open_map(map: String, game_dir := "", progress := Callable(),
 	var t := Time.get_ticks_msec()
 	src = BF6Source.new()
 	if not src.open(game_dir):
-		error = src.error
+		error = _fail("finding the install", src.error)
 		return false
 	if progress.is_valid():
 		progress.call(ST_MOUNT, 0, 0)
@@ -775,7 +797,7 @@ func open_map(map: String, game_dir := "", progress := Callable(),
 			if progress.is_valid():
 				progress.call(ST_MOUNT, tocs, paths),
 			true, 0, catalogue_mount):
-		error = src.last_error()
+		error = _fail("mounting the level's archives", src.last_error())
 		return false
 	# COUNTED IN BUNDLES, not in seconds alone. The mount is a sweep over every
 	# bundle in every mounted TOC, so bundles is the denominator that makes two
@@ -800,10 +822,11 @@ func open_map(map: String, game_dir := "", progress := Callable(),
 			exe = c
 			break
 	if exe == "":
-		error = "no bf6.exe under %s — the type layouts live in it" % src.game
+		error = _fail("finding the type database",
+			"no bf6.exe under %s — the type layouts live in it" % src.game)
 		return false
 	if not types.open(exe):
-		error = types.error
+		error = _fail("reading the type database", types.error)
 		return false
 	# WHICH EXE WON, recorded because it is a real choice with consequences and
 	# the log never said. SP and MP carry DIFFERENT type databases, and picking
@@ -899,7 +922,8 @@ func open_map(map: String, game_dir := "", progress := Callable(),
 			walk.progress = func(found: int, _seen: int):
 				progress.call(ST_WALK, found, 0)
 		if not walk.run_cached(level):
-			error = str(walk.stats.get("error", "the placement walk produced nothing"))
+			error = _fail("walking the map's placements",
+				str(walk.stats.get("error", "it produced nothing")))
 			return false
 		placements_ready = true
 		var walk_cached: bool = bool(walk.stats.get("from_cache", false))

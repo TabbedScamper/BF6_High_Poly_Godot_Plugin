@@ -3838,8 +3838,16 @@ func _ensure_game_source(map: String, gen: int = -1) -> bool:
 		% [map, int(gs.timings.get("_total", 0)),
 		   "  (walk cached)" if int(gs.timings.get("_cached", 0)) == 1 else ""])
 	if not ok_g:
-		HighpolyLog.warn("map context: could not read %s from the install (%s)"
+		# The stage and the machine's free memory come with gs.error now (see
+		# HighpolyGameSource._fail). A read that fails part-way through mounting
+		# on a machine with a few hundred MB left is not the same complaint as a
+		# map whose archives are absent, and this line used to read identically
+		# for both.
+		HighpolyLog.warn("map context: could not read %s from the install — %s"
 			% [map, gs.error])
+		HighpolyLog.warn("  if the free-memory figure above is small, this is the "
+			+ "editor running out rather than anything wrong with your game: "
+			+ "restart it and open this map first, before any other.")
 		return false
 	mapctx.game_source = gs
 	# The object library reads from the same source: a placed object is
