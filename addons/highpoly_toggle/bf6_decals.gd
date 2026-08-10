@@ -56,6 +56,7 @@ var vb_start := 0
 var vb_size := 0
 var chain_ok := true
 var truncated_at := -1
+var format := ""                        # "fixed-header" or "props-first"
 var anchor_ok := false
 var vb_from_anchor := false
 var total_tris := 0
@@ -107,26 +108,44 @@ func parse(d: PackedByteArray) -> bool:
 	record_count = int(d.decode_u32(p))
 	p += 4
 
-	# Record 0 is pinned by an invariant rather than by its header: its FirstIndex
-	# is 0 by definition. From record 1 on, the chain carries the frame — each
-	# record's FirstIndex must be the previous one's plus its triangle count times
-	# three, and that is what disambiguates the stray 1.0/1.0/0 patterns that
-	# occur inside long pads and property payloads.
-	var expect_first := 0
-	for i in range(record_count):
-		var got := _record(p, expect_first)
-		if got.is_empty():
-			# KEEP WHAT PARSED. A map's road network is worth having partially;
-			# ten of 23 maps truncate partway and still yield thousands of good
-			# records each, and raising here discards all of them for one bad one.
-			truncated_at = i
-			break
-		var rec: Dictionary = got["rec"]
-		p = int(got["next"])
-		if int(rec["first_index"]) != expect_first:
-			chain_ok = false
-		expect_first = int(rec["first_index"]) + int(rec["tri_count"]) * 3
-		records.append(rec)
+	# TWO RECORD FRAMINGS SHIP, and the map does not say which (MAP-*.md, task
+	# #98). The FIXED-HEADER family (badlands, plaza, and by their headers
+	# outskirts and golmud) leads each record with a 16-byte id and holds every
+	# geometry field at a constant offset, with the property stream LAST. The
+	# PROPS-FIRST family (dumbo, tungsten, aftermath, and with quirks firestorm
+	# and contaminated) is the TERRAIN.md 10.2 layout this file always parsed.
+	# The fixed walk is tried first because it is cheap and self-checking: on a
+	# props-first map its chain collapses on record 0 and the walk is rejected.
+	var fixed_recs := _parse_fixed(p)
+	if fixed_recs >= 0:
+		format = "fixed-header"
+		p = fixed_recs
+	else:
+		format = "props-first"
+		records.clear()
+		chain_ok = true
+		truncated_at = -1
+		# Record 0 is pinned by an invariant rather than by its header: its
+		# FirstIndex is 0 by definition. From record 1 on, the chain carries the
+		# frame — each record's FirstIndex must be the previous one's plus its
+		# triangle count times three, and that is what disambiguates the stray
+		# 1.0/1.0/0 patterns inside long pads and property payloads.
+		var expect_first := 0
+		for i in range(record_count):
+			var got := _record(p, expect_first)
+			if got.is_empty():
+				# KEEP WHAT PARSED. A map's road network is worth having
+				# partially; several maps truncate partway and still yield
+				# thousands of good records each, and raising here discards
+				# all of them for one bad one.
+				truncated_at = i
+				break
+			var rec: Dictionary = got["rec"]
+			p = int(got["next"])
+			if int(rec["first_index"]) != expect_first:
+				chain_ok = false
+			expect_first = int(rec["first_index"]) + int(rec["tri_count"]) * 3
+			records.append(rec)
 
 	var span := 0
 	for r in records:
@@ -143,6 +162,83 @@ func parse(d: PackedByteArray) -> bool:
 	if a + 8 <= d.size():
 		anchor_ok = int(d.decode_u32(a)) == 4 and int(d.decode_u32(a + 4)) == 0
 	return not records.is_empty()
+
+
+# ---------------------------------------------------------------------------
+# THE FIXED-HEADER RECORD FAMILY (measured on badlands 628/628 and plaza
+# 485/485, docs/MAP-BADLANDS.md and MAP-PLAZA.md):
+#
+#   +0x00  16 B  record id (a material-group hash on badlands, the decal-asset
+#                GUID on plaza — where it joins the slot table by VALUE)
+#   +0x20  u32   FirstIndex        +0x24  u32  TriCount
+#   +0x2C  f32   Tiling0           +0x30  f32  Tiling1
+#   +0x40  f32x3 AabbMin           +0x50  f32x3 AabbMax
+#   +0x90  the anchor row (f32 1.0, +0x14 f32 1.0, +0x18 u64 0)
+#   +0x98  u32 slot   +0x9C u32 vbOff   +0xA0 u32 vbSize
+#   +0xB0  u32 propSize, then the same 10.3 property grammar; next record at
+#          +0xB4 + propSize
+#
+# Walked WITHOUT scanning — every field at a constant offset — and validated by
+# the same FirstIndex chain as the other family. Rejection is the detector: a
+# props-first map read this way breaks the chain immediately, and a walk below
+# 90% chain integrity or overrunning the stream returns -1 so the caller falls
+# back. Returns the stream-end offset on success.
+# ---------------------------------------------------------------------------
+const FIXED_GEO := 0xB0
+
+func _parse_fixed(start: int) -> int:
+	var p := start
+	var out: Array = []
+	var expect_first := 0
+	var chain_hits := 0
+	# Plaza joins records to the slot table by GUID value; build the index once.
+	var slot_by_guid := {}
+	for i in range(slots.size()):
+		var g: PackedByteArray = slots[i]
+		if not g.is_empty():
+			slot_by_guid[g.hex_encode()] = i
+	for i in range(record_count):
+		if p + FIXED_GEO + 4 > data.size():
+			return -1
+		var first := int(data.decode_u32(p + 0x20))
+		var tri := int(data.decode_u32(p + 0x24))
+		var psize := int(data.decode_u32(p + 0xB0))
+		if tri <= 0 or tri > 2000000 or psize < 0 or psize > 0x8000 \
+				or p + FIXED_GEO + 4 + psize > data.size():
+			return -1
+		if first == expect_first:
+			chain_hits += 1
+		elif i * 10 > record_count and chain_hits * 10 < i * 9:
+			return -1                  # the chain is not holding: wrong family
+		var slot := int(data.decode_u32(p + 0x98))
+		if slot >= slots.size():
+			# 65535 sentinel or the plaza value-join: resolve via the record id
+			slot = int(slot_by_guid.get(data.slice(p, p + 16).hex_encode(), slot))
+		var props := {}
+		if psize > 0:
+			_props(p + 0xB0 + 8, p + 0xB0 + 4 + psize, props)
+		out.append({
+			"first_index": first,
+			"tri_count": tri,
+			"tiling0": data.decode_float(p + 0x2C),
+			"tiling1": data.decode_float(p + 0x30),
+			"aabb_min": Vector3(data.decode_float(p + 0x40),
+				data.decode_float(p + 0x44), data.decode_float(p + 0x48)),
+			"aabb_max": Vector3(data.decode_float(p + 0x50),
+				data.decode_float(p + 0x54), data.decode_float(p + 0x58)),
+			"asset_slot": slot,
+			"vb_off": int(data.decode_u32(p + 0x9C)),
+			"vb_size": int(data.decode_u32(p + 0xA0)),
+			"props": props,
+			"prop_size": psize,
+		})
+		expect_first = first + tri * 3
+		p += FIXED_GEO + 4 + psize
+	if out.size() < record_count or chain_hits * 10 < out.size() * 9:
+		return -1
+	records = out
+	chain_ok = chain_hits == out.size()
+	return p
 
 
 # Scan the tail for the `u32 4, u32 0` VB-end landmark and return the implied VB
@@ -204,6 +300,15 @@ func _record(p: int, expect_first: int) -> Dictionary:
 # FirstIndex says what this one's must be, PREFER the candidate that matches —
 # a false anchor almost never lands on the exact expected value, so this locks
 # the frame instead of drifting.
+#
+# STEPPED ONE BYTE, not four: MAP-FIRESTORM.md measured odd propSizes, which
+# put every later tail on an unaligned offset a 4-byte scan can never land on.
+#
+# AND A CHAIN-LOCKED SECOND PASS: on MAP-CONTAMINATED.md the transform region
+# stops being identity-shaped at record 336 of 1053, so the 1.0/1.0 pattern
+# simply is not there. When the anchor pass finds nothing and the chain says
+# what FirstIndex must be, the tail is found by that value directly, sanity-
+# checked by TriCount and both tilings — 1053/1053 on the map that proved it.
 func _find_anchor(prop_end: int, expect_first: int) -> int:
 	var lim: int = mini(prop_end + ANCHOR_WINDOW, data.size() - 0x20)
 	var first_any := -1
@@ -219,7 +324,19 @@ func _find_anchor(prop_end: int, expect_first: int) -> int:
 					return q
 				if int(data.decode_u32(t)) == expect_first:
 					return q
-		q += 4
+		q += 1
+	if expect_first >= 0:
+		q = prop_end
+		while q <= lim:
+			if int(data.decode_u32(q)) == expect_first:
+				var tri := int(data.decode_u32(q + 4))
+				var t0 := absf(data.decode_float(q + 0x0C))
+				var t1 := absf(data.decode_float(q + 0x10))
+				if tri > 0 and tri < 2000000 \
+						and t0 > 0.001 and t0 < 10000.0 \
+						and t1 > 0.001 and t1 < 10000.0:
+					return q + 0x70    # q IS the tail t; M sits 0x70 past it
+			q += 1
 	return first_any
 
 
@@ -331,7 +448,7 @@ static func _all_zero(b: PackedByteArray) -> bool:
 
 func stats() -> Dictionary:
 	return {"records": records.size(), "declared": record_count,
-		"slots": slots.size(), "triangles": total_tris,
+		"slots": slots.size(), "triangles": total_tris, "format": format,
 		"chain_ok": chain_ok, "anchor_ok": anchor_ok,
 		"vb_from_anchor": vb_from_anchor, "truncated_at": truncated_at,
 		"vb_start": vb_start, "vb_size": vb_size}
