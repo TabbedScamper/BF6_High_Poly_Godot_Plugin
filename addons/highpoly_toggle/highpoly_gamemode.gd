@@ -306,7 +306,14 @@ static func _make(gm: Node3D, root: Node, o: Dictionary, failed: Dictionary) -> 
 		# forces its own rotation to Y only, so the points go in as world XZ.
 		var pts := _world_points(o["points"] as Array, xf)
 		var c := _centre(pts)
-		n.global_position = c if n.is_inside_tree() else c
+		# global_position asserts when the node is not in a tree yet and quietly
+		# returns identity; the mode node hangs off the level root, which sits at
+		# the origin in every SDK level, so the local position is the world one
+		# either way
+		if n.is_inside_tree():
+			n.global_position = c
+		else:
+			n.position = c
 		var poly := _polygon(root, pts, c, float(o.get("height", 0.0)), kind)
 		if poly != null:
 			n.add_child(poly)
