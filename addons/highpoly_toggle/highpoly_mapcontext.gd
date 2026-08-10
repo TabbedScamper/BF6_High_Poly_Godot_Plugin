@@ -28,6 +28,11 @@ const PROPS_CACHE := "user://mapcontext/_props"
 var _active := false               # Map Context enabled at all
 var _show_objects := false         # original map objects (props) layer on
 var _show_backdrop := false        # distant skyline / out-of-bounds vista layer on
+# Roads default to ON, unlike the two above: they arrived with Extended Terrain
+# for the whole of this plugin's life and taking that away by default would be a
+# change nobody asked for. Remembered so a rebuild does not bring them back
+# after they have been switched off.
+var _show_roads := true
 var _show_water := false           # rivers / sea layer on
 # Set by the dock from its own toggles, because the light and FX layers are
 # switched independently of apply() and this object cannot see those buttons.
@@ -3543,6 +3548,11 @@ func apply(root: Node, enabled: bool, show_objects: bool, tex = true,
 	# still drives its ripple speed either way: apply_shader_prefs walks the whole
 	# overlay, so the plane picks the pref up wherever it is parented.
 	if _roads_from != "":
+		# The chip's state survives a rebuild: whichever branch above placed the
+		# node, it starts hidden if that is how the user left it.
+		var _rd := ctx.get_node_or_null("Roads")
+		if _rd is Node3D:
+			(_rd as Node3D).visible = _show_roads
 		_ph("roads: place the street mesh", Time.get_ticks_msec() - _t_roads,
 			1, _roads_from)
 	if water:
@@ -5262,6 +5272,45 @@ func set_backdrop_shown(root: Node, on: bool, tex_mode := -1) -> bool:
 	_show_backdrop = on
 	(bd as Node3D).visible = on
 	return true
+
+
+# Roads and street markings, on their own switch.
+#
+# These are baked from the level's TerrainDecals and draped on the heightfield,
+# and they used to follow Extended Terrain on the reasoning written a few
+# hundred lines up: "without them the map is bare dirt where the street network
+# should be". True, and not the whole story - they are also the thing you want
+# OFF while laying out your own paths and arrays over the ground, and there was
+# no way to do that short of losing the terrain along with them.
+#
+# Pure visibility, like the objects and backdrop chips: the mesh is already
+# built, so this never triggers a rebuild. False means there is no Roads node -
+# either the terrain has not been built yet or this map has no street network -
+# and the caller says which rather than treating it as a failure.
+func set_roads_shown(root: Node, on: bool) -> bool:
+	_show_roads = on
+	if root == null: return false
+	var ctx := root.get_node_or_null(NODE)
+	if ctx == null: return false
+	var rd := ctx.get_node_or_null("Roads")
+	if rd == null: return false
+	(rd as Node3D).visible = on
+	return true
+
+
+func has_roads(root: Node) -> bool:
+	if root == null: return false
+	var ctx := root.get_node_or_null(NODE)
+	return ctx != null and ctx.get_node_or_null("Roads") != null
+
+
+# Is the ground itself built? Asked so "no roads" can be told apart from "no
+# terrain yet" - the two look identical from the Roads chip and need different
+# things from the user.
+func has_terrain(root: Node) -> bool:
+	if root == null: return false
+	var ctx := root.get_node_or_null(NODE)
+	return ctx != null and ctx.get_node_or_null("Terrain") != null
 
 
 # Fast path for the "Show whole map" toggle: hide/show the already-built

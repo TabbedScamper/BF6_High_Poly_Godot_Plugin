@@ -95,6 +95,7 @@ var mapctx_on: Button        # Map Context enabled
 var mapctx_objects: Button   # show original map objects (lives under Detail Mode)
 var mapctx_backdrop: Button  # show the distant skyline / out-of-bounds vista
 var mapctx_water: Button     # show the level's rivers / harbour / sea
+var mapctx_roads: Button     # the street network baked onto the ground
 var _detail_chips: Node      # Detail Mode's chip row (hosts "Original map objects")
 var mapctx_range: HSlider      # object render distance; 0 = objects off, 3500 = no culling
 var mapctx_range_val: Label    # live "%dm" / "No Culling" readout next to the slider
@@ -847,6 +848,32 @@ All of it is read from your own Battlefield 6 installation."
 			return
 		_mapctx_changed())
 	mc_chips.add_child(mapctx_water)
+
+	# ROADS, SEPARATED FROM THE GROUND THEY SIT ON.
+	#
+	# They came in with Extended Terrain because a map without them is bare dirt
+	# where the street network should be. That reasoning holds for looking at the
+	# map and not for building on it: laying your own paths and arrays over the
+	# ground means wanting the ground and not the streets painted on it, and the
+	# only way to get that was to lose the terrain too.
+	#
+	# Starts checked, because that is how this has always behaved.
+	mapctx_roads = Theme_.chip("Roads and paths")
+	mapctx_roads.set_pressed_no_signal(true)
+	mapctx_roads.tooltip_text = "The street network and its markings, baked from the level's own terrain decals and draped on the ground. Part of Extended Terrain until now; switch it off to see the bare ground while you lay out your own paths and arrays over it. Hiding costs nothing and never rebuilds."
+	mapctx_roads.toggled.connect(func(v: bool):
+		if _locked(mapctx_roads): return
+		var r0 := EditorInterface.get_edited_scene_root()
+		if mapctx.set_roads_shown(r0, v):
+			lbl.text = "Roads " + ("shown" if v else "hidden")
+			_save_mapctx_state()
+			return
+		# No Roads node. Two different situations, and saying which saves a
+		# report: the ground is not built yet, or this map has no streets.
+		lbl.text = ("Turn Extended Terrain on first — the roads are built with it"
+			if not mapctx.has_terrain(r0)
+			else "This map has no road network to show"))
+	mc_chips.add_child(mapctx_roads)
 
 	mapctx_objects = Theme_.chip("Original map objects")
 	mapctx_objects.tooltip_text = "Swaps the level's shipped assets for the real per-object geometry, so you get the actual buildings, vehicles and clutter instead of the single merged mesh the SDK ships. The merged one is hidden while this is on and comes back exactly as you left it when you turn it off. How they look follows the Detail Mode above; the Range slider in Map Context sets how far away you can still see them."
@@ -1803,6 +1830,7 @@ func _settings_snapshot() -> PackedStringArray:
 	out.append("%-22s %s" % ["map objects", yn.call(mapctx_objects)])
 	out.append("%-22s %s" % ["skyline", yn.call(mapctx_backdrop)])
 	out.append("%-22s %s" % ["water", yn.call(mapctx_water)])
+	out.append("%-22s %s" % ["roads and paths", yn.call(mapctx_roads)])
 	out.append("%-22s %s" % ["fx", yn.call(mapctx_fx)])
 	out.append("%-22s %s" % ["lighting", yn.call(mapctx_light)])
 	out.append("%-22s %s" % ["  sdfgi + ssao", yn.call(mapctx_gi)])
@@ -3161,6 +3189,10 @@ func _check_scene_change() -> void:
 	# would claim a skyline and a sea that the new scene has not built
 	if mapctx_backdrop: mapctx_backdrop.set_pressed_no_signal(false)
 	if mapctx_water: mapctx_water.set_pressed_no_signal(false)
+	# back to ON, not off, because that is this chip's default everywhere else
+	if mapctx_roads:
+		mapctx_roads.set_pressed_no_signal(true)
+		if mapctx: mapctx.set_roads_shown(null, true)
 	if mapctx_light: mapctx_light.set_pressed_no_signal(false)
 	if mapctx_fx:
 		mapctx_fx.set_pressed_no_signal(false)
@@ -3653,6 +3685,10 @@ func _save_mapctx_state() -> void:
 		"objects": mapctx_objects.button_pressed,
 		"backdrop": mapctx_backdrop.button_pressed if mapctx_backdrop else false,
 		"water": mapctx_water.button_pressed if mapctx_water else false,
+		# defaults TRUE on read, unlike the other chips: roads shipped with
+		# Extended Terrain for this plugin's whole life, so a saved state from
+		# before this chip existed has to restore them shown.
+		"roads": mapctx_roads.button_pressed if mapctx_roads else true,
 		"range": mapctx_range.value if mapctx_range else 800.0,
 		"maptile": false,      # the SDK plugin owns the ground texture now
 		"light": mapctx_light.button_pressed if mapctx_light else false,
@@ -3730,6 +3766,14 @@ func _restore_mapctx_state() -> void:
 		mapctx_backdrop.set_pressed_no_signal(bool(d.get("backdrop", false)))
 	if mapctx_water:
 		mapctx_water.set_pressed_no_signal(bool(d.get("water", false)))
+	# TRUE by default, and pushed into the map context by hand:
+	# set_pressed_no_signal skips the handler, so without this the chip would
+	# read "on" while the build had already hidden the node (or the reverse).
+	if mapctx_roads:
+		var _rd_on := bool(d.get("roads", true))
+		mapctx_roads.set_pressed_no_signal(_rd_on)
+		if mapctx: mapctx.set_roads_shown(
+			EditorInterface.get_edited_scene_root(), _rd_on)
 	if mapctx_gi: mapctx_gi.set_pressed_no_signal(bool(d.get("gi", true)))
 	if mapctx_shadows: mapctx_shadows.set_pressed_no_signal(bool(d.get("shadows", true)))
 	if mapctx_maplights: mapctx_maplights.set_pressed_no_signal(bool(d.get("maplights", false)))
