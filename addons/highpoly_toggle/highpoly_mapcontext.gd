@@ -1113,7 +1113,10 @@ void splat_texel(ivec2 t, vec2 wxz, vec3 fb_a, vec3 fb_n,
 					// it look like satellite imagery pasted on the ground.
 					// At 1 it is the sharp raster. One textureLod, blended
 					// by the Ground photo slider.
-					float soft = max(floor(log2(float(textureSize(colormap, 0).x))) - 7.0, 0.0);
+					// floor at ~16 m regions, not 64: streets and blocks stay distinct
+					// at 0%% without the aerial-photo detail - 64 m blobs read
+					// as a blurry mess, reported in exactly those words
+					float soft = max(floor(log2(float(textureSize(colormap, 0).x))) - 9.0, 0.0);
 					vbase = textureLod(colormap, vcu,
 						mix(soft, 0.0, clamp(cmap_strength, 0.0, 1.0))).rgb;
 					pacc += wi;    // this share is ALREADY photo-coloured
@@ -1178,7 +1181,10 @@ void splat_texel_n(ivec2 t, vec2 wxz, vec3 fb_a, vec3 fb_n,
 					// it look like satellite imagery pasted on the ground.
 					// At 1 it is the sharp raster. One textureLod, blended
 					// by the Ground photo slider.
-					float soft = max(floor(log2(float(textureSize(colormap, 0).x))) - 7.0, 0.0);
+					// floor at ~16 m regions, not 64: streets and blocks stay distinct
+					// at 0%% without the aerial-photo detail - 64 m blobs read
+					// as a blurry mess, reported in exactly those words
+					float soft = max(floor(log2(float(textureSize(colormap, 0).x))) - 9.0, 0.0);
 					vbase = textureLod(colormap, vcu,
 						mix(soft, 0.0, clamp(cmap_strength, 0.0, 1.0))).rgb;
 					pacc += wi;    // this share is ALREADY photo-coloured
