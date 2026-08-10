@@ -330,6 +330,49 @@ static func impact(names: Array, geom_changed := true) -> String:
 	return "code"
 
 
+# AN OLD INSTANCE RUNNING NEW CODE, healed. A hot-swap replaces the CODE on a
+# living object but does not run the new script's initializers on it, so a
+# member the update ADDED reads null on the live instance where a fresh one
+# would hold its default ({} for the caches, almost always). The next material
+# build then dies on `.has()` of null, and every prop dresses white - a user
+# hit exactly that after an update that grew highpoly_gamesource by three
+# cache dictionaries, and it looked like a giant regression when it was one
+# uninitialized member. Copying the script default into any live member that
+# is null-where-the-default-is-not is idempotent, and the one case it could
+# overreach - a member DEFAULTED non-null that code intentionally nulled - is
+# a cache reset, not a break.
+# The defaults come from a throwaway FRESH instance of the same script -
+# Script.get_property_default_value answers null outside the editor's own
+# resource path, but a fresh instance ran the new initializers by
+# construction. Instantiated lazily (only when a null member is found) and
+# freed when it is a Node; RefCounted frees itself.
+static func heal_new_members(live) -> int:
+	if live == null or not is_instance_valid(live):
+		return 0
+	var sc: Script = live.get_script()
+	if sc == null or not sc.can_instantiate():
+		return 0
+	var healed := 0
+	var fresh = null
+	for p in sc.get_script_property_list():
+		var nm := str(p.get("name", ""))
+		if nm == "":
+			continue
+		if live.get(nm) != null:
+			continue
+		if fresh == null:
+			fresh = sc.new()
+			if fresh == null:
+				return healed
+		var d = fresh.get(nm)
+		if d != null:
+			live.set(nm, d)
+			healed += 1
+	if fresh != null and fresh is Node:
+		(fresh as Node).free()
+	return healed
+
+
 # Everything the plugin holds that was DERIVED from the code, dropped so the
 # next look at it is computed by the new code.
 #

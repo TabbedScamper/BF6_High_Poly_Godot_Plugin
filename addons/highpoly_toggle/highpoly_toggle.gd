@@ -2373,6 +2373,20 @@ func _hot_reload() -> bool:
 		return true
 
 	var what := HighpolyReload.impact(names, geom_changed)
+	# HEAL THE LIVING INSTANCES FIRST, before anything re-dresses through them.
+	# A swap replaces code but never runs the new initializers on an existing
+	# object, so a member the update ADDED is null on every live instance - and
+	# the very next material build dies on it, dressing the whole map white.
+	# (That exact regression shipped once; see HighpolyReload.heal_new_members.)
+	var _gs0 = mapctx.game_source if mapctx != null else null
+	var _healed := 0
+	for o in [mapctx, _gs0,
+			(_gs0.src if _gs0 != null else null),
+			(_gs0.walk if _gs0 != null else null),
+			previews, jobs]:
+		_healed += HighpolyReload.heal_new_members(o)
+	if _healed > 0:
+		Log.info("Initialized %d member(s) the update added on live objects" % _healed)
 	# REFRESH WHAT IS CHEAP TO RE-ASK, and nothing else.
 	#
 	# map_data holds answers derived from the install, and a reader fix cannot
