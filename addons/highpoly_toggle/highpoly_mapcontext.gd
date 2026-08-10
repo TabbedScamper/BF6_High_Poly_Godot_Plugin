@@ -998,10 +998,10 @@ const TEXTURED_LAYER := HighpolyLib.TEXTURED_LAYER
 const TERRAIN_SHADER := """
 shader_type spatial;
 render_mode cull_disabled;
-uniform sampler2D ground_alb : source_color, filter_linear_mipmap;
-uniform sampler2D ground_nrm : filter_linear_mipmap;
-uniform sampler2D cliff_alb : source_color, filter_linear_mipmap;
-uniform sampler2D cliff_nrm : filter_linear_mipmap;
+uniform sampler2D ground_alb : source_color, filter_linear_mipmap_anisotropic;
+uniform sampler2D ground_nrm : filter_linear_mipmap_anisotropic;
+uniform sampler2D cliff_alb : source_color, filter_linear_mipmap_anisotropic;
+uniform sampler2D cliff_nrm : filter_linear_mipmap_anisotropic;
 uniform float tile_scale = 4.0;          // world metres per detail-texture repeat
 uniform float detail_strength = 0.5;
 uniform float normal_strength = 0.7;
@@ -1013,9 +1013,9 @@ uniform float slope_hi = 0.70;
 uniform int splat_slices = 0;            // layer_alb/layer_nrm slice count
 uniform vec4 splat_bounds;               // xmin, zmin, sizeX, sizeZ (world)
 uniform sampler2D splat_idx : filter_nearest, repeat_disable;  // top-4 table idx (x255)
-uniform sampler2D splat_w : filter_linear, repeat_disable;     // top-4 weights (sum=1)
-uniform sampler2DArray layer_alb : source_color, filter_linear_mipmap, repeat_enable;
-uniform sampler2DArray layer_nrm : filter_linear_mipmap, repeat_enable;
+uniform sampler2D splat_w : filter_nearest, repeat_disable;    // top-4 weights (sum=1)
+uniform sampler2DArray layer_alb : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2DArray layer_nrm : filter_linear_mipmap_anisotropic, repeat_enable;
 uniform float layer_scale[32];           // world metres per repeat, per slice
 // THE GAME'S OWN TERRAIN COLOUR MAP (TERRAIN.md 5.3): one BC7 tile per
 // streaming-tree node, read out of the player's install and assembled here. The
@@ -1026,7 +1026,7 @@ uniform float layer_scale[32];           // world metres per repeat, per slice
 // redistributed and painted over their own decal's job; this is the engine's
 // own input, covers the whole footprint instead of the playable bowl, and never
 // leaves the machine it was read on.
-uniform sampler2D colormap : source_color, filter_linear_mipmap, repeat_disable;
+uniform sampler2D colormap : source_color, filter_linear_mipmap_anisotropic, repeat_disable;
 uniform vec4 cmap_bounds;                // xmin, zmin, sizeX, sizeZ (world)
 uniform bool use_colormap = false;
 uniform float cmap_strength = 1.0;
@@ -1035,6 +1035,40 @@ varying vec3 wnorm;
 void vertex() {
 	wpos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 	wnorm = normalize((MODEL_MATRIX * vec4(NORMAL, 0.0)).xyz);
+}
+// One splat texel's exact layer blend: 4 table indices + 4 weights, each layer
+// tiling at its own authored rate. Reads the uniforms directly - the shading
+// language does not take sampler parameters, and it does not need to.
+void splat_texel(ivec2 t, vec2 wxz, vec3 fb_a, vec3 fb_n,
+		out vec3 oa, out vec3 on) {
+	ivec2 ts = textureSize(splat_idx, 0);
+	t = clamp(t, ivec2(0), ts - ivec2(1));
+	vec4 sid = texelFetch(splat_idx, t, 0) * 255.0;
+	vec4 sw = texelFetch(splat_w, t, 0);
+	vec3 acc = vec3(0.0);
+	vec3 nacc = vec3(0.0);
+	float tot = 0.0;
+	for (int i = 0; i < 4; i++) {
+		float wi = sw[i];
+		if (wi < 0.004) { continue; }
+		int id = int(sid[i] + 0.5);
+		if (id < splat_slices) {
+			vec2 luv = wxz / max(layer_scale[id], 0.01);
+			acc += wi * texture(layer_alb, vec3(luv, float(id))).rgb;
+			nacc += wi * texture(layer_nrm, vec3(luv, float(id))).rgb;
+		} else {
+			acc += wi * fb_a;      // unpackaged layer: slope fallback
+			nacc += wi * fb_n;
+		}
+		tot += wi;
+	}
+	if (tot > 0.01) {
+		oa = acc / tot;
+		on = nacc / tot;
+	} else {
+		oa = fb_a;
+		on = fb_n;
+	}
 }
 void fragment() {
 	// slope-selected tiling ground detail â€” the legacy heuristic, kept as the
@@ -1047,41 +1081,33 @@ void fragment() {
 	vec3 det = fb_alb;
 	vec3 nrm = fb_nrm;
 	if (splat_slices > 0) {
-		// exact per-texel layer blend: 4 table indices (nearest) + 4 weights
-		// (linear â€” weights fall to 0 where indices change, hiding idx seams)
+		// EXACT LAYER BLEND, BILINEAR ACROSS TEXELS. The index texture cannot
+		// be filtered (a blend of table indices is garbage), so the old path
+		// sampled one nearest texel and every layer boundary was a stair-step
+		// at the splat raster's texel size - 4 m on an 8 km map, which is the
+		// "pixelated ground" a user reported. Filtering has to happen on the
+		// RESULTS: blend each of the four surrounding texels exactly, then mix
+		// the four finished colours with the bilinear weights. Boundaries
+		// become one-texel gradients instead of steps, at any raster size.
+		// (EACH LAYER TILES AT ITS OWN RATE inside splat_texel: the layer
+		// graph's 0x5707A992 constant, 4-50 m per repeat on dumbo. The four
+		// taps mostly reference the SAME layers, so the extra array samples
+		// land in the texture cache rather than in the frame time.)
 		vec2 suv = vec2((wpos.x - splat_bounds.x) / splat_bounds.z,
 		                (wpos.z - splat_bounds.y) / splat_bounds.w);
 		if (suv.x >= 0.0 && suv.x <= 1.0 && suv.y >= 0.0 && suv.y <= 1.0) {
-			vec4 sid = texture(splat_idx, suv) * 255.0;
-			vec4 sw = texture(splat_w, suv);
-			vec3 acc = vec3(0.0);
-			vec3 nacc = vec3(0.0);
-			float tot = 0.0;
-			for (int i = 0; i < 4; i++) {
-				float wi = sw[i];
-				if (wi < 0.004) { continue; }
-				int id = int(sid[i] + 0.5);
-				if (id < splat_slices) {
-					// EACH LAYER TILES AT ITS OWN RATE. The layer-graph depot
-					// carries a UV tiling constant per layer (0x5707A992,
-					// repeats per metre) and dumbo's spread from 4 m to 50 m
-					// per repeat. Tiling them all at one rate makes the 50 m
-					// layers look like a pattern and the 4 m ones look like
-					// mud, which is the visible difference between the game's
-					// numbers and an invented one.
-					vec2 luv = wpos.xz / max(layer_scale[id], 0.01);
-					acc += wi * texture(layer_alb, vec3(luv, float(id))).rgb;
-					nacc += wi * texture(layer_nrm, vec3(luv, float(id))).rgb;
-				} else {
-					acc += wi * fb_alb;      // unpackaged layer: slope fallback
-					nacc += wi * fb_nrm;
-				}
-				tot += wi;
-			}
-			if (tot > 0.01) {
-				det = acc / tot;
-				nrm = nacc / tot;
-			}
+			vec2 tsz = vec2(textureSize(splat_idx, 0));
+			vec2 fpos = suv * tsz - 0.5;
+			ivec2 t00 = ivec2(floor(fpos));
+			vec2 fr = fract(fpos);
+			vec3 a00; vec3 n00; vec3 a10; vec3 n10;
+			vec3 a01; vec3 n01; vec3 a11; vec3 n11;
+			splat_texel(t00, wpos.xz, fb_alb, fb_nrm, a00, n00);
+			splat_texel(t00 + ivec2(1, 0), wpos.xz, fb_alb, fb_nrm, a10, n10);
+			splat_texel(t00 + ivec2(0, 1), wpos.xz, fb_alb, fb_nrm, a01, n01);
+			splat_texel(t00 + ivec2(1, 1), wpos.xz, fb_alb, fb_nrm, a11, n11);
+			det = mix(mix(a00, a10, fr.x), mix(a01, a11, fr.x), fr.y);
+			nrm = mix(mix(n00, n10, fr.x), mix(n01, n11, fr.x), fr.y);
 		}
 	}
 	// THE GROUND IS THE GAME'S OWN MATERIALS, and nothing else.
@@ -1196,6 +1222,12 @@ func _splat_set(map: String) -> Dictionary:
 						im.resize(side, side, Image.INTERPOLATE_LANCZOS)
 						resized += 1
 					im.generate_mipmaps()
+					# S3TC, mips included. The slices doubled to 1024 px for
+					# close-up detail (SPLAT_VERSION 4); raw RGB8 that would be
+					# 4x the resident memory of the old 512s, compressed it is
+					# a quarter of it. The colour map takes the same trade a
+					# few lines down, and for the same reason.
+					im.compress(Image.COMPRESS_S3TC, Image.COMPRESS_SOURCE_GENERIC)
 			if resized > 0:
 				Log.info("%s terrain: %d splat layer image(s) were not %dx%d and were rescaled to match"
 					% [map, resized, side, side])

@@ -1744,7 +1744,23 @@ func terrain(cache_dir: String) -> Dictionary:
 # ALL OF IT IS CACHED. The composite is ~40 s of GDScript, once per map, into
 # the same per-map cache directory the heightfield goes to, in exactly the
 # layout the terrain shader's splat path already reads.
-const SURFACE_RES := 2048              # splat raster side
+# The splat raster TARGETS A TEXEL DENSITY rather than a fixed side. 2048 on
+# an 8 km map is 4 m per texel, and 4 m stair-steps at every layer boundary is
+# the "pixelated ground" a user reported; the game's own weight pages are
+# denser than that (per-node pages, ~1 m native), so the resolution was ours,
+# not the data's. 2 m per texel, capped: a 4 km map stays at 2048 and an 8 km
+# map doubles to 4096. The cap is VRAM - idx+w at 4096 are 128 MB resident
+# against 32 at 2048, and 8192 would be half a gigabyte for one map.
+const SURFACE_RES_MIN := 2048
+const SURFACE_RES_MAX := 4096
+const SURFACE_M_PER_TEXEL := 2.0
+
+static func _surface_res_for(world_size: float) -> int:
+	var want := int(world_size / SURFACE_M_PER_TEXEL)
+	var side := SURFACE_RES_MIN
+	while side < want and side < SURFACE_RES_MAX:
+		side *= 2
+	return side
 const COLOR_RES := 4096                # colour map side (~2 m per texel on a 8 km map)
 # Bumped whenever the colour map is DECODED differently, so an existing cache
 # is rebuilt instead of serving the previous interpretation forever.
@@ -1761,8 +1777,15 @@ const CMAP_VERSION := 2
 #      end-relative, which on the block-2 water maps (tungsten, eastwood,
 #      isolated) read the WATER HEIGHTFIELD as weight pages on exactly the
 #      river nodes. See MAP-TUNGSTEN.md §U.
-const SPLAT_VERSION := 3
-const LAYER_TEX_DIM := 512             # per-slice detail textures; all slices must match
+#   4  the raster targets 2 m per texel (large maps bake at 4096, not 2048)
+#      and the layer slices doubled to 1024 px - same reader, sharper bake.
+const SPLAT_VERSION := 4
+# Per-slice detail textures; all slices must match. 1024 rather than 512: the
+# game's layer sheets are mostly 1024+, and at 512 the close-up ground was a
+# quarter of the detail the install holds. The loader compresses the slices to
+# S3TC before the array upload, so 1024 compressed is CHEAPER resident than
+# 512 raw was.
+const LAYER_TEX_DIM := 1024
 
 
 # Set by terrain_surface: true when it returned the cached answer without
@@ -1874,6 +1897,8 @@ func terrain_surface(cache_dir: String, force := false,
 		_say("game source: terrain surface — %s" % (sp.error if sp.error != "" else t.error))
 		return {}
 	var fetch := func(g): return src.get_chunk(str(g))
+	# The raster side for THIS map, from its world span (see _surface_res_for).
+	var sres := _surface_res_for(sp.root_max.x - sp.root_min.x)
 
 	DirAccess.make_dir_recursive_absolute(dir_splat)
 	DirAccess.make_dir_recursive_absolute("%s/terrain_layers" % cache_dir)
@@ -1936,14 +1961,14 @@ func terrain_surface(cache_dir: String, force := false,
 
 	# ---- the splat -----------------------------------------------------------
 	t0 = Time.get_ticks_msec()
-	var comp := sp.composite(chunks, fetch, SURFACE_RES, func(done: int, total: int):
+	var comp := sp.composite(chunks, fetch, sres, func(done: int, total: int):
 		if progress.is_valid():
 			progress.call(ST_SPLAT, done, total))
 	var t_splat := Time.get_ticks_msec() - t0
 	_say("game source: terrain splat composite, %.1fs" % (t_splat / 1000.0))
 	note_phase("ground: splat composite", t_splat, int(comp.get("pages", 0)),
 		"pages", FROM_INSTALL,
-		"into a %dx%d index and weight raster" % [SURFACE_RES, SURFACE_RES])
+		"into a %dx%d index and weight raster" % [sres, sres])
 	if comp.is_empty():
 		_say("game source: terrain splat — %s" % sp.error)
 		return {}
@@ -1973,7 +1998,7 @@ func terrain_surface(cache_dir: String, force := false,
 				if int((l as Dictionary)["link"]) >= 0:
 					linked.append(int((l as Dictionary)["index"]))
 			linked.sort()
-			base = mt.rasterize(SURFACE_RES, func(k): return sp.base_list(k),
+			base = mt.rasterize(sres, func(k): return sp.base_list(k),
 				sp.full_list(), linked)
 			var t_base := Time.get_ticks_msec() - t0
 			_say("game source: terrain base field, %d pairs, %d nodes, %.1fs"
@@ -1981,7 +2006,7 @@ func terrain_surface(cache_dir: String, force := false,
 			note_phase("ground: street materials", t_base, mt.nodes.size(),
 				"tree nodes", FROM_INSTALL,
 				"%d material pairs rasterised to %dx%d"
-				% [mt.pairs.size(), SURFACE_RES, SURFACE_RES])
+				% [mt.pairs.size(), sres, sres])
 		else:
 			_say("game source: terrain base field, %s" % mt.error)
 
@@ -1999,7 +2024,7 @@ func terrain_surface(cache_dir: String, force := false,
 		var li := int((l as Dictionary)["index"])
 		if pal.albedo_of(li) != "":
 			textured[li] = true
-	if base.size() == SURFACE_RES * SURFACE_RES:
+	if base.size() == sres * sres:
 		var idx0: PackedByteArray = comp["idx"]
 		var wgt0: PackedByteArray = comp["w"]
 		var placed := 0
@@ -2024,7 +2049,7 @@ func terrain_surface(cache_dir: String, force := false,
 	var per_layer := {}
 	var idx_c: PackedByteArray = comp["idx"]
 	var wgt_c: PackedByteArray = comp["w"]
-	for i in range(SURFACE_RES * SURFACE_RES):
+	for i in range(sres * sres):
 		var o := i * 4
 		for s in range(4):
 			if wgt_c[o + s] == 0:
@@ -2120,13 +2145,13 @@ func terrain_surface(cache_dir: String, force := false,
 			if s == 255 and (i & 3) == 0:
 				out_of_slice += 1
 
-	var img_idx := Image.create_from_data(SURFACE_RES, SURFACE_RES, false,
+	var img_idx := Image.create_from_data(sres, sres, false,
 		Image.FORMAT_RGBA8, idx)
-	var img_w := Image.create_from_data(SURFACE_RES, SURFACE_RES, false,
+	var img_w := Image.create_from_data(sres, sres, false,
 		Image.FORMAT_RGBA8, wgt)
 	img_idx.save_png("%s/idx.png" % dir_splat)
 	img_w.save_png("%s/w.png" % dir_splat)
-	var img_raw := Image.create_from_data(SURFACE_RES, SURFACE_RES, false,
+	var img_raw := Image.create_from_data(sres, sres, false,
 		Image.FORMAT_RGBA8, idx_raw)
 	img_raw.save_png("%s/idx_raw.png" % dir_splat)
 	# 16.7 million bytes through a lookup table plus two PNG encodes. It is pure
@@ -2172,7 +2197,7 @@ func terrain_surface(cache_dir: String, force := false,
 	_say(("game source: terrain splat — %d pages over %d layers, %d textured "
 		+ "slices, %.0f%% of ground on a shader-computed layer")
 		% [int(comp["pages"]), per_layer.size(), written,
-		   100.0 * float(out_of_slice) / float(maxi(1, SURFACE_RES * SURFACE_RES))])
+		   100.0 * float(out_of_slice) / float(maxi(1, sres * sres))])
 	return meta
 
 
