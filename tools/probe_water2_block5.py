@@ -28,15 +28,27 @@ import os
 import struct
 import sys
 
+sys.setrecursionlimit(200000)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import probe_tung_common as C        # noqa: E402
 import probe_tung_terrain as T       # noqa: E402
 import probe_tung_colormap as CM     # noqa: E402
 
-PAYLOAD = 149297
+# Per-node payload size, from the block header (the same identity
+# bf6_terrain.gd::read_block_header computes: xs^2*2 + minmax/occluder stacks
+# + density page). 265 -> 149,297; 137 (mp_isolated block 2) -> 39,919.
+def data_size(h):
+    return (h["xs"] * h["xs"] * 2 + T._stack(h["MinMaxStackDepth"], False) * 2
+            + T._stack(h["OccluderGridStackDepth"], True) * 2
+            + h["DensityMapNodeSamplesPerSide"] ** 2)
+
+# Distance from the block-2 payload END to the chunk end. MEASURED per level
+# (probe run 2026-08-10): tungsten/eastwood chunks end [b2][0..n tiles] with the
+# tungsten tail set; mp_isolated ends [b2][8,712 = 2 x 4,356] on leaf chunks and
+# one extra 17,424 colour tile on non-leaf chunks.
+TAILS_BY_LEVEL = {"mp_isolated": (8712, 26136)}
 TAILS = (0, 17424, 34848, 85024)
-PAGE_BY_LEVEL = {"mp_eastwood": 2592, "mp_tungsten": 4356, "mp_granite": 4356,
-                 "mp_isolated": 4356}
+PAGE_BY_LEVEL = {"mp_eastwood": 2592, "mp_tungsten": 4356, "mp_granite": 4356}
 RES = 512
 
 # TERRAIN.md 2.4 traversal order, and the binary alternative it was measured
@@ -134,17 +146,22 @@ def paint(rects, world_bbox, want_cov):
 def block2_rasters(level, d, bl, world_bbox):
     """(wet, abovefill, ext2img): 512x512 masks - water > ground + 2 cm;
     block-2 surface above dryfill + 0.5 m (the plugin's mode-based clip); and
-    the External block-2 node footprint."""
+    the External block-2 node footprint.
+
+    Handles xs(block 2) != xs(block 0): mp_isolated ships block 2 at xs=137
+    against block 0's 265, so the two grids are sampled by WORLD position
+    (border-aware, per bf6_terrain.gd composite: the node AABB spans
+    grid[border .. xs-1-border])."""
     h0 = T.hf_header(d, bl[0][0])
     h2 = T.hf_header(d, bl[2][0])
-    xs = h0["xs"]
+    xs0, xs2 = h0["xs"], h2["xs"]
+    p0, p2 = data_size(h0), data_size(h2)
     wy0, wy2 = h0["WorldSizeY"], h2["WorldSizeY"]
-    n0, _ = ({n[0]: n for n in T.hf_walk(d, bl[0][0], bl[0][1], h0)[0]}, None)
     l2 = T.hf_walk(d, bl[2][0], bl[2][1], h2)[0]
     ext2 = [n for n in l2 if n[4] == "External"]
     dirnodes, _ = CM.chunk_dir(d, T.container(d)[2])
     bykey = {n["key"]: n for n in dirnodes}
-    page = PAGE_BY_LEVEL.get(level, 4356)
+    tails = TAILS_BY_LEVEL.get(level, TAILS)
     x0w, z0w, x1w, z1w = world_bbox
 
     wet = bytearray(RES * RES)
@@ -160,27 +177,27 @@ def block2_rasters(level, d, bl, world_bbox):
         if not os.path.isfile(p):
             continue
         buf = C.read(p)
-        if len(buf) < 2 * PAYLOAD:
+        if len(buf) < p0 + p2:
             continue
         lo16 = int((mn[1] - 0.5) / wy2 * 65536)
         hi16 = int((mx[1] + 0.5) / wy2 * 65536)
 
         def inband(off):
-            g = struct.unpack_from("<%dH" % (xs * xs), buf, off)
-            pick = [g[(j + 4) * xs + (i + 4)]
-                    for j in range(0, xs - 8, 13) for i in range(0, xs - 8, 13)]
+            g = struct.unpack_from("<%dH" % (xs2 * xs2), buf, off)
+            pick = [g[(j + 4) * xs2 + (i + 4)]
+                    for j in range(0, xs2 - 8, 13) for i in range(0, xs2 - 8, 13)]
             return sum(1 for v in pick if lo16 <= v <= hi16) / float(len(pick))
-        cands = [len(buf) - t - PAYLOAD for t in TAILS
-                 if len(buf) - t - PAYLOAD >= PAYLOAD
-                 and (len(buf) - t - 2 * PAYLOAD) % page == 0]
+        cands = [len(buf) - t - p2 for t in tails if len(buf) - t - p2 >= p0]
         if not cands:
             continue
         off2 = max(cands, key=inband)
-        g0 = struct.unpack_from("<%dH" % (xs * xs), buf, 0)
-        g2 = struct.unpack_from("<%dH" % (xs * xs), buf, off2)
+        if inband(off2) < 0.9:
+            continue
+        g0 = struct.unpack_from("<%dH" % (xs0 * xs0), buf, 0)
+        g2 = struct.unpack_from("<%dH" % (xs2 * xs2), buf, off2)
         grids.append((key, mn, mx, g0, g2))
         # dry-fill tally on a stride, like the plugin's
-        for s in range(0, xs * xs, 97):
+        for s in range(0, xs2 * xs2, 97):
             fill_tally[g2[s]] = fill_tally.get(g2[s], 0) + 1
         # External node footprint
         px0 = max(0, int((mn[0] - x0w) / (x1w - x0w) * RES))
@@ -193,17 +210,22 @@ def block2_rasters(level, d, bl, world_bbox):
 
     fill = max(fill_tally, key=fill_tally.get)
     wet_min = fill + int(0.5 / wy2 * 65536.0)
-    n = xs - 8
+    b = 4                                    # NodeBorderWidth, both blocks
+    n2i = xs2 - 1 - 2 * b                    # interior spans of the node AABB
+    n0i = xs0 - 1 - 2 * b
     for key, mn, mx, g0, g2 in grids:
-        step = (mx[0] - mn[0]) / (n - 1)
-        for j in range(n):
-            for i in range(n):
-                v2 = g2[(j + 4) * xs + (i + 4)]
-                v0 = g0[(j + 4) * xs + (i + 4)]
-                wx = mn[0] + i * step
-                wz = mn[2] + j * step
+        for j in range(n2i + 1):
+            for i in range(n2i + 1):
+                v2 = g2[(j + b) * xs2 + (i + b)]
+                i0 = b + int(round(i * n0i / float(n2i)))
+                j0 = b + int(round(j * n0i / float(n2i)))
+                v0 = g0[j0 * xs0 + i0]
+                wx = mn[0] + i / float(n2i) * (mx[0] - mn[0])
+                wz = mn[2] + j / float(n2i) * (mx[2] - mn[2])
                 px = int((wx - x0w) / (x1w - x0w) * (RES - 1))
                 pz = int((wz - z0w) / (z1w - z0w) * (RES - 1))
+                if not (0 <= px < RES and 0 <= pz < RES):
+                    continue
                 if v2 / 65536.0 * wy2 - v0 / 65536.0 * wy0 > 0.02:
                     wet[pz * RES + px] = 1
                 if v2 >= wet_min:
@@ -241,6 +263,14 @@ def main():
         fits = size == 57 + 4 * h["TotalNodeCount"]
         print("\nblock %d: %d bytes  header %s" % (b, size, h))
         print("  size == 57 + 4*N: %s" % fits)
+        if not fits:
+            # mp_eastwood's block 5: Dim=260, Unknown16=0, N=53, 154 payload
+            # bytes. MEASURED not to be any 1..4-byte-stride pre-order or BFS
+            # quadtree (brute force over header lengths 40..80); undecoded.
+            print("  VARIANT FORMAT - node walk skipped (see RESEARCH-WATER2.md)")
+            if b == 5:
+                return
+            continue
         nodes = mask_walk(d, off + 57, h["TotalNodeCount"])
         bad = [n for n in nodes if n[2] not in (0, 1) or n[3] not in (0, 1)
                or n[4] != 0 or n[5] not in (0, 1)]

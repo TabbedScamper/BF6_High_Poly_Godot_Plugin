@@ -103,7 +103,9 @@ def dump_partition(path, label, max_inst=None):
     imps = C.imports_of(f)
     print("  imports (%d):" % len(imps))
     for pgs, igs, leaves in imps:
-        print("    %s -> %s" % (pgs, ", ".join(leaves) or "NOT IN _af"))
+        print("    %s -> %s" % (pgs, ", ".join(leaves)
+                                or S.leaf_of(pgs, full=True)
+                                or "UNRESOLVED"))
     return D, f
 
 
@@ -187,12 +189,18 @@ def part_c():
 def part_d():
     print("=" * 78)
     print("D. meshvariationdb_win32: what references bd_eus_dumbo_*_mid")
-    p = os.path.join(DUMBO, "meshvariationdb_win32.ebx")
+    p = os.path.join(DUMBO, "mp_dumbo", "meshvariationdb_win32.ebx")
     D, f = C.open_ebx(p)
     # map import slot -> leaf, find bd_eus targets among the imports
     bd_parts = set()
     for pgs, igs, leaves in C.imports_of(f):
-        if any("bd_eus_dumbo" in l for l in leaves):
+        hit = any("bd_eus_dumbo" in l for l in leaves)
+        if not hit:
+            l2 = S.leaf_of(pgs)
+            hit = bool(l2 and "bd_eus_dumbo" in l2)
+        if hit:
+            # decoded records carry the PARTITION guid in their "import" slots
+            bd_parts.add(str(pgs))
             bd_parts.add(str(igs))
     print("  import instance-guids resolving to bd_eus_dumbo_*: %d"
           % len(bd_parts))

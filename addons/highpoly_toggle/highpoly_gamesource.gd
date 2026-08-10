@@ -1771,6 +1771,23 @@ var _surface_tried := ""
 var _surface_failed := false
 
 
+# One row per palette layer for layers.json: the index and a representative
+# texture stem ("" when the layer binds nothing anywhere). The stem, not the
+# path: classification keys on words like grass/gravel, and the directory adds
+# nothing but bytes to a file parsed on every open.
+func _palette_rows(pal) -> Array:
+	var out: Array = []
+	for i in range(pal.layers.size()):
+		var lay: Dictionary = pal.layers[i]
+		var nm := ""
+		for k in (lay["textures"] as Dictionary):
+			nm = str((lay["textures"] as Dictionary)[k]).get_file()
+			if nm != "":
+				break
+		out.append({"layer": i, "tex": nm})
+	return out
+
+
 func terrain_surface(cache_dir: String, force := false,
 		progress := Callable()) -> Dictionary:
 	_surface_cached = false
@@ -2119,6 +2136,14 @@ func terrain_surface(cache_dir: String, force := false,
 			# span for both axes, silently wrong on any non-square footprint.
 			"size_z": sp.root_max.y - sp.root_min.y},
 		"layers": slice_meta,
+		# THE WHOLE PALETTE, not just the textured slices: one row per layer
+		# with a NAME the scatter can classify (grass vs gravel), taken from
+		# any texture the layer binds - detail and AO slots carry names even
+		# when the colour lives in the shader. idx_raw.png's indices mean
+		# nothing without this table; together they are the game's own painted
+		# coverage, which is what replaces the satellite-greenness guess
+		# (task #93). Additive: an old cache without it keeps the heuristic.
+		"palette": _palette_rows(pal),
 	}
 	var f := FileAccess.open(meta_path, FileAccess.WRITE)
 	if f == null:

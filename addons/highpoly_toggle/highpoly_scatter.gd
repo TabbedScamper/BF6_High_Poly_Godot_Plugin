@@ -8,7 +8,7 @@ class_name HighpolyScatter
 #   {"budget": N, "entries": [{mesh, kit:[[x,z,w]..], viewDistance, param,
 #                              budgetShare, spacing}, ...]}
 # The game places these at runtime from its terrain-layer splat masks. Those
-# masks are now DECODED: maps whose package ships splat/grass_mask.png (the
+# masks are now DECODED: idx_raw.png + w.png + the layers.json palette (the
 # baked combined coverage of the map's grass layers) accept anchors by the REAL
 # coverage weight, with slope kept only as a cliff sanity clamp. Anchors are
 # still generated as a deterministic jittered grid in a ring around the editor
@@ -61,12 +61,26 @@ var _hm_scale := 0.0
 # optional maptile greenness (satellite jpg + world bounds)
 var _tile: Image = null
 var _tile_b := Vector4()      # xmin, zmin, sizeX, sizeZ
-# REAL grass coverage (splat/grass_mask.png, baked from the game's own terrain
-# layer masks by the pipeline's splat_build.py). When present it REPLACES the
-# slope-band + maptile-greenness heuristic as the anchor accept weight; slope
-# stays only as a cliff sanity clamp. Maps without the file keep the heuristic.
-var _mask: Image = null
-var _mask_b := Vector4()      # xmin, zmin, sizeX, sizeZ (splat bake box)
+# REAL painted coverage (task #93): splat/idx_raw.png holds the TRUE per-texel
+# palette indices (4 layer slots per texel, RGBA8) and splat/w.png the matching
+# blend weights - the game's own statement of where each ground layer is,
+# preserved by the compositor before the shader remap collapses it. Together
+# with the palette table in layers.json (layer index -> texture stem) they
+# replace the slope-band + satellite-greenness heuristic: a grass kit accepts
+# by the summed weight of VEGETATION-classified layers under the anchor, a
+# debris kit by the rest. Slope stays only as a cliff sanity clamp. Maps whose
+# cache predates the table keep the heuristic - graceful, not silent: setup
+# says which path it took.
+var _cov := PackedByteArray()      # idx_raw RGBA8 bytes, _cov_res^2 * 4
+var _covw := PackedByteArray()     # w.png RGBA8 bytes, same shape
+var _cov_res := 0
+var _cov_b := Vector4()            # xmin, zmin, sizeX, sizeZ (splat world box)
+# layer index -> class: 0 ground, 1 vegetation. 255 (no layer) counts as
+# ground, so debris still lands on the unpainted background.
+var _cov_cls := PackedByteArray()
+const VEG_WORDS := ["grass", "tuft", "shrub", "weed", "plant", "flower",
+	"fern", "bush", "leaf", "clover", "moss", "ivy", "hay", "wheat", "crop",
+	"reed", "lawn", "fairway", "turf", "iceplant", "oakshrub", "driedgrass"]
 # ground lift applied by the map context when the splat terrain is active (the
 # extended terrain is raised slightly to win the SDK-bowl depth fight; grass
 # must sit on the lifted surface, not inside it)
@@ -83,7 +97,10 @@ func clear() -> void:
 	_mesh_cache.clear()
 	_hm_raw = PackedByteArray()
 	_tile = null
-	_mask = null
+	_cov = PackedByteArray()
+	_covw = PackedByteArray()
+	_cov_res = 0
+	_cov_cls = PackedByteArray()
 	# (y_lift is NOT reset here: the map context owns it and assigns it around
 	# setup(); clear() runs at the start of setup and must not wipe it)
 	_last_cell = Vector2i(2147483647, 2147483647)
@@ -131,21 +148,42 @@ func setup(mc: Object, ctx: Node3D, map: String, dir: String, hm: Dictionary, ti
 		if img.load(gp) == OK:
 			_tile = img
 			_tile_b = tile.get("bounds", Vector4())
-	# REAL grass coverage from the map package's splat bake (preferred over the
-	# heuristic): grass_mask.png = combined coverage of the map's grass layers,
-	# world box from splat/layers.json
-	var mp := "%s/splat/grass_mask.png" % dir
+	# REAL painted coverage: idx_raw + w + the palette table (see the field
+	# notes above). The old grass_mask.png path is gone with the pipeline that
+	# baked it; this reads what the surface build now preserves.
+	var mp := "%s/splat/idx_raw.png" % dir
+	var wp := "%s/splat/w.png" % dir
 	var lj := "%s/splat/layers.json" % dir
-	if FileAccess.file_exists(mp) and FileAccess.file_exists(lj):
+	if FileAccess.file_exists(mp) and FileAccess.file_exists(wp) \
+			and FileAccess.file_exists(lj):
 		var meta: Variant = JSON.parse_string(FileAccess.get_file_as_string(lj))
-		if meta is Dictionary and (meta as Dictionary).get("world", {}) is Dictionary:
+		if meta is Dictionary and (meta as Dictionary).get("palette", null) is Array \
+				and (meta as Dictionary).get("world", {}) is Dictionary:
 			var wj: Dictionary = (meta as Dictionary)["world"]
 			var mimg := Image.load_from_file(ProjectSettings.globalize_path(mp))
-			if mimg != null:
-				_mask = mimg
-				_mask_b = Vector4(float(wj.get("x0", 0.0)), float(wj.get("z0", 0.0)),
+			var wimg := Image.load_from_file(ProjectSettings.globalize_path(wp))
+			if mimg != null and wimg != null \
+					and mimg.get_width() == wimg.get_width():
+				_cov = mimg.get_data()
+				_covw = wimg.get_data()
+				_cov_res = mimg.get_width()
+				_cov_b = Vector4(float(wj.get("x0", 0.0)), float(wj.get("z0", 0.0)),
 					float(wj.get("size", 1.0)), float(wj.get("size", 1.0)))
-				print("MapContext[%s]: scatter uses the real grass-layer mask" % map)
+				_cov_cls = PackedByteArray()
+				_cov_cls.resize(256)
+				var veg_n := 0
+				for prow in ((meta as Dictionary)["palette"] as Array):
+					var pd: Dictionary = prow
+					var nm2 := str(pd.get("tex", "")).to_lower()
+					for wv in VEG_WORDS:
+						if nm2.contains(str(wv)):
+							var li2 := int(pd.get("layer", -1))
+							if li2 >= 0 and li2 < 255:
+								_cov_cls[li2] = 1
+								veg_n += 1
+							break
+				print("MapContext[%s]: scatter uses the game's painted coverage (%d vegetation layer(s))"
+					% [map, veg_n])
 	_root = Node3D.new()
 	_root.name = NODE
 	ctx.add_child(_root)
@@ -194,6 +232,9 @@ func setup(mc: Object, ctx: Node3D, map: String, dir: String, hm: Dictionary, ti
 		var dense := clampf(span * 2.0 * 0.9, 1.5, 6.0)
 		_entries.append({
 			"kit": kit,
+			# the kit's class, from its own catalogue name: what the painted
+			# coverage matches it against
+			"veg": _name_is_veg(nm),
 			"spacing": dense,
 			# "distance" is what scatter_entries() emits from the game's own DB
 			# (real per-mesh values {30, 50, 55, 75, 100, 150, 200, 300});
@@ -329,9 +370,12 @@ func _gen_entry(e: Dictionary, cam: Vector3) -> PackedFloat32Array:
 			var sl := _slope(ax, az)
 			if sl >= SLOPE_NONE: continue
 			var wgt: float
-			if _mask != null:
-				# EXACT accept weight: the game's own grass-layer coverage here
-				wgt = _mask_weight(ax, az)
+			if _cov_res > 0:
+				# EXACT accept weight: the game's own painted coverage, matched
+				# to this kit's class - grass on vegetation layers, debris on
+				# the rest. This is also what finally answers "which mesh goes
+				# where": the 49 kits stop being 49 identical carpets.
+				wgt = _cov_weight(ax, az, bool(e.get("veg", false)))
 			else:
 				wgt = clampf((SLOPE_NONE - sl) / (SLOPE_NONE - SLOPE_FULL), 0.0, 1.0)
 				wgt *= _green_weight(ax, az)
@@ -398,26 +442,50 @@ func _slope(x: float, z: float) -> float:
 	var gz := hzp - hzm
 	return 1.0 - (2.0 * s) / sqrt(gx * gx + gz * gz + 4.0 * s * s)
 
-# real grass-layer coverage (bilinear); 0 outside the splat box — the box is
-# the whole playable maptile area, so no more heuristic desert scatter beyond it
-func _mask_weight(x: float, z: float) -> float:
-	var u := (x - _mask_b.x) / _mask_b.z
-	var v := (z - _mask_b.y) / _mask_b.w
+# The painted-coverage accept weight at a world position, for one kit class.
+# The texel's four layer slots are summed where their class matches the kit:
+# a grass kit reads the vegetation weight, anything else reads the remainder
+# (255 = no layer counts as ground, so debris still lands on the unpainted
+# background). Nearest texel - the slots are INDICES, and indices cannot be
+# bilinearly blended; at 2 m per texel the block edge is finer than a clump.
+# 0 outside the splat box, which is the playable area: no heuristic scatter
+# out in the void.
+# A kit's class from its catalogue name, same vocabulary as the layer table.
+static func _name_is_veg(nm: String) -> bool:
+	var low := nm.to_lower()
+	for w in VEG_WORDS:
+		if low.contains(str(w)):
+			return true
+	return false
+
+
+func _cov_weight(x: float, z: float, veg: bool) -> float:
+	var u := (x - _cov_b.x) / _cov_b.z
+	var v := (z - _cov_b.y) / _cov_b.w
 	if u < 0.0 or u > 1.0 or v < 0.0 or v > 1.0:
 		return 0.0
-	var fx := u * float(_mask.get_width() - 1)
-	var fz := v * float(_mask.get_height() - 1)
-	var x0 := int(fx)
-	var z0 := int(fz)
-	var x1 := mini(x0 + 1, _mask.get_width() - 1)
-	var z1 := mini(z0 + 1, _mask.get_height() - 1)
-	var tx := fx - float(x0)
-	var tz := fz - float(z0)
-	var m00 := _mask.get_pixel(x0, z0).r
-	var m10 := _mask.get_pixel(x1, z0).r
-	var m01 := _mask.get_pixel(x0, z1).r
-	var m11 := _mask.get_pixel(x1, z1).r
-	return lerpf(lerpf(m00, m10, tx), lerpf(m01, m11, tx), tz)
+	var px := clampi(int(u * float(_cov_res - 1) + 0.5), 0, _cov_res - 1)
+	var pz := clampi(int(v * float(_cov_res - 1) + 0.5), 0, _cov_res - 1)
+	var o := (pz * _cov_res + px) * 4
+	var hit := 0
+	var total := 0
+	for s in range(4):
+		var w := int(_covw[o + s])
+		if w == 0:
+			continue
+		total += w
+		var li := int(_cov[o + s])
+		var is_veg := li < 255 and int(_cov_cls[li]) == 1
+		if is_veg == veg:
+			hit += w
+	if veg:
+		# grass grows by how much of the texel its layers cover
+		return clampf(float(hit) / 255.0, 0.0, 1.0)
+	# ground kits: full weight wherever vegetation does NOT dominate, including
+	# unpainted background (total 0)
+	if total == 0:
+		return 1.0
+	return clampf(1.0 - float(total - hit) / 255.0, 0.0, 1.0)
 
 # maptile greenness: density weight 0.15..1 inside the satellite footprint,
 # 1 outside it (or when the map has no tile). Grey/asphalt reads low, green

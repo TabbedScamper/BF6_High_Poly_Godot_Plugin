@@ -36,8 +36,18 @@ FLEET = {
     "mp_isolated": "glaciermp", "mp_limestone": "glaciermp",
     "mp_outskirts": "glaciermp", "mp_plaza": "glaciermp",
     "mp_subsurface": "glaciermp", "mp_tungsten": "glaciermp",
-    # extras beyond the 16 glaciermp worlds
+    "mp_propaganda": "glaciermp",
+    # extras beyond the 17 glaciermp worlds
     "mp_granite": "glaciergranite", "mp_portal_sand": "glacierportal",
+    "mp_aftermath_portal": "glacierportal",
+    "mp_portal_lobby": "glacierportal",
+    "mp_granite_clubhouse_portal": "glacierportal",
+    "mp_granite_mainstreet_portal": "glacierportal",
+    "mp_granite_marina_portal": "glacierportal",
+    "mp_granite_militaryrnd_portal": "glacierportal",
+    "mp_granite_militarystorage_portal": "glacierportal",
+    "mp_granite_techcampus_portal": "glacierportal",
+    "mp_granite_underground_portal": "glacierportal",
 }
 
 GAME = os.path.join(C.BUNDLES, "game")
