@@ -118,6 +118,10 @@ var _gm_key := ""
 # to survive a slow drive and still short enough that nobody waits out a
 # session for a worker that died on its first line.
 const MINE_TIMEOUT_MS := 90000
+# How long a build may wait for the placeable catalogue before the flag is
+# treated as stale. The sweep is about 90 s at its coldest, so this is generous
+# and still far short of "the editor has hung".
+const CATALOGUE_WAIT_MAX_MS := 240000
 # Set when a heal ran and still produced no node - the dropdown is showing a
 # layer name with no mined mode behind it, so retrying every tick would just
 # rebuild nothing forever. Cleared whenever the selection or the map changes.
@@ -873,6 +877,11 @@ All of it is read from your own Battlefield 6 installation."
 		# not built yet: build JUST the props layer into the existing overlay.
 		# The old path fell through to the full apply, which starts by clearing
 		# the terrain and skyline it is about to rebuild identically.
+		#
+		# This path does NOT go through _apply_with_placements, so it needs the
+		# catalogue wait of its own - ensure_layer reaches map_data and therefore
+		# the same whole-mount scans.
+		await _wait_for_catalogue("building the map objects")
 		if v and mapctx.game_source != null \
 				and mapctx.ensure_layer(r0, "objects", _mapctx_tex_mode()):
 			lbl.text = "Building the map objects…"
@@ -3351,10 +3360,66 @@ func _apply_with_placements(r: Node, on: bool, objs: bool, tex, bd: bool, wt: bo
 	#
 	# objs and bd are the two layers built FROM walk rows. Nothing else needs
 	# them, and ensure_placements returns immediately once the walk has run.
+	await _wait_for_catalogue("building this layer")
 	if (objs or bd) and mapctx != null and mapctx.game_source != null \
 			and not mapctx.game_source.placements_ready:
 		await _ensure_placements_async(mapctx.game_source)
+	# ...and again, because the wait above is the one that matters and the
+	# placement walk between them can take a minute of its own.
+	await _wait_for_catalogue("building this layer")
 	return mapctx.apply(r, on, objs, tex, bd, wt)
+
+
+# NOTHING THAT SCANS THE WHOLE MOUNT MAY RUN WHILE THE CATALOGUE IS GROWING.
+#
+# The build reads src.ebx and src.res by walking every key - that is how
+# terrain() finds the streaming tree, how the water partition is found, how the
+# gamemode roots are listed. The catalogue sweep adds to those same two
+# Dictionaries from a worker thread, and a Dictionary that rehashes under
+# another thread's iterator does not misbehave, it takes Godot down:
+#
+#   FATAL: Index p_index = 184634 is out of bounds (size = 184634)
+#      at terrain() highpoly_gamesource.gd:1470
+#
+# So the build waits. It is an await, not a lock, so the editor stays live and
+# the panel says what it is waiting for rather than appearing to hang. The wait
+# is bounded by the sweep itself - seconds when its cache is warm, up to about
+# a minute and a half cold - and it only happens if you switch a layer on during
+# the first minute of a session.
+func _wait_for_catalogue(what: String) -> void:
+	if mapctx == null or mapctx.game_source == null:
+		return
+	var gs = mapctx.game_source
+	if not gs.catalogue_upgrading:
+		return
+	var said := false
+	var t0 := Time.get_ticks_msec()
+	while gs.catalogue_upgrading:
+		if get_tree() == null:
+			return
+		# A STUCK FLAG MUST NOT BECOME A PERMANENT WAIT. The sweep is bounded -
+		# about a minute and a half at its worst - so four minutes means nobody
+		# is going to lower this: the panel was freed mid-upgrade, or its
+		# coroutine was dropped. Waiting on it forever would be a worse failure
+		# than the crash it exists to prevent, so it is cleared and said out
+		# loud rather than left to look like a hang.
+		if Time.get_ticks_msec() - t0 > CATALOGUE_WAIT_MAX_MS:
+			HighpolyLog.warn(("the placeable catalogue has been marked as loading "
+				+ "for %d s, which is longer than it can take. Treating that as "
+				+ "stale and carrying on.") % (CATALOGUE_WAIT_MAX_MS / 1000))
+			gs.catalogue_upgrading = false
+			return
+		if not said and Time.get_ticks_msec() - t0 > 400:
+			said = true
+			lbl.text = ("Waiting for the placeable catalogue before %s — it is "
+				+ "still loading in the background.") % what
+			HighpolyLog.info(("%s is waiting for the placeable catalogue: the two "
+				+ "read the same tables and the catalogue is still growing them.")
+				% what)
+		await get_tree().process_frame
+	if said:
+		HighpolyLog.info("the catalogue finished after %.1f s; carrying on"
+			% ((Time.get_ticks_msec() - t0) / 1000.0))
 
 
 # The dock owns these two buttons; the map context cannot see them. Kept in one
@@ -3994,6 +4059,10 @@ func _upgrade_catalogue_async(gs) -> void:
 	if gs == null or gs.catalogue_ready:
 		return
 	HighpolyVitals.crumb("adding the placeable catalogue in the background")
+	# Raised HERE, on the main thread, before the worker exists - and lowered
+	# only after it is joined. Anything that scans the whole mount waits on it.
+	# See HighpolyGameSource.catalogue_upgrading for the crash this prevents.
+	gs.catalogue_upgrading = true
 	var done := [false]
 	var tid := WorkerThreadPool.add_task(func() -> void:
 		gs.upgrade_catalogue()
@@ -4003,6 +4072,7 @@ func _upgrade_catalogue_async(gs) -> void:
 			break
 		await get_tree().process_frame
 	WorkerThreadPool.wait_for_task_completion(tid)
+	gs.catalogue_upgrading = false
 	HighpolyVitals.crumb("idle, nothing building")
 	if not gs.catalogue_ready:
 		return

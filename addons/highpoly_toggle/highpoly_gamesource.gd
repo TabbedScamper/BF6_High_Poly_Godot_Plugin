@@ -634,6 +634,27 @@ func ensure_ground(cache_dir: String, progress := Callable()) -> bool:
 # A cache written by an earlier session turns it into a load instead.
 #
 # Safe to call more than once; the second call returns immediately.
+# TRUE WHILE THE CATALOGUE SWEEP IS GROWING src.ebx AND src.res.
+#
+# Those two Dictionaries are mounted once and then read all over this file by
+# scanning every key - terrain() looks for the streaming tree that way,
+# _water_partition and water_sim do the same, _level_dir and the gamemode
+# miner's roots_of too. That is fine against a mount that has stopped changing,
+# and it is a crash against one that has not: the sweep runs on a worker, and a
+# Dictionary that rehashes under another thread's iterator takes the process
+# down. A user's crash log caught it exactly there -
+#
+#   FATAL: Index p_index = 184634 is out of bounds (size = 184634)
+#      at terrain() highpoly_gamesource.gd:1470   <- for rn in src.res.keys()
+#
+# with 184,634 sitting between MP_Tungsten's level mount (154,245 resources) and
+# the full catalogue, which is what a half-grown dictionary looks like.
+#
+# Set on the MAIN thread before the worker starts and cleared after it is
+# joined, so a reader can wait on it without a lock.
+var catalogue_upgrading := false
+
+
 func upgrade_catalogue(progress := Callable()) -> bool:
 	if catalogue_ready or src == null:
 		return catalogue_ready
