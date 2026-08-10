@@ -478,6 +478,83 @@ func _finish(nm: String, tex: Texture2D) -> void:
 		_cache[nm] = tex
 		_ours[tex.get_instance_id()] = true
 
+
+# ---------------------------------------------------------------------------
+# BUILD EVERY ICON, ON PURPOSE, WITH SOMETHING TO WATCH.
+#
+# The 2-second timer renders whatever the Object Library happens to be showing.
+# That keeps icons current, and it is the wrong shape for a first run: it fires
+# while you are working, each render assembles an object out of the install and
+# spends a SubViewport frame on it, and what you get is a hitch every couple of
+# seconds from something you never asked for and cannot see the end of.
+#
+# This does the whole set when asked. Everything it renders lands in the same
+# on-disk thumbnail cache the timer checks FIRST, so afterwards the timer finds
+# a PNG for every icon and renders nothing at all. The hitching stops because
+# the work is finished, not because it was suppressed.
+#
+# `progress` is called as (done, total). Set cancel_build to stop it.
+var cancel_build := false
+var building := false
+
+
+func build_all(progress := Callable()) -> Dictionary:
+	if building:
+		return {"error": "a build is already running"}
+	building = true
+	cancel_build = false
+	var names: Array = HighpolyLib.known().keys()
+	names.sort()                       # deterministic, so stopping and resuming
+	var total := names.size()           # covers the same ground in the same order
+	var done := 0
+	var made := 0
+	var cached := 0
+	var skipped := 0
+	var t0 := Time.get_ticks_msec()
+	for nm in names:
+		if cancel_build:
+			break
+		var key := str(nm)
+		var src := _source_for(key)
+		# ALREADY ON DISK IS THE COMMON CASE on a second run, and it must not
+		# cost a render to find that out - that is what the cache is for.
+		if src == "":
+			skipped += 1               # nothing to draw it from; not a failure
+		elif FileAccess.file_exists(
+				HighpolyStore.thumb_path(key, _mode_tag() + _tag_suffix(key, src))):
+			cached += 1
+		else:
+			_pending[key] = true
+			await _render_one(key)
+			made += 1
+		done += 1
+		if progress.is_valid():
+			progress.call(done, total)
+		# ONE ITEM PER FRAME AT MOST. This is main-thread rendering into a
+		# SubViewport - the very thing that made the timer hitch - so the editor
+		# gets a frame back between every one and stays usable while it runs.
+		if is_inside_tree() and get_tree() != null:
+			await get_tree().process_frame
+	building = false
+	return {"total": total, "rendered": made, "already_cached": cached,
+		"no_source": skipped, "cancelled": cancel_build,
+		"seconds": float(Time.get_ticks_msec() - t0) / 1000.0}
+
+
+# How many icons are missing, without rendering any. A file test per known name,
+# so the button can say what it is about to do before it does it.
+func missing_count() -> int:
+	var n := 0
+	for nm in HighpolyLib.known().keys():
+		var key := str(nm)
+		var src := _source_for(key)
+		if src == "":
+			continue
+		if not FileAccess.file_exists(
+				HighpolyStore.thumb_path(key, _mode_tag() + _tag_suffix(key, src))):
+			n += 1
+	return n
+
 func _merged_aabb(root: Node3D) -> AABB:
 	var out := AABB()
 	var first := true

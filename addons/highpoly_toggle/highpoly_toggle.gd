@@ -701,6 +701,24 @@ All of it is read from your own Battlefield 6 installation."
 	detail_chips.add_child(ovr_chk)
 	_gate(ovr_chk, "Previewing a selection in High-Poly")
 
+	# BUILD THE OBJECT LIBRARY'S ICONS ON PURPOSE, RATHER THAN BY AMBUSH.
+	#
+	# They are rendered by a 2-second timer, for whatever the library is showing
+	# at the time. Each one assembles the object out of the install and spends a
+	# SubViewport frame on it, so what a user experiences is the editor hitching
+	# every couple of seconds, indefinitely, with nothing on screen to say what
+	# is happening or when it will stop.
+	#
+	# The renders are cached to disk and the timer reads that cache first, so
+	# doing them all up front does not add work - it moves it somewhere visible
+	# and finishes it. After this runs the timer finds a PNG for every icon and
+	# renders nothing.
+	previews_btn = Button.new()
+	previews_btn.text = "Build object previews"
+	previews_btn.tooltip_text = "Renders an icon for every object in the library, once, with a progress bar. They are rendered anyway - a few at a time, whenever the library shows something new - which is what makes the editor hitch every couple of seconds. Doing them all now moves that work somewhere you can watch it and ends it: the icons are cached to disk, so nothing is rendered again."
+	previews_btn.pressed.connect(_build_previews)
+	host.add_child(previews_btn)
+
 	host = _section("Collision",
 		"Shows the invisible shapes players bump into. They are often not the shape they look like, which is why something can feel wrong to walk past even when it looks right.")
 
@@ -808,7 +826,15 @@ All of it is read from your own Battlefield 6 installation."
 	prop_light_on.toggled.connect(func(v: bool):
 		if _locked(prop_light_on): return
 		_set_prop_lighting(v))
-	mc_chips.add_child(prop_light_on)
+	# UNDER DETAIL MODE, not with the map-context layers.
+	#
+	# It reads as a map-context switch because it was next to them, but it is not
+	# one: every other chip in that row decides whether a LAYER OF THE MAP exists
+	# - the ground, the skyline, the sea, the level's own props. This one decides
+	# how the pieces YOU placed are lit, which is the same question Detail Mode
+	# answers for how they are modelled and textured. It works with no map
+	# context at all.
+	_detail_chips.add_child(prop_light_on)
 
 	# The distant skyline is its own layer: it is what you see PAST the edge of
 	# the play area, and wanting the horizon is a different question from wanting
@@ -1823,6 +1849,24 @@ func _settings_snapshot() -> PackedStringArray:
 	var out := PackedStringArray()
 	var yn := func(b: Button) -> String:
 		return "unavailable" if b == null else ("ON" if b.button_pressed else "off")
+	# WHICH SCENE IS OPEN, AND WHAT MAP WE THINK IT IS.
+	#
+	# Neither was ever recorded, and everything this plugin does hangs off the
+	# second one: map_of() returns the scene ROOT NODE'S NAME, and only if it
+	# begins with "MP_". A scene whose root is named anything else resolves to
+	# "" and every path that needs the install returns silently - no read, no
+	# skinning, nothing in the log to say why.
+	#
+	# A user reported exactly that: High-Poly selected, a four minute session,
+	# and not one "game source" line. Without these two rows there was no way to
+	# tell that from a read that failed.
+	var _r0 := EditorInterface.get_edited_scene_root()
+	var _map0: String = mapctx.map_of(_r0) if mapctx != null else ""
+	out.append("%-22s %s" % ["scene root",
+		String(_r0.name) if _r0 != null else "(no scene open)"])
+	out.append("%-22s %s" % ["reads as map", _map0 if _map0 != ""
+		else "NOT A MAP SCENE — the root must be named MP_<Map> for anything "
+			+ "to be read from your install"])
 	if mode_btn != null and mode_btn.selected >= 0:
 		out.append("%-22s %s" % ["detail mode",
 			mode_btn.get_item_text(mode_btn.selected)])
@@ -4224,7 +4268,28 @@ func _ensure_source_for_mode(force := false) -> void:
 		return
 	var map: String = mapctx.map_of(r)
 	if map == "":
+		# SILENT BEFORE, AND THE SILENCE WAS THE BUG REPORT.
+		#
+		# map_of() is the scene root's NAME and only when it begins with "MP_".
+		# Anything else - a renamed root, a scene built from scratch - resolves
+		# to "" and every path that needs the install returned here without a
+		# word. A user sat in High-Poly for four minutes with nothing skinned
+		# and a log containing no game-source line at all, which is
+		# indistinguishable from a read that failed until you know this rule.
+		#
+		# Said once per scene, not once per call: this runs on every dropped
+		# node as well as on the mode switch.
+		if _said_not_map != String(r.name):
+			_said_not_map = String(r.name)
+			var msg := ("\"%s\" is not a map scene, so there is nothing to read "
+				+ "from your install. Detail Mode needs the scene's ROOT NODE "
+				+ "named MP_<Map> - the level scenes the SDK ships already are, "
+				+ "and a copy keeps working as long as you keep that name.")\
+				% String(r.name)
+			lbl.text = msg
+			HighpolyLog.warn(msg)
 		return
+	_said_not_map = ""
 	# THE OPEN SOURCE HAS TO BE THIS SCENE'S MAP, NOT MERELY NON-NULL.
 	#
 	# This asked only whether a source existed, and _check_scene_change resets
@@ -4440,6 +4505,48 @@ func _reoverride_selection() -> void:
 # win when a prop is both. Only consumed when something was actually hit, so
 # normal click/drag selection and camera behavior stay untouched.
 var prop_light_on: Button = null
+var previews_btn: Button = null      # "Build object previews", with a progress row
+var _said_not_map := ""              # scene we have already explained is not a map
+
+
+# Render every library icon now, through the same progress queue the other long
+# jobs use, instead of letting the 2-second timer do it a hitch at a time.
+func _build_previews() -> void:
+	if previews == null:
+		return
+	if previews.building:
+		# A SECOND PRESS IS A CANCEL, not a second build. The button is the only
+		# thing on screen that can stop this, and a run over a large library is
+		# long enough that someone will want to.
+		previews.cancel_build = true
+		previews_btn.text = "Stopping…"
+		return
+	# Icons of what you PLACE, so they follow Detail Mode - and Detail Mode
+	# cannot draw anything without the install open. Asked for first, or the
+	# whole run renders nothing and reports success.
+	await _ensure_source_for_mode(true)
+	if previews == null or not is_instance_valid(previews_btn):
+		return
+	var missing: int = previews.missing_count()
+	if missing == 0:
+		lbl.text = "Object previews are already built for this detail mode"
+		return
+	var was := previews_btn.text
+	previews_btn.text = "Stop building previews"
+	var token: int = await jobs.acquire("Object previews")
+	var res: Dictionary = await previews.build_all(func(done: int, total: int):
+		jobs.report(done, total))
+	jobs.release(token, not res.has("error"), str(res.get("error", "")))
+	if is_instance_valid(previews_btn):
+		previews_btn.text = was
+	if res.has("error"):
+		lbl.text = str(res["error"])
+		return
+	lbl.text = ("Object previews: %d rendered, %d already cached, %d have nothing "
+		+ "to draw them from — %.1f s%s") % [int(res["rendered"]),
+		int(res["already_cached"]), int(res["no_source"]), float(res["seconds"]),
+		"  (stopped early)" if bool(res["cancelled"]) else ""]
+	HighpolyLog.info(lbl.text)
 
 
 # ONE SWITCH, BOTH HALVES. The fixtures are Light3D children of each overlay and
