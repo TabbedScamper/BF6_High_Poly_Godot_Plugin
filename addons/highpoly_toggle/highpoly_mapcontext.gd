@@ -28,11 +28,15 @@ const PROPS_CACHE := "user://mapcontext/_props"
 var _active := false               # Map Context enabled at all
 var _show_objects := false         # original map objects (props) layer on
 var _show_backdrop := false        # distant skyline / out-of-bounds vista layer on
-# Roads default to ON, unlike the two above: they arrived with Extended Terrain
-# for the whole of this plugin's life and taking that away by default would be a
-# change nobody asked for. Remembered so a rebuild does not bring them back
-# after they have been switched off.
-var _show_roads := true
+# OFF by default, like the two above.
+#
+# It shipped ON for one build, on the reasoning that roads had always arrived
+# with Extended Terrain and taking that away would be a change nobody asked for.
+# That was backwards: the chip exists BECAUSE someone asked to build on bare
+# ground, and defaulting it on means switching the ground on and then having to
+# switch the streets back off every time. A layer you have to ask for is the
+# same contract as Backdrops and Water, and it is one click either way.
+var _show_roads := false
 var _show_water := false           # rivers / sea layer on
 # Set by the dock from its own toggles, because the light and FX layers are
 # switched independently of apply() and this object cannot see those buttons.

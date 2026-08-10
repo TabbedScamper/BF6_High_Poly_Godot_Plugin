@@ -119,10 +119,6 @@ var _gm_key := ""
 # to survive a slow drive and still short enough that nobody waits out a
 # session for a worker that died on its first line.
 const MINE_TIMEOUT_MS := 90000
-# How long a build may wait for the placeable catalogue before the flag is
-# treated as stale. The sweep is about 90 s at its coldest, so this is generous
-# and still far short of "the editor has hung".
-const CATALOGUE_WAIT_MAX_MS := 240000
 # Set when a heal ran and still produced no node - the dropdown is showing a
 # layer name with no mined mode behind it, so retrying every tick would just
 # rebuild nothing forever. Cleared whenever the selection or the map changes.
@@ -883,10 +879,11 @@ All of it is read from your own Battlefield 6 installation."
 	# ground means wanting the ground and not the streets painted on it, and the
 	# only way to get that was to lose the terrain too.
 	#
-	# Starts checked, because that is how this has always behaved.
+	# Starts unchecked: the point of the chip is bare ground, so having to switch
+	# the streets off every time you switch the ground on would defeat it.
 	mapctx_roads = Theme_.chip("Roads and paths")
-	mapctx_roads.set_pressed_no_signal(true)
-	mapctx_roads.tooltip_text = "The street network and its markings, baked from the level's own terrain decals and draped on the ground. Part of Extended Terrain until now; switch it off to see the bare ground while you lay out your own paths and arrays over it. Hiding costs nothing and never rebuilds."
+	mapctx_roads.set_pressed_no_signal(false)
+	mapctx_roads.tooltip_text = "The street network and its markings, baked from the level's own terrain decals and draped on the ground. They used to arrive with Extended Terrain whether you wanted them or not; now they are their own layer, off until you ask, so you can lay out your own paths and arrays on bare ground. Showing and hiding costs nothing and never rebuilds."
 	mapctx_roads.toggled.connect(func(v: bool):
 		if _locked(mapctx_roads): return
 		var r0 := EditorInterface.get_edited_scene_root()
@@ -931,10 +928,6 @@ All of it is read from your own Battlefield 6 installation."
 		# The old path fell through to the full apply, which starts by clearing
 		# the terrain and skyline it is about to rebuild identically.
 		#
-		# This path does NOT go through _apply_with_placements, so it needs the
-		# catalogue wait of its own - ensure_layer reaches map_data and therefore
-		# the same whole-mount scans.
-		await _wait_for_catalogue("building the map objects")
 		if v and mapctx.game_source != null \
 				and mapctx.ensure_layer(r0, "objects", _mapctx_tex_mode()):
 			lbl.text = "Building the map objects…"
@@ -3233,10 +3226,9 @@ func _check_scene_change() -> void:
 	# would claim a skyline and a sea that the new scene has not built
 	if mapctx_backdrop: mapctx_backdrop.set_pressed_no_signal(false)
 	if mapctx_water: mapctx_water.set_pressed_no_signal(false)
-	# back to ON, not off, because that is this chip's default everywhere else
 	if mapctx_roads:
-		mapctx_roads.set_pressed_no_signal(true)
-		if mapctx: mapctx.set_roads_shown(null, true)
+		mapctx_roads.set_pressed_no_signal(false)
+		if mapctx: mapctx.set_roads_shown(null, false)
 	if mapctx_light: mapctx_light.set_pressed_no_signal(false)
 	if mapctx_fx:
 		mapctx_fx.set_pressed_no_signal(false)
@@ -3436,66 +3428,23 @@ func _apply_with_placements(r: Node, on: bool, objs: bool, tex, bd: bool, wt: bo
 	#
 	# objs and bd are the two layers built FROM walk rows. Nothing else needs
 	# them, and ensure_placements returns immediately once the walk has run.
-	await _wait_for_catalogue("building this layer")
+	# THE CATALOGUE WAIT THAT USED TO BE HERE IS GONE.
+	#
+	# It was the first fix for the crash inside terrain(): the sweep grew
+	# src.ebx and src.res while the build scanned them, so the build waited for
+	# the sweep to finish. Correct, and the wrong price - switching Extended
+	# Terrain on could sit there for up to a minute and a half waiting for
+	# something the terrain does not use and whose name means nothing to anyone
+	# ("the placeable catalogue" reads as "object previews").
+	#
+	# BF6Source.mount_rest now builds into private copies and publishes them in
+	# one assignment, so there is no half-grown mount for anything to trip over
+	# and nothing to wait for. See the note there.
 	if (objs or bd) and mapctx != null and mapctx.game_source != null \
 			and not mapctx.game_source.placements_ready:
 		await _ensure_placements_async(mapctx.game_source)
-	# ...and again, because the wait above is the one that matters and the
-	# placement walk between them can take a minute of its own.
-	await _wait_for_catalogue("building this layer")
 	return mapctx.apply(r, on, objs, tex, bd, wt)
 
-
-# NOTHING THAT SCANS THE WHOLE MOUNT MAY RUN WHILE THE CATALOGUE IS GROWING.
-#
-# The build reads src.ebx and src.res by walking every key - that is how
-# terrain() finds the streaming tree, how the water partition is found, how the
-# gamemode roots are listed. The catalogue sweep adds to those same two
-# Dictionaries from a worker thread, and a Dictionary that rehashes under
-# another thread's iterator does not misbehave, it takes Godot down:
-#
-#   FATAL: Index p_index = 184634 is out of bounds (size = 184634)
-#      at terrain() highpoly_gamesource.gd:1470
-#
-# So the build waits. It is an await, not a lock, so the editor stays live and
-# the panel says what it is waiting for rather than appearing to hang. The wait
-# is bounded by the sweep itself - seconds when its cache is warm, up to about
-# a minute and a half cold - and it only happens if you switch a layer on during
-# the first minute of a session.
-func _wait_for_catalogue(what: String) -> void:
-	if mapctx == null or mapctx.game_source == null:
-		return
-	var gs = mapctx.game_source
-	if not gs.catalogue_upgrading:
-		return
-	var said := false
-	var t0 := Time.get_ticks_msec()
-	while gs.catalogue_upgrading:
-		if get_tree() == null:
-			return
-		# A STUCK FLAG MUST NOT BECOME A PERMANENT WAIT. The sweep is bounded -
-		# about a minute and a half at its worst - so four minutes means nobody
-		# is going to lower this: the panel was freed mid-upgrade, or its
-		# coroutine was dropped. Waiting on it forever would be a worse failure
-		# than the crash it exists to prevent, so it is cleared and said out
-		# loud rather than left to look like a hang.
-		if Time.get_ticks_msec() - t0 > CATALOGUE_WAIT_MAX_MS:
-			HighpolyLog.warn(("the placeable catalogue has been marked as loading "
-				+ "for %d s, which is longer than it can take. Treating that as "
-				+ "stale and carrying on.") % (CATALOGUE_WAIT_MAX_MS / 1000))
-			gs.catalogue_upgrading = false
-			return
-		if not said and Time.get_ticks_msec() - t0 > 400:
-			said = true
-			lbl.text = ("Waiting for the placeable catalogue before %s — it is "
-				+ "still loading in the background.") % what
-			HighpolyLog.info(("%s is waiting for the placeable catalogue: the two "
-				+ "read the same tables and the catalogue is still growing them.")
-				% what)
-		await get_tree().process_frame
-	if said:
-		HighpolyLog.info("the catalogue finished after %.1f s; carrying on"
-			% ((Time.get_ticks_msec() - t0) / 1000.0))
 
 
 # The dock owns these two buttons; the map context cannot see them. Kept in one
@@ -3729,10 +3678,10 @@ func _save_mapctx_state() -> void:
 		"objects": mapctx_objects.button_pressed,
 		"backdrop": mapctx_backdrop.button_pressed if mapctx_backdrop else false,
 		"water": mapctx_water.button_pressed if mapctx_water else false,
-		# defaults TRUE on read, unlike the other chips: roads shipped with
-		# Extended Terrain for this plugin's whole life, so a saved state from
-		# before this chip existed has to restore them shown.
-		"roads": mapctx_roads.button_pressed if mapctx_roads else true,
+		# defaults FALSE on read, like every other layer chip: a saved state from
+		# before this chip existed restores with the streets off, same as any
+		# layer you have not asked for.
+		"roads": mapctx_roads.button_pressed if mapctx_roads else false,
 		"range": mapctx_range.value if mapctx_range else 800.0,
 		"maptile": false,      # the SDK plugin owns the ground texture now
 		"light": mapctx_light.button_pressed if mapctx_light else false,
@@ -3810,11 +3759,10 @@ func _restore_mapctx_state() -> void:
 		mapctx_backdrop.set_pressed_no_signal(bool(d.get("backdrop", false)))
 	if mapctx_water:
 		mapctx_water.set_pressed_no_signal(bool(d.get("water", false)))
-	# TRUE by default, and pushed into the map context by hand:
-	# set_pressed_no_signal skips the handler, so without this the chip would
-	# read "on" while the build had already hidden the node (or the reverse).
+	# Pushed into the map context by hand: set_pressed_no_signal skips the
+	# handler, so without this the chip and the built node could disagree.
 	if mapctx_roads:
-		var _rd_on := bool(d.get("roads", true))
+		var _rd_on := bool(d.get("roads", false))
 		mapctx_roads.set_pressed_no_signal(_rd_on)
 		if mapctx: mapctx.set_roads_shown(
 			EditorInterface.get_edited_scene_root(), _rd_on)

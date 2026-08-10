@@ -247,7 +247,26 @@ func _save_cache(p: String) -> void:
 # ebx.has(n): continue`), which is what makes adding later archives safe: they
 # can only fill names the level did not already provide, so a level read that
 # has already resolved cannot be changed underneath by the catalogue arriving.
-func _sweep(paths: Array, progress := Callable(), bundle_limit := 0) -> Dictionary:
+# `into` REDIRECTS THE WRITES, so a sweep can build somewhere private.
+#
+# Everything filled here is read elsewhere by scanning every key: the terrain
+# finds its streaming tree that way, the water its partition, the gamemode miner
+# its roots. Growing one of these Dictionaries while another thread iterates it
+# does not misbehave, it takes Godot down - a user's crash log caught exactly
+# that, "Index p_index = 184634 is out of bounds (size = 184634)" inside
+# terrain(), with 184,634 sitting between MP_Tungsten's level mount and the full
+# catalogue.
+#
+# Empty (the default) writes straight into the live mount, which is right for
+# the FIRST mount because nothing can be reading it yet. mount_rest passes
+# copies and publishes them in one assignment when it is done.
+func _sweep(paths: Array, progress := Callable(), bundle_limit := 0,
+		into := {}) -> Dictionary:
+	var d_ebx: Dictionary = into.get("ebx", ebx)
+	var d_res: Dictionary = into.get("res", res)
+	var d_rb: Dictionary = into.get("res_bundle", res_bundle)
+	var d_chunks: Dictionary = into.get("chunks", chunks)
+	var d_cseg: Dictionary = into.get("chunk_seg", chunk_seg)
 	var opened := 0
 	var failed := 0
 	var collisions := 0
@@ -291,30 +310,30 @@ func _sweep(paths: Array, progress := Callable(), bundle_limit := 0) -> Dictiona
 				match kind:
 					"ebx":
 						var n: String = rec["name"]
-						if ebx.has(n):
-							if int(ebx[n][4]) != int(rec["size"]):
+						if d_ebx.has(n):
+							if int(d_ebx[n][4]) != int(rec["size"]):
 								collisions += 1
 							continue
-						ebx[n] = [seg[0], seg[1], seg[2], seg[3], rec["size"]]
+						d_ebx[n] = [seg[0], seg[1], seg[2], seg[3], rec["size"]]
 					"res":
 						var rn: String = rec["name"]
-						if res.has(rn):
-							if int(res[rn][4]) != int(rec["size"]):
+						if d_res.has(rn):
+							if int(d_res[rn][4]) != int(rec["size"]):
 								collisions += 1
 							continue
-						res[rn] = [seg[0], seg[1], seg[2], seg[3],
+						d_res[rn] = [seg[0], seg[1], seg[2], seg[3],
 								rec["size"], rec["type"], rec["rid"]]
 						# WHICH BUNDLE SHIPPED IT, which is the only thing that can
 						# answer "where are this mesh's materials". A ShaderBlockDepot
 						# is named <bundle>_win32_shaderstate/shaderblockdepot_<id>, so
 						# a depot belongs to a BUNDLE. Known right here, once, while
 						# the sweep is already holding it.
-						res_bundle[rn] = str(b["name"])
+						d_rb[rn] = str(b["name"])
 					_:
-						if not chunk_seg.has(rec["id"]):
-							chunk_seg[rec["id"]] = seg
+						if not d_cseg.has(rec["id"]):
+							d_cseg[rec["id"]] = seg
 		if progress.is_valid():
-			progress.call(tocs.size(), paths.size(), ebx.size())
+			progress.call(tocs.size(), paths.size(), d_ebx.size())
 	return {"opened": opened, "failed": failed, "collisions": collisions}
 
 
@@ -332,7 +351,30 @@ func _sweep(paths: Array, progress := Callable(), bundle_limit := 0) -> Dictiona
 func mount_rest(progress := Callable(), use_cache := true) -> bool:
 	var t0 := Time.get_ticks_msec()
 	var paths := _find_tocs(_level, true)
-	var sw := _sweep(paths, progress, 0)
+	# BUILT PRIVATELY, THEN PUBLISHED IN ONE ASSIGNMENT.
+	#
+	# This runs on a worker while the map is on screen and being read, and it is
+	# the only sweep that does. Writing into the live Dictionaries grew them
+	# under whoever was scanning them, which crashed Godot inside terrain() - see
+	# the note on _sweep.
+	#
+	# A copy costs the dictionary structure and not the payload: the entries are
+	# Arrays and stay shared. Publishing is a reference swap, so a reader that
+	# already holds the old Dictionary keeps iterating it safely to the end and
+	# the next caller gets the complete one. Nothing has to wait, and nothing
+	# sees a half-grown mount.
+	var n_ebx := ebx.duplicate()
+	var n_res := res.duplicate()
+	var n_rb := res_bundle.duplicate()
+	var n_chunks := chunks.duplicate()
+	var n_cseg := chunk_seg.duplicate()
+	var sw := _sweep(paths, progress, 0, {"ebx": n_ebx, "res": n_res,
+		"res_bundle": n_rb, "chunks": n_chunks, "chunk_seg": n_cseg})
+	ebx = n_ebx
+	res = n_res
+	res_bundle = n_rb
+	chunks = n_chunks
+	chunk_seg = n_cseg
 	stats["ms_rest"] = Time.get_ticks_msec() - t0
 	stats["ebx"] = ebx.size()
 	stats["res"] = res.size()
