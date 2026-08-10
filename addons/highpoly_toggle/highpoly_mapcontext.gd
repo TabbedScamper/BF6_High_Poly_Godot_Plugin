@@ -1249,6 +1249,7 @@ var _splat_n := 0                          # its texture-array slice count
 # thread - the only main-thread work is two 16 MB texture uploads when one
 # lands, which is a frame's worth of transfer, not a stall.
 var _tmat_live: ShaderMaterial = null      # the live terrain material, or null
+var _cmap_bound := false                   # the live material holds a colour map
 var _near_center := Vector2.INF            # centre of the applied window
 var _near_flight := false                  # a recomposite is on the worker
 var _near_last_ms := 0
@@ -1526,11 +1527,15 @@ func _terrain_shader_mat(map: String) -> ShaderMaterial:
 	# Deliberately independent of the splat: a map whose splat did not build
 	# still gets the colour map if it is asked for. Tying the two together would
 	# mean one failure costing both.
-	var cm := _colormap_set(map) if colormap_enabled else {}
-	if not cm.is_empty():
+	# ALWAYS BOUND, gated by the uniform alone: the Ground photo slider must
+	# work in BOTH directions without a rebuild, and a material built with the
+	# photo off would have no texture to turn back on.
+	var cm := _colormap_set(map)
+	_cmap_bound = not cm.is_empty()
+	if _cmap_bound:
 		m.set_shader_parameter("colormap", cm["tex"])
 		m.set_shader_parameter("cmap_bounds", cm["bounds"])
-		m.set_shader_parameter("use_colormap", true)
+		m.set_shader_parameter("use_colormap", colormap_enabled)
 		# NEVER left at the shader's default. The uniform defaults to 1.0, and
 		# mix(det, cm, 1.0) REPLACES the textured layers' colour with the photo
 		# - a correct decode at full strength still flattens every layer that
@@ -1562,6 +1567,22 @@ func _terrain_shader_mat(map: String) -> ShaderMaterial:
 	_near_center = Vector2.INF
 	_near_fail = false
 	return m
+
+
+# The Ground photo knob, applied live: no rebuild, the shader reads uniforms.
+# The photo is the game's own terrain colour raster; on a dense city map it
+# reads like a satellite image over the ground, and how much of it anyone
+# wants is taste, not correctness - so it is the user's slider now.
+func set_colormap_strength(v: float) -> String:
+	colormap_strength = clampf(v, 0.0, 1.0)
+	colormap_enabled = colormap_strength > 0.005
+	if _tmat_live != null and is_instance_valid(_tmat_live):
+		_tmat_live.set_shader_parameter("use_colormap",
+			_cmap_bound and colormap_enabled)
+		_tmat_live.set_shader_parameter("cmap_strength", colormap_strength)
+	if not colormap_enabled:
+		return "Ground photo off - the ground is the game's layers and detail only"
+	return "Ground photo at %d%%" % int(round(colormap_strength * 100.0))
 
 # READ FROM THE GAME INSTEAD OF THE DOWNLOAD.
 #

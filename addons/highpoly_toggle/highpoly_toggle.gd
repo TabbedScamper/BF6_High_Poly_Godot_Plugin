@@ -108,6 +108,9 @@ var mapctx_maplights: Button # sub-toggle: the map's mined light entities
 var mapctx_fill_row: HBoxContainer   # "Interior light" slider row (with the shadow controls)
 var mapctx_fill: HSlider             # ambient held back from sky visibility, 0-60%
 var mapctx_fill_val: Label
+var mapctx_photo_row: HBoxContainer  # "Ground photo" slider row (always shown)
+var mapctx_photo: HSlider            # colour-map strength on the extended ground, 0-100%
+var mapctx_photo_val: Label
 var mapctx_optimize: Button  # distance-cull the user's PLACED objects (their custom map content)
 var mapctx_variant_row: HBoxContainer  # "Variant" gamemode dropdown (visible with objects)
 var mapctx_variant: OptionButton
@@ -1085,6 +1088,37 @@ All of it is read from your own Battlefield 6 installation."
 			EditorInterface.get_edited_scene_root(), v / 100.0)
 		_save_mapctx_state())
 	mc_sub.add_child(mapctx_fill_row)
+
+	# Ground photo: how strongly the game's own terrain colour raster steers
+	# the extended ground. It is real game data - the engine modulates every
+	# terrain material by it - but on a dense city map it reads like a
+	# satellite image laid over the ground, and how much of that anyone wants
+	# is taste. A user called Aftermath's ground "a google earth image
+	# overlay", and they were describing this term at its shipped 75%. Live:
+	# the shader reads a uniform, so dragging it needs no rebuild.
+	mapctx_photo_row = HBoxContainer.new()
+	var ph_lbl := Label.new()
+	ph_lbl.text = "Ground photo"
+	mapctx_photo_row.add_child(ph_lbl)
+	mapctx_photo = HSlider.new()
+	mapctx_photo.min_value = 0
+	mapctx_photo.max_value = 100
+	mapctx_photo.step = 1
+	mapctx_photo.value = int(round(MapContextScript.colormap_strength * 100.0))
+	mapctx_photo.custom_minimum_size = Vector2(150, 0)
+	mapctx_photo.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	mapctx_photo.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	mapctx_photo.tooltip_text = "How much of the game's own terrain colour raster tints the extended ground. It is the engine's large-scale ground colour, and it is also the only colour source for ground whose layers are computed in the game's shaders - at 0% those areas go plain. On city maps a high setting reads like an aerial photo on the ground; drop it until it looks right to you."
+	mapctx_photo_row.add_child(mapctx_photo)
+	mapctx_photo_val = Label.new()
+	mapctx_photo_val.text = "%d%%" % int(mapctx_photo.value)
+	mapctx_photo_row.add_child(mapctx_photo_val)
+	mapctx_photo.value_changed.connect(func(v: float):
+		mapctx_photo_val.text = "%d%%" % int(v)
+		if mapctx != null:
+			lbl.text = mapctx.set_colormap_strength(v / 100.0)
+		_save_mapctx_state())
+	mc_sub.add_child(mapctx_photo_row)
 
 	# (A pair of sun-position sliders lived here while the azimuth convention was
 	# being worked out against the running game. They did their job — SunRotationX
@@ -2202,6 +2236,7 @@ func _capture_ui() -> Dictionary:
 		"mode": mode_btn.get_selected_id() if mode_btn != null else -1,
 		"range": mapctx_range.value if mapctx_range != null else -1.0,
 		"fill": mapctx_fill.value if mapctx_fill != null else -1.0,
+		"photo": mapctx_photo.value if mapctx_photo != null else -1.0,
 		"variant": mapctx_variant.selected if mapctx_variant != null else -1,
 		"scroll": dock_scroll.scroll_vertical if dock_scroll != null else 0,
 		"open": win != null and win.visible,
@@ -2229,6 +2264,12 @@ func _apply_ui(d: Dictionary) -> void:
 	if mapctx_fill != null and fl >= 0.0:
 		mapctx_fill.set_value_no_signal(fl)
 		if mapctx_fill_val: mapctx_fill_val.text = "%d%%" % int(fl)
+	var pv := float(d.get("photo", -1.0))
+	if mapctx_photo != null and pv >= 0.0:
+		mapctx_photo.set_value_no_signal(pv)
+		if mapctx_photo_val: mapctx_photo_val.text = "%d%%" % int(pv)
+		MapContextScript.colormap_strength = clampf(pv / 100.0, 0.0, 1.0)
+		MapContextScript.colormap_enabled = pv > 0.5
 	var vi := int(d.get("variant", -1))
 	if mapctx_variant != null and vi >= 0 and vi < mapctx_variant.item_count:
 		mapctx_variant.select(vi)
@@ -3997,6 +4038,7 @@ func _save_mapctx_state() -> void:
 		"maplights": mapctx_maplights.button_pressed if mapctx_maplights else false,
 		"proplight": prop_light_on.button_pressed if prop_light_on else false,
 		"fill": mapctx_fill.value if mapctx_fill else 22.0,
+		"photo": mapctx_photo.value if mapctx_photo else 75.0,
 		"optimize": true,      # always on: it is what the Range slider means
 		"fx": mapctx_fx.button_pressed if mapctx_fx else false,
 		"variant": mapctx_variant.get_item_text(mapctx_variant.selected)
@@ -4127,6 +4169,14 @@ func _restore_mapctx_state() -> void:
 				lbl.text = HighpolyGamemode.apply(r, map, _sv, mapctx)
 				mapctx.set_variant_layers(_sv)
 				break
+	# the Ground photo strength, BEFORE the apply below builds the terrain
+	# material, so the build binds the saved value rather than the default
+	if mapctx_photo:
+		var pv: float = float(d.get("photo", mapctx_photo.value))
+		mapctx_photo.set_value_no_signal(pv)
+		if mapctx_photo_val: mapctx_photo_val.text = "%d%%" % int(pv)
+		MapContextScript.colormap_strength = clampf(pv / 100.0, 0.0, 1.0)
+		MapContextScript.colormap_enabled = pv > 0.5
 	lbl.text = "Bringing back the real level for %s…" % map
 	var saved_tex := int(d.get("tex", 0))
 	# MIGRATION. Before the light rung existed, id 0 meant plain "Low-Poly" and
