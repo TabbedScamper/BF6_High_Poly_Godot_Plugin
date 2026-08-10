@@ -482,6 +482,20 @@ static func _bubble(idx: PackedByteArray, wgt: PackedByteArray, o: int, s: int) 
 # blitting the apron would double a two-pixel band of the neighbour into every
 # tile seam.
 # ---------------------------------------------------------------------------
+# In place, over the raw bytes: get_pixel/set_pixel per texel on a 68x68 tile is
+# 4,624 Color allocations, and there are thousands of tiles.
+static func _swap_rb(img: Image) -> void:
+	var d := img.get_data()
+	var i := 0
+	while i + 2 < d.size():
+		var r := d[i]
+		d[i] = d[i + 2]
+		d[i + 2] = r
+		i += 4                          # RGBA8
+	img.set_data(img.get_width(), img.get_height(), img.has_mipmaps(),
+		Image.FORMAT_RGBA8, d)
+
+
 func assemble_colors(tiles: Dictionary, size: int) -> Image:
 	if tiles.is_empty() or tile_side <= 0:
 		return null
@@ -496,6 +510,22 @@ func assemble_colors(tiles: Dictionary, size: int) -> Image:
 		if bc == null or bc.decompress() != OK:
 			continue
 		bc.convert(Image.FORMAT_RGBA8)
+		# RED AND BLUE ARE THE OTHER WAY ROUND in these tiles.
+		#
+		# Decoded as they come, MP_Tungsten's colour map has a mean of
+		# (0.119, 0.735, 0.676) - cyan. No terrain is cyan. The SDK ships its
+		# own top-down image of that exact map, at
+		# addons/bf_portal/terrain_decal/textures/MP_Tungsten.jpg, and its mean
+		# is (0.520, 0.473, 0.356): warm, red above blue, which is what ground
+		# looks like. Swapping R and B turns ours into (0.676, 0.735, 0.119) and
+		# cuts the distance to that reference from 0.576 to 0.386 - the closest
+		# of every interpretation tried, beating alpha-as-red, GBA and a
+		# linear/sRGB mismatch.
+		#
+		# The residual is expected rather than a second fault: the reference is
+		# a rendered overview of the whole map with its props and lighting in
+		# it, so it can agree on hue and never on value.
+		_swap_rb(bc)
 		var inner := bc.get_region(Rect2i(apron, apron, tile_side - apron * 2,
 			tile_side - apron * 2))
 		var b: Array = bounds_of(int(k), root_min, root_max)

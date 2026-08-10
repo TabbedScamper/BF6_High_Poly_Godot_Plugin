@@ -1591,6 +1591,10 @@ func terrain(cache_dir: String) -> Dictionary:
 # layout the terrain shader's splat path already reads.
 const SURFACE_RES := 2048              # splat raster side
 const COLOR_RES := 4096                # colour map side (~2 m per texel on a 8 km map)
+# Bumped whenever the colour map is DECODED differently, so an existing cache
+# is rebuilt instead of serving the previous interpretation forever.
+#   1  red and blue swapped (see BF6Splat._swap_rb)
+const CMAP_VERSION := 1
 const LAYER_TEX_DIM := 512             # per-slice detail textures; all slices must match
 
 
@@ -1644,7 +1648,12 @@ func terrain_surface(cache_dir: String, force := false,
 	if not force and FileAccess.file_exists(meta_path) \
 			and FileAccess.file_exists("%s/colormap.png" % cache_dir):
 		var got: Variant = JSON.parse_string(FileAccess.get_file_as_string(meta_path))
-		if got is Dictionary:
+		# A CACHE FROM BEFORE A COLOUR CHANGE IS NOT A CACHE, IT IS THE OLD BUG
+		# ON DISK. The ground surface is expensive - 25 s to 115 s - so it is
+		# kept and reused, which means a fix to how it is DECODED reaches nobody
+		# who has already built one. The colour maps written before the red/blue
+		# swap are cyan and would have stayed cyan forever.
+		if got is Dictionary and int((got as Dictionary).get("cmap_v", 0)) >= CMAP_VERSION:
 			_surface_cached = true
 			return got as Dictionary
 
@@ -1932,6 +1941,7 @@ func terrain_surface(cache_dir: String, force := false,
 		"slices": written,
 		"world": {"x0": sp.root_min.x, "z0": sp.root_min.y,
 			"size": sp.root_max.x - sp.root_min.x},
+		"cmap_v": CMAP_VERSION,
 		"colormap": {"file": "colormap.png", "res": COLOR_RES,
 			"x0": sp.root_min.x, "z0": sp.root_min.y,
 			"size": sp.root_max.x - sp.root_min.x},
