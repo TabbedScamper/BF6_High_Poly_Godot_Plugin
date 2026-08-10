@@ -3807,7 +3807,40 @@ func _ensure_game_source(map: String, gen: int = -1) -> bool:
 	# be drawn. Added on a worker instead, additively, so the map is on screen
 	# and being worked on while it lands.
 	_upgrade_catalogue_async(gs)
+	_mine_gamemodes_async(gs, map)
 	return true
+
+
+# THE MODE MARKERS, mined from the install on a worker.
+#
+# highpoly_gamemode.gd has always been able to draw capture zones, objectives
+# and spawns; it needed gamemode_markers.json, from a miner that no longer
+# exists. HighpolyGmMine rebuilds that file from the game. 7 s on MP_Aftermath,
+# so it goes on a worker rather than in front of the map.
+#
+# Only when the file is absent: it is derived from the install and does not go
+# stale between sessions, and re-mining on every open would spend those seconds
+# for nothing.
+func _mine_gamemodes_async(gs, map: String) -> void:
+	if gs == null or map == "":
+		return
+	if FileAccess.file_exists(HighpolyGamemode.data_path(map)):
+		return
+	var done := [false]
+	var n := [0]
+	var tid := WorkerThreadPool.add_task(func() -> void:
+		n[0] = HighpolyGmMine.mine_to_disk(gs, str(gs.level), map)
+		done[0] = true, true, "bf6 gamemode markers")
+	while not done[0]:
+		if get_tree() == null:
+			break
+		await get_tree().process_frame
+	WorkerThreadPool.wait_for_task_completion(tid)
+	if n[0] > 0:
+		# The dropdown lists what this just produced, so it has to be asked
+		# again - the same timing mistake that kept the row hidden before.
+		_variant_row_update(mapctx_objects != null and mapctx_objects.button_pressed)
+	return
 
 
 # Runs the catalogue sweep off the main thread and refreshes what depends on it.
