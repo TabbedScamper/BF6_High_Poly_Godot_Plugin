@@ -1703,7 +1703,11 @@ const CMAP_VERSION := 2
 #      map, so the nine 4356/5184 maps had their pages sliced at wrong offsets
 #      and decoded with the wrong codec. Their idx/w caches are noise and must
 #      be rebuilt. (Starts at 2 to match CMAP_VERSION's history.)
-const SPLAT_VERSION := 2
+#   3  pages sliced FORWARD from the block-0 payload: v2 still sliced them
+#      end-relative, which on the block-2 water maps (tungsten, eastwood,
+#      isolated) read the WATER HEIGHTFIELD as weight pages on exactly the
+#      river nodes. See MAP-TUNGSTEN.md §U.
+const SPLAT_VERSION := 3
 const LAYER_TEX_DIM := 512             # per-slice detail textures; all slices must match
 
 
@@ -2587,16 +2591,198 @@ func _counts_water(name: String) -> bool:
 	return false
 
 
+# ---------------------------------------------------------------------------
+# THE RIVER, out of terrain streaming-tree BLOCK 2.
+#
+# Block 2 is a second, ABSOLUTE-Y u16 heightfield: the water surface, decoded
+# with block 0's own codec (u16/65536 x WorldSizeY). It was mislabeled
+# "density" from an engine binder slot name, which is why no water search ever
+# looked at it - while the user could SEE the river in game. Measured
+# (MAP-TUNGSTEN.md §U): every decoded sample lands inside its node's stored
+# AABB-Y band, the water-above-ground raster reproduces the braided channels
+# one-for-one, the level descends monotonically downstream (76.4 -> 66.9 m),
+# and on Eastwood the wet plateaus match the LakeData authored levels to the
+# centimetre. Dry texels hold a constant fill just below the terrain floor, so
+# the wet mask is simply "above the fill".
+#
+# Ships on tungsten, eastwood and isolated; every other map has no block 2 and
+# returns {} here, which costs one find_block call.
+#
+# -> {"mesh": ArrayMesh, "y0", "y1", "wet_km2"} or {}
+# ---------------------------------------------------------------------------
+const WATER_GRID := 1024               # ~4 m per sample on a 4 km map: the
+                                       # water surface is smooth, unlike ground
+
+func terrain_water() -> Dictionary:
+	if src == null:
+		return {}
+	var pick := ""
+	for rn in src.res.keys():
+		var n := str(rn)
+		if n.contains("streamingtree") and n.to_lower().contains(level):
+			pick = n
+			break
+	if pick == "":
+		return {}
+	var res := src.get_res(pick)
+	if res.is_empty():
+		return {}
+	var t := BF6Terrain.new()
+	var b2 := t.find_block(res, BF6Terrain.BLOCK_DENSITY)
+	if b2.is_empty():
+		return {}                      # no block 2: this map's water is elsewhere
+	if not t.read_block_header(b2) or not t.walk_nodes(b2):
+		return {}
+	var dir := t.read_chunk_directory(res)
+	if dir.is_empty():
+		return {}
+	# The block-2 payload is NOT at the chunk head: the primary chunk is
+	# [block-0][pages][block-2][tiles]. The wrapped fetch hands resolve_external
+	# the block-2 window as if it were the whole chunk, picked from the tail
+	# candidates by which slice's interior u16s scale into the node's own
+	# stored AABB-Y band - pages and tiles do not.
+	var band := {}
+	for n in t.nodes:
+		var nd: Dictionary = n
+		if not nd["external"]:
+			continue
+		var e = dir.get(int(nd["key"]))
+		if e == null:
+			continue
+		var g := str((e as Dictionary)["primary"])
+		var yb := Vector2((nd["min"] as Vector3).y, (nd["max"] as Vector3).y)
+		band[g] = yb
+		band[BF6Terrain._reverse_guid(g)] = yb
+	var xs := t.xs
+	var dsz := t.data_size
+	var wy := t.world_size_y
+	var want := xs * xs * 2
+	var fetch2 := func(g) -> PackedByteArray:
+		var gs := str(g)
+		if not band.has(gs):
+			return PackedByteArray()   # a paired chunk: block 2 has none
+		var raw: PackedByteArray = src.get_chunk(gs)
+		if raw.size() < 2 * dsz:
+			return PackedByteArray()   # single-payload chunk: block 0 only
+		var yb: Vector2 = band[gs]
+		var lo16 := int(maxf(0.0, (yb.x - 0.5) / wy * 65536.0))
+		var hi16 := int(minf(65535.0, (yb.y + 0.5) / wy * 65536.0))
+		var best_off := -1
+		var best := -1.0
+		for tail in [0, 17424, 34848, 85024]:
+			var off: int = raw.size() - int(tail) - dsz
+			if off < dsz:
+				continue
+			var okn := 0
+			var cnt := 0
+			var j := 4
+			while j < xs - 4:
+				var i := 4
+				while i < xs - 4:
+					var v := raw.decode_u16(off + (j * xs + i) * 2)
+					if v >= lo16 and v <= hi16:
+						okn += 1
+					cnt += 1
+					i += 13
+				j += 13
+			var f := float(okn) / maxf(1.0, float(cnt))
+			if f > best:
+				best = f
+				best_off = off
+		if best_off < 0 or best < 0.9:
+			return PackedByteArray()
+		return raw.slice(best_off, best_off + want)
+	t.resolve_external(dir, fetch2)
+	var g := t.composite(WATER_GRID)
+	if g.is_empty():
+		return {}
+	# The dry fill is the most common value - 86%+ of the map - and water is
+	# strictly above it. A half-metre margin keeps the fill's own quantisation
+	# out of the mesh without eating the shallow braid edges.
+	var grid: PackedByteArray = g["data"]
+	var tally := {}
+	var s := 0
+	while s < grid.size():
+		var v := grid.decode_u16(s)
+		tally[v] = int(tally.get(v, 0)) + 1
+		s += 2 * 97                    # ~5,500 samples: the mode is a landslide
+	var fill := 0
+	var fill_n := 0
+	for k in tally.keys():
+		if int(tally[k]) > fill_n:
+			fill_n = int(tally[k])
+			fill = int(k)
+	var wet_min := fill + int(0.5 / wy * 65536.0)
+	var lo: Vector3 = g["min"]
+	var hi: Vector3 = g["max"]
+	var step_x := (hi.x - lo.x) / float(WATER_GRID - 1)
+	var step_z := (hi.z - lo.z) / float(WATER_GRID - 1)
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var quads := 0
+	var y0 := 1.0e9
+	var y1 := -1.0e9
+	for gz in range(WATER_GRID - 1):
+		for gx in range(WATER_GRID - 1):
+			var v00 := grid.decode_u16((gz * WATER_GRID + gx) * 2)
+			var v10 := grid.decode_u16((gz * WATER_GRID + gx + 1) * 2)
+			var v01 := grid.decode_u16(((gz + 1) * WATER_GRID + gx) * 2)
+			var v11 := grid.decode_u16(((gz + 1) * WATER_GRID + gx + 1) * 2)
+			if v00 < wet_min and v10 < wet_min and v01 < wet_min and v11 < wet_min:
+				continue
+			var x0 := lo.x + gx * step_x
+			var z0 := lo.z + gz * step_z
+			var p00 := Vector3(x0, v00 / 65536.0 * wy, z0)
+			var p10 := Vector3(x0 + step_x, v10 / 65536.0 * wy, z0)
+			var p01 := Vector3(x0, v01 / 65536.0 * wy, z0 + step_z)
+			var p11 := Vector3(x0 + step_x, v11 / 65536.0 * wy, z0 + step_z)
+			y0 = minf(y0, minf(p00.y, p11.y))
+			y1 = maxf(y1, maxf(p00.y, p11.y))
+			st.set_normal(Vector3.UP)
+			st.set_uv(Vector2(x0, z0) * 0.05)
+			st.add_vertex(p00)
+			st.set_uv(Vector2(x0, z0 + step_z) * 0.05)
+			st.add_vertex(p01)
+			st.set_uv(Vector2(x0 + step_x, z0) * 0.05)
+			st.add_vertex(p10)
+			st.set_uv(Vector2(x0 + step_x, z0) * 0.05)
+			st.add_vertex(p10)
+			st.set_uv(Vector2(x0, z0 + step_z) * 0.05)
+			st.add_vertex(p01)
+			st.set_uv(Vector2(x0 + step_x, z0 + step_z) * 0.05)
+			st.add_vertex(p11)
+			quads += 1
+	if quads == 0:
+		return {}
+	var mesh := st.commit()
+	var km2 := quads * step_x * step_z / 1.0e6
+	_say(("game source: river/lake surface from terrain block 2 - %d wet cells "
+		+ "(%.2f km2), water level %.1f..%.1f m") % [quads, km2, y0, y1])
+	return {"mesh": mesh, "y0": y0, "y1": y1, "wet_km2": km2}
+
+
 func water() -> Array:
 	if src == null or types == null:
 		return []
 	var out: Array = []
+	# THE TERRAIN'S OWN WATER FIRST - the block-2 river/lake surface, which is
+	# per-texel truth. The flat entity plane on these maps is authored
+	# UNDERGROUND (tungsten y=0 vs floor 64.8) and acts as the render/material
+	# entity; block 2 is what you actually see in game.
+	var hf := terrain_water()
 	var name := _water_partition()
 	if name == "":
-		return []
+		if hf.is_empty():
+			return []
+		# a block-2 map whose entity partition eluded the name scan still
+		# renders its river; the look falls back to the default water shader
+		out.append(hf)
+		return out
 	var raw := src.get_ebx(name)
 	if raw.is_empty():
-		return []
+		if not hf.is_empty():
+			out.append(hf)
+		return out
 	var e := BF6Ebx.new(types, walk.gi if walk != null else {})
 	if not e.parse(raw):
 		return []
@@ -2640,6 +2826,17 @@ func water() -> Array:
 			   float((out[0]["size"] as Array)[1]),
 			   "" if l0.is_empty() else ", %s shader, %d texture(s)"
 					% [str(l0.get("variant", "?")), (l0.get("tex", {}) as Dictionary).size()]])
+	if not hf.is_empty():
+		# The river wears the map's own water look: the buried plane IS the
+		# material entity (full-ocean shader on tungsten/eastwood), block 2 the
+		# shape. Marry them.
+		if not out.is_empty():
+			var first: Dictionary = out[0]
+			if first.has("look"):
+				hf["look"] = first["look"]
+			if first.has("sim"):
+				hf["sim"] = first["sim"]
+		out.append(hf)
 	return out
 
 

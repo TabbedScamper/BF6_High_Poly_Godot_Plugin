@@ -771,3 +771,184 @@ aftermath do not.** Block 2 is a heightfield-format tree with 125 nodes,
    `findings/water-surface-geometry-from-transform-and-tileoffset` (the field
    identification). Each is a one-line fix that another consumer would otherwise
    repeat.
+
+---
+
+## UPDATE (2026-08-10) — the river IS shipped: streaming-tree block 2 is a water-surface heightfield
+
+Ground truth from the game: MP_Tungsten's braided river renders as REAL water
+in retail. Section A above concluded the level ships no river water geometry.
+The game was right and the study's negative had a hole. The mechanism is found,
+measured, and cross-validated on a second map. New probes:
+
+```
+tools/probe_tungwater_refs.py     reverse-import chain + parent transforms of
+                                  any partition (suspect 1)
+tools/probe_tungwater_block2.py   block-2 payload decode, water-vs-ground
+                                  tests, depth/level PNG + ASCII renders
+```
+
+### U1. The mechanism
+
+**MEASURED — terrain streaming-tree BLOCK 2 is a second, absolute-Y
+heightfield: the WATER SURFACE.** Decoded with the same u16 codec as block 0
+(`y = u16/65536 * WorldSizeY`, same xs=265 grid, same 4-sample border), its
+quadtree carries 125 nodes (99 External, 22 Empty, 4 Packed) and decodes to a
+braided channel network:
+
+- **T1 — the values are heights.** All 99 External payloads decode with every
+  interior sample inside the node's own stored AABB Y band (99 ok / 0 bad).
+  A density/mask interpretation cannot produce that.
+- **T2 — the water sits ON the ground.** Against block 0 in the same chunk,
+  13.28% of samples are above ground (>2 cm); per-node max depth peaks at
+  **5.85 m**; median wet depth ~3 m.
+- **T3 — the wet mask IS the river.** Rasterised (water > ground), the mask
+  reproduces the wet channels of the SDK overhead `MP_Tungsten.jpg`
+  one-for-one — the braided network entering at the east edge, looping through
+  the south-centre, exiting west (`probe_tungwater_block2.py --png`).
+- **T4 — the surface falls downstream, monotonically.** Mean water level by
+  256-m x-band: 76.36 m at x -2048 falling to 66.87 m at x +2048, no
+  inversions.
+
+**The river's numbers (MEASURED):** water level **66.05..76.52 m** (p5 67.47,
+median 69.98, p95 75.58), wet extent **x -2048..2048, z -424..1254**, wet area
+**0.82 km²** (4.9% of the world square). The dry remainder of the grid holds a
+constant **64.006 m** — 0.77 m below the terrain floor of 64.771, i.e. the
+water surface exists everywhere and is simply authored underground wherever
+there is no river. Block 2's "root Y 64.006..76.523" in §E was this all along.
+
+### U2. Where the study's negative had its hole
+
+Section A scanned entity types, layers, decals and ECS prefabs — all EBX-side.
+The water is not EBX; it is a **terrain resource plane**, and TERRAIN.md had
+labelled block 2 "Density / DetailDisplacement" from an engine binder slot
+name (slot 1 `DensityMap`), so no water-side search ever looked at it. The A3
+water-height table ("entity y below floor = buried = no water") is correct for
+the ENTITY but wrong as a verdict on the MAP: on block-2 maps the entity's
+transform Y is irrelevant to where water renders.
+
+**HYPOTHESIS (mechanism join, not traced in the exe):** the full-map
+`WaterSurfaceEntityData` (§A1: 4,096 m basis, QueryBoxHalfExtent covering the
+whole world, MaterialPair 0x06D03489, depot StateKey 0x109C22DA5F67CF7A) is the
+render entity — material, foam, interaction — and the runtime displaces its
+surface per-texel from block 2. Under this reading the full-map query box and
+the y=0 transform are exactly right for a terrain-conforming surface, and A1's
+"untouched default entity" hypothesis is retired.
+
+### U3. Chunk-layout correction (affects every reader of block-2 maps)
+
+**MEASURED — the chunk order is `[block-0][weight pages][block-2][colour
+tiles]`, not "height payloads followed by pages".** Found structurally: the
+bytes at +149,297 have 66-byte-stride u8 smoothness (weight pages are raw
+66x66), and the row-major u16 heightfield begins exactly at
+`149,297 + pages*4,356`, ending `2 x 17,424` before the chunk end where tiles
+exist. Exactly **99 primary chunks decompose with two payloads = the 99
+External block-2 nodes**, key-for-key. TERRAIN.md's chunk-composition section
+("payload(s) — block 0 and, where present, block 2 — followed by the splat
+pages") states the wrong order; the study's §C1 decomposition proved only the
+size multiset. Consequence for any consumer that slices pages from the chunk
+END (the plugin's `node_pages()` pattern): on tungsten/eastwood/isolated a
+back-slice lands on the block-2 payload, not the pages — pages must be sliced
+forward from +149,297. Note `2*17,424 = 8*4,356`, so tile-vs-page ambiguity is
+real; resolve the block-2 offset by the in-AABB-band test
+(`probe_tungwater_block2.py` does; dry texels hold the band floor, so a correct
+slice is ~100% in-band).
+
+### U4. Cross-validation on mp_eastwood — block 2 equals LakeData, rasterised
+
+**MEASURED.** Eastwood's block 2 (23 External nodes, dry-fill exactly
+**50.00 m**) decodes 23 ok / 0 bad, and its wet plateaus sit at **215.88,
+221.70, 225.09, 230.51, 234.49, 237.59** — the authored LakeData water levels
+of MAP-EASTWOOD.md §A2 (215.89..237.28) to the centimetre, at the lakes'
+positions (e.g. node 0x32003, x 0..256 / z 256..512, level 225.09 = the
+fountain pond at y 225.10). Since eastwood's water ENTITY sits at y 3.08,
+block-2 values are **absolute world Y**, not offsets from the entity. LakeData
+is the authoring form; block 2 is the shipped, rasterised render form. The
+same holds for tungsten's river: the empty `river`/`riversplines_backdrop`
+layers and ECS stubs of §A2 are the authoring records, and block 2 is where
+their content was baked — the §A2 bake hypothesis, now with the bake found.
+
+### U5. Fleet census
+
+**MEASURED** (block presence over every level with a streaming tree):
+
+| level | blocks | block-2 root Y | the map's water |
+|---|---|---|---|
+| mp_tungsten | 0,1,**2**,4,**5**,7,8 | 64.01..76.52 | braided river (this doc) |
+| mp_eastwood | 0,1,**2**,4,**5**,7,8 | 50.00..237.59 | 20 LakeData ponds/pools |
+| mp_isolated | 0,1,**2**,4,**5**,7,8,**10** | 100.49..109.12 | its river (untested here) |
+| all 13 others | 0,1,4,7,8 | — | flat entity plane, vista mesh, or none |
+
+Block 2 ships on exactly the three maps whose water must follow a varying
+level, and block 5 co-occurs with it 3-for-3. TERRAIN.md's "8k maps
+(mp_tungsten, mp_eastwood, mp_granite) add 2 and 5" is wrong on membership:
+**mp_isolated ships both** (and an undocumented block 10, content unknown), and
+the correlate is not resolution but terrain-conforming water.
+**HYPOTHESIS:** block 5 (the "twin" coverage mask) is the water-coverage mask
+for block 2. Untested.
+
+### U6. What this changes in section A and the F table
+
+- A1's "Unknown: whether the game renders any true water surface on
+  MP_Tungsten" — **answered: yes, the river**, from block 2.
+- A1's HYPOTHESIS "L10 is the water/wet terrain material" stands, refined:
+  **L10 is the river BED; block 2 is the river SURFACE.** Two different
+  things at the same place.
+- A3 / F-table row "water renders where the entity's y is above the terrain
+  floor" — **demoted from diagnostic to half-truth**: it holds only on maps
+  without block 2. The one-line diagnostic must become: entity-y test, THEN
+  block-2 presence test, THEN (per MAP-BATTERY.md) vista-mesh search.
+- §E's "Tungsten ships blocks 2 and 5 … Block 2 is a heightfield-format tree
+  … root Y range 64.006..76.523" was the river's water surface, unrecognised.
+
+### U7. The suspects that died, with their measurements
+
+1. **Parent transform — NO.** (`probe_tungwater_refs.py`) The water partition
+   `a0873001-e1eb-4532-b8ef-8a852f95a592` is referenced by exactly one
+   partition in the level, `_layers_content/content.ebx`, instance [2]
+   `LayerReferenceObjectData`, whose `BlueprintTransform` is IDENTITY with
+   translation (0, 0, 0); nothing under the level imports content.ebx itself.
+   There is no parent translation to lift the y=0 plane.
+2. **A placed water/river mesh — NO.** A filename sweep of the level tree
+   finds no `*water*`/`*river*`/`*creek*`/`*ocean*`/`*lake*`/`*stream*` mesh
+   partition beyond the empty `WaterAsset` of §A1 (the hits are the known
+   empty layers, prefab `pf_waterstationrural_01` — a building — and the
+   shader-state lookup table).
+3. **LakeData — NO** on tungsten (§A2's type-GUID byte scan over the level
+   tree, unchanged).
+4. **Simulation/VE placement — NO.** `WaterOceanSimulationEntityData`
+   (water_shared_schematic.ebx) holds only `Resolution 64 / TileDimension
+   24.0 / PhysicsSimulationEnabled false` — wave-sim parameters, no geometry,
+   no height; the schematic around it is player_hub channel plumbing. The VE
+   `OceanComponentData` remains shading-only (MAP-BATTERY.md A1).
+5. **QueryBoxHalfExtent tiling — resolved by U2**: the full-map box is the
+   correct authoring for a full-map terrain-conforming surface, not a tile
+   generator.
+
+### U8. Actions for the plugin, in priority order
+
+1. **Render block-2 water** (`highpoly_gamesource.gd::water()` +
+   `bf6_splat.gd`-side chunk access): when the streaming tree carries block 2,
+   walk it with the existing block-0 heightfield walker, take each External
+   node's payload at `chunk_len - trailer - 149,297` (validate by the
+   in-AABB-band test), and mesh the surface where `block2 > block0` (+2 cm),
+   using the material the existing water path already joins from the entity's
+   depot StateKey. Verification numbers: level 66.05..76.52 m, wet area
+   0.82 km², the T3 raster.
+2. **Fix end-relative page slicing on block-2 maps** (`bf6_splat.gd::
+   node_pages()` / the rewritten detect_layout): pages start at +149,297
+   always; on the 99 two-payload chunks a back-slice reads the water
+   heightfield as pages. Applies to eastwood and isolated too.
+3. **Water diagnostic ladder** (G5 revision): "entity y 0.0 is 64.8 m below
+   ground" AND "block 2 present: terrain-conforming water, level
+   66.1..76.5 m" — never conclude dry from the entity alone.
+4. **Eastwood lakes for free**: action 1 renders eastwood's ponds without a
+   LakeData triangulator (MAP-EASTWOOD.md G2 alternative) — block 2 already
+   carries them rasterised, dry-fill 50 m.
+5. **Check mp_isolated** with `probe_tungwater_block2.py mp_isolated` when it
+   gets its map study (block-2 root Y 100.49..109.12 says its river is there).
+6. **Upstream to TERRAIN.md**: (a) block 2 is the water-surface heightfield
+   (absolute world Y; the "Density" binder-slot label is at minimum
+   misleading); (b) chunk internal order `[block0][pages][block2][tiles]`;
+   (c) the 8k-maps claim -> the three-map census of U5 (+ isolated's
+   block 10); (d) the block-5 co-occurrence note.

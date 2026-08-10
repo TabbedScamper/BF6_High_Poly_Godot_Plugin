@@ -4655,7 +4655,29 @@ func _add_water_plane(ctx: Node3D, textured: bool) -> void:
 	wroot.owner = null
 	ctx = wroot
 	for wcfg in planes:
-		if not (wcfg is Dictionary) or not wcfg.has("height"): continue
+		if not (wcfg is Dictionary): continue
+		# THE RIVER/LAKE SURFACE: terrain block 2, meshed per texel by the game
+		# source (see terrain_water). Not a plane at one height - the water
+		# level descends along the flow - so it arrives as a finished mesh in
+		# world space and only needs the water look.
+		if wcfg.has("mesh") and wcfg["mesh"] is Mesh:
+			var rv := MeshInstance3D.new()
+			rv.name = WATER_NODE
+			rv.mesh = wcfg["mesh"] as Mesh
+			var rmat: Material = HighpolyWater.material(wcfg, game_source) if textured else null
+			if rmat == null:
+				var rfb := StandardMaterial3D.new()
+				rfb.albedo_color = WATER_COLOR
+				rfb.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+				rfb.metallic = 0.3
+				rfb.roughness = 0.1
+				rfb.cull_mode = BaseMaterial3D.CULL_DISABLED
+				rmat = rfb
+			rv.material_override = rmat
+			rv.layers = EXT_TERRAIN_LAYER
+			ctx.add_child(rv); rv.owner = null
+			continue
+		if not wcfg.has("height"): continue
 		var wc: Array = wcfg.get("center", [0.0, 0.0])
 		var wsz: Array = wcfg.get("size", [5000.0, 5000.0])
 		var wp := MeshInstance3D.new()

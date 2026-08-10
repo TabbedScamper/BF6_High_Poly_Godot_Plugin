@@ -199,6 +199,17 @@ var _trailer := {}
 # mixed nodes) the pair's TAIL mip matches scale, offset 67,600; on a 260²
 # map (Granite's marina family) the pair's HEAD is the tile, offset 0.
 var _mip := {}
+# residual -> the FORWARD byte offset where the weight pages start in the
+# primary chunk. The pages sit immediately after the BLOCK-0 payload — and on
+# the three maps that ship a block-2 water heightfield (tungsten, eastwood,
+# isolated; see MAP-TUNGSTEN.md §U) the chunk is
+#   [block-0][pages][block-2][tiles]
+# so "size − trailer − pages×pageSize" lands on BLOCK 2, not on the pages:
+# end-relative slicing read the WATER SURFACE as weight pages on exactly the
+# river nodes. Forward slicing from the block-0 prefix is identical on
+# single-payload maps and correct on all of them. The 298,594 prefix is two
+# 149,297 payloads (block 0 + block 2), and the pages follow the FIRST.
+var _pfx := {}
 # Model B (constant non-tile trailer, MAP-CONTAMINATED.md's 936): the constant,
 # or -1 when model A fit.
 var _tail_const := -1
@@ -211,6 +222,7 @@ func detect_layout(dir: Dictionary) -> bool:
 	error = ""
 	_trailer.clear()
 	_mip.clear()
+	_pfx.clear()
 	_tail_const = -1
 	no_colour = false
 	# --- the page size: fewest distinct residuals, none negative -------------
@@ -261,15 +273,20 @@ func detect_layout(dir: Dictionary) -> bool:
 		var t_of := {}
 		var t_mip := {}
 		var okn := 0
+		var t_pf := {}
 		for r in best_resid.keys():
-			var k := _tiles_in(int(r), int(tb))
-			if k >= 0:
-				t_of[int(r)] = k * int(tb)
+			var dc := _decomp(int(r), int(tb))
+			if not dc.is_empty():
+				t_of[int(r)] = dc[0] * int(tb)
+				t_pf[int(r)] = _fwd_of(dc[1])
 				okn += int(best_resid[r])
-			elif (int(tb) == 17424 or int(tb) == 67600) and _mip_fits(int(r)):
-				t_of[int(r)] = 85024
-				t_mip[int(r)] = 67600 if int(tb) == 17424 else 0
-				okn += int(best_resid[r])
+			elif int(tb) == 17424 or int(tb) == 67600:
+				var mp := _mip_fits(int(r))
+				if mp >= 0:
+					t_of[int(r)] = 85024
+					t_mip[int(r)] = 67600 if int(tb) == 17424 else 0
+					t_pf[int(r)] = _fwd_of(mp)
+					okn += int(best_resid[r])
 		if okn * 10 >= total * 9 and okn > best_fit:
 			best_fit = okn
 			tile_bytes = int(tb)
@@ -277,6 +294,7 @@ func detect_layout(dir: Dictionary) -> bool:
 			tile_fmt = int(TILE_FMTS[tb])
 			_trailer = t_of
 			_mip = t_mip
+			_pfx = t_pf
 	if tile_bytes > 0:
 		return true
 	# --- MODEL B: the trailer is a CONSTANT, and it is not a tile ------------
@@ -305,6 +323,7 @@ func detect_layout(dir: Dictionary) -> bool:
 		for p in PREFIXES:
 			if int(r) - int(p) == best_c:
 				_trailer[int(r)] = best_c
+				_pfx[int(r)] = _fwd_of(int(p))
 				break
 	# The colour tile's size and codec, from the paired trailers: four child
 	# tiles each, so a quarter of the paired remainder names the tile.
@@ -337,18 +356,24 @@ func detect_layout(dir: Dictionary) -> bool:
 	return true
 
 
-# Does `residual` decompose as a prefix plus the 260²+132² mip pair?
-func _mip_fits(residual: int) -> bool:
+# The prefix that decomposes `residual` with the 260²+132² mip pair, or -1.
+func _mip_fits(residual: int) -> int:
 	for p in PREFIXES:
 		if residual - int(p) == 85024:
-			return true
-	return false
+			return int(p)
+	return -1
 
 
-# How many tiles a residual holds under `tb`, or -1 if no prefix decomposes it.
-# k = 0 is legal: a node whose chunk is prefix + pages and no colour tile.
-func _tiles_in(residual: int, tb: int) -> int:
-	var best_k := -1
+# Where the weight pages START in a primary chunk with this prefix: right after
+# the block-0 payload. 298,594 is block 0 + block 2, and pages follow block 0.
+func _fwd_of(prefix: int) -> int:
+	return 149297 if prefix == 298594 else prefix
+
+
+# [k tiles, chosen prefix] for a residual under `tb`, or empty when no prefix
+# decomposes it. k = 0 is legal: prefix + pages and no colour tile.
+func _decomp(residual: int, tb: int) -> PackedInt32Array:
+	var best := PackedInt32Array()
 	for p in PREFIXES:
 		var rem := residual - int(p)
 		if rem < 0 or rem % tb != 0:
@@ -359,9 +384,9 @@ func _tiles_in(residual: int, tb: int) -> int:
 		# Prefer the decomposition with the fewest tiles: a residual that can be
 		# read as either "big prefix + 1 tile" or "no prefix + many tiles" is
 		# height data plus one tile, not a stack of tiles.
-		if best_k < 0 or k < best_k:
-			best_k = k
-	return best_k
+		if best.is_empty() or k < best[0]:
+			best = PackedInt32Array([k, int(p)])
+	return best
 
 
 # The trailer (colour tile block) size for one node's primary chunk, from the
@@ -379,18 +404,32 @@ func _trailer_bytes(primary_size: int, pages: int) -> int:
 		for p in PREFIXES:
 			if r - int(p) == _tail_const:
 				_trailer[r] = _tail_const
+				_pfx[r] = _fwd_of(int(p))
 				return _tail_const
 		return -1
-	if (tile_bytes == 17424 or tile_bytes == 67600) and _mip_fits(r):
-		_trailer[r] = 85024
-		_mip[r] = 67600 if tile_bytes == 17424 else 0
-		return 85024
-	var k := _tiles_in(r, tile_bytes)
-	if k < 0:
+	if tile_bytes == 17424 or tile_bytes == 67600:
+		var mp := _mip_fits(r)
+		if mp >= 0:
+			_trailer[r] = 85024
+			_mip[r] = 67600 if tile_bytes == 17424 else 0
+			_pfx[r] = _fwd_of(mp)
+			return 85024
+	var dc := _decomp(r, tile_bytes)
+	if dc.is_empty():
 		return -1
-	var t := k * tile_bytes
+	var t := dc[0] * tile_bytes
 	_trailer[r] = t
+	_pfx[r] = _fwd_of(dc[1])
 	return t
+
+
+# Where the weight pages start in this node's primary chunk, FORWARD from the
+# chunk head, or -1 when the residual does not decompose. See the note on _pfx
+# for why end-relative slicing is wrong on the block-2 (water) maps.
+func pages_offset(primary_size: int, pages: int) -> int:
+	if _trailer_bytes(primary_size, pages) < 0:
+		return -1
+	return int(_pfx.get(primary_size - pages * page_size, -1))
 
 
 # ---------------------------------------------------------------------------
@@ -585,18 +624,18 @@ func node_pages(node: Dictionary, dir: Dictionary, fetch: Callable) -> Array:
 	var e = dir.get(key)
 	if e != null:
 		var ed: Dictionary = e
-		# The pages sit between the height prefix and the colour trailer, so the
-		# offset back from the end is the TRAILER, not one tile — a two-tile node
-		# read with a one-tile offset lands every page 17,424 bytes off and the
-		# weights decode as coloured noise.
-		var trailer := _trailer_bytes(int(ed["primary_size"]), n_pages)
-		if trailer >= 0:
-			var need := trailer + n_pages * page_size
+		# FORWARD from the block-0 payload, never backward from the end. The
+		# pages sit right after block 0, and on the water maps (tungsten,
+		# eastwood, isolated) a block-2 heightfield sits BETWEEN the pages and
+		# the colour trailer - end-relative slicing there read the water
+		# surface as weight pages on exactly the river nodes.
+		var fwd := pages_offset(int(ed["primary_size"]), n_pages)
+		if fwd >= 0:
+			var need := fwd + n_pages * page_size
 			if int(ed["primary_size"]) >= need:
 				var data: PackedByteArray = fetch.call(str(ed["primary"]))
 				if data.size() >= need:
-					var start := data.size() - trailer - n_pages * page_size
-					return _slice_pages(data, start, n_pages)
+					return _slice_pages(data, fwd, n_pages)
 	# the parent's paired chunk
 	var pe = dir.get(key >> 4)
 	if pe == null or str((pe as Dictionary)["paired"]) == "":
