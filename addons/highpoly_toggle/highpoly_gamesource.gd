@@ -1648,12 +1648,19 @@ func terrain_surface(cache_dir: String, force := false,
 	if not force and FileAccess.file_exists(meta_path) \
 			and FileAccess.file_exists("%s/colormap.png" % cache_dir):
 		var got: Variant = JSON.parse_string(FileAccess.get_file_as_string(meta_path))
-		# A CACHE FROM BEFORE A COLOUR CHANGE IS NOT A CACHE, IT IS THE OLD BUG
-		# ON DISK. The ground surface is expensive - 25 s to 115 s - so it is
-		# kept and reused, which means a fix to how it is DECODED reaches nobody
-		# who has already built one. The colour maps written before the red/blue
-		# swap are cyan and would have stayed cyan forever.
-		if got is Dictionary and int((got as Dictionary).get("cmap_v", 0)) >= CMAP_VERSION:
+		# A VERSION GATE HERE INVALIDATES EVERY GROUND CACHE THERE IS, and each
+		# one is a 25 s to 115 s rebuild - which on the path that runs this on
+		# the main thread is the editor gone for two minutes with a progress bar
+		# stopped on the last layer.
+		#
+		# It was added so a fix to how the colour map is DECODED would reach
+		# people who already had a cache. Right instinct, wrong trade: the
+		# colour map is not currently handed to the shader at all (see
+		# MapContext.colormap_enabled), so re-deriving it buys nothing anyone
+		# can see and costs everyone a freeze. cmap_v is still written below, so
+		# the gate can come back the day the shader path works - and only then
+		# is the rebuild worth what it costs.
+		if got is Dictionary:
 			_surface_cached = true
 			return got as Dictionary
 

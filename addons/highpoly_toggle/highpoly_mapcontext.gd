@@ -1247,17 +1247,26 @@ static var _cmap_cache: Dictionary = {}    # map -> {tex, bounds} or {}
 
 # Whether the ground carries the game's aerial photograph. See the comment at
 # the point of use in _terrain_shader_mat for why the default is off.
-# ON. It was declared false and NOTHING EVER SET IT, so the colour map was
-# decoded from the game, written to disk - 25 s of work on MP_Aftermath, 115 s
-# on MP_Tungsten - and then never handed to the shader.
+# OFF, AND BACK OFF AFTER BEING TURNED ON ONCE.
 #
-# That is most of "the terrain is all one texture". The ground gets its close-up
-# detail from splat layers, and on these maps almost none of them can be drawn:
-# MP_Tungsten paints 27 layers and 3 have a texture, so 99% of the ground has no
-# detail layer at all (see docs/GROUND-LAYERS.md). The colour map is precisely
-# what is supposed to cover that case - it is the game's own baked colour for
-# every square metre of the map - and it was switched off.
-static var colormap_enabled := true
+# The finding that prompted it still stands: this was declared false and nothing
+# in the plugin ever set it, so the colour map is decoded from the game, written
+# to disk - 25 s of work on MP_Aftermath, 115 s on MP_Tungsten - and never handed
+# to the shader. On maps where almost no splat layer resolves a texture
+# (MP_Tungsten paints 27 and 3 have one) that leaves the ground with nothing to
+# colour it, which is the "all one texture" complaint.
+#
+# But turning it on made the terrain WORSE, not better: random colours and
+# lines. Which is the honest lesson - a switch nobody has ever set is not a
+# feature waiting to be enabled, it is a code path that has never run. The
+# shader's use_colormap branch, cmap_bounds and cmap_strength have never been
+# exercised, and the evidence says at least one of them is wrong.
+#
+# So it stays off until the shader path is verified against a picture, not
+# reasoned about. The red/blue swap below it (BF6Splat._swap_rb) is measured and
+# correct and stays in: it costs nothing while this is false, and it is needed
+# the moment this is true.
+static var colormap_enabled := false
 
 
 func _colormap_set(map: String) -> Dictionary:

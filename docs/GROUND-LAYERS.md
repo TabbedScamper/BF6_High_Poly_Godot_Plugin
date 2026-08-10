@@ -163,3 +163,57 @@ variant's field offsets is still open.
 
     tools/probe_decalmats.gd   every terrain-decal group with its textures
     tools/probe_water.gd       what water() finds, and every watery partition
+
+---
+
+# The colour map: what turning it on proved, and why it is off again
+
+**It was enabled for one build and made the ground worse.** Recorded here so
+nobody repeats it from the same reasoning I did.
+
+## The two facts that still stand
+
+`MapContext.colormap_enabled` is declared `false` and **nothing in the plugin
+ever sets it**. So the colour map is decoded from the game and written to disk —
+25 s of work on MP_Aftermath, 115 s on MP_Tungsten — and never handed to the
+shader. On these maps that leaves the ground with almost nothing colouring it.
+
+And as decoded it is **not a terrain colour**. MP_Tungsten's mean is
+`(0.119, 0.735, 0.676)` — cyan. The SDK ships its own top-down image of that map
+at `addons/bf_portal/terrain_decal/textures/MP_Tungsten.jpg`, mean
+`(0.520, 0.473, 0.356)`: warm, red above blue.
+
+## What I got wrong
+
+Swapping red and blue moves ours to `(0.709, 0.761, 0.077)` and halves the
+distance to that reference, which was the best of every reading tried. I called
+the remaining gap "expected rather than a second fault" because the reference is
+a rendered overview.
+
+On screen it rendered **yellow**, over grass and dirt that were finally visible
+underneath, with random colours across them. Yellow is exactly
+`(0.709, 0.761, 0.077)`. So the residual was not noise — blue at 0.077 against a
+true ~0.36 is the whole problem, and a red/blue swap is not the answer. A mean
+that moves in the right direction is not evidence that a decode is correct.
+
+The "random colours over recognisable grass and dirt" is the more useful
+symptom: structure surviving while colour scrambles is what a **wrong block
+codec** looks like, not a channel order. `TILE_SIZES` maps 4624 bytes to a 68×68
+tile, which is 16 bytes per 4×4 block — shared by BC2, BC3, BC5, BC6H and BC7,
+so the byte count cannot tell them apart and `assemble_colors` simply asserts
+`FORMAT_BPTC_RGBA` on TERRAIN.md's word.
+
+## Where to start next time
+
+1. Identify the tile codec from the game rather than assuming it. BC5 would
+   explain a near-zero red channel directly: two channels stored, third derived.
+2. Only then re-check the channel order, against a picture and not a mean.
+3. The shader's `use_colormap` branch, `cmap_bounds` and `cmap_strength` have
+   never run either. Verify them separately from the decode, or a second fault
+   will be blamed on the first.
+
+Two mistakes to avoid repeating: a switch nobody has ever set is not a feature
+waiting to be enabled, it is a code path that has never run; and a cache version
+gate that invalidates every ground cache costs every user a 25–115 s rebuild,
+which on the main-thread path is a two-minute freeze with the progress bar
+stopped on the last layer.
