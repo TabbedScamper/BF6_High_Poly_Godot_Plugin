@@ -1670,8 +1670,16 @@ const SURFACE_RES := 2048              # splat raster side
 const COLOR_RES := 4096                # colour map side (~2 m per texel on a 8 km map)
 # Bumped whenever the colour map is DECODED differently, so an existing cache
 # is rebuilt instead of serving the previous interpretation forever.
-#   1  red and blue swapped (see BF6Splat._swap_rb)
-const CMAP_VERSION := 1
+#   1  a red/blue swap that turned out to be wrong and was reverted
+#   2  the layout fix: first-tile-of-trailer, per-node trailer sizes, apron 2
+const CMAP_VERSION := 2
+# Bumped whenever the WEIGHT PAGES are read differently - this invalidates the
+# whole surface (slices, idx, w), not just the colour map.
+#   2  detect_layout rewritten: the old scorer picked page size 2592 on every
+#      map, so the nine 4356/5184 maps had their pages sliced at wrong offsets
+#      and decoded with the wrong codec. Their idx/w caches are noise and must
+#      be rebuilt. (Starts at 2 to match CMAP_VERSION's history.)
+const SPLAT_VERSION := 2
 const LAYER_TEX_DIM := 512             # per-slice detail textures; all slices must match
 
 
@@ -1725,19 +1733,19 @@ func terrain_surface(cache_dir: String, force := false,
 	if not force and FileAccess.file_exists(meta_path) \
 			and FileAccess.file_exists("%s/colormap.png" % cache_dir):
 		var got: Variant = JSON.parse_string(FileAccess.get_file_as_string(meta_path))
-		# A VERSION GATE HERE INVALIDATES EVERY GROUND CACHE THERE IS, and each
-		# one is a 25 s to 115 s rebuild - which on the path that runs this on
-		# the main thread is the editor gone for two minutes with a progress bar
-		# stopped on the last layer.
-		#
-		# It was added so a fix to how the colour map is DECODED would reach
-		# people who already had a cache. Right instinct, wrong trade: the
-		# colour map is not currently handed to the shader at all (see
-		# MapContext.colormap_enabled), so re-deriving it buys nothing anyone
-		# can see and costs everyone a freeze. cmap_v is still written below, so
-		# the gate can come back the day the shader path works - and only then
-		# is the rebuild worth what it costs.
-		if got is Dictionary:
+		# THE VERSION GATE IS BACK, because the day the old note here waited for
+		# has come. It was removed when re-deriving the colour map bought
+		# "nothing anyone can see" - correct then, because the colour map never
+		# reached the shader. Now detect_layout has been rewritten (the old one
+		# picked the wrong page size on nine of sixteen maps, so those caches
+		# hold noise for weights AND colour), the colour map is decoded from the
+		# right bytes, and the shader path is wired. A cache from before the fix
+		# is precisely "the previous interpretation served forever", which is
+		# what the gate exists to end. The rebuild it forces runs on a worker
+		# behind the read panel - not the main-thread freeze the old note
+		# rightly refused to pay.
+		if got is Dictionary \
+				and int((got as Dictionary).get("splat_v", 0)) == SPLAT_VERSION:
 			_surface_cached = true
 			return got as Dictionary
 
@@ -1993,6 +2001,16 @@ func terrain_surface(cache_dir: String, force := false,
 		lut[int(l)] = int(slice_of[l])
 	var idx: PackedByteArray = comp["idx"]
 	var wgt: PackedByteArray = comp["w"]
+	# THE TRUE COVERAGE, KEPT. The loop below overwrites idx IN PLACE through a
+	# LUT that collapses every textureless layer to 255 — right for the shader,
+	# which can only sample slices it has, and it used to be the only copy: on
+	# Tungsten that threw away 27 painted layers' identities to keep 3. The raw
+	# palette indices are what per-layer work needs — scatter placement by the
+	# game's own painted coverage instead of a satellite-greenness guess, and
+	# the per-layer scatter densities after it — and they are in hand RIGHT
+	# HERE for the cost of a duplicate and one PNG. (w.png is not mutated, so
+	# idx_raw.png + w.png together are the complete true coverage.)
+	var idx_raw := idx.duplicate()
 	var out_of_slice := 0
 	for i in range(idx.size()):
 		if wgt[i] == 0:
@@ -2009,11 +2027,14 @@ func terrain_surface(cache_dir: String, force := false,
 		Image.FORMAT_RGBA8, wgt)
 	img_idx.save_png("%s/idx.png" % dir_splat)
 	img_w.save_png("%s/w.png" % dir_splat)
+	var img_raw := Image.create_from_data(SURFACE_RES, SURFACE_RES, false,
+		Image.FORMAT_RGBA8, idx_raw)
+	img_raw.save_png("%s/idx_raw.png" % dir_splat)
 	# 16.7 million bytes through a lookup table plus two PNG encodes. It is pure
 	# GDScript over a byte array, which is the shape that used to be a minute
 	# before the LUT went in, so it is worth a row of its own to keep honest.
 	note_phase("ground: slice remap + write", Time.get_ticks_msec() - t_remap,
-		idx.size(), "texel bytes", FROM_MEMORY, "idx.png and w.png")
+		idx.size(), "texel bytes", FROM_MEMORY, "idx.png, w.png and idx_raw.png")
 
 	# ---- the slope fallback, also from the game ------------------------------
 	var t_fb := Time.get_ticks_msec()
@@ -2026,9 +2047,13 @@ func terrain_surface(cache_dir: String, force := false,
 		"world": {"x0": sp.root_min.x, "z0": sp.root_min.y,
 			"size": sp.root_max.x - sp.root_min.x},
 		"cmap_v": CMAP_VERSION,
+		"splat_v": SPLAT_VERSION,
 		"colormap": {"file": "colormap.png", "res": COLOR_RES,
 			"x0": sp.root_min.x, "z0": sp.root_min.y,
-			"size": sp.root_max.x - sp.root_min.x},
+			"size": sp.root_max.x - sp.root_min.x,
+			# The Z span under its own name: the shader's cmap_bounds used the X
+			# span for both axes, silently wrong on any non-square footprint.
+			"size_z": sp.root_max.y - sp.root_min.y},
 		"layers": slice_meta,
 	}
 	var f := FileAccess.open(meta_path, FileAccess.WRITE)

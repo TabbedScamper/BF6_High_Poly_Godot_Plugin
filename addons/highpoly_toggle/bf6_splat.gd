@@ -26,8 +26,13 @@ const NO_PAGE_FLAG := 0x0100         # §5.1 bit8: IgnoreMask layer, no stored p
 const RECORD := 33
 const HEADER := 0x3D
 const PAGE_SIZES := [2592, 4356, 5184]
-# §5.3. A trailer is one BC7 square tile per node (or, on survey, a mip pair).
-const TILE_SIZES := {4624: 68, 17424: 132, 67600: 260, 85024: 260}
+# §5.3 tile sizes: side² × 16/16 bytes of BC7. 85024 is deliberately NOT here:
+# it is a 67600 + 17424 MIP PAIR trailer (survey-style), not a tile, and the
+# old entry decoded it as a 260² image with 17,424 bytes too many. A map whose
+# residuals decompose to neither pure size now fails detect_layout LOUDLY with
+# the residual list in the error — which is the right outcome until a mip-pair
+# map is actually observed in the Portal set and its tile order established.
+const TILE_SIZES := {4624: 68, 17424: 132, 67600: 260}
 const PAGE_SIDE := 66                # every codec decodes to this
 
 var error := ""
@@ -151,65 +156,146 @@ const CHILD_Z := [0, 0, 1, 1]
 # ---------------------------------------------------------------------------
 # Which page codec this map uses, and how big its colour tiles are.
 #
-# Neither is stored. §5.2's rule is that a map uses ONE codec throughout, found
-# by testing the three candidates against the per-node chunk sizes. The test
-# here needs no height-prefix table: pages sit immediately before the colour
-# tile, so `primarySize − trailer − pages × pageSize` only has to be a
-# non-negative number for the right pair, and the wrong pairs miss on almost
-# every node.
+# Neither is stored, and the old test here could not fail: it counted nodes
+# where `primarySize − tile − pages × pageSize >= 0`, a count that is
+# monotonically decreasing in BOTH parameters, so the smallest pair
+# (2592, 4624) won on EVERY map. That was wrong on nine of sixteen — every
+# 4356-page map had misaligned weight pages decoded with the wrong codec AND a
+# colour "tile" sliced out of the middle of the real trailer (the flat teal at
+# 78% of Tungsten's colormap.png was the tail of a different raster entirely).
+#
+# The decisive test, measured across maps (docs/MAP-TUNGSTEN.md): for the TRUE
+# page size the per-node residual `primarySize − pages × pageSize` collapses to
+# a handful of distinct values — Tungsten: 3 {184145, 333442, 0}; Aftermath: 3
+# {166721, 17424, 0} — while every wrong page size scatters into dozens, many
+# negative. So: pick the page size with the fewest distinct residuals, then
+# derive the tile size by decomposing those residuals as
+#
+#     residual = heightPrefix + k × tileBytes
+#
+# with the §5.2 prefix set below. The trailer (k tiles) is per RESIDUAL, so a
+# map can mix one-tile and two-tile nodes, which Tungsten does.
 # ---------------------------------------------------------------------------
+
+# §5.2 height prefixes, plus the observed sum 2×149297 (Tungsten's two-tile
+# nodes). 189216 is itself 149297 + 39919, so the set is closed under the
+# combinations seen so far.
+const PREFIXES := [0, 39919, 149297, 189216, 298594]
+# residual -> trailer bytes (k × tile_bytes), filled by detect_layout.
+var _trailer := {}
+
+
 func detect_layout(dir: Dictionary) -> bool:
 	error = ""
-	var best := -1
+	_trailer.clear()
+	# --- the page size: fewest distinct residuals, none negative -------------
+	var best_ps := 0
+	var best_resid := {}
 	for ps in PAGE_SIZES:
-		for tb in TILE_SIZES.keys():
-			var score := 0
-			for n in nodes:
-				var nd: Dictionary = n
-				var e = dir.get(int(nd["key"]))
-				if e == null:
-					continue
-				var sz := int((e as Dictionary)["primary_size"])
-				var rest: int = sz - int(tb) - int(nd["pages"]) * ps
-				if sz > 0 and rest >= 0 and int(nd["pages"]) > 0:
-					score += 1
-			if score > best:
-				best = score
-				page_size = ps
-				tile_bytes = int(tb)
-				tile_side = int(TILE_SIZES[tb])
-	# Ambiguity is the risk here, so require the winner to be decisive rather
-	# than merely first: re-score and insist nothing else ties it.
-	var ties := 0
-	for ps in PAGE_SIZES:
-		for tb in TILE_SIZES.keys():
-			if ps == page_size and int(tb) == tile_bytes:
+		var resid := {}
+		var ok := true
+		for n in nodes:
+			var nd: Dictionary = n
+			if int(nd["pages"]) <= 0:
 				continue
-			var score := 0
-			for n in nodes:
-				var nd: Dictionary = n
-				var e = dir.get(int(nd["key"]))
-				if e == null:
-					continue
-				var sz := int((e as Dictionary)["primary_size"])
-				var rest: int = sz - int(tb) - int(nd["pages"]) * ps
-				if sz > 0 and rest >= 0 and int(nd["pages"]) > 0:
-					score += 1
-			if score >= best:
-				ties += 1
-	if best <= 0:
-		error = "no page size / tile size pair fits any node's chunk"
+			var e = dir.get(int(nd["key"]))
+			if e == null:
+				continue
+			var sz := int((e as Dictionary)["primary_size"])
+			if sz <= 0:
+				continue
+			var r := sz - int(nd["pages"]) * int(ps)
+			if r < 0:
+				# pages that do not fit their own chunk: this page size is too big
+				ok = false
+				break
+			resid[r] = true
+		if not ok or resid.is_empty():
+			continue
+		if best_ps == 0 or resid.size() < best_resid.size():
+			best_ps = int(ps)
+			best_resid = resid
+	if best_ps == 0:
+		error = "no page size fits the per-node chunk sizes"
+		return false
+	page_size = best_ps
+	# --- the tile size: every residual must decompose ------------------------
+	# Smallest tile first: a coarser tile that happens to divide a residual
+	# would mask the true one, but the sizes here do not divide each other and
+	# the prefix constraint disambiguates in practice (Tungsten's 34848 trailer
+	# fails 4624 on every prefix and is exactly 2 × 17424).
+	tile_bytes = 0
+	for tb in TILE_SIZES.keys():
+		var t_of := {}
+		var fits := true
+		for r in best_resid.keys():
+			var k := _tiles_in(int(r), int(tb))
+			if k < 0:
+				fits = false
+				break
+			t_of[int(r)] = k * int(tb)
+		if fits:
+			tile_bytes = int(tb)
+			tile_side = int(TILE_SIZES[tb])
+			_trailer = t_of
+			break
+	if tile_bytes <= 0:
+		error = ("page size %d fits but no tile size decomposes its residuals %s"
+			% [page_size, str(best_resid.keys())])
 		return false
 	return true
+
+
+# How many tiles a residual holds under `tb`, or -1 if no prefix decomposes it.
+# k = 0 is legal: a node whose chunk is prefix + pages and no colour tile.
+func _tiles_in(residual: int, tb: int) -> int:
+	var best_k := -1
+	for p in PREFIXES:
+		var rem := residual - int(p)
+		if rem < 0 or rem % tb != 0:
+			continue
+		var k := rem / tb
+		if k > 8:
+			continue
+		# Prefer the decomposition with the fewest tiles: a residual that can be
+		# read as either "big prefix + 1 tile" or "no prefix + many tiles" is
+		# height data plus one tile, not a stack of tiles.
+		if best_k < 0 or k < best_k:
+			best_k = k
+	return best_k
+
+
+# The trailer (colour tile block) size for one node's primary chunk, from the
+# decomposition table detect_layout built. A residual not seen at detection
+# time (a no-page node, say) is decomposed on demand and remembered.
+func _trailer_bytes(primary_size: int, pages: int) -> int:
+	var r := primary_size - pages * page_size
+	if r < 0:
+		return -1
+	if _trailer.has(r):
+		return int(_trailer[r])
+	var k := _tiles_in(r, tile_bytes)
+	if k < 0:
+		return -1
+	var t := k * tile_bytes
+	_trailer[r] = t
+	return t
 
 
 # ---------------------------------------------------------------------------
 # THE COLOUR MAP.
 #
-# §5.3: one tile per node, at the end of the node's primary chunk; paired chunks
-# end with the four children's tiles in reversed child order [3,2,1,0]. Both
-# sources are needed — on mp_dumbo the primary chunks give 272 tiles and the
-# paired chunks another 832.
+# §5.3 plus docs/MAP-TUNGSTEN.md: the trailer at the end of a node's primary
+# chunk holds ONE OR TWO tiles, and the COLOUR tile is the FIRST — the second,
+# where present, is a degenerate second raster (BC7 mode-3 constant blocks;
+# decoded, it is the flat teal that used to cover 78% of Tungsten's colour
+# map). So the slice is taken from the trailer's START, never from the end of
+# the chunk. Paired chunks group the four children's tiles by raster, colour
+# tiles first, in reversed child order [3,2,1,0]; the old code took the LAST
+# four tiles, which on two-raster maps is the wrong raster entirely.
+#
+# Both sources are needed — on mp_dumbo the primary chunks give 272 tiles and
+# the paired chunks another 832.
 #
 # -> {quadtree key: BC7 bytes}
 # ---------------------------------------------------------------------------
@@ -229,20 +315,36 @@ func color_tiles(dir: Dictionary, fetch: Callable,
 		if e == null:
 			continue
 		var ed: Dictionary = e
-		if int(ed["primary_size"]) < tile_bytes:
-			continue
+		var trailer := _trailer_bytes(int(ed["primary_size"]), int(nd["pages"]))
+		if trailer < tile_bytes:
+			continue                      # no colour tile in this node's chunk
 		var data: PackedByteArray = fetch.call(str(ed["primary"]))
-		if data.size() < tile_bytes:
+		if data.size() < trailer:
 			continue
-		out[int(nd["key"])] = data.slice(data.size() - tile_bytes, data.size())
+		var start := data.size() - trailer
+		out[int(nd["key"])] = data.slice(start, start + tile_bytes)
 	for key in dir.keys():
 		var ed: Dictionary = dir[key]
 		if str(ed["paired"]) == "":
 			continue
-		var data: PackedByteArray = fetch.call(str(ed["paired"]))
-		if data.size() < tile_bytes * 4:
+		# The paired trailer's size comes from what precedes it: the children's
+		# pages from offset 0, no height prefix. All four children must be known
+		# or the offsets cannot be trusted.
+		var kids_pages := 0
+		var kids_known := true
+		for i in range(4):
+			var sib = _by_key.get((int(key) << 4) | i)
+			if sib == null:
+				kids_known = false
+				break
+			kids_pages += int((sib as Dictionary)["pages"])
+		if not kids_known:
 			continue
-		var base := data.size() - tile_bytes * 4
+		var data: PackedByteArray = fetch.call(str(ed["paired"]))
+		var trailer := data.size() - kids_pages * page_size
+		if trailer < tile_bytes * 4:
+			continue
+		var base := data.size() - trailer
 		for slot in range(4):
 			var ck := (int(key) << 4) | (3 - slot)
 			if out.has(ck):
@@ -268,12 +370,18 @@ func node_pages(node: Dictionary, dir: Dictionary, fetch: Callable) -> Array:
 	var e = dir.get(key)
 	if e != null:
 		var ed: Dictionary = e
-		var need := tile_bytes + n_pages * page_size
-		if int(ed["primary_size"]) >= need:
-			var data: PackedByteArray = fetch.call(str(ed["primary"]))
-			if data.size() >= need:
-				var start := data.size() - tile_bytes - n_pages * page_size
-				return _slice_pages(data, start, n_pages)
+		# The pages sit between the height prefix and the colour trailer, so the
+		# offset back from the end is the TRAILER, not one tile — a two-tile node
+		# read with a one-tile offset lands every page 17,424 bytes off and the
+		# weights decode as coloured noise.
+		var trailer := _trailer_bytes(int(ed["primary_size"]), n_pages)
+		if trailer >= 0:
+			var need := trailer + n_pages * page_size
+			if int(ed["primary_size"]) >= need:
+				var data: PackedByteArray = fetch.call(str(ed["primary"]))
+				if data.size() >= need:
+					var start := data.size() - trailer - n_pages * page_size
+					return _slice_pages(data, start, n_pages)
 	# the parent's paired chunk
 	var pe = dir.get(key >> 4)
 	if pe == null or str((pe as Dictionary)["paired"]) == "":
@@ -489,7 +597,10 @@ func assemble_colors(tiles: Dictionary, size: int) -> Image:
 	keys.sort_custom(func(x, y): return depth_of(int(x)) < depth_of(int(y)))
 	var img := Image.create_empty(size, size, false, Image.FORMAT_RGBA8)
 	var span: Vector2 = root_max - root_min
-	var apron := 2 if tile_side == 68 else 4
+	# 2 per edge ALWAYS (§5.3: the payload is side − 4 total, 132 = 128 + 4 and
+	# 68 = 64 + 4 alike). The old `4 for anything but 68` guess cropped a 132
+	# tile to 124 px of a 128 px payload and shifted every tile by 2 px.
+	var apron := 2
 	for k in keys:
 		var bc := Image.create_from_data(tile_side, tile_side, false,
 			Image.FORMAT_BPTC_RGBA, tiles[k])

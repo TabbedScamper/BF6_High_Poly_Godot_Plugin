@@ -1256,17 +1256,30 @@ static var _cmap_cache: Dictionary = {}    # map -> {tex, bounds} or {}
 # (MP_Tungsten paints 27 and 3 have one) that leaves the ground with nothing to
 # colour it, which is the "all one texture" complaint.
 #
-# But turning it on made the terrain WORSE, not better: random colours and
-# lines. Which is the honest lesson - a switch nobody has ever set is not a
-# feature waiting to be enabled, it is a code path that has never run. The
-# shader's use_colormap branch, cmap_bounds and cmap_strength have never been
-# exercised, and the evidence says at least one of them is wrong.
+# The first attempt to turn this on made the terrain WORSE - random colours
+# over teal - and the note that stood here concluded the shader path was
+# suspect. It was not: the DECODE was wrong. detect_layout picked the wrong
+# page size on nine of sixteen maps and the colour "tile" was sliced from the
+# tail of a two-tile trailer, i.e. from a different raster (docs/MAP-TUNGSTEN.md
+# and docs/GROUND-LAYERS.md carry the whole post-mortem, including the reverted
+# red/blue swap that treated a symptom of those wrong bytes as a channel-order
+# bug). The decode is now verified against pictures: corrected assemblies of
+# Tungsten and Aftermath are recognisable aerial photographs whose means match
+# the SDK's own overhead renders.
 #
-# So it stays off until the shader path is verified against a picture, not
-# reasoned about. The red/blue swap below it (BF6Splat._swap_rb) is measured and
-# correct and stays in: it costs nothing while this is false, and it is needed
-# the moment this is true.
-static var colormap_enabled := false
+# ON, because for the majority of ground - the shader-computed layers that
+# bind no texture, 72% of Tungsten - the colour map is not a decoration, it is
+# the only colour the install ships for that ground, and it is the same data
+# path the engine itself uses at distance. cmap_strength below is the knob:
+# 1.0 would REPLACE the textured layers' own hue too, which is wrong in the
+# other direction, so it ships below 1.0.
+static var colormap_enabled := true
+# How strongly the colour map steers the composed ground colour where textured
+# detail exists (the shader mixes toward a level-set of the photo by this
+# factor). Textureless fallback ground effectively has nothing else, so it
+# benefits at any setting; 0.75 keeps the three-ish textured slices' detail
+# visible underneath rather than flattening them into the photo.
+static var colormap_strength := 0.75
 
 
 func _colormap_set(map: String) -> Dictionary:
@@ -1286,11 +1299,16 @@ func _colormap_set(map: String) -> Dictionary:
 				if not img.is_compressed():
 					img.compress(Image.COMPRESS_S3TC, Image.COMPRESS_SOURCE_SRGB)
 				var bd: Dictionary = box
+				# Per-axis spans. layers.json writes "size" from the X span and,
+				# since the layout fix, "size_z" from the Z span; every observed
+				# footprint is square, so the fallback to the X span is safe on
+				# old caches and only a NON-square map would ever notice.
 				var sz := float(bd.get("size", 8192.0))
+				var sz_z := float(bd.get("size_z", sz))
 				out = {
 					"tex": ImageTexture.create_from_image(img),
 					"bounds": Vector4(float(bd.get("x0", -4096.0)),
-						float(bd.get("z0", -4096.0)), sz, sz),
+						float(bd.get("z0", -4096.0)), sz, sz_z),
 				}
 	_cmap_cache[map] = out
 	return out
@@ -1385,6 +1403,11 @@ func _terrain_shader_mat(map: String) -> ShaderMaterial:
 		m.set_shader_parameter("colormap", cm["tex"])
 		m.set_shader_parameter("cmap_bounds", cm["bounds"])
 		m.set_shader_parameter("use_colormap", true)
+		# NEVER left at the shader's default. The uniform defaults to 1.0, and
+		# mix(det, cm, 1.0) REPLACES the textured layers' colour with the photo
+		# - a correct decode at full strength still flattens every layer that
+		# has real detail. Set explicitly, always, from the one knob.
+		m.set_shader_parameter("cmap_strength", colormap_strength)
 	else:
 		m.set_shader_parameter("use_colormap", false)
 
@@ -5406,6 +5429,18 @@ func set_radius(r: float) -> void:
 	# rather than drawing at the old one for a frame
 	_refresh_mesh_lod()
 	_apply_radius()
+	# The clutter follows the same slider. It was in neither _cells nor
+	# _bd_list, so the one distance control the panel advertises as governing
+	# "everything" governed everything except the grass — and after v1.19.0
+	# deleted the Grass slider, nothing at all reached it. Scaled to a third of
+	# the scenery radius (clutter at full scenery distance is sub-pixel and
+	# pure instance cost), floored so a low slider thins rather than kills it,
+	# and zero still means off.
+	if _scatter != null and _scatter.active:
+		var cam := _editor_cam()
+		if cam != null:
+			var gr := 0.0 if r <= 0.0 else clampf(r / 3.0, 60.0, 300.0)
+			_scatter.set_range(gr, cam.global_transform.origin)
 
 func _apply_radius(budget: int = 1 << 30) -> void:
 	# backdrop-only is valid (Show Whole Map without objects) â€” don't early-out

@@ -34,13 +34,14 @@ const Y_EPS := 0.02           # lift above the heightfield to dodge z-fighting
 const OUTSIDE := -1.0e9
 
 var active := false
-var grass_range := 0.0        # dock slider: how far from the camera grass grows
-                              # (metres; DEFAULT 0 = grass OFF until the user
-                              # asks for it). Density itself is FIXED
-                              # at carpet spacing derived from each kit's own
-                              # footprint — matching the game's near-continuous
-                              # cover where the mask is full — so range is the
-                              # one perf lever.
+# How far from the camera clutter grows, metres. The 0.0 that used to sit here
+# was "off until the Grass slider raises it" — and v1.19.0 deleted the Grass
+# slider without deleting the default, leaving set_range() with NO callers and
+# the whole subsystem silently drawing zero instances on every map while the
+# status line still said "49 scatter types". A default the UI cannot reach must
+# carry the value the feature needs, so it is a real range now; the map-context
+# Range slider clamps it via set_range().
+var grass_range := 100.0
 var last_regen_ms := 0        # debug: last regeneration cost
 var last_instances := 0       # debug: instances currently placed
 const HARD_TOTAL := 90000     # absolute instance safety cap across all entries
@@ -179,6 +180,8 @@ func setup(mc: Object, ctx: Node3D, map: String, dir: String, hm: Dictionary, ti
 		mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		_root.add_child(mmi)
 		mmi.owner = null
+		# Game-sourced entries carry no budgetShare; the equal split is the
+		# real path, and the key is only ever present in legacy scatter.json.
 		var share := float(e.get("budgetShare", 1.0 / ents.size()))
 		# CARPET spacing from the kit's own footprint: clumps tile nearly
 		# edge-to-edge where the mask is full (the game's cell budget works
@@ -191,7 +194,13 @@ func setup(mc: Object, ctx: Node3D, map: String, dir: String, hm: Dictionary, ti
 		_entries.append({
 			"kit": kit,
 			"spacing": dense,
-			"radius": minf(CULL_R, float(e.get("viewDistance", CULL_R))),
+			# "distance" is what scatter_entries() emits from the game's own DB
+			# (real per-mesh values {30, 50, 55, 75, 100, 150, 200, 300});
+			# "viewDistance" was the legacy scatter.json key, and reading only
+			# it meant every game entry silently took the 300 m default — the
+			# whole budget spent placing pebbles to the horizon.
+			"radius": minf(CULL_R, float(e.get("distance",
+				e.get("viewDistance", CULL_R)))),
 			"share": share,
 			"seed": nm.hash(),
 			"mmi": mmi,
@@ -276,14 +285,38 @@ func _gen_entry(e: Dictionary, cam: Vector3) -> PackedFloat32Array:
 	var w := 0                          # write cursor (floats)
 	var r2 := radius * radius
 	var near2 := NEAR_R * NEAR_R
-	var cx0 := int(floor((cam.x - radius) / spacing))
-	var cx1 := int(floor((cam.x + radius) / spacing))
-	var cz0 := int(floor((cam.z - radius) / spacing))
-	var cz1 := int(floor((cam.z + radius) / spacing))
+	# NEAREST-FIRST, in square rings outward from the camera's cell. The old
+	# row-major scan from (cam - radius) upward hit the per-entry cap while
+	# still in the far -x/-z corner, so the entire budget was a clutter blob
+	# ~radius metres off to one side with bare ground under the camera. The cap
+	# must truncate the FAR field, and ring order gives that without sorting:
+	# every cell in ring r is nearer than any cell in ring r+2, which is as
+	# sorted as an accept-reject scatter needs.
+	var ccx := int(floor(cam.x / spacing))
+	var ccz := int(floor(cam.z / spacing))
+	var max_ring := int(ceil(radius / spacing)) + 1
 	var count := 0
-	for cz in range(cz0, cz1 + 1):
-		for cx in range(cx0, cx1 + 1):
-			# jittered, deterministic anchor inside the cell
+	for ring in range(0, max_ring + 1):
+		if count >= cap:
+			break
+		# the ring's cells: the full row at top and bottom, the two side columns
+		# between them (ring 0 is just the centre cell)
+		var cells := PackedInt32Array()
+		if ring == 0:
+			cells.append(ccx); cells.append(ccz)
+		else:
+			for i in range(-ring, ring + 1):
+				cells.append(ccx + i); cells.append(ccz - ring)
+				cells.append(ccx + i); cells.append(ccz + ring)
+			for i in range(-ring + 1, ring):
+				cells.append(ccx - ring); cells.append(ccz + i)
+				cells.append(ccx + ring); cells.append(ccz + i)
+		for c in range(0, cells.size(), 2):
+			var cx := int(cells[c])
+			var cz := int(cells[c + 1])
+			# jittered, deterministic anchor inside the cell — same hash, same
+			# anchors as before; only the VISIT ORDER changed, so a spot still
+			# regenerates the identical clumps
 			var ax := (float(cx) + 0.1 + 0.8 * _hash01(seed_i, cx, cz, 0)) * spacing
 			var az := (float(cz) + 0.1 + 0.8 * _hash01(seed_i, cx, cz, 1)) * spacing
 			var dx := ax - cam.x
@@ -329,7 +362,6 @@ func _gen_entry(e: Dictionary, cam: Vector3) -> PackedFloat32Array:
 				count += 1
 				if count >= cap: break
 			if count >= cap: break
-		if count >= cap: break
 	buf.resize(count * 12)
 	return buf
 
