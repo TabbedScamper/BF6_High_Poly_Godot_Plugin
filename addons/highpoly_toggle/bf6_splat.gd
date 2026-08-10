@@ -751,10 +751,16 @@ static func depth_of(key: int) -> int:
 # far raster could keep. Without the filter, every coarse record repainted the
 # whole 4M-texel window through a per-texel insert - measured 32 s a window;
 # fine-only is the same picture for a fraction of the work.
+# `smooth`: bilinear-sample the pages instead of nearest. The apron is what
+# makes this seamless without touching the neighbour record - its edge texels
+# ARE the neighbour's, byte for byte - and the near-field window (4x denser
+# than the pages) is where the smoothing shows. The whole-map bake stays
+# nearest: its raster density matches the pages, so bilinear would buy blur.
 func composite(dir: Dictionary, fetch: Callable, size: int,
 		progress := Callable(), rect_min := Vector2.INF,
 		rect_size := 0.0, seed_idx := PackedByteArray(),
-		seed_w := PackedByteArray(), max_span := 0.0) -> Dictionary:
+		seed_w := PackedByteArray(), max_span := 0.0,
+		smooth := false) -> Dictionary:
 	var idx := PackedByteArray()
 	var wgt := PackedByteArray()
 	if seed_idx.size() == size * size * 4 and seed_w.size() == size * size * 4:
@@ -827,23 +833,50 @@ func composite(dir: Dictionary, fetch: Callable, size: int,
 				continue
 			var layer := int(rd["layer"]) & 0xFF
 			# The page is addressed by the texel's WORLD position inside the
-			# record's own rect, not by its index inside the raster rect. The
-			# two matched while the raster rect never clipped; with a window,
-			# every record crossing the edge clips, and the index mapping
-			# would squeeze the whole page into the clipped remainder.
+			# record's own rect, not by its index inside the raster rect -
+			# and through the page's INTERIOR 64x64, not all 66 texels. The
+			# 66x66 page carries a 1-texel apron (proven byte-identical to
+			# the neighbour's first interior column on 400 of 400 adjacent
+			# pairs, tools/test_apron.gd); stretching all 66 across the rect
+			# scaled every painted shape by 66/64 and shifted paint up to a
+			# full page texel at node edges - the "paints are not quite where
+			# the game has them" misalignment, measured.
 			var rw := maxf(hi.x - lo.x, 1e-6)
 			var rh := maxf(hi.y - lo.y, 1e-6)
+			var inner := float(PAGE_SIDE - 2)          # 64
 			for gz in range(z0, z1):
 				var wz := org.y + (float(gz) + 0.5) / float(size) * span.y
 				var fz := clampf((wz - lo.y) / rh, 0.0, 1.0)
-				var row := clampi(int(fz * float(PAGE_SIDE - 1)), 0, PAGE_SIDE - 1) * PAGE_SIDE
 				var drow := gz * size
-				for gx in range(x0, x1):
-					var wx := org.x + (float(gx) + 0.5) / float(size) * span.x
-					var fx := clampf((wx - lo.x) / rw, 0.0, 1.0)
-					var w := int(page[row + clampi(int(fx * float(PAGE_SIDE - 1)), 0, PAGE_SIDE - 1)])
-					if w > 0:
-						_insert(idx, wgt, (drow + gx) * 4, layer, w)
+				if smooth:
+					# continuous page coords: interior texel i's centre sits
+					# at fz=(i+0.5)/64, page column 1+i - so cy = fz*64+0.5
+					# hits it exactly, and the apron makes the edge taps
+					# valid without clamping artefacts.
+					var cy := fz * inner + 0.5
+					var iy := clampi(int(cy - 0.5), 0, PAGE_SIDE - 2)
+					var ty := clampf(cy - 0.5 - float(iy), 0.0, 1.0)
+					for gx in range(x0, x1):
+						var wx := org.x + (float(gx) + 0.5) / float(size) * span.x
+						var fx := clampf((wx - lo.x) / rw, 0.0, 1.0)
+						var cx := fx * inner + 0.5
+						var ix := clampi(int(cx - 0.5), 0, PAGE_SIDE - 2)
+						var tx := clampf(cx - 0.5 - float(ix), 0.0, 1.0)
+						var o00 := iy * PAGE_SIDE + ix
+						var a := lerpf(float(page[o00]), float(page[o00 + 1]), tx)
+						var b := lerpf(float(page[o00 + PAGE_SIDE]),
+							float(page[o00 + PAGE_SIDE + 1]), tx)
+						var w := int(round(lerpf(a, b, ty)))
+						if w > 0:
+							_insert(idx, wgt, (drow + gx) * 4, layer, w)
+				else:
+					var row := (1 + clampi(int(fz * inner), 0, PAGE_SIDE - 3)) * PAGE_SIDE
+					for gx in range(x0, x1):
+						var wx := org.x + (float(gx) + 0.5) / float(size) * span.x
+						var fx := clampf((wx - lo.x) / rw, 0.0, 1.0)
+						var w := int(page[row + 1 + clampi(int(fx * inner), 0, PAGE_SIDE - 3)])
+						if w > 0:
+							_insert(idx, wgt, (drow + gx) * 4, layer, w)
 	# COUNTED ACROSS ALL FOUR SLOTS, not just the strongest.
 	#
 	# Counting slot 0 only answers "which layer wins here", and the consumer of

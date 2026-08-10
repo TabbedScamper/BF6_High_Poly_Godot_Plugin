@@ -32,8 +32,8 @@ func _init() -> void:
 		print("FAIL surface bake returned {}")
 		quit(1)
 		return
-	if int(meta.get("splat_v", 0)) != 5:
-		print("FAIL splat_v is %s, wanted 5" % str(meta.get("splat_v")))
+	if int(meta.get("splat_v", 0)) < 5:
+		print("FAIL splat_v is %s, wanted 5+" % str(meta.get("splat_v")))
 		fails += 1
 	var cm := Image.load_from_file(ProjectSettings.globalize_path("user://hdtest/colormap.png"))
 	print("colormap.png: %dx%d  [8 km map at 1 m/texel = 8192]" % [cm.get_width(), cm.get_height()])

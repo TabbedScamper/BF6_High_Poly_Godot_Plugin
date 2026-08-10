@@ -1037,6 +1037,13 @@ uniform float layer_scale[32];           // world metres per repeat, per slice
 uniform int virt_count = 0;
 uniform float virt_scale[32];            // world metres per repeat, per id-32
 uniform float virt_rough[32];            // roughness, per id-32
+// Whether a colour map is BOUND at all - independent of use_colormap, which
+// is the user's Ground photo slider. A computed layer has no albedo of its
+// own anywhere in the data, so the colour map IS its colour: city blocks
+// asphalt-toned, parks green, the seabed dark, all from the game's raster.
+// One generic texture in its place is wrong somewhere on every map - it was
+// bricks city-wide, then grass city-wide, each reported within the hour.
+uniform int cmap_ok = 0;
 // THE GAME'S OWN TERRAIN COLOUR MAP (TERRAIN.md 5.3): one BC7 tile per
 // streaming-tree node, read out of the player's install and assembled here. The
 // engine's terrain material shaders all sample it for large-scale hue, with 0.5
@@ -1087,10 +1094,21 @@ void splat_texel(ivec2 t, vec2 wxz, vec3 fb_a, vec3 fb_n,
 			nacc += wi * texture(layer_nrm, vec3(luv, float(id))).rgb;
 			racc += wi * 0.92;
 		} else if (id >= 32 && id < 32 + virt_count) {
-			// a computed layer: the fallback detail at ITS OWN authored
-			// tiling and roughness (see the virt uniforms above)
+			// a computed layer: colour from the game's own colour map, detail
+			// from the fallback's LUMINANCE at the layer's authored tiling.
+			// The colour map is this layer's only colour anywhere in the
+			// data, so it applies here regardless of the Ground photo slider.
 			vec2 vuv = wxz / max(virt_scale[id - 32], 0.01);
-			acc += wi * texture(ground_alb, vuv).rgb;
+			float dl = dot(texture(ground_alb, vuv).rgb, vec3(0.3333));
+			vec3 vbase = fb_a;
+			if (cmap_ok == 1) {
+				vec2 vcu = vec2((wxz.x - cmap_bounds.x) / cmap_bounds.z,
+				                (wxz.y - cmap_bounds.y) / cmap_bounds.w);
+				if (vcu.x >= 0.0 && vcu.x <= 1.0 && vcu.y >= 0.0 && vcu.y <= 1.0) {
+					vbase = texture(colormap, vcu).rgb;
+				}
+			}
+			acc += wi * (vbase * clamp(dl * 2.0, 0.4, 1.6));
 			nacc += wi * texture(ground_nrm, vuv).rgb;
 			racc += wi * virt_rough[id - 32];
 		} else {
@@ -1133,7 +1151,16 @@ void splat_texel_n(ivec2 t, vec2 wxz, vec3 fb_a, vec3 fb_n,
 			racc += wi * 0.92;
 		} else if (id >= 32 && id < 32 + virt_count) {
 			vec2 vuv = wxz / max(virt_scale[id - 32], 0.01);
-			acc += wi * texture(ground_alb, vuv).rgb;
+			float dl = dot(texture(ground_alb, vuv).rgb, vec3(0.3333));
+			vec3 vbase = fb_a;
+			if (cmap_ok == 1) {
+				vec2 vcu = vec2((wxz.x - cmap_bounds.x) / cmap_bounds.z,
+				                (wxz.y - cmap_bounds.y) / cmap_bounds.w);
+				if (vcu.x >= 0.0 && vcu.x <= 1.0 && vcu.y >= 0.0 && vcu.y <= 1.0) {
+					vbase = texture(colormap, vcu).rgb;
+				}
+			}
+			acc += wi * (vbase * clamp(dl * 2.0, 0.4, 1.6));
 			nacc += wi * texture(ground_nrm, vuv).rgb;
 			racc += wi * virt_rough[id - 32];
 		} else {
@@ -1609,6 +1636,9 @@ func _terrain_shader_mat(map: String) -> ShaderMaterial:
 		m.set_shader_parameter("colormap", cm["tex"])
 		m.set_shader_parameter("cmap_bounds", cm["bounds"])
 		m.set_shader_parameter("use_colormap", colormap_enabled)
+		# the COMPUTED layers' colour source, independent of the slider - the
+		# raster is their only albedo anywhere in the data
+		m.set_shader_parameter("cmap_ok", 1)
 		# NEVER left at the shader's default. The uniform defaults to 1.0, and
 		# mix(det, cm, 1.0) REPLACES the textured layers' colour with the photo
 		# - a correct decode at full strength still flattens every layer that

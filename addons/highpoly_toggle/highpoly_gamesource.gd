@@ -1805,7 +1805,11 @@ const CMAP_VERSION := 2
 #      coverage: aftermath's biggest textured layer is cobblestone, and with
 #      the virtual slices tiling the generic ground everywhere the seabed
 #      came out as bricks. Natural surfaces only; architectural ones barred.
-const SPLAT_VERSION := 7
+#   8  pages are sampled through their INTERIOR 64x64: the 66x66 page carries
+#      a 1-texel apron (byte-identical to the neighbour on 400/400 adjacent
+#      pairs), and stretching all 66 across the record scaled every painted
+#      shape by 66/64 and shifted paint up to a page texel at node edges.
+const SPLAT_VERSION := 8
 # Per-slice detail textures; all slices must match. 1024 rather than 512: the
 # game's layer sheets are mostly 1024+, and at 512 the close-up ground was a
 # quarter of the detail the install holds. The loader compresses the slices to
@@ -2396,8 +2400,10 @@ func terrain_window(cache_dir: String, cx: float, cz: float) -> Dictionary:
 	# Only the pages FINER than the far raster's texel: everything coarser is
 	# already in the seed, texel for texel.
 	var max_span := (wsize / float(far_res)) * float(BF6Splat.PAGE_SIDE)
+	# smooth=true: the window is 4x denser than the pages, and the apron is
+	# exactly what makes bilinear page sampling seamless across records.
 	var comp := sp.composite(st["chunks"], fetch, NEAR_RES, Callable(),
-		wmin, NEAR_SPAN, seed_i.get_data(), seed_w.get_data(), max_span)
+		wmin, NEAR_SPAN, seed_i.get_data(), seed_w.get_data(), max_span, true)
 	if comp.is_empty():
 		return {}
 	var idx: PackedByteArray = comp["idx"]
