@@ -3756,12 +3756,32 @@ func _restore_mapctx_state() -> void:
 # The one-open-at-a-time guard moved here with it, and now covers more callers
 # than before: the mode dropdown and a dragged-in prop can both arrive while a
 # Map Context toggle is still awaiting.
+# Is a reader for THIS map already open? If so, make sure everything that reads
+# one is pointed at it, and say yes.
+#
+# The three early exits in _ensure_game_source all used to just answer "yes,
+# there is one" and return. That is true and not enough: the assignments that
+# hand the reader to the object library and the lighting live at the BOTTOM of
+# the function, so a caller that took an early exit left those pointing at
+# whatever was there before - the previous map's reader, on a map switch. The
+# library then answered every "what does this prop look like" from the wrong
+# level.
+func _adopt_open_source(map: String) -> bool:
+	if mapctx == null or mapctx.game_source == null:
+		return false
+	if str(mapctx.game_source.level) != map.to_lower():
+		return false
+	LibScript.game_source = mapctx.game_source
+	LightingScript.game_source = mapctx.game_source
+	return true
+
+
 func _ensure_game_source(map: String, gen: int = -1) -> bool:
 	if map == "":
 		return false
 	if mapctx == null:
 		return false
-	if mapctx.game_source != null and mapctx.game_source.level == map.to_lower():
+	if _adopt_open_source(map):
 		return true
 	if not HighpolyGameSource.available():
 		return false
@@ -3769,9 +3789,9 @@ func _ensure_game_source(map: String, gen: int = -1) -> bool:
 		await get_tree().process_frame
 		if gen >= 0 and gen != _mapctx_gen:
 			return false
-		if mapctx.game_source != null and mapctx.game_source.level == map.to_lower():
+		if _adopt_open_source(map):
 			return true
-	if mapctx.game_source != null and mapctx.game_source.level == map.to_lower():
+	if _adopt_open_source(map):
 		return true
 	_gs_opening = true
 	lbl.text = "Reading %s from your Battlefield 6 install." % map
@@ -4085,12 +4105,31 @@ func _mapctx_changed() -> void:
 func _ensure_source_for_mode(force := false) -> void:
 	if not force and _mode() == HighpolyLib.Tier.LOW:
 		return                       # the SDK's own proxies need nothing from us
-	if HighpolyLib.game_source != null:
-		return
 	var r := EditorInterface.get_edited_scene_root()
 	if r == null or mapctx == null:
 		return
-	await _ensure_game_source(mapctx.map_of(r))
+	var map: String = mapctx.map_of(r)
+	if map == "":
+		return
+	# THE OPEN SOURCE HAS TO BE THIS SCENE'S MAP, NOT MERELY NON-NULL.
+	#
+	# This asked only whether a source existed, and _check_scene_change resets
+	# every chip on the dock but does not close the reader - deliberately, since
+	# switching back to a map you were just on should not pay for it twice. So
+	# after opening a second map the previous map's source was still sitting
+	# there, this returned immediately, and the scene-wide apply then asked
+	# MP_Aftermath's reader for MP_Abbasid's props. The catalogue covers every
+	# level, so a handful still resolved and the rest did not: "only a few
+	# assets come in high poly".
+	#
+	# Turning "Original map objects" on looked like the fix because that path
+	# goes through _ensure_game_source, which HAS always compared the level -
+	# it opened the right reader, and everything skinned from then on. The
+	# toggle was never doing the skinning; it was repairing this.
+	if HighpolyLib.game_source != null \
+			and str(HighpolyLib.game_source.level) == map.to_lower():
+		return
+	await _ensure_game_source(map)
 
 
 func _mode_changed() -> void:
