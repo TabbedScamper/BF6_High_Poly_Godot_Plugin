@@ -1672,58 +1672,17 @@ func terrain(cache_dir: String) -> Dictionary:
 	var lo: Vector3 = g["min"]
 	var hi: Vector3 = g["max"]
 	DirAccess.make_dir_recursive_absolute(cache_dir)
-	# THE HOLE MASK RIDES ALONG. Block 8 is the game's own terrain-suppression
-	# raster (bit 0 clear = the ground is cut away because mesh city-ground -
-	# sidewalks, plazas, whole blocks - replaces it). Skipping it draws our
-	# terrain up through the sidewalks. Rasterised once at ~2 m (native is
-	# ~1.93 m) and cached beside the heights.
-	var b8 := t.find_block(res, 8)
-	if not b8.is_empty():
-		var mk := BF6MaterialTree.new()
-		if mk.parse_mask(b8):
-			var hr := mk.hole_raster(4097)
-			# KEEP THE STREETS. The game's mask suppresses terrain under the
-			# whole mesh-city ground - sidewalks AND streets (49% of
-			# aftermath's cut is painted L08 asphalt) - because real ground
-			# meshes replace all of it in-game. We do not reliably show those
-			# ground meshes yet, so cutting the streets left visible voids
-			# where the road used to be. Compromise, measured 2026-08-10:
-			# only cut where OUR base field is textureless or unresolved -
-			# the sidewalk/plaza case the mask exists to fix - and keep the
-			# terrain wherever it IS the road surface.
-			var b1 := t.find_block(res, 1)
-			var b7 := t.find_block(res, 7)
-			var sp = BF6Splat.new()
-			var mt7 := BF6MaterialTree.new()
-			var pal := BF6TerrainLayers.new()
-			if not b1.is_empty() and not b7.is_empty() and sp.parse(b1) \
-					and mt7.parse(b7) \
-					and pal.load(src, level, src.partition_index()):
-				var bf := mt7.rasterize(4097,
-					func(cx, cz, w): return sp.base_list_at(cx, cz, w),
-					sp.full_list(), _linked_of(pal), Vector2.INF, 0.0,
-					sp.global_base_list())
-				var kept := 0
-				for i in range(hr.size()):
-					if hr[i] == 0 and int(bf[i]) != 255 \
-							and pal.albedo_of(int(bf[i])) != "":
-						hr[i] = 1
-						kept += 1
-				if kept > 0:
-					_say("game source: hole mask - kept %d street texels the "
-						% kept + "mask would cut (no ground meshes to replace them)")
-			var cut := 0
-			for i in range(hr.size()):
-				if hr[i] == 0:
-					cut += 1
-				hr[i] *= 255
-			var him := Image.create_from_data(4097, 4097, false, Image.FORMAT_L8, hr)
-			him.save_png("%s/holes_game.png" % cache_dir)
-			_say("game source: terrain hole mask - %.2f%% of the map is "
-				% (100.0 * cut / hr.size())
-				+ "game-suppressed ground (sidewalk/plaza cuts)")
-		else:
-			_say("game source: terrain hole mask - %s" % mk.error)
+	# NO TERRAIN CUT. Block 8 looked like a render-hole mask for one session
+	# (its region contains 91% of the sidewalks) and IS NOT one: triangle-level
+	# ray-casts through every placement near cut street texels found NO ground
+	# mesh at street height - the street surface in that region IS the terrain,
+	# and the game draws it. Block 8 is a hard-ground descriptor for the
+	# dynamic-world systems (77-100% of crater-denial markers sit inside it).
+	# Cutting our terrain there produced voids where the road was. The mask
+	# reader stays in BF6MaterialTree for scatter/deformation use; nothing
+	# consumes it for rendering, and the mask file from the one build that
+	# wrote it is removed so a stale mesh rebuild cannot pick it up.
+	DirAccess.remove_absolute("%s/holes_game.png" % cache_dir)
 	var path := "%s/height_game.r16" % cache_dir
 	var f := FileAccess.open(path, FileAccess.WRITE)
 	if f == null:

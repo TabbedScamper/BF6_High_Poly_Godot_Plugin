@@ -5083,10 +5083,12 @@ func _build_terrain_from_heightmap(dir: String, meta: Dictionary) -> Node3D:
 	# v2 = corrected triangle winding. The cached mesh is the geometry itself, so
 	# anyone with a v1 cache would keep their inside-out terrain forever â€” the
 	# version goes in the filename and the old file is deleted below.
-	# v4 = the block-8 hole mask cuts the ground where the game cuts it
-	# (sidewalks, plazas, whole mesh-floored blocks), and the heights behind
-	# it are bilinear-composited.
-	var cache := "%s/terrain_ck%d_s%d_v5.res" % [dir, TERRAIN_CHUNKS, step]
+	# v6 = NO hole cut. v4/v5 cut terrain by block 8, which turned out to be a
+	# crater-denial descriptor, not a render mask: triangle-level ray-casts
+	# proved no ground mesh replaces the terrain there - the streets ARE the
+	# terrain, and the cut drew voids where the road was. The heights behind
+	# the mesh are bilinear-composited.
+	var cache := "%s/terrain_ck%d_s%d_v6.res" % [dir, TERRAIN_CHUNKS, step]
 	if ResourceLoader.exists(cache):
 		var cached: Variant = ResourceLoader.load(cache)
 		if cached is PackedScene:
@@ -5095,18 +5097,6 @@ func _build_terrain_from_heightmap(dir: String, meta: Dictionary) -> Node3D:
 	var raw := FileAccess.get_file_as_bytes("%s/%s" % [dir, meta.get("file", "height.r16")])
 	if raw.is_empty(): return null
 	var res: int = int(meta.get("res", 4097))
-	# The game's own terrain-suppression raster, written by the source beside
-	# the heights (0 = ground cut away because mesh city-ground covers it).
-	# Older caches have no mask file and simply cut nothing.
-	var holes := PackedByteArray()
-	var holes_w := 0
-	var hp := "%s/holes_game.png" % dir
-	if FileAccess.file_exists(hp):
-		var him := Image.load_from_file(hp)
-		if him != null and not him.is_empty():
-			him.convert(Image.FORMAT_L8)
-			holes = him.get_data()
-			holes_w = him.get_width()
 	# heightmap px per tile, aligned to the vertex step so tile edges share verts
 	var cpx := int(ceil(float(res - 1) / float(TERRAIN_CHUNKS)))
 	cpx = int(ceil(float(cpx) / float(step))) * step
@@ -5137,7 +5127,7 @@ func _build_terrain_from_heightmap(dir: String, meta: Dictionary) -> Node3D:
 			# PackedScene cache as the tiles (hence v3 in its name). Memory does
 			# not move: LODs are extra index buffers over the same vertices.
 			var m := _with_lods(_heightmap_mesh(raw, res, step, meta,
-				cx * cpx, cz * cpx, cpx, holes, holes_w))
+				cx * cpx, cz * cpx, cpx))
 			if m == null: continue
 			var mi := MeshInstance3D.new()
 			mi.name = "T%d_%d" % [cx, cz]
@@ -5151,15 +5141,15 @@ func _build_terrain_from_heightmap(dir: String, meta: Dictionary) -> Node3D:
 	DirAccess.remove_absolute("%s/terrain_s%d.res" % [dir, step])   # legacy single-mesh cache
 	# v1 chunk cache: same chunking, inside-out winding â€” reclaim the space
 	DirAccess.remove_absolute("%s/terrain_ck%d_s%d.res" % [dir, TERRAIN_CHUNKS, step])
-	# v3: no hole mask, nearest-sampled heights. v4: the mask cut the streets
-	# too and left voids where the road surface was.
+	# v3: nearest-sampled heights. v4/v5: the block-8 cut era - both left
+	# voids where the streets were.
 	DirAccess.remove_absolute("%s/terrain_ck%d_s%d_v3.res" % [dir, TERRAIN_CHUNKS, step])
 	DirAccess.remove_absolute("%s/terrain_ck%d_s%d_v4.res" % [dir, TERRAIN_CHUNKS, step])
+	DirAccess.remove_absolute("%s/terrain_ck%d_s%d_v5.res" % [dir, TERRAIN_CHUNKS, step])
 	return troot
 
 func _heightmap_mesh(raw: PackedByteArray, res: int, step: int, meta: Dictionary,
-		px0 := 0, pz0 := 0, npx := 0, holes := PackedByteArray(),
-		holes_w := 0) -> ArrayMesh:
+		px0 := 0, pz0 := 0, npx := 0) -> ArrayMesh:
 	var wmin: float = float(meta.get("world_min", -2048))
 	var wspan: float = float(meta.get("world_max", 2048)) - wmin
 	var base: float = float(meta.get("base", 0.0))
@@ -5203,31 +5193,14 @@ func _heightmap_mesh(raw: PackedByteArray, res: int, step: int, meta: Dictionary
 	# chunk lit inside-out next to the SDK's own terrain. Wind it correctly and
 	# geometry, normals and lighting finally agree.
 	var indices := PackedInt32Array(); indices.resize((nx - 1) * (nz - 1) * 6)
-	# THE GAME CUTS ITS GROUND, so we cut ours. A quad whose four corners all
-	# fall in the block-8 suppression mask is terrain the game never draws -
-	# there is mesh city-ground (sidewalks, plazas) there instead, and drawing
-	# it anyway is the terrain-through-the-sidewalk overlap. All-four-corners
-	# keeps the boundary conservative: the mesh ground owns the seam.
-	var inv_m := float(holes_w - 1) / float(maxi(1, res - 1)) if holes_w > 1 else 0.0
 	var k := 0
 	for gz in range(nz - 1):
 		var ro := gz * nx
 		for gx in range(nx - 1):
-			if holes_w > 1:
-				var mx0 := clampi(int(float(px0 + gx * step) * inv_m), 0, holes_w - 1)
-				var mx1 := clampi(int(float(px0 + (gx + 1) * step) * inv_m), 0, holes_w - 1)
-				var mz0 := clampi(int(float(pz0 + gz * step) * inv_m), 0, holes_w - 1) * holes_w
-				var mz1 := clampi(int(float(pz0 + (gz + 1) * step) * inv_m), 0, holes_w - 1) * holes_w
-				if holes[mz0 + mx0] == 0 and holes[mz0 + mx1] == 0 \
-						and holes[mz1 + mx0] == 0 and holes[mz1 + mx1] == 0:
-					continue
 			var a := ro + gx
 			indices[k] = a; indices[k+1] = a + 1; indices[k+2] = a + nx
 			indices[k+3] = a + 1; indices[k+4] = a + nx + 1; indices[k+5] = a + nx
 			k += 6
-	indices.resize(k)
-	if k == 0:
-		return null
 	var arr := []; arr.resize(Mesh.ARRAY_MAX)
 	arr[Mesh.ARRAY_VERTEX] = verts
 	arr[Mesh.ARRAY_NORMAL] = norms

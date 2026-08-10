@@ -84,12 +84,14 @@ func parse(b7: PackedByteArray) -> bool:
 
 
 # Block 8 — the MASK tree. Same node grammar as block 7 but the stream starts
-# at +0x28 and there is no pair footer. Decoded 2026-08-10: it is the terrain
-# HOLE mask. Texels carry four near-identical boolean planes; 15 = terrain
-# present, bit 0 CLEAR = terrain suppressed — the game cuts the ground away
-# where mesh city-ground replaces it (91% of aftermath's 502 sidewalk/curb
-# instances sit inside the clear region, enrichment x505; native texel
-# ~1.93 m). A rebuild that skips this mask draws terrain through sidewalks.
+# at +0x28 and there is no pair footer. Texels carry four near-identical
+# boolean planes; bit 0 clear marks the urban hard-ground region (~0.2% of a
+# map, containing 91% of the sidewalks). It is NOT a render mask - triangle-
+# level ray-casts proved no ground mesh replaces the terrain there; the game
+# draws its terrain inside the region like anywhere else. It is a hard-ground
+# descriptor for the dynamic-world systems: 77-100% of crater-denial markers
+# and 90-99% of debris-spawn controllers sit inside it. Useful for scatter
+# suppression and deformation logic; never cut geometry with it.
 func parse_mask(b8: PackedByteArray) -> bool:
 	error = ""
 	nodes.clear()
