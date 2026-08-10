@@ -17,6 +17,7 @@ var fails := 0
 
 func _init() -> void:
 	_shape_reading()
+	_classifying()
 	_lettering()
 	_spawn_to_flag()
 	_volume_geometry()
@@ -77,17 +78,68 @@ func _shape_reading() -> void:
 	# int is Team.
 	ck("team", HighpolyGmMine._int_of({0x1: 1.0, 0x2: true, 0x3: 2}), 2)
 
-	print("-- what a partition name says a volume is")
-	ck("capture", HighpolyGmMine._role_of("conquest_capturepoint_a"), "capture")
-	ck("combat beats hq", HighpolyGmMine._role_of("hq_combatarea"), "combat")
-	ck("hq", HighpolyGmMine._role_of("conquest_hq_us"), "hq")
-	ck("unknown falls back", HighpolyGmMine._role_of("conquest_zone_04"), "capture")
+	print("-- polygon area, which is what classifies a volume")
+	# a 20 m square, wound either way, is 400 m2
+	var sq := [[-10.0, 0.0, -10.0], [-10.0, 0.0, 10.0],
+			   [10.0, 0.0, 10.0], [10.0, 0.0, -10.0]]
+	ck("square", HighpolyGmMine._area(sq), 400.0)
+	sq.reverse()
+	ck("winding does not matter", HighpolyGmMine._area(sq), 400.0)
+	ck("a line has no area", HighpolyGmMine._area(
+		[[0.0, 0.0, 0.0], [1.0, 0.0, 1.0]]), 0.0)
+
+	print("-- what is a subworld and what is not")
+	ck("gameplay is the union, not a mode", HighpolyGmMine._is_mode("gameplay"), false)
+	ck("_global is shared setup", HighpolyGmMine._is_mode("gameplay_global"), false)
+	ck("cinematic prefabs", HighpolyGmMine._is_mode("pf_endofgame_bestsquad"), false)
+	ck("conquest is", HighpolyGmMine._is_mode("conquest"), true)
+	ck("customportal is", HighpolyGmMine._is_mode("customportal"), true)
 
 	print("-- one mode per subworld, digits folded")
 	ck("plain", HighpolyGmMine._mode_of("conquest/conquest"), "conquest")
 	ck("numbered variant", HighpolyGmMine._mode_of("conquest0/x"), "conquest")
 	ck("winter is its own", HighpolyGmMine._mode_of("winter_domination/x"),
 		"winter_domination")
+
+
+# ---------- evidence first, size only where there is none ----------
+func _classifying() -> void:
+	print("-- classifying volumes")
+	# three flag-sized zones and one much larger, the shape of real conquest
+	# data (268-562 m2, then 3,604)
+	# _vol takes a HALF width, so these are 256, 400, 576 and 3,600 m2 - the
+	# real conquest spread is 268-562 and then 3,604
+	var objs := [_vol(8.0, 0.0, 0.0), _vol(10.0, 200.0, 0.0),
+				 _vol(12.0, -200.0, 0.0), _vol(30.0, 0.0, 400.0)]
+	var out := HighpolyGmMine._classify(objs)
+	var by := {}
+	for o in out:
+		var k := str((o as Dictionary)["kind"])
+		by[k] = int(by.get(k, 0)) + 1
+	ck("small ones are capture zones", int(by.get("capture", 0)), 3)
+	ck("the large one is only a zone", int(by.get("zone", 0)), 1)
+
+	# a real CombatAreaEntityData outranks size: the volume nearest it is the
+	# combat area whatever its size, and nothing else is called one
+	var objs2 := [_vol(10.0, 0.0, 0.0), _vol(30.0, 0.0, 400.0),
+		{"kind": "combatref", "src": "gmc_combatarea",
+		 "xf": [1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 400]}]
+	var out2 := HighpolyGmMine._classify(objs2)
+	var by2 := {}
+	for o in out2:
+		var k := str((o as Dictionary)["kind"])
+		by2[k] = int(by2.get(k, 0)) + 1
+	ck("the entity names the combat area", int(by2.get("combat", 0)), 1)
+	ck("the flag is untouched", int(by2.get("capture", 0)), 1)
+	ck("the bare reference is dropped", int(by2.get("combatref", 0)), 0)
+	ck("nothing else invented", out2.size(), 2)
+
+
+func _vol(half: float, x: float, z: float) -> Dictionary:
+	return {"kind": "volume", "xf": [1, 0, 0, 0, 1, 0, 0, 0, 1, x, 0, z],
+		"height": 0.0,
+		"points": [[-half, 0.0, -half], [-half, 0.0, half],
+				   [half, 0.0, half], [half, 0.0, -half]]}
 
 
 # ---------- flags are lettered by position, not by walk order ----------
@@ -119,8 +171,9 @@ func _spawn_to_flag() -> void:
 	HighpolyGmMine._name_objects("domination", objs)
 	ck("near the west flag", objs[2]["label"], "Flag A Spawn")
 	ck("near the east flag", objs[3]["label"], "Flag B Spawn")
-	# 40 m out is still nearer A than B, and belongs to A
-	ck("further out, same flag", objs[4]["label"], "Flag A Spawn")
+	# 40 m out is still NEAREST to A, and is not A's spawn. Nearest-wins gave
+	# one real conquest flag 36 of 137 spawns.
+	ck("far from any flag is nobody's", objs[4]["label"], "Spawn Point")
 
 	# with no flags at all a spawn still gets a readable name
 	var lone := [_spawn(0.0, 0.0)]

@@ -75,7 +75,7 @@ func _init() -> void:
 	get_root().add_child(root)
 	print("   %s" % HighpolyGamemode.apply(root, map, mode))
 
-	var gm := HighpolyGamemode.built(root).get(mode)
+	var gm = HighpolyGamemode.built(root).get(mode)
 	if gm == null:
 		print("FAIL no node for the mode")
 		quit(1)
@@ -123,16 +123,26 @@ func _init() -> void:
 			% [int(sizes[0]), int(sizes[sizes.size() / 2]), int(sizes[-1])])
 		ck("not the 10x10 default", int(sizes[-1]) != 100, true)
 
-	# spawns wired into their flag
+	# spawns wired into their flag, every flag, so a lopsided share shows
+	var wired_total := 0
+	var worst := 0
 	for c in (gm as Node).get_children():
 		if String((c as Node).scene_file_path).get_file() != "CapturePoint.tscn":
 			continue
 		var a = c.get("InfantrySpawnPoints_Team1")
 		var b = c.get("InfantrySpawnPoints_Team2")
-		var m := (a.size() if a is Array else 0) + (b.size() if b is Array else 0)
-		if m > 0:
-			print("   %s holds %d spawn(s)" % [String(c.name), m])
-			break
+		var m: int = (a.size() if a is Array else 0) + (b.size() if b is Array else 0)
+		wired_total += m
+		worst = maxi(worst, m)
+		print("   %-10s holds %d spawn(s)" % [String(c.name), m])
+	var spawn_n := int(by_type.get("SpawnPoint.tscn", 0))
+	print("   %d of %d spawns belong to a flag, %d stand alone"
+		% [wired_total, spawn_n, spawn_n - wired_total])
+	# The share that belongs to SOME flag is not the thing to bound - on
+	# conquest most infantry spawns really are at flags. What was wrong before
+	# was ONE flag taking 36 of 137 because nearest-wins had no distance limit.
+	if spawn_n > 0:
+		ck("no single flag dominates", worst <= spawn_n / 3, true)
 
 	# ---- switching modes hides, it does not destroy ----
 	if keys.size() > 1:

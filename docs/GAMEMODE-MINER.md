@@ -62,11 +62,13 @@ value for infinite height and the right answer for a capture zone anyway.
 |---|---|---|
 | capture | `conquest/CapturePoint.tscn` | + `PolygonVolume` child wired to `CaptureArea` |
 | combat | `common/CombatArea.tscn` | + volume wired to `CombatVolume` |
-| hq | `common/HQ_PlayerSpawner.tscn` | + volume wired to `HQArea` |
-| sector | `common/Sector.tscn` | |
-| objective | `rush/MCOM.tscn` | |
-| spawn | `entities/SpawnPoint.tscn` | added to the nearest flag's `InfantrySpawnPoints_TeamN` |
+| zone | `PolygonVolume.tscn` | the polygon *is* the node — no wrapper invented |
+| spawn | `entities/SpawnPoint.tscn` | added to its flag's `InfantrySpawnPoints_TeamN` |
 | obb | `OBBVolume.tscn` | `size` = 2 × HalfExtents |
+
+Measured on MP_Aftermath conquest: 5 CapturePoints, 3 PolygonVolume zones, 2
+OBBVolumes, 137 SpawnPoints. Capture areas 268–562 m². Five flags is what the
+map has.
 
 **The spawns are `SpawnPoint`, not `AI_Spawner`,** and the obvious reading is
 the wrong one. The game type is `AlternateSpawnEntityData` and `AI_Spawner.tscn`
@@ -76,14 +78,41 @@ export is an `Array[SpawnPoint]`, so the thing the game holds **one** of is a
 cluster around capture points and carry a `Team`, which is exactly what
 `CapturePoint.InfantrySpawnPoints_TeamN` is for.
 
-**What a volume is** is not in the volume — `VolumeVectorShapeData` is the same
-type for a capture zone, a deploy area and a combat boundary. The partition name
-decides (`ROLES` in the miner).
+## 4. What a volume *is* is not in the data at all
+
+`VolumeVectorShapeData` is the same type for a capture zone, a sector and a
+boundary. Four ways of telling them apart were tried and three are **disproven**:
+
+| approach | result on MP_Aftermath |
+|---|---|
+| the partition name | all 8 conquest volumes come out of one partition, `conquest0`. Nothing to read. |
+| a `CombatAreaEntityData` beside it | 4 on the whole map, **all in strikepoint**. Conquest has none. |
+| containment ("the boundary holds the rest") | **false** — conquest's largest volume holds 5 of its 7 others and 125 of 137 spawns; rush has no dominant volume at all. They overlap; they are sectors. |
+| an owning entity | every type in the 25 conquest partitions, named through the corpus GUID table: 137 `AlternateSpawnEntityData`, 8 `VolumeVectorShapeData`, 2 `OBBData`, 60 `SpatialPrefabReferenceObjectData` — and **all 60 prefabs are `pf_heatzone`**, an FX volume. No `CapturePointEntityData`, no `ObjectiveData`, no name. |
+
+The mode layers ship spawns, polygons and boxes. Conquest's objective logic is
+not in them — the same partitions carry `NetworkRegistryAsset` and
+`EcsRuntimePrefabAsset`, so it lives server-side.
+
+So **size** decides, and is called a heuristic rather than dressed up as a
+reading: conquest's five capture zones are 268–562 m² and the next volume up is
+3,604 — a clean order-of-magnitude gap. At or under `CAPTURE_MAX_AREA` (1,500 m²)
+a volume becomes a `CapturePoint`; larger stays a bare `PolygonVolume`, which is
+exactly what it is and can be promoted by hand. Where a real
+`CombatAreaEntityData` exists it outranks size — evidence beats heuristic.
 
 **Names.** Flags are lettered by position, west to east, so "Flag A" is the same
-flag on every run and every machine; each spawn takes the letter of the flag it
-is nearest to. The floating `Label3D` reads "Domination: Flag A" / "Domination:
-Flag A Spawn".
+flag on every run and every machine. A spawn takes a flag's letter only if it is
+within `SPAWN_CLAIM_RADIUS` (30 m) of it: nearest-wins with no limit gave one
+conquest flag **36 of the map's 137 spawns**, which would have written every
+deploy spawn in the level into that flag's `InfantrySpawnPoints`. Bounded, the
+five flags hold 18/11/13/18/21 and 56 spawns stand alone. The floating `Label3D`
+reads "Domination: Flag A" / "Domination: Flag A Spawn".
+
+**Not every subworld is a mode.** `gameplay` is the union of all of them (36
+partitions, all 129 capture volumes and 579 spawns at once — picking it would
+draw every mode on top of itself); `*_global` is shared setup; `gmpf_*`/`pf_*`
+are cinematic prefabs carrying only lights. Filtered out, 18 "modes" become 12.
 
 ## Ownership, deliberately split
 
@@ -116,6 +145,12 @@ the next map open re-mines it from the install.
     tools/probe_gm4.gd        instances and fields of one partition
     tools/probe_gm5.gd        run the walk with extra want_types
     tools/probe_gm8.gd        every field of every gameplay entity, by shape
+    tools/probe_gmjson.gd     what the MINED FILE holds, by partition, with
+                              areas and containment. Reads JSON only - instant.
+    tools/probe_gmtypes.gd    every instance type in a mode's partitions, NAMED
+                              through the corpus GUID table. This is what
+                              settled the classification question.
+    tools/probe_gmprefab.gd   the prefab references those partitions make
 
 All take the level mount only (`catalogue_mount = false`), which is the
 difference between a 40-second probe and one that times out. A probe run while

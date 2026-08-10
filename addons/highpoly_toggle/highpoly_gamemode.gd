@@ -43,16 +43,22 @@ const LABELS := "_HP_LABELS"          # unowned label group inside a mode node
 # a list of them. These entities cluster around capture points and carry a Team,
 # which is what CapturePoint.InfantrySpawnPoints_TeamN is for - so each becomes
 # a SpawnPoint and gets wired into the flag it belongs to.
+const POLYGON := "res://addons/bf_portal/portal_tools/types/PolygonVolume/PolygonVolume.tscn"
+
 const SCENES := {
 	"capture":   "res://objects/gameplay/conquest/CapturePoint.tscn",
 	"combat":    "res://objects/gameplay/common/CombatArea.tscn",
 	"hq":        "res://objects/gameplay/common/HQ_PlayerSpawner.tscn",
-	"sector":    "res://objects/gameplay/common/Sector.tscn",
 	"objective": "res://objects/gameplay/rush/MCOM.tscn",
 	"spawn":     "res://objects/entities/SpawnPoint.tscn",
 	"obb":       "res://addons/bf_portal/portal_tools/types/OBBVolume/OBBVolume.tscn",
+	# A ZONE IS THE POLYGON, not something holding one. Too large to be a
+	# capture zone and with no combat-area entity claiming it, so what the data
+	# supports is exactly a shape in a place - a sector, a deploy area, a
+	# boundary. Building it as a bare PolygonVolume states that and nothing
+	# more; drop a CapturePoint on it yourself if you know better.
+	"zone":      POLYGON,
 }
-const POLYGON := "res://addons/bf_portal/portal_tools/types/PolygonVolume/PolygonVolume.tscn"
 
 # Which export on the owning scene takes the polygon, per kind.
 const AREA_PROP := {
@@ -62,7 +68,7 @@ const AREA_PROP := {
 const COLORS := {
 	"capture": Color(1.0, 0.55, 0.1), "objective": Color(0.9, 0.15, 0.15),
 	"spawn": Color(0.2, 0.85, 0.3), "combat": Color(1.0, 0.85, 0.2),
-	"hq": Color(0.35, 0.7, 1.0), "sector": Color(0.8, 0.5, 1.0),
+	"hq": Color(0.35, 0.7, 1.0), "zone": Color(0.55, 0.75, 0.95),
 	"obb": Color(0.9, 0.15, 0.15), "other": Color(0.7, 0.7, 0.75),
 }
 
@@ -306,6 +312,14 @@ static func _make(gm: Node3D, root: Node, o: Dictionary, failed: Dictionary) -> 
 		# forces its own rotation to Y only, so the points go in as world XZ.
 		var pts := _world_points(o["points"] as Array, xf)
 		var c := _centre(pts)
+		if path == POLYGON:
+			# the node IS the volume, so there is no child to wire
+			_fill_polygon(n, pts, c, float(o.get("height", 0.0)), kind)
+			if n.is_inside_tree():
+				n.global_position = c
+			else:
+				n.position = c
+			return n
 		# global_position asserts when the node is not in a tree yet and quietly
 		# returns identity; the mode node hangs off the level root, which sits at
 		# the origin in every SDK level, so the local position is the world one
@@ -349,13 +363,18 @@ static func _polygon(root: Node, pts: Array, centre: Vector3, height: float,
 	if v == null:
 		return null
 	v.name = "Area"
+	_fill_polygon(v, pts, centre, height, kind)
+	return v
+
+
+static func _fill_polygon(v: Node3D, pts: Array, centre: Vector3, height: float,
+		kind: String) -> void:
 	var flat := PackedVector2Array()
 	for p in pts:
 		flat.append(Vector2((p as Vector3).x - centre.x, (p as Vector3).z - centre.z))
 	v.set("points", flat)
 	v.set("height", maxf(height, 0.0))
 	v.set("color", _tint(kind))
-	return v
 
 
 static func _tint(kind: String) -> Color:
@@ -469,7 +488,7 @@ static func _kind_of(n: Node3D) -> String:
 		"capturepoint": return "capture"
 		"combatarea": return "combat"
 		"hq_playerspawner": return "hq"
-		"sector": return "sector"
+		"polygonvolume": return "zone"
 		"mcom": return "objective"
 		"spawnpoint": return "spawn"
 		"obbvolume": return "obb"

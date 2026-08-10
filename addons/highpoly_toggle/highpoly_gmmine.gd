@@ -63,17 +63,55 @@ const TYPES := {
 # would draw a second, wrong set of zones over the real ones.
 const SKIP := ["telemetry_", "_ai", "_narrative", "generated/"]
 
-# What a volume IS is not in the volume - VolumeVectorShapeData is the same type
-# for a capture zone, a deploy area and a combat boundary. The partition that
-# holds it says which, so the role comes from the name. Ordered: the first
-# substring that matches wins, so "hq_combat" reads as combat, not HQ.
-const ROLES := [
-	["combatarea", "combat"], ["combat_", "combat"], ["playablearea", "combat"],
-	["capture", "capture"], ["flag", "capture"], ["controlpoint", "capture"],
-	["objective", "objective"], ["mcom", "objective"], ["bomb", "objective"],
-	["hq", "hq"], ["deploy", "hq"], ["base", "hq"],
-	["sector", "sector"],
-]
+# Subworlds that survive SKIP but are still not something anyone plays. Checked
+# against the folded mode name, because these are only recognisable once the
+# name exists:
+#
+#   gameplay      THE UNION OF EVERY MODE. 36 partitions, holding all 129
+#                 capture volumes and 579 spawns on MP_Aftermath at once -
+#                 picking it would draw every mode's layout on top of itself.
+#   *_global      gameplay_global, freeroam0_global: shared setup, no layout
+#   gmpf_*, pf_*  prefab and cinematic partitions (the end-of-round camera
+#                 flight, a fastrope flare) that carry lights and nothing else
+static func _is_mode(m: String) -> bool:
+	return not (m == "gameplay" or m.ends_with("_global")
+		or m.begins_with("gmpf_") or m.begins_with("pf_"))
+
+# WHAT A VOLUME IS, IS NOT IN THE DATA. Four ways of telling a capture zone
+# from a sector or a boundary were tried on MP_Aftermath and three are disproven
+# outright:
+#
+#   the partition name    all 8 conquest volumes come out of ONE partition,
+#                         "conquest0". There is nothing to read.
+#   a combat-area entity  there are 4 CombatAreaEntityData on the whole map and
+#                         all 4 are in strikepoint. Conquest has none.
+#   containment           "the boundary contains the rest" is false: conquest's
+#                         largest volume holds 5 of its 7 others and 125 of 137
+#                         spawns, and rush has no dominant volume at all. These
+#                         overlap; they are sectors, not one boundary.
+#   an owning entity      dumping EVERY type in the 25 conquest partitions and
+#                         naming them through the corpus GUID table gives 137
+#                         AlternateSpawnEntityData, 8 VolumeVectorShapeData, 2
+#                         OBBData, 60 SpatialPrefabReferenceObjectData - and the
+#                         60 prefabs are all pf_heatzone, an FX volume. No
+#                         CapturePointEntityData, no ObjectiveData, no name.
+#
+# The mode layers ship spawns, polygons and boxes. Conquest's objective logic is
+# not in them - the same partitions carry NetworkRegistryAsset and
+# EcsRuntimePrefabAsset, so it lives server-side.
+#
+# So SIZE is used, and is called a heuristic rather than dressed up as a
+# reading. On conquest the five capture zones are 268-562 m2 and the next volume
+# up is 3,604 - a clean order-of-magnitude gap. A volume at or under this
+# becomes a CapturePoint; anything larger stays a plain PolygonVolume, which is
+# exactly what it is and can be promoted by hand.
+const CAPTURE_MAX_AREA := 1500.0
+
+# How near a capture zone a spawn has to be to count as that flag's spawn. The
+# zones themselves are 268-562 m2 on conquest, so roughly 16-24 m across; 30 m
+# from the centre reaches a spawn just outside the ring without reaching the
+# next flag, which is hundreds of metres away.
+const SPAWN_CLAIM_RADIUS := 30.0
 
 
 # -> {v, modes: {name: {objects: [...]}}}, or {} when nothing mined.
@@ -98,19 +136,24 @@ static func mine(gs, level: String) -> Dictionary:
 			roots.append(s)
 	roots.sort()
 
-	# Ask the walk for these types, and for every field of them, for the
-	# duration of the mine - then put both back. The level walk's own result is
-	# keyed on that want list and a changed one would invalidate its cache.
-	var saved: Dictionary = gs.walk.want_types.duplicate()
+	# Ask the walk for THESE TYPES AND NOTHING ELSE for the duration of the
+	# mine, then put its want list back. The level walk's own result is keyed on
+	# that list and a changed one would invalidate its cache.
+	#
+	# REPLACED, not added to. Adding left the caller's own wants in place, and
+	# the caller wants lights and FX heatzones: the first mined file carried
+	# 1,116 lights - 540 of them in conquest alone, from
+	# lf_com_emptyspotlight_firebarel_01 and pf_heatzone - which is 690 KB of a
+	# 815 KB file describing objects no mode has any use for.
+	var saved: Dictionary = gs.walk.want_types
 	var saved_all: bool = gs.walk.want_all_fields
-	for g in TYPES:
-		gs.walk.want_types[g] = str(TYPES[g])
+	gs.walk.want_types = TYPES.duplicate()
 	gs.walk.want_all_fields = true
 
 	var modes := {}
 	for r in roots:
 		var mode := _mode_of(r.substr(pre.length()))
-		if mode == "":
+		if mode == "" or not _is_mode(mode):
 			continue
 		var ref = gs.walk.resolve_name(r)
 		if ref == null:
@@ -139,8 +182,68 @@ static func mine(gs, level: String) -> Dictionary:
 	if out.is_empty():
 		return {}
 	for k in out:
-		_name_objects(k, (out[k] as Dictionary)["objects"] as Array)
+		var objs: Array = (out[k] as Dictionary)["objects"]
+		objs = _classify(objs)
+		(out[k] as Dictionary)["objects"] = objs
+		_name_objects(k, objs)
 	return {"v": SCHEMA, "modes": out}
+
+
+# Decide what each volume is, and drop the bare combat references once they have
+# done their job. Evidence first, heuristic only where there is none.
+static func _classify(objs: Array) -> Array:
+	var vols: Array = []
+	var refs: Array = []
+	var rest: Array = []
+	for o in objs:
+		match str((o as Dictionary).get("kind", "")):
+			"volume": vols.append(o)
+			"combatref": refs.append(o)
+			_: rest.append(o)
+
+	# A CombatAreaEntityData is a real statement that a combat area exists here,
+	# so the volume nearest one is that area. Only strikepoint has any on
+	# MP_Aftermath, and where there are none nothing is called a combat area.
+	var claimed := {}
+	for r in refs:
+		var rx: Array = (r as Dictionary)["xf"]
+		var at := Vector3(rx[9], rx[10], rx[11])
+		var best := -1
+		var bd := INF
+		for i in range(vols.size()):
+			if claimed.has(i):
+				continue
+			var d := _origin(vols[i]).distance_squared_to(at)
+			if d < bd:
+				bd = d
+				best = i
+		if best >= 0:
+			claimed[best] = true
+			(vols[best] as Dictionary)["kind"] = "combat"
+
+	for i in range(vols.size()):
+		if claimed.has(i):
+			continue
+		var v := vols[i] as Dictionary
+		var a := _area(v["points"] as Array)
+		v["kind"] = "capture" if a <= CAPTURE_MAX_AREA else "zone"
+		v["area"] = int(a)
+	return rest + vols
+
+
+# Twice the signed area of the polygon in its own XZ plane. The transform beside
+# it is a rotation and a translation, neither of which changes an area, so this
+# is the world area without having to move the points first.
+static func _area(pts: Array) -> float:
+	var n := pts.size()
+	if n < 3:
+		return 0.0
+	var a := 0.0
+	for i in range(n):
+		var c: Array = pts[i]
+		var d: Array = pts[(i + 1) % n]
+		a += float(c[0]) * float(d[2]) - float(d[0]) * float(c[2])
+	return absf(a) * 0.5
 
 
 # One collected entity -> one buildable object, or {} to drop it.
@@ -159,14 +262,15 @@ static func _object_of(ent: Dictionary) -> Dictionary:
 		"volume", "combat":
 			var pts := _points_of(f)
 			if pts.is_empty():
-				# A combat area entity carries no polygon of its own - the shape
-				# is a separate VolumeVectorShapeData beside it. Keeping the
-				# entity anyway would draw a zero-size volume, so drop it and
-				# let the shape it points at be the one that builds.
-				return {}
+				# A CombatAreaEntityData carries no polygon of its own - the
+				# shape is a separate VolumeVectorShapeData. Kept as a bare
+				# reference so the pass below can say WHICH volume is the combat
+				# boundary; it never reaches the file.
+				return {"kind": "combatref", "src": src.get_file(),
+					"xf": _flat(xf as Array)} if kind == "combat" else {}
 			o["points"] = pts
 			o["height"] = _height_of(f)
-			o["kind"] = "combat" if kind == "combat" else _role_of(src)
+			o["kind"] = "volume"
 		"obb":
 			var hx := _vec3_of(f)
 			# HalfExtents, so the OBBVolume size is twice it.
@@ -233,14 +337,6 @@ static func _height_of(f: Dictionary) -> float:
 	return maxf(float(cand[0]), 0.0) if cand.size() == 1 else 0.0
 
 
-static func _role_of(src: String) -> String:
-	var low := src.to_lower()
-	for r in ROLES:
-		if low.findn(str(r[0])) >= 0:
-			return str(r[1])
-	return "capture"
-
-
 static func _flat(m: Array) -> Array:
 	var out: Array = []
 	for i in range(4):
@@ -270,19 +366,30 @@ static func _name_objects(mode: String, objs: Array) -> void:
 		(caps[i] as Dictionary)["label"] = "Flag %s" % _letter(i)
 
 	var n := {}
+	const PRETTY_KIND := {"zone": "Zone", "combat": "Combat Area",
+		"obb": "Box", "spawn": "Spawn Point"}
 	for o in objs:
 		var d := o as Dictionary
 		var kind := str(d.get("kind", ""))
 		if kind == "capture":
 			continue
 		if kind == "spawn":
+			# NEAREST IS NOT THE SAME AS BELONGING. Taking the nearest flag
+			# unconditionally gave one conquest flag 36 of the map's 137 spawns:
+			# every deploy spawn in the level attached itself to whichever flag
+			# happened to be closest, and each one would then have been written
+			# into that flag's InfantrySpawnPoints - making deploy spawns into
+			# flag spawns. Measured, the capture polygons contain 1, 7, 4, 4 and
+			# 9 spawns; a flag's spawns are AT the flag.
 			var near = _nearest(caps, _origin(d))
+			var at_flag := near != null \
+				and _origin(near).distance_to(_origin(d)) <= SPAWN_CLAIM_RADIUS
 			d["label"] = ("%s Spawn" % str((near as Dictionary)["label"])) \
-				if near != null else "Spawn Point"
+				if at_flag else "Spawn Point"
 			continue
-		var pretty := kind.capitalize()
 		n[kind] = int(n.get(kind, 0)) + 1
-		d["label"] = "%s %d" % [pretty, int(n[kind])]
+		d["label"] = "%s %d" % [str(PRETTY_KIND.get(kind, kind.capitalize())),
+			int(n[kind])]
 	# the mode prefixes every label, so it reads "Domination: Flag A" in the
 	# viewport without each label having to carry the mode itself
 	for o in objs:
