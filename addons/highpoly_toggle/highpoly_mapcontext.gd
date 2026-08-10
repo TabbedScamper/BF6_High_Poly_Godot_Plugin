@@ -871,11 +871,24 @@ func _tile_params(map: String) -> Dictionary:
 
 # The SDK's saved decal for this level, or null. Its presence means the user
 # pressed "Apply Texture" on the 3D toolbar and the decal lives in their scene.
+#
+# Exact name first, then ANY Decal under Static whose name carries the SDK's
+# suffix: the exact test silently misses a renamed scene root (the SDK names
+# the decal after the LEVEL, the lookup used the ROOT), and a missed decal is
+# not a missing feature - it is the SDK's aerial photo projecting over the
+# extended terrain, which a user reported as the map texture overlapping the
+# ground.
 func sdk_decal(root: Node) -> Decal:
 	if root == null: return null
 	var st := root.get_node_or_null("Static")
 	if st == null: return null
-	return st.get_node_or_null("%s%s" % [String(root.name), SDK_DECAL_SUFFIX]) as Decal
+	var exact := st.get_node_or_null("%s%s" % [String(root.name), SDK_DECAL_SUFFIX]) as Decal
+	if exact != null:
+		return exact
+	for c in st.get_children():
+		if c is Decal and String(c.name).ends_with(SDK_DECAL_SUFFIX):
+			return c as Decal
+	return null
 
 # First maptile jpg present ON DISK for this map ("" = none). Deliberately
 # FileAccess, not ResourceLoader: a stale .import with no imported .ctex passes
@@ -5946,6 +5959,31 @@ func tick() -> void:
 		var cam := _editor_cam()
 		if cam: _scatter.tick(cam.global_transform.origin)
 	_tick_near()
+	_tick_sdk_decal()
+
+
+# THE SDK DECAL IS STOOD DOWN CONTINUOUSLY, not only at apply time. The apply
+# hides it, but "Apply Texture" on the SDK's toolbar can be pressed - or its
+# undo redone - AFTER the extended terrain is up, and the new decal projected
+# the aerial photo over our ground until the next apply: buildings printed on
+# the terrain under the real buildings, reported as the map texture
+# overlapping the terrain. While our terrain is on, any visible SDK decal is
+# hidden the moment the tick sees it (remembered and restored when the layer
+# goes off, exactly as the apply-time hide does). And whenever one is seen at
+# all, our overlay layer is stripped from its cull mask, so even a VISIBLE
+# decal - the user's choice while our terrain is off - can never project onto
+# our water, roads or ground.
+func _tick_sdk_decal() -> void:
+	var r := EditorInterface.get_edited_scene_root()
+	if r == null:
+		return
+	var dec := sdk_decal(r)
+	if dec == null:
+		return
+	if (dec.cull_mask & EXT_TERRAIN_LAYER) != 0:
+		dec.cull_mask &= ~EXT_TERRAIN_LAYER
+	if _active and dec.visible:
+		_set_sdk_decal_shown(r, false)
 
 
 # Recentre the near-field ground window when the camera has drifted, from the
