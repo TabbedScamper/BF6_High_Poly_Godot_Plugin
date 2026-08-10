@@ -193,10 +193,11 @@ const CHILD_Z := [0, 0, 1, 1]
 const PREFIXES := [0, 39919, 149297, 189216, 298594]
 # residual -> trailer bytes (k × tile_bytes), filled by detect_layout.
 var _trailer := {}
-# residuals whose trailer is the 85,024-byte MIP PAIR (a 260² tile with its
-# 132² mip after it — MAP-EASTWOOD.md measured 19 such nodes beside 133 plain
-# 132² ones IN THE SAME MAP). The colour slice there is the pair's LAST
-# tile_bytes: the small mip, which matches the scale of the map's other tiles.
+# residual -> OFFSET of the colour tile inside an 85,024-byte MIP PAIR trailer
+# (a 260² tile with its 132² mip after it). Which component is "the" colour
+# depends on the map's tile size: beside 132² tiles (MAP-EASTWOOD.md's 19
+# mixed nodes) the pair's TAIL mip matches scale, offset 67,600; on a 260²
+# map (Granite's marina family) the pair's HEAD is the tile, offset 0.
 var _mip := {}
 # Model B (constant non-tile trailer, MAP-CONTAMINATED.md's 936): the constant,
 # or -1 when model A fit.
@@ -265,9 +266,9 @@ func detect_layout(dir: Dictionary) -> bool:
 			if k >= 0:
 				t_of[int(r)] = k * int(tb)
 				okn += int(best_resid[r])
-			elif int(tb) == 17424 and _mip_fits(int(r)):
+			elif (int(tb) == 17424 or int(tb) == 67600) and _mip_fits(int(r)):
 				t_of[int(r)] = 85024
-				t_mip[int(r)] = true
+				t_mip[int(r)] = 67600 if int(tb) == 17424 else 0
 				okn += int(best_resid[r])
 		if okn * 10 >= total * 9 and okn > best_fit:
 			best_fit = okn
@@ -380,9 +381,9 @@ func _trailer_bytes(primary_size: int, pages: int) -> int:
 				_trailer[r] = _tail_const
 				return _tail_const
 		return -1
-	if tile_bytes == 17424 and _mip_fits(r):
+	if (tile_bytes == 17424 or tile_bytes == 67600) and _mip_fits(r):
 		_trailer[r] = 85024
-		_mip[r] = true
+		_mip[r] = 67600 if tile_bytes == 17424 else 0
 		return 85024
 	var k := _tiles_in(r, tile_bytes)
 	if k < 0:
@@ -435,12 +436,12 @@ func color_tiles(dir: Dictionary, fetch: Callable,
 		var resid := data.size() * 0      # keep typed int
 		resid = int(ed["primary_size"]) - int(nd["pages"]) * page_size
 		if _mip.has(resid):
-			# The 85,024-byte mip pair: a 260² tile with its 132² mip AFTER it.
-			# The colour slice is the small mip - the same 132² scale as the
-			# map's plain tiles - and a signature scan must not run here: every
-			# 17,424-byte window of the big tile is itself valid BC7, so the
-			# scan would happily return a quarter of the wrong-resolution image.
-			start = data.size() - tile_bytes
+			# The 85,024-byte mip pair: the offset stored at detection picks the
+			# component matching the map's tile size (tail 132² beside 132²
+			# tiles, head 260² on a 260² map). A signature scan must not run
+			# here: every window of the big tile is itself a valid image, so the
+			# scan would happily return a piece of the wrong-resolution mip.
+			start = data.size() - trailer + int(_mip[resid])
 		elif trailer > tile_bytes:
 			# WHICH tile of a multi-tile trailer is the colour is decided by
 			# SIGNATURE, not position. On Tungsten the colour tile is first and
@@ -451,7 +452,7 @@ func color_tiles(dir: Dictionary, fetch: Callable,
 			var best_frac := -1.0
 			var off := 0
 			while off + tile_bytes <= trailer:
-				var f := _mode47_frac(data, start + off)
+				var f := _tile_score(data, start + off)
 				if f > best_frac:
 					best_frac = f
 					best_off = off
@@ -494,7 +495,7 @@ func color_tiles(dir: Dictionary, fetch: Callable,
 			var best_frac := -1.0
 			var g := 0
 			while (g + 4) * tile_bytes <= trailer:
-				var f := _mode47_frac(data, base + g * tile_bytes)
+				var f := _tile_score(data, base + g * tile_bytes)
 				if f > best_frac:
 					best_frac = f
 					best_g = g
@@ -523,13 +524,18 @@ func color_tiles(dir: Dictionary, fetch: Callable,
 # degenerate second raster is mode-0-3 and measures ~0. Sampled every fourth
 # block: the two populations are far enough apart that 272 blocks of a 132
 # tile settle it, and this runs per tile on a 1,000-tile map.
-# Is the tile at `start` a plausible colour raster for the map's codec?
-# Thresholds sit in the wide gap between measured populations (see the call
-# site); a tile that fails is weight-page data wearing a tile-sized coat.
-func _tile_looks_real(d: PackedByteArray, start: int) -> bool:
+# The codec-appropriate "how much does this look like a colour raster" score,
+# used both to CHOOSE between candidate tiles (relative) and to GATE a chosen
+# one (absolute, in _tile_looks_real). Granite proved the mode test is wrong
+# for BC1 both ways - real BC1 colour reads "mode 3" and uniform BC1 filler
+# reads "mode 6" - so the score is per format.
+func _tile_score(d: PackedByteArray, start: int) -> float:
 	if tile_fmt == Image.FORMAT_DXT1:
 		# BC1: opaque blocks order their two RGB565 endpoints c0 > c1. Colour
-		# tiles are ~99% ordered; page bytes land near 14%.
+		# tiles measure ~99% ordered; page bytes ~14%; Granite's constant
+		# filler tiles (identical endpoints) score ~0 and are rejected by the
+		# gate, which is exactly the "skip filler over the play area" its
+		# study calls for.
 		var ordered := 0
 		var n := 0
 		var b := start
@@ -538,8 +544,15 @@ func _tile_looks_real(d: PackedByteArray, start: int) -> bool:
 				ordered += 1
 			n += 1
 			b += 32
-		return n > 0 and float(ordered) / float(n) >= 0.6
-	return _mode47_frac(d, start) >= 0.4
+		return float(ordered) / maxf(1.0, float(n))
+	return _mode47_frac(d, start)
+
+
+# Is the tile at `start` a plausible colour raster for the map's codec?
+# Thresholds sit in the wide gap between measured populations; a tile that
+# fails is weight-page data (or constant filler) wearing a tile-sized coat.
+func _tile_looks_real(d: PackedByteArray, start: int) -> bool:
+	return _tile_score(d, start) >= (0.6 if tile_fmt == Image.FORMAT_DXT1 else 0.4)
 
 
 static func _mode47_frac(d: PackedByteArray, start: int) -> float:

@@ -1,0 +1,9 @@
+# Godot: do not scan this folder.
+#
+# This repo carries a SECOND copy of every plugin script (the addon it ships)
+# with the same class_name declarations as the ACTIVE addon at
+# res://addons/highpoly_toggle. Without this file the editor compiles both,
+# and any edit or git operation here while the editor is open hot-reloads
+# scripts under running code - which is a "Bad address index" crash mid-build
+# (godot-crash-2026-08-10_01-34-44.log). The deployed addon is unaffected:
+# deploys copy files there, and that path is outside this folder.
