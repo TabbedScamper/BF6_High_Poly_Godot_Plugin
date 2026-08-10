@@ -5108,13 +5108,40 @@ func ensure_layer(root: Node, layer: String, tex_mode: int) -> bool:
 		_ph_reset()
 	match layer:
 		"water":
-			if ctx.get_node_or_null("Water") != null:
-				return true                # already there; caller just flips it
+			# THE NODE EXISTING IS NOT PROOF IT MATCHES THE DATA. A session
+			# that built Water before a reader fix kept SHOWING the stale node
+			# through every later toggle - the early return here was the last
+			# of the doors that held the block-2 river invisible without a
+			# restart. Two corrections in one: the data is re-asked with water
+			# actually WANTED (_load_data above ran with _show_water still
+			# false, since the chip flips it after this call), and the built
+			# node is compared against the answer by body count - a mismatch
+			# rebuilds instead of shows.
+			_show_water = true
+			if game_source != null and game_source.level == map.to_lower():
+				var wd: Dictionary = game_source.map_data(dir, {
+					"lights": want_lights, "fx": want_fx, "water": true})
+				if not wd.is_empty():
+					_data = wd
+			var bodies_v: Variant = (_data as Dictionary).get("water", []) \
+				if _data is Dictionary else []
+			var nbod := 0
+			if bodies_v is Dictionary:
+				nbod = 1
+			elif bodies_v is Array:
+				nbod = (bodies_v as Array).size()
+			var wn := ctx.get_node_or_null("Water")
+			if wn != null and wn.get_child_count() == nbod and nbod > 0:
+				return true                # already there AND current: just flip
+			if wn != null:
+				# renamed before the free so _add_water_plane's fresh node does
+				# not collide with a queue_free'd sibling still holding "Water"
+				wn.name = "_WaterStale"
+				wn.queue_free()
 			var _t_w := Time.get_ticks_msec()
 			_add_water_plane(ctx, textured)
 			_ph("water: build the surface", Time.get_ticks_msec() - _t_w, 1,
 				PH_INSTALL)
-			_show_water = true
 			return ctx.get_node_or_null("Water") != null
 		"backdrop":
 			if ctx.get_node_or_null("Backdrop") != null:
