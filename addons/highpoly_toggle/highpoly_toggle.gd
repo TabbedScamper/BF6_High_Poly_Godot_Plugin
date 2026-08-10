@@ -1919,6 +1919,17 @@ func _exit_tree() -> void:
 			remove_control_from_container(CONTAINER_SPATIAL_EDITOR_MENU, tools_btn)
 			tools_btn.queue_free()
 			tools_btn = null
+		# A DOCKED CONTROL HAS TO BE TAKEN OUT BEFORE ITS OWNER GOES.
+		#
+		# win.free() takes dock_root with it only while dock_root is inside the
+		# window. Docked, it is parented into the editor's own dock column
+		# instead, so freeing the window leaves it sitting there - a tab
+		# belonging to a plugin that no longer exists, which survives into the
+		# editor's saved layout.
+		if _is_docked():
+			remove_control_from_docks(dock_root)
+			dock_root.queue_free()
+			dock_root = null
 		if win:
 			win.free()
 			win = null
@@ -1949,6 +1960,13 @@ func _exit_tree() -> void:
 		remove_control_from_container(CONTAINER_SPATIAL_EDITOR_MENU, tools_btn)
 		tools_btn.queue_free()
 		tools_btn = null
+	# Out of the dock column first, or freeing the window frees nothing: docked,
+	# dock_root is not the window's child and would be left behind as a tab
+	# belonging to a plugin that has been switched off.
+	if _is_docked():
+		remove_control_from_docks(dock_root)
+		dock_root.free()
+		dock_root = null
 	if win:
 		# free(), not queue_free(): teardown DOES run at editor shutdown, but the
 		# deferred queue is not flushed before the process exits, so a queued
@@ -2881,16 +2899,83 @@ func _build_tool_window() -> void:
 	tools_btn.toggled.connect(_set_tools_visible)
 	add_control_to_container(CONTAINER_SPATIAL_EDITOR_MENU, tools_btn)
 
+# ---------------------------------------------------------------------------
+# TWO HOMES: the floating window, and a tab beside Inspector / Signals / Groups.
+#
+# Closing the window used to just hide it, which threw the panel away until you
+# remembered the toolbar button. Docking instead keeps it to hand where every
+# other editor panel lives, and the toolbar button pops it back out to float.
+#
+# The panel itself never rebuilds. dock_root is one Control holding the whole
+# UI, and both homes are the same reparent - so the open reader, the built
+# overlay, the job queue and every toggle carry across untouched. That is the
+# same property the soft-reopen path depends on, for the same reason.
+# Right-hand column, lower half — the strip Inspector, Signals and Groups share.
+#
+# Which home the panel is in persists through _get_window_layout, the slice of
+# the editor's own layout file Godot hands plugins. Not project metadata: the
+# window rect and whether it was open already live there, and two places
+# remembering the same thing is how they end up disagreeing.
+const DOCK_SLOT := EditorPlugin.DOCK_SLOT_RIGHT_BL
+
+
+func _is_docked() -> bool:
+	return dock_root != null and is_instance_valid(dock_root) \
+		and win != null and dock_root.get_parent() != win
+
+
+# Move the panel into the editor's dock column. Idempotent.
+func _dock_panel() -> void:
+	if dock_root == null or not is_instance_valid(dock_root) or _is_docked():
+		return
+	if win != null and win.visible:
+		_win_rect = Rect2i(win.position, win.size)
+	if win != null:
+		win.hide()
+		if dock_root.get_parent() == win:
+			win.remove_child(dock_root)
+	# A DOCK IS A CONTAINER AND A WINDOW IS NOT, and this panel was built for the
+	# window. Inside a Window the FULL_RECT anchors set at creation do the
+	# sizing; inside a TabContainer anchors are ignored and the container sizes
+	# its child from the size flags instead - which were never set, because
+	# nothing had ever put this Control in a Container. Both homes now get what
+	# they need and neither disturbs the other: a Window ignores size flags
+	# exactly as a Container ignores anchors.
+	#
+	# dock_root.name is already "High-Poly" from _enter_tree, and that name is
+	# what the dock uses as the tab label.
+	dock_root.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	dock_root.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	dock_root.custom_minimum_size = Vector2(260, 220)
+	add_control_to_dock(DOCK_SLOT, dock_root)
+	# PAUSED WHILE DOCKED. The video is a backdrop, and a docked panel is on
+	# screen for the whole session - the original reasoning for stopping the
+	# decoder when the panel closes ("this plugin exists to buy back frame time,
+	# not to spend it on its own scenery") applies more here, not less.
+	if video: video.paused = true
+	_stop_boot()
+
+
+# Take it back out of the dock and float it.
+func _float_panel() -> void:
+	if dock_root == null or not is_instance_valid(dock_root) or win == null:
+		return
+	if _is_docked():
+		remove_control_from_docks(dock_root)
+	if dock_root.get_parent() != win:
+		if dock_root.get_parent() != null:
+			dock_root.get_parent().remove_child(dock_root)
+		win.add_child(dock_root)
+
+
 func _set_tools_visible(on: bool) -> void:
 	if win == null: return
 	if not on:
-		if win.visible: _win_rect = Rect2i(win.position, win.size)
-		win.hide()
-		# a closed panel must not keep a video decoder running: this plugin
-		# exists to buy back frame time, not to spend it on its own scenery
-		if video: video.paused = true
-		_stop_boot()
+		# CLOSING DOCKS IT rather than hiding it. Nothing is lost and nothing is
+		# rebuilt; the panel is simply somewhere else.
+		_dock_panel()
 		return
+	_float_panel()
 	if video:
 		if video.is_playing(): video.paused = false
 		else: video.play()
@@ -2914,10 +2999,9 @@ func _stop_boot() -> void:
 func _close_tools() -> void:
 	# closing from the window's own X must not re-enter _set_tools_visible
 	if tools_btn: tools_btn.set_pressed_no_signal(false)
-	if win and win.visible: _win_rect = Rect2i(win.position, win.size)
-	if win: win.hide()
-	if video: video.paused = true
-	_stop_boot()
+	# The X docks it, same as untoggling the button. _dock_panel records the
+	# window rect on the way out, so floating it again lands where you left it.
+	_dock_panel()
 
 # A remembered position is only good while that monitor still exists. Unplug a
 # second screen and a restored panel would open onto coordinates nothing can
@@ -2944,11 +3028,22 @@ func _get_window_layout(cfg: ConfigFile) -> void:
 	if win.visible: _win_rect = Rect2i(win.position, win.size)
 	cfg.set_value("HighPoly", "win_rect", _win_rect)
 	cfg.set_value("HighPoly", "win_open", win.visible)
+	cfg.set_value("HighPoly", "docked", _is_docked())
 
 func _set_window_layout(cfg: ConfigFile) -> void:
 	_win_rect = cfg.get_value("HighPoly", "win_rect", Rect2i())
-	if tools_btn and bool(cfg.get_value("HighPoly", "win_open", false)):
+	# THE PANEL ALWAYS LIVES SOMEWHERE NOW: floating, or a tab in the dock
+	# column. There is no third state where it exists and cannot be seen, which
+	# is what "closed" used to mean and what made people hunt for the button.
+	if bool(cfg.get_value("HighPoly", "docked", false)):
+		_dock_panel.call_deferred()
+	elif tools_btn and bool(cfg.get_value("HighPoly", "win_open", false)):
 		tools_btn.button_pressed = true      # fires _set_tools_visible
+	else:
+		# Neither recorded: a layout written before the panel could dock, or a
+		# first run. Docked is the safe home - visible, out of the way, and one
+		# click from floating.
+		_dock_panel.call_deferred()
 
 # Boot animation, played on every open.
 func _maybe_play_splash() -> void:
