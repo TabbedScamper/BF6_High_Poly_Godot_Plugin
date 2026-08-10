@@ -1809,12 +1809,15 @@ const CMAP_VERSION := 2
 #      a 1-texel apron (byte-identical to the neighbour on 400/400 adjacent
 #      pairs), and stretching all 66 across the record scaled every painted
 #      shape by 66/64 and shifted paint up to a page texel at node edges.
-#   9  block-7 base pairs index the MAP-GLOBAL no-page list, not the block-1
-#      ancestor node's subset: a nibble into a subset names the wrong layer,
-#      which erased mp_aftermath's street asphalt from the base field
-#      entirely (fleet-measured present; ours 0). With it the streets, the
-#      cobble and the concrete tile come back as real textured ground.
-const SPLAT_VERSION := 9
+#   9  block-7 base pairs briefly indexed the MAP-GLOBAL no-page list - see 10.
+#  10  block-7 base pairs index the SPATIALLY MATCHED block-1 node's own
+#      no-page list (TERRAIN.md 8 as written). v9's global list was validated
+#      on aftermath/outskirts, the two maps where every node list EQUALS the
+#      global list; on 23 of 35 maps they differ (mp_isolated: 98.9% of its
+#      base-kind texels named the wrong layer, dumbo 31%). The v9-era symptom
+#      that motivated the global list was a broken key-equality node lookup,
+#      not the list choice: the match is by BOUNDS (bf6_splat.base_list_at).
+const SPLAT_VERSION := 10
 # Per-slice detail textures; all slices must match. 1024 rather than 512: the
 # game's layer sheets are mostly 1024+, and at 512 the close-up ground was a
 # quarter of the detail the install holds. The loader compresses the slices to
@@ -2029,7 +2032,8 @@ func terrain_surface(cache_dir: String, force := false,
 		var mt := BF6MaterialTree.new()
 		t0 = Time.get_ticks_msec()
 		if mt.parse(b7):
-			base = mt.rasterize(sres, func(k): return sp.base_list(k),
+			base = mt.rasterize(sres,
+				func(cx, cz, w): return sp.base_list_at(cx, cz, w),
 				sp.full_list(), _linked_of(pal), Vector2.INF, 0.0,
 				sp.global_base_list())
 			var t_base := Time.get_ticks_msec() - t0

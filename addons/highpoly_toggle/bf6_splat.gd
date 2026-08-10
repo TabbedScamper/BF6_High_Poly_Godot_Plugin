@@ -1018,6 +1018,61 @@ func base_list(key: int) -> Array:
 	return []
 
 
+# The base list of the block-1 node that SPATIALLY matches a block-7 node:
+# descend from the root by the query CENTER until the node is no wider than
+# the block-7 node (or has no child there), then take the DEEPEST node on
+# that chain with a non-empty no-page list.
+#
+# Fleet-measured (2026-08-10, 35 trees): the pair nibbles index the matched
+# NODE's own ascending list. The map-global list names a different layer on
+# 23 of 35 maps (mp_isolated: 98.9% of its kind-1 texels; dumbo: 31%, where
+# the global list shifts X=0x04 off the visually verified L08 concretetile).
+# Aftermath/outskirts cannot tell the two apart - every node list there IS
+# the global list - which is how a global-list reading once validated.
+# Key-equality matching into block 1 is NOT reliable across maps (the two
+# trees differ in depth and key space); bounds are the invariant.
+func base_list_at(cx: float, cz: float, width: float) -> Array:
+	var n = _by_key.get(3)
+	if n == null:
+		return []
+	var chain: Array = [n]
+	while true:
+		var nd: Dictionary = n
+		var lo: Vector2 = nd["min"]
+		var w := float((nd["max"] as Vector2).x - lo.x)
+		if w <= width * 1.001:
+			break
+		var half := w * 0.5
+		var ex := cx >= lo.x + half
+		var ez := cz >= lo.y + half
+		var c := 0
+		if ex and not ez:
+			c = 1
+		elif ex and ez:
+			c = 2
+		elif not ex and ez:
+			c = 3
+		var child = _by_key.get((int(nd["key"]) << 4) | c)
+		if child == null:
+			break
+		n = child
+		chain.append(n)
+	for i in range(chain.size() - 1, -1, -1):
+		# DISTINCT layers: a node may carry several no-page records for one
+		# layer (one per coverage rect), and a duplicate shifts every nibble
+		# index after it.
+		var seen := {}
+		for r in ((chain[i] as Dictionary)["records"] as Array):
+			var rd: Dictionary = r
+			if int(rd["page"]) < 0:
+				seen[int(rd["layer"])] = true
+		if not seen.is_empty():
+			var out: Array = seen.keys()
+			out.sort()
+			return out
+	return []
+
+
 # The MAP-GLOBAL no-page layer list, ascending - TERRAIN.md 8's fallback for
 # a raster node whose own base list is empty.
 func global_base_list() -> Array:

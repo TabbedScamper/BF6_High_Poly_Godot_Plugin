@@ -24,15 +24,21 @@ class_name BF6TerrainLayers
 # materials at once, which four of dumbo's do — L42 binds cracked concrete AND
 # asphalt edge, so it binds two `_cv`s and the suffix cannot say which is which.
 # The depot keys each texture by a parameter hash, and those hashes fall into
-# clean per-slot families, measured over every layer of the map:
+# clean per-slot families - fleet-measured 2026-08-10 over ALL 36 terrain
+# levels (1,634 layers, 3,653 bindings): exactly 17 texture-slot hashes exist
+# in the whole game, and no fourth set does (three-material layers are A+B+C).
 #
-#   set A   0x0929399A _cv (12/12)   0x09293A41 _ao (11/11)   0x2E50567A _nhs (12/12)
-#   set B   0x2E5ACDA8 _cv           0x2E5ACDF3 _ao           0xF9B44F08 _nhs
-#   set C   0x2E5B5189 _cv           0x2E5B51D2 _ao           0xF9C55709 _nhs
-#   shared  0x09293810 default/_op   0xB6C7E795 _ncs          0x0B725504 breakup noise
+#   set A   0x0929399A _cv   0x09293A41 _ao + 0xF860C3BE _ao2   0x2E50567A _nhs
+#   set B   0x2E5ACDA8 _cv   0x2E5ACDF3 _ao + 0x304613CC _ao2   0xF9B44F08 _nhs
+#   set C   0x2E5B5189 _cv   0x2E5B51D2 _ao                     0xF9C55709 _nhs
+#   aux     0x09293810 default/_op   0xB6C7E795 _ncs   0x0B725504 breakup
+#           0xEB1B291C scatternoise  0xAE16A5C0 hfd    0x07A9B250 _ssm distance
 #
-# No hash was ever seen carrying two different suffixes, so the families are the
-# reliable reading and the suffix is the corroboration.
+# A set's two AO hashes NEVER co-occur (0/1,634) - ao2 marks two graph
+# templates (the per-map linked crater/debris pair and the distance-material
+# graphs), so accept either. A populated set ALWAYS has its own AO; the
+# default slot never substitutes for one. 315 of 1,634 layers (19.3%) bind
+# 2+ textures of one role, which is what breaks any suffix-keyed reading.
 
 const RES_LAYERGRAPHS := 0xDE540C59
 const RES_DEPOT := 0x73312045
@@ -44,9 +50,14 @@ const SLOTS := {
 	0x0929399A: ["a", "cv"], 0x09293A41: ["a", "ao"], 0x2E50567A: ["a", "nhs"],
 	0x2E5ACDA8: ["b", "cv"], 0x2E5ACDF3: ["b", "ao"], 0xF9B44F08: ["b", "nhs"],
 	0x2E5B5189: ["c", "cv"], 0x2E5B51D2: ["c", "ao"], 0xF9C55709: ["c", "nhs"],
-	0x304613CC: ["b", "ao"], 0xF860C3BE: ["c", "ao"],
+	# ao2: the second AO hash of sets A/B (dual-material crater + distance
+	# templates); never co-present with the set's ao. 0xF860C3BE is set A's,
+	# not set C's - dumbo L45 binds it on the same stem as A's cv/nhs.
+	0x304613CC: ["b", "ao"], 0xF860C3BE: ["a", "ao"],
 	0x09293810: ["a", "default"], 0xB6C7E795: ["a", "ncs"],
 	0x0B725504: ["a", "breakup"],
+	0xEB1B291C: ["x", "scatternoise"], 0xAE16A5C0: ["x", "hfd"],
+	0x07A9B250: ["x", "ssm"],
 }
 # §9.1's identified shading constants, all three of which this map does set:
 # tiling on 37 layers, smoothness on 29, tint on 7.

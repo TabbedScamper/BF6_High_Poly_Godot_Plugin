@@ -32,7 +32,8 @@ func _init() -> void:
 		if int((l as Dictionary)["link"]) >= 0:
 			linked.append(int((l as Dictionary)["index"]))
 	linked.sort()
-	var base := mt.rasterize(4096, func(k): return sp.base_list(k),
+	var base := mt.rasterize(4096,
+		func(cx, cz, w): return sp.base_list_at(cx, cz, w),
 		sp.full_list(), linked, Vector2.INF, 0.0, sp.global_base_list())
 	var hist := {}
 	for i in range(base.size()):

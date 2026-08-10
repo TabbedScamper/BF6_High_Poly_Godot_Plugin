@@ -249,8 +249,9 @@ static func bounds_of(key: int, root_lo: Vector2, root_hi: Vector2) -> Array:
 # ---------------------------------------------------------------------------
 # The whole base field, rasterised coarse-first so finer nodes overwrite.
 #
-# `base_list_for` is called with a node key and returns that node's ascending
-# no-page layer list; `full_list` and `linked_list` are map-global.
+# `base_list_at` is called with (center_x, center_z, node_width) and returns
+# the ascending no-page list of the SPATIALLY matched block-1 node
+# (bf6_splat.base_list_at); `full_list` and `linked_list` are map-global.
 #
 # -> PackedByteArray of `size*size` layer indices, 255 where nothing resolved.
 # ---------------------------------------------------------------------------
@@ -259,12 +260,11 @@ static func bounds_of(key: int, root_lo: Vector2, root_hi: Vector2) -> Array:
 # inside it would drop back to painted layers alone (see bf6_splat.composite's
 # twin note).
 # `global_base`: the MAP-GLOBAL no-page layer list, ascending. TERRAIN.md 8's
-# practical fallback, previously unimplemented: "a raster node with an empty
-# base list uses the map-global no-page layer list." Without it, every node
-# whose block-7 key finds no block-1 base records resolved its base-kind
-# pairs to nothing - on mp_aftermath that erased the street asphalt entirely
-# (fleet-measured L08 at 3.9%, ours at 0%).
-func rasterize(size: int, base_list_for: Callable, full_list: Array,
+# stated fallback for a node whose whole ancestor chain is base-less; measured
+# to never fire on the deep-dive maps (empty-base nodes exist on the granite
+# family and a few others, and the ancestor walk absorbs every one), kept as
+# the last resort all the same.
+func rasterize(size: int, base_list_at: Callable, full_list: Array,
 		linked_list: Array, rect_min := Vector2.INF,
 		rect_size := 0.0, global_base: Array = []) -> PackedByteArray:
 	var out := PackedByteArray()
@@ -278,13 +278,12 @@ func rasterize(size: int, base_list_for: Callable, full_list: Array,
 	if rect_min.x != INF and rect_size > 0.0:
 		org = rect_min
 		span = Vector2(rect_size, rect_size)
-	# THE BACKGROUND DOES NOT OVERWRITE. Aftermath authors its street asphalt
-	# at COARSE tree levels; the finer nodes above them are almost entirely
-	# background texels, and letting those overwrite erased every street from
-	# the final raster while the pooled per-node counts still matched the
-	# fleet's measured 3.9% exactly - which is what proved the decode right
-	# and the overwrite wrong. A finer node's background texel means "nothing
-	# to refine here", so it only ever paints onto texels nothing has claimed.
+	# THE BACKGROUND DOES NOT OVERWRITE. Measured 2026-08-10: block-7 data
+	# nodes TILE each map exactly (0 overlapping rects across all 35 trees),
+	# so no-override and overwrite give byte-identical rasters - the earlier
+	# "backgrounds erased the streets" symptom was this pipeline's own broken
+	# node lookup, not a format property. Kept because it is free and it
+	# stays correct even if a map ever does overlap levels.
 	var bg_layer := -1
 	if background != 0:
 		var bg_lists := {0: full_list,
@@ -299,18 +298,21 @@ func rasterize(size: int, base_list_for: Callable, full_list: Array,
 	for n in order:
 		var nd: Dictionary = n
 		var key := int(nd["key"])
-		# THE GLOBAL LIST WINS. TERRAIN.md 8 words kind-1 as "the node's base
-		# list", but the reference decoder indexes the MAP-GLOBAL no-page
-		# list - and it is the one validated visually against three maps'
-		# street grids and numerically against aftermath's shares. Our
-		# block-7-key -> block-1 ancestor walk can land on a node whose base
-		# records are a SUBSET, and a nibble into a subset names the wrong
-		# layer: that is precisely how aftermath's street asphalt (pair
-		# nibble 4 -> global list[4] = L08) resolved to nothing here while
-		# the pooled global-list count matched the fleet to the decimal.
-		var nb: Array = global_base
+		var b: Array = bounds_of(key, world_min, world_max)
+		var lo: Vector2 = b[0]
+		var hi: Vector2 = b[1]
+		# THE NODE'S OWN LIST WINS - TERRAIN.md 8 as written. A global-list
+		# reading once lived here, validated on aftermath/outskirts where
+		# every node list happens to EQUAL the global list; on 23 of 35 maps
+		# they differ (mp_isolated: 98.9% of kind-1 texels) because node
+		# lists omit or insert layers mid-order, so a nibble only means
+		# anything against the matched node's own ascending list. The match
+		# is SPATIAL (center descent to this node's width) - key-equality
+		# into block 1 is what silently failed here before.
+		var nb: Array = base_list_at.call(
+			(lo.x + hi.x) * 0.5, (lo.y + hi.y) * 0.5, hi.x - lo.x)
 		if nb.is_empty():
-			nb = base_list_for.call(key)
+			nb = global_base
 		var lists := {0: full_list, 1: nb, 2: linked_list}
 		# One resolve per DISTINCT texel value rather than per texel: the values
 		# are 4-bit, so there are at most 16 answers for a whole 256x256 node and
@@ -319,9 +321,6 @@ func rasterize(size: int, base_list_for: Callable, full_list: Array,
 		lut.resize(16)
 		for v in range(16):
 			lut[v] = resolve(v, lists)
-		var b: Array = bounds_of(key, world_min, world_max)
-		var lo: Vector2 = b[0]
-		var hi: Vector2 = b[1]
 		if hi.x <= org.x or hi.y <= org.y \
 				or lo.x >= org.x + span.x or lo.y >= org.y + span.y:
 			continue               # node entirely outside the window
