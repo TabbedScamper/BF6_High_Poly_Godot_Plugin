@@ -44,6 +44,7 @@ const U_BONE := 2
 const U_NORMAL := 6
 const U_UV0 := 33
 const U_UV1 := 34
+const U_UV4 := 37                    # TexCoord4 - the livery/ad unwrap slot
 # SubMaterialIndex — the PER-VERTEX PALETTE SELECTOR. Engine enum value 51,
 # which the research repo writes as 0x33 and which is NOT TexCoord0 (that is
 # decimal 33 = 0x21, one line above). A UByte4 in a stream of its own; lane 0
@@ -327,20 +328,47 @@ func read_lod(d: PackedByteArray, lod := 0, chunk := PackedByteArray(),
 			for i in range(vcount):
 				uvs[i] = Vector2(src[i * c], src[i * c + 1])
 
-		# THE SECOND CHANNEL TOO. UV0 tiles across many units; the later channel
-		# is the per-object bake unwrap that fits 0..1, and it is what a
-		# vehicle's *_unique livery/detail sheet and a carpaint wrap are
-		# authored against. Shipping only set 0 is why an ambulance wore its
-		# livery with tiling coordinates - the right texture in the wrong
-		# places (task #32). Godot has exactly one spare channel (UV2), so the
-		# second declared set is the one that rides along.
+		# THE UNWRAP CHANNEL. UV0 tiles across many units; the unwrap is the
+		# per-object 0..1 set that livery/ad art (a vehicle's *_unique sheet,
+		# a trailer's billboard advert) is authored against. WHICH set that is
+		# was cracked 2026-08-10: the section's SECOND 100-byte declaration
+		# (declB) re-lists the canonical semantics and binds TexCoord4 to a
+		# physical stream - its OWN stream when the mesh has a real unwrap,
+		# or ALIASED onto TexCoord0's stream when it does not, in which case
+		# the unwrap IS UV0. "The second declared UV set" is NOT the rule: on
+		# the retail-sign class that set is an atlas slice and using it turns
+		# the art 90 degrees. Godot has exactly one spare channel (UV2):
+		#   - declB TC4 on its own stream  -> ship that set   (src "tc4")
+		#   - declB TC4 aliased to TC0     -> unwrap is UV0   (src "uv0")
+		#   - no TC4 in declB (or skinned) -> legacy second declared set
 		var uv2 := PackedVector2Array()
-		if uv_sets.size() > 1:
+		var uv2_src := ""
+		var b_tc0: Array = []
+		var b_tc4: Array = []
+		for el4 in ((s["decl1"] as Dictionary)["elements"] as Array):
+			if int(el4[0]) == U_UV0 and b_tc0.is_empty():
+				b_tc0 = el4
+			elif int(el4[0]) == U_UV4 and b_tc4.is_empty():
+				b_tc4 = el4
+		if not b_tc4.is_empty() and not b_tc0.is_empty():
+			if int(b_tc4[3]) == int(b_tc0[3]) and int(b_tc4[2]) == int(b_tc0[2]):
+				uv2_src = "uv0"
+			else:
+				var r4 := _read_attr(buf, voff, vcount, b_tc4, streams)
+				if not r4.is_empty() and int(r4[1]) >= 2:
+					var src4: PackedFloat32Array = r4[0]
+					var c4 := int(r4[1])
+					uv2.resize(vcount)
+					for i in range(vcount):
+						uv2[i] = Vector2(src4[i * c4], src4[i * c4 + 1])
+					uv2_src = "tc4"
+		if uv2_src == "" and uv_sets.size() > 1:
 			var src2: PackedFloat32Array = uv_sets[1][0]
 			var c2: int = uv_sets[1][1]
 			uv2.resize(vcount)
 			for i in range(vcount):
 				uv2[i] = Vector2(src2[i * c2], src2[i * c2 + 1])
+			uv2_src = "second"
 
 		var normals := PackedVector3Array()
 		if nrm_comps >= 3:
@@ -374,7 +402,7 @@ func read_lod(d: PackedByteArray, lod := 0, chunk := PackedByteArray(),
 		# section still needs to know which depot record dresses it, and
 		# re-parsing the file to find out would be absurd.
 		out.append({"material": s["material"], "verts": verts, "uvs": uvs,
-					"uv2": uv2,
+					"uv2": uv2, "uv2_src": uv2_src,
 					"normals": normals, "indices": idx,
 					"uv_sets": uv_sets.size(),
 					"state_key": s.get("state_key", 0),
