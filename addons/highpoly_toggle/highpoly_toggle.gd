@@ -3837,6 +3837,32 @@ func _ensure_game_source(map: String, gen: int = -1) -> bool:
 	HighpolyProfiler.crumb("game source", "%s in %d ms%s"
 		% [map, int(gs.timings.get("_total", 0)),
 		   "  (walk cached)" if int(gs.timings.get("_cached", 0)) == 1 else ""])
+	# A READ THAT FAILED WHILE THE MACHINE WAS SHORT OF MEMORY GETS ONE MORE GO.
+	#
+	# The previous map's caches are dropped on a switch, but Godot hands freed
+	# pages back lazily and the reader allocates hard while it mounts - so a
+	# switch on a tight machine can fail on the first attempt and succeed on the
+	# second, with nothing changed except that everything we were holding has
+	# actually gone by then. Retried once, and only under real pressure, so a
+	# genuinely absent map still fails immediately instead of taking twice as
+	# long to say so.
+	if not ok_g and HighpolyVitals.pressure() > 0:
+		var before := HighpolyVitals.free_mb()
+		if mapctx != null and mapctx.game_source != null \
+				and mapctx.game_source.has_method("release_caches"):
+			mapctx.game_source.release_caches()
+		HighpolyLog.warn(("map context: reading %s failed with %d MB free. "
+			+ "Releasing everything held and trying once more.")
+			% [map, int(before)])
+		# a frame for the engine to actually hand the pages back
+		await get_tree().process_frame
+		await get_tree().process_frame
+		ok_g = await gs.open_async(dock, map, "",
+			{"placements": _wants_map_layers()}, Callable())
+		if ok_g:
+			HighpolyLog.info("map context: %s read on the second attempt (%d MB "
+				% [map, int(HighpolyVitals.free_mb())]
+				+ "free now). Close other applications if this keeps happening.")
 	if not ok_g:
 		# The stage and the machine's free memory come with gs.error now (see
 		# HighpolyGameSource._fail). A read that fails part-way through mounting

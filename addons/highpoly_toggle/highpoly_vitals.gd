@@ -65,6 +65,34 @@ static var _first_static := -1.0
 const BUDGET_HEAP_MB := 8192.0
 const BUDGET_VRAM_MB := 6144.0
 
+# FREE PHYSICAL MEMORY, in MB. Physical, not "available" - the second figure
+# includes the page file, and on one machine here that reads 240 GB against
+# 127 GB installed, which as a headroom figure is nonsense. Physical is what
+# runs out.
+static func free_mb() -> float:
+	return float(OS.get_memory_info().get("free", 0)) / 1048576.0
+
+
+# How hard the machine is being squeezed right now: 0 fine, 1 tight, 2 critical.
+#
+# A build that keeps going at full speed into a machine with a few hundred MB
+# left does not fail politely - Godot is taken down by the allocation that
+# cannot be served. Reported here so the build can slow down instead, which is
+# the difference between a map that takes longer and a session that is lost.
+# One user's log recorded 794 MB free at its low point, a 139-second
+# main-thread frame, and a map that never finished building after a switch.
+const TIGHT_MB := 2048.0
+const CRITICAL_MB := 900.0
+
+static func pressure() -> int:
+	var f := free_mb()
+	if f <= 0.0:
+		return 0                   # no reading available; do not invent one
+	if f < CRITICAL_MB:
+		return 2
+	return 1 if f < TIGHT_MB else 0
+
+
 static var _peak_gpu_ms := 0.0
 static var _peak_cpu_ms := 0.0
 static var _peak_draws := 0

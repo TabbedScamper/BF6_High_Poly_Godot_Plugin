@@ -159,6 +159,42 @@ var build_job := BUILD_JOB_OF3
 # Tuned by measurement rather than taste â€” see session.py history.
 const BUILD_FRAME_MS := 500         # per-slice work budget (always >=1 mesh per slice)
 const BUILD_REPORT_EVERY := 100     # print / progress-file cadence (meshes)
+var _pressure_said := -1            # last pressure level announced, so it says it once
+
+
+# THE SLICE, SHRUNK WHEN THE MACHINE IS SHORT OF MEMORY.
+#
+# Running out of memory is not a failure the editor reports: the allocation that
+# cannot be served takes Godot down with it. So when free memory gets low the
+# answer is to keep building and go slower, not to carry on at full speed and
+# hope. One user's log recorded 794 MB free at its low point, a 139-second
+# main-thread frame, and a map that never finished building after a switch.
+#
+# Smaller slices help for a reason worth stating, because it is not the obvious
+# one: they do not make the finished map any smaller. What they change is the
+# TRANSIENT peak and the rate of reclamation. Every yield is a frame boundary,
+# and frame boundaries are where Godot frees queued objects and the driver
+# retires buffers - a 500 ms slice stacks up hundreds of meshes' worth of
+# intermediates before letting go of the frame, where 60 ms reaches the same
+# total through eight times as many collection points.
+#
+# It is deliberately slower. A map that takes three minutes instead of one is a
+# map you still get.
+func _frame_ms() -> int:
+	var p := HighpolyVitals.pressure()
+	if p != _pressure_said:
+		_pressure_said = p
+		if p > 0:
+			HighpolyLog.warn(("memory is %s (%d MB free): building in smaller "
+				+ "slices, which is slower but survives. Close other "
+				+ "applications, or turn off a layer, to speed it back up.")
+				% ["critical" if p == 2 else "tight", int(HighpolyVitals.free_mb())])
+		else:
+			HighpolyLog.info("memory recovered: building at full speed again")
+	match p:
+		2: return 60
+		1: return 150
+	return BUILD_FRAME_MS
 var _build_gen := 0                 # generation: _clear() bumps it, cancelling in-flight builds
 var _building := false              # a background props build is in flight
 var _build_done := 0                # mesh groups processed so far
@@ -2278,7 +2314,7 @@ func flush_sidecars() -> void:
 	while not _side_writes.is_empty():
 		var e: Dictionary = _side_writes.pop_front()
 		_write_sidecar(str(e["gp"]), str(e["baked"]), e["m"] as Array)
-		if Time.get_ticks_msec() - slice >= BUILD_FRAME_MS:
+		if Time.get_ticks_msec() - slice >= _frame_ms():
 			if not is_inside_tree():
 				return                  # panel closed: the rest simply re-parses
 			await get_tree().process_frame
@@ -3815,7 +3851,7 @@ func _build_backdrop_async(bd_root: Node3D, entries: Array, dir: String,
 				maxi(1, int((e.get("xf", []) as Array).size() / 12)), PH_ENGINE)
 			_bd_ok += 1
 		_bd_done += 1
-		if Time.get_ticks_msec() - frame_start >= BUILD_FRAME_MS:
+		if Time.get_ticks_msec() - frame_start >= _frame_ms():
 			# Cull what has just been added, every slice. Without this the
 			# skyline was built fully visible and stayed that way until
 			# something else happened to call _apply_radius() â€” which in
@@ -4091,7 +4127,7 @@ func _build_props_async(props_root: Node3D, entries: Array, dir: String,
 				maxi(1, int((e.get("xf", []) as Array).size() / 12)), PH_ENGINE)
 			_build_props += 1
 		_build_done += 1
-		if Time.get_ticks_msec() - frame_start >= BUILD_FRAME_MS:
+		if Time.get_ticks_msec() - frame_start >= _frame_ms():
 			# SUSPECT. This walks EVERY cell built so far, and it runs on every
 			# yield â€” i.e. every BUILD_FRAME_MS of work â€” with an unlimited
 			# budget. The set it walks grows as the build proceeds, so the cost
