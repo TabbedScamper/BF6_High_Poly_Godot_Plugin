@@ -19,7 +19,7 @@ class_name HighpolyUpdater
 # from inside a version they are not running.
 
 # Godot's HTTPRequest.timeout defaults to 0 = wait forever. A connection that is
-# accepted and then goes quiet (dropped wifi, a NAT that forgets the flow, r2.dev
+# accepted and then goes quiet (dropped wifi, a NAT that forgets the flow, a CDN
 # holding a throttled socket) never fires request_completed, so `await` never
 # returns and the caller is wedged for the rest of the session. Every request
 # here gets a deadline; a timeout surfaces as RESULT_TIMEOUT, which the retry
