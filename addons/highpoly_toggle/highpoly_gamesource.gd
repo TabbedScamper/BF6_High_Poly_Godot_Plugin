@@ -2594,9 +2594,11 @@ uniform bool opaque_alpha = false;
 uniform vec4 flat_col : source_color = vec4(0.35, 0.35, 0.35, 1.0);
 void fragment() {
 	vec4 c = has_cv ? texture(cv, UV) : flat_col;
-	ALBEDO = c.rgb;
+	// The authored per-vertex RGBA multiplies in; its alpha is the edge
+	// fade (mud strips feathering out), its rgb an occasional tint.
+	ALBEDO = c.rgb * COLOR.rgb;
 	// R, not A. Of this map's 33 op textures, 30 vary on R and one on A.
-	ALPHA = opaque_alpha ? 1.0 : (has_op ? texture(op, UV).r : c.a);
+	ALPHA = (opaque_alpha ? 1.0 : (has_op ? texture(op, UV).r : c.a)) * COLOR.a;
 	ROUGHNESS = 0.85;
 	SPECULAR = 0.2;
 }
@@ -2652,52 +2654,43 @@ func roads() -> Mesh:
 		var recs: Array = groups[key]
 		var verts := PackedVector3Array()
 		var uvs := PackedVector2Array()
+		var cols := PackedColorArray()
 		for r in recs:
 			var rec: Dictionary = r
 			var vs := td.vertices(rec)
-			var n := vs.size() / 4
+			var n := vs.size() / 8
 			# A record whose vertex count disagrees with its triangle count means
 			# the VB is being read at the wrong place, and a wrong VB still
 			# produces plausible floats. Dropped rather than drawn as confetti.
 			if n != int(rec["tri_count"]) * 3:
 				continue
-			# STAMP decals (crosswalks, manholes, arrows) map the unit square as
-			# (v1, v0). Long tiled fills overflow half precision along the ribbon,
-			# so those are tiled from world position at Tiling0 m/tile instead —
-			# using their stored UVs draws a smear.
-			var stamp := true
-			for i in range(n):
-				if absf(vs[i * 4 + 2]) > 1.05 or absf(vs[i * 4 + 3]) > 1.05:
-					stamp = false
-					break
+			# THE STORED UVS ARE THE ANSWER - decoded 2026-08-10. Every vertex
+			# carries full f32 (u across, v along-the-spline) at +0x10/+0x14;
+			# emit UV = (v, u) and the stripes follow every curve. The old
+			# stamp-vs-fill split and the per-record direction projection were
+			# workarounds for a misread of these very bytes (the "1.875
+			# normaliser" was f32 1.0's top half decoded as f16). The one real
+			# regime split left is PLANAR fills, which store world X/Z verbatim
+			# and tile at Tiling0/Tiling1 metres.
+			var planar := BF6Decals.is_planar(vs)
 			var t0 := float(rec["tiling0"])
 			if absf(t0) < 1e-3:
-				t0 = 8.0
+				t0 = 10.0
 			var t1 := float(rec["tiling1"])
 			if absf(t1) < 1e-3:
 				t1 = t0
-			# ALONG THE RIBBON, NOT ALONG WORLD X AND Z.
-			#
-			# The fallback used to tile a fill as (x/t0, z/t0), which is
-			# axis-aligned world tiling. That is correct only for a road that
-			# happens to run north-south or east-west, and Dumbo's street grid is
-			# rotated — so some roads looked perfect and the rest carried lane
-			# markings and asphalt grain running across them at an angle.
-			#
-			# §10.4 says the engine reconstructs u in-shader from world position
-			# and the record's DIRECTION, which the vertex format carries as a
-			# per-record constant tangent. Projecting onto that tangent and its
-			# perpendicular is that reconstruction.
-			var dir := td.direction(rec)
 			for i in range(n):
-				var x := vs[i * 4]
-				var z := vs[i * 4 + 1]
+				var x := vs[i * 8]
+				var z := vs[i * 8 + 1]
 				verts.push_back(Vector3(x, _height_at(x, z) + ROAD_Y_BIAS, z))
-				if stamp:
-					uvs.push_back(Vector2(vs[i * 4 + 3], vs[i * 4 + 2]))
+				if planar:
+					uvs.push_back(Vector2(z / t0, x / t1))
 				else:
-					uvs.push_back(Vector2((x * dir.x + z * dir.y) / t0,
-						(-x * dir.y + z * dir.x) / t1))
+					uvs.push_back(Vector2(vs[i * 8 + 3], vs[i * 8 + 2]))
+				# Vertex RGBA rides along; alpha is the authored edge fade
+				# (mud strips feathering into the ground).
+				cols.push_back(Color(vs[i * 8 + 4], vs[i * 8 + 5],
+					vs[i * 8 + 6], vs[i * 8 + 7]))
 		if verts.is_empty():
 			continue
 		var idx := PackedInt32Array()
@@ -2708,6 +2701,7 @@ func roads() -> Mesh:
 		arr.resize(Mesh.ARRAY_MAX)
 		arr[Mesh.ARRAY_VERTEX] = verts
 		arr[Mesh.ARRAY_TEX_UV] = uvs
+		arr[Mesh.ARRAY_COLOR] = cols
 		arr[Mesh.ARRAY_INDEX] = idx
 		am.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr)
 		am.surface_set_material(am.get_surface_count() - 1,

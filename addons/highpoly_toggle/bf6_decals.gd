@@ -43,7 +43,6 @@ const TYPE_FLOAT := 0x14A0B1C1          # u32 count + count * 4
 const TYPE_VEC3 := 0x25F81AF1           # u32 count + count * 12
 
 const VTX_STRIDE := 32
-const V_SCALE := 1.875                  # v0/v1 normaliser (runtime vertex-format value)
 const ANCHOR_WINDOW := 0x8000
 
 var data := PackedByteArray()
@@ -377,12 +376,28 @@ func _props(p: int, end: int, out: Dictionary) -> void:
 				return          # unknown size -> the walk ends (documented)
 
 
-# One record's vertices as [x, z, v0, v1] quadruples in a flat float array.
+# One record's vertices as [x, z, u, v, r, g, b, a] — stride 8 — in a flat
+# float array.
 #
-# NO Y: drape on the heightfield at (x, z). v0/v1 are divided by 1.875 to
-# normalise. STAMP decals (crosswalks, manholes, arrows) map the unit square as
-# (v1, v0); long tiled fills overflow half precision along the ribbon and are
-# tiled from world position at Tiling0 m/tile instead — see roads_mesh().
+# NO Y: drape on the heightfield at (x, z).
+#
+# THE UVS ARE FULL f32s AT +0x10 AND +0x14, decoded 2026-08-10. The earlier
+# reading — "f16 v0/v1 at +0x12/+0x16, divide by 1.875" — was the HIGH HALVES
+# of these very floats read as halves: f32 1.0 is 0x3F800000, and its top 16
+# bits decode as f16 to exactly 1.875. That one bit-pattern accident invented
+# the 1.875 constant, the "u overflows half precision" myth, and the whole
+# world-projection fallback. Nothing overflows. u (+0x10) runs 0..1 ACROSS the
+# ribbon (x Tiling1 metres); v (+0x14) is tessellated arc length ALONG the
+# spline, already divided by Tiling0 — continuous and monotonic around curves,
+# proven on a curved stripe whose frame rotates 17.4 degrees with
+# chord/(dV*t0) = 1.0000 at every ring. Emit UV = (v, u).
+#
+# +0x18 is f16x4 RGBA vertex colour; alpha carries the mud edge fades (18.3%
+# of aftermath's verts), so a consumer multiplies it in.
+#
+# PLANAR records are the one exception: some fills (all with t0 = t1 = 10)
+# store u = world X and v = world Z exactly; those tile as (z/t0, x/t1).
+# Detect with is_planar().
 func vertices(rec: Dictionary) -> PackedFloat32Array:
 	var out := PackedFloat32Array()
 	var base := vb_start + int(rec["vb_off"])
@@ -393,28 +408,27 @@ func vertices(rec: Dictionary) -> PackedFloat32Array:
 			break
 		out.push_back(data.decode_float(o))            # world X
 		out.push_back(data.decode_float(o + 4))        # world Z
-		out.push_back(data.decode_half(o + 0x12) / V_SCALE)
-		out.push_back(data.decode_half(o + 0x16) / V_SCALE)
+		out.push_back(data.decode_float(o + 0x10))     # u: across, 0..1
+		out.push_back(data.decode_float(o + 0x14))     # v: along, arc/Tiling0
+		out.push_back(data.decode_half(o + 0x18))      # R
+		out.push_back(data.decode_half(o + 0x1A))      # G
+		out.push_back(data.decode_half(o + 0x1C))      # B
+		out.push_back(data.decode_half(o + 0x1E))      # A - edge fade
 	return out
 
 
-# The record's 2D ribbon TANGENT — the direction the road runs.
-#
-# §10.4 puts it at +0x08 / +0x0C of the vertex as a pair of halves and calls it
-# a per-record constant, so the first vertex is the whole answer. It is what the
-# engine reconstructs the along-ribbon u from, and without it a tiled fill can
-# only be tiled along world X and Z — which is right for a road that happens to
-# run along an axis and wrong for every other one.
-#
-# -> a normalised Vector2, or (1, 0) when the record stores nothing usable.
-func direction(rec: Dictionary) -> Vector2:
-	var base := vb_start + int(rec["vb_off"])
-	if base + VTX_STRIDE > data.size():
-		return Vector2(1, 0)
-	var d := Vector2(data.decode_half(base + 0x08), data.decode_half(base + 0x0C))
-	if d.length() < 0.001:
-		return Vector2(1, 0)
-	return d.normalized()
+# A planar record stores u = world X and v = world Z verbatim (R^2 = 1.00000
+# on every one measured; 27 of dumbo's 433, 16 of aftermath's 255, all with
+# Tiling0 = Tiling1 = 10). Everything else authors u across / v along.
+static func is_planar(vs: PackedFloat32Array) -> bool:
+	var n := vs.size() / 8
+	if n == 0:
+		return false
+	for i in range(mini(n, 12)):
+		if absf(vs[i * 8 + 2] - vs[i * 8]) >= 0.5 \
+				or absf(vs[i * 8 + 3] - vs[i * 8 + 1]) >= 0.5:
+			return false
+	return true
 
 
 # The decal asset GUID for a record, or an empty array.
