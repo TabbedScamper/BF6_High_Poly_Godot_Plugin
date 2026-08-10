@@ -4664,19 +4664,27 @@ func _add_water_plane(ctx: Node3D, textured: bool) -> void:
 			var rv := MeshInstance3D.new()
 			rv.name = "RiverSurface"
 			rv.mesh = wcfg["mesh"] as Mesh
-			# PLAIN WATER MATERIAL, deliberately, until the river is CONFIRMED
-			# on screen. The ocean shader's alpha rides the scene depth behind
-			# the surface, which for a 0-6 m river is a suspect for "renders
-			# but reads as nothing" - and a debugging session must change one
-			# variable at a time. Once the shape is confirmed visible, the game
-			# look goes back on.
-			var rfb := StandardMaterial3D.new()
-			rfb.albedo_color = Color(0.11, 0.34, 0.48, 0.82)
-			rfb.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-			rfb.metallic = 0.55
-			rfb.roughness = 0.08
-			rfb.cull_mode = BaseMaterial3D.CULL_DISABLED
-			rv.material_override = rfb
+			# THE RIVER PRESET OF OUR OWN WATER SHADER, and deliberately NOT the
+			# mined game look. The plain-material test proved placement and
+			# shape; the shader's own defaults are visible (min_alpha 0.45);
+			# what made the first shader attempt invisible was therefore
+			# _apply_game_look's mapping of tungsten's 27 full-ocean constants
+			# onto our uniforms. That mapping gets verified on-screen on its
+			# own before it touches the river again. The wave sim rides along -
+			# it only drives motion.
+			var rmat: Material = null
+			if textured:
+				rmat = HighpolyWater.material(
+					{"kind": "river", "sim": wcfg.get("sim", null)}, null)
+			if rmat == null:
+				var rfb := StandardMaterial3D.new()
+				rfb.albedo_color = Color(0.11, 0.34, 0.48, 0.82)
+				rfb.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+				rfb.metallic = 0.55
+				rfb.roughness = 0.08
+				rfb.cull_mode = BaseMaterial3D.CULL_DISABLED
+				rmat = rfb
+			rv.material_override = rmat
 			rv.layers = EXT_TERRAIN_LAYER
 			ctx.add_child(rv); rv.owner = null
 			# SAY SO. Every earlier stage of this hunt logged, and the one that
