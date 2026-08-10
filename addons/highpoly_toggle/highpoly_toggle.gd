@@ -3079,16 +3079,30 @@ Also frees %d high-poly model(s) only %s uses (%s)." % [
 	dlg.canceled.connect(func(): dlg.queue_free())
 	EditorInterface.popup_dialog_centered(dlg)
 
-# Reset: delete everything downloaded and put the panel back to defaults.
+# Reset: clear every cache, drop what is held in memory, panel back to defaults.
+#
+# THE OLD WORDING DESCRIBED A PLUGIN THAT NO LONGER EXISTS. It said this deletes
+# "all downloaded data" and that "everything here downloads again on demand".
+# Nothing downloads. Since 2.0 every model, texture and heightfield is read from
+# the player's own Battlefield 6 install, so what this clears is CACHES - work
+# already done, kept so it need not be done twice.
+#
+# That is more than pedantry: someone pressed Reset, watched the high-poly props
+# come straight back, and reasonably asked what Reset had actually done. The
+# honest answer was "deleted some files you were not using at that moment",
+# because the open reader - the mounted archives, the parsed meshes, the decoded
+# textures - survived untouched in memory and served the rebuild from RAM.
 func _reset_everything() -> void:
 	var dlg := ConfirmationDialog.new()
-	dlg.dialog_text = ("Delete ALL downloaded data and reset this panel?\n\n"
-		+ "Removes every map, all level scenery and the entire model library, "
-		+ "and puts the toggles back to their defaults.\n\n"
-		+ "Nothing about your own map is touched: the Low-Poly pieces you "
-		+ "build and export with are untouched, and everything here downloads "
-		+ "again on demand.")
-	dlg.ok_button_text = "Reset everything"
+	dlg.dialog_text = ("Clear everything this plugin has cached and reset the "
+		+ "panel?\n\nIt re-reads from your Battlefield 6 install afterwards, so "
+		+ "nothing is lost — the next map you open simply takes its full time "
+		+ "again instead of being served from disk.\n\nCleared: the decoded "
+		+ "terrain and scenery, the geometry and thumbnail caches, the archive "
+		+ "index, and whatever is currently held in memory — so this really is "
+		+ "a cold start.\n\nYour own map is not touched. The Low-Poly pieces "
+		+ "you build and export with are exactly as you left them.")
+	dlg.ok_button_text = "Clear caches and reset"
 	dlg.confirmed.connect(func():
 		_do_reset()
 		dlg.queue_free())
@@ -3113,6 +3127,26 @@ func _do_reset() -> void:
 	# from it, or the library keeps offering stand-ins for deleted files
 	HighpolyStore.ctx_scan(true)
 	if previews: previews.rescan_context()
+
+	# AND DROP THE OPEN READER, which is what made Reset a half-measure.
+	#
+	# It deleted caches on disk and left the game source mounted in memory -
+	# archives, parsed meshes, resolved materials, decoded textures, all of it.
+	# So the very next rebuild served everything from RAM and the props came
+	# back instantly, which is not what anyone pressing "reset everything"
+	# expects to see, and is why it looked as though nothing had happened.
+	#
+	# Released rather than merely dropped: release_caches() is what actually
+	# frees the textures and materials. Then the references go, so the next
+	# thing that needs the install opens it again from scratch - which is the
+	# cold start this button is for.
+	if mapctx != null and mapctx.game_source != null:
+		if mapctx.game_source.has_method("release_caches"):
+			mapctx.game_source.release_caches()
+		mapctx.game_source = null
+	LibScript.game_source = null
+	LightingScript.game_source = null
+	HighpolyVitals.set_cache_probe(Callable())
 
 	# --- panel back to defaults ---
 	if mode_btn: mode_btn.select(mode_btn.get_item_index(MODE_SDK))
