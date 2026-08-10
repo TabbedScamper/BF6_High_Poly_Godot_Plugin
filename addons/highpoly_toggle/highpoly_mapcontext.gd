@@ -1030,6 +1030,13 @@ uniform sampler2D splat_w : filter_nearest, repeat_disable;    // top-4 weights 
 uniform sampler2DArray layer_alb : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2DArray layer_nrm : filter_linear_mipmap_anisotropic, repeat_enable;
 uniform float layer_scale[32];           // world metres per repeat, per slice
+// VIRTUAL slices (ids 32..63): the computed layers - no colour sheet exists
+// anywhere for them, measured to the end - keep their AUTHORED tiling and
+// smoothness, driving the fallback detail per layer instead of one global
+// tile. It is what stops 87% of a city map's ground being one texture.
+uniform int virt_count = 0;
+uniform float virt_scale[32];            // world metres per repeat, per id-32
+uniform float virt_rough[32];            // roughness, per id-32
 // THE GAME'S OWN TERRAIN COLOUR MAP (TERRAIN.md 5.3): one BC7 tile per
 // streaming-tree node, read out of the player's install and assembled here. The
 // engine's terrain material shaders all sample it for large-scale hue, with 0.5
@@ -1061,13 +1068,14 @@ void vertex() {
 // tiling at its own authored rate. Reads the uniforms directly - the shading
 // language does not take sampler parameters, and it does not need to.
 void splat_texel(ivec2 t, vec2 wxz, vec3 fb_a, vec3 fb_n,
-		out vec3 oa, out vec3 on) {
+		out vec3 oa, out vec3 on, out float orr) {
 	ivec2 ts = textureSize(splat_idx, 0);
 	t = clamp(t, ivec2(0), ts - ivec2(1));
 	vec4 sid = texelFetch(splat_idx, t, 0) * 255.0;
 	vec4 sw = texelFetch(splat_w, t, 0);
 	vec3 acc = vec3(0.0);
 	vec3 nacc = vec3(0.0);
+	float racc = 0.0;
 	float tot = 0.0;
 	for (int i = 0; i < 4; i++) {
 		float wi = sw[i];
@@ -1077,30 +1085,42 @@ void splat_texel(ivec2 t, vec2 wxz, vec3 fb_a, vec3 fb_n,
 			vec2 luv = wxz / max(layer_scale[id], 0.01);
 			acc += wi * texture(layer_alb, vec3(luv, float(id))).rgb;
 			nacc += wi * texture(layer_nrm, vec3(luv, float(id))).rgb;
+			racc += wi * 0.92;
+		} else if (id >= 32 && id < 32 + virt_count) {
+			// a computed layer: the fallback detail at ITS OWN authored
+			// tiling and roughness (see the virt uniforms above)
+			vec2 vuv = wxz / max(virt_scale[id - 32], 0.01);
+			acc += wi * texture(ground_alb, vuv).rgb;
+			nacc += wi * texture(ground_nrm, vuv).rgb;
+			racc += wi * virt_rough[id - 32];
 		} else {
 			acc += wi * fb_a;      // unpackaged layer: slope fallback
 			nacc += wi * fb_n;
+			racc += wi * 0.92;
 		}
 		tot += wi;
 	}
 	if (tot > 0.01) {
 		oa = acc / tot;
 		on = nacc / tot;
+		orr = racc / tot;
 	} else {
 		oa = fb_a;
 		on = fb_n;
+		orr = 0.92;
 	}
 }
 // The same exact blend against the NEAR window's rasters. A duplicate rather
 // than a parameter because the shading language cannot pass samplers.
 void splat_texel_n(ivec2 t, vec2 wxz, vec3 fb_a, vec3 fb_n,
-		out vec3 oa, out vec3 on) {
+		out vec3 oa, out vec3 on, out float orr) {
 	ivec2 ts = textureSize(near_idx, 0);
 	t = clamp(t, ivec2(0), ts - ivec2(1));
 	vec4 sid = texelFetch(near_idx, t, 0) * 255.0;
 	vec4 sw = texelFetch(near_w, t, 0);
 	vec3 acc = vec3(0.0);
 	vec3 nacc = vec3(0.0);
+	float racc = 0.0;
 	float tot = 0.0;
 	for (int i = 0; i < 4; i++) {
 		float wi = sw[i];
@@ -1110,18 +1130,27 @@ void splat_texel_n(ivec2 t, vec2 wxz, vec3 fb_a, vec3 fb_n,
 			vec2 luv = wxz / max(layer_scale[id], 0.01);
 			acc += wi * texture(layer_alb, vec3(luv, float(id))).rgb;
 			nacc += wi * texture(layer_nrm, vec3(luv, float(id))).rgb;
+			racc += wi * 0.92;
+		} else if (id >= 32 && id < 32 + virt_count) {
+			vec2 vuv = wxz / max(virt_scale[id - 32], 0.01);
+			acc += wi * texture(ground_alb, vuv).rgb;
+			nacc += wi * texture(ground_nrm, vuv).rgb;
+			racc += wi * virt_rough[id - 32];
 		} else {
 			acc += wi * fb_a;
 			nacc += wi * fb_n;
+			racc += wi * 0.92;
 		}
 		tot += wi;
 	}
 	if (tot > 0.01) {
 		oa = acc / tot;
 		on = nacc / tot;
+		orr = racc / tot;
 	} else {
 		oa = fb_a;
 		on = fb_n;
+		orr = 0.92;
 	}
 }
 void fragment() {
@@ -1134,7 +1163,8 @@ void fragment() {
 	vec3 fb_nrm = mix(texture(ground_nrm, tuv).rgb, texture(cliff_nrm, tuv).rgb, b);
 	vec3 det = fb_alb;
 	vec3 nrm = fb_nrm;
-	if (splat_slices > 0) {
+	float rough = 0.92;
+	if (splat_slices > 0 || virt_count > 0) {
 		// EXACT LAYER BLEND, BILINEAR ACROSS TEXELS. The index texture cannot
 		// be filtered (a blend of table indices is garbage), so the old path
 		// sampled one nearest texel and every layer boundary was a stair-step
@@ -1156,12 +1186,14 @@ void fragment() {
 			vec2 fr = fract(fpos);
 			vec3 a00; vec3 n00; vec3 a10; vec3 n10;
 			vec3 a01; vec3 n01; vec3 a11; vec3 n11;
-			splat_texel(t00, wpos.xz, fb_alb, fb_nrm, a00, n00);
-			splat_texel(t00 + ivec2(1, 0), wpos.xz, fb_alb, fb_nrm, a10, n10);
-			splat_texel(t00 + ivec2(0, 1), wpos.xz, fb_alb, fb_nrm, a01, n01);
-			splat_texel(t00 + ivec2(1, 1), wpos.xz, fb_alb, fb_nrm, a11, n11);
+			float r00; float r10; float r01; float r11;
+			splat_texel(t00, wpos.xz, fb_alb, fb_nrm, a00, n00, r00);
+			splat_texel(t00 + ivec2(1, 0), wpos.xz, fb_alb, fb_nrm, a10, n10, r10);
+			splat_texel(t00 + ivec2(0, 1), wpos.xz, fb_alb, fb_nrm, a01, n01, r01);
+			splat_texel(t00 + ivec2(1, 1), wpos.xz, fb_alb, fb_nrm, a11, n11, r11);
 			det = mix(mix(a00, a10, fr.x), mix(a01, a11, fr.x), fr.y);
 			nrm = mix(mix(n00, n10, fr.x), mix(n01, n11, fr.x), fr.y);
+			rough = mix(mix(r00, r10, fr.x), mix(r01, r11, fr.x), fr.y);
 		}
 		// the near window, feather-blended over the far result inside its box
 		if (near_on == 1) {
@@ -1173,17 +1205,20 @@ void fragment() {
 				vec2 nfr = fract(nfp);
 				vec3 b00; vec3 m00; vec3 b10; vec3 m10;
 				vec3 b01; vec3 m01; vec3 b11; vec3 m11;
-				splat_texel_n(nt0, wpos.xz, fb_alb, fb_nrm, b00, m00);
-				splat_texel_n(nt0 + ivec2(1, 0), wpos.xz, fb_alb, fb_nrm, b10, m10);
-				splat_texel_n(nt0 + ivec2(0, 1), wpos.xz, fb_alb, fb_nrm, b01, m01);
-				splat_texel_n(nt0 + ivec2(1, 1), wpos.xz, fb_alb, fb_nrm, b11, m11);
+				float q00; float q10; float q01; float q11;
+				splat_texel_n(nt0, wpos.xz, fb_alb, fb_nrm, b00, m00, q00);
+				splat_texel_n(nt0 + ivec2(1, 0), wpos.xz, fb_alb, fb_nrm, b10, m10, q10);
+				splat_texel_n(nt0 + ivec2(0, 1), wpos.xz, fb_alb, fb_nrm, b01, m01, q01);
+				splat_texel_n(nt0 + ivec2(1, 1), wpos.xz, fb_alb, fb_nrm, b11, m11, q11);
 				vec3 ndet = mix(mix(b00, b10, nfr.x), mix(b01, b11, nfr.x), nfr.y);
 				vec3 nnrm = mix(mix(m00, m10, nfr.x), mix(m01, m11, nfr.x), nfr.y);
+				float nrough = mix(mix(q00, q10, nfr.x), mix(q01, q11, nfr.x), nfr.y);
 				float fe = max(near_bounds.w / near_bounds.z, 0.001);
 				float edge = min(min(nuv.x, 1.0 - nuv.x), min(nuv.y, 1.0 - nuv.y));
 				float m = smoothstep(0.0, fe, edge);
 				det = mix(det, ndet, m);
 				nrm = mix(nrm, nnrm, m);
+				rough = mix(rough, nrough, m);
 			}
 		}
 	}
@@ -1221,7 +1256,7 @@ void fragment() {
 		}
 	}
 	ALBEDO = clamp(det, 0.0, 1.0);
-	ROUGHNESS = 0.92;
+	ROUGHNESS = clamp(rough, 0.05, 1.0);
 	vec2 nxy = (nrm.rg * 2.0 - 1.0) * normal_strength;
 	float nz = sqrt(clamp(1.0 - dot(nxy, nxy), 0.0, 1.0));
 	vec3 N = normalize(wnorm);
@@ -1281,7 +1316,13 @@ func _splat_set(map: String) -> Dictionary:
 	if FileAccess.file_exists(lj) and FileAccess.file_exists("%s/idx.png" % dir) \
 			and FileAccess.file_exists("%s/w.png" % dir):
 		var meta: Variant = JSON.parse_string(FileAccess.get_file_as_string(lj))
-		if meta is Dictionary and int((meta as Dictionary).get("slices", 0)) > 0 \
+		# A map with ZERO textured slices still splats when it has VIRTUAL
+		# layers (capstone's whole ground is computed): the ids drive the
+		# fallback detail at each layer's own authored tiling, which is the
+		# entire point of the virtual set.
+		if meta is Dictionary \
+				and (int((meta as Dictionary).get("slices", 0)) > 0
+					or not ((meta as Dictionary).get("virtual", []) as Array).is_empty()) \
 				and (meta as Dictionary).get("world", {}) is Dictionary:
 			var slices := int(meta["slices"])
 			var wj: Dictionary = meta["world"]
@@ -1324,7 +1365,20 @@ func _splat_set(map: String) -> Dictionary:
 			if resized > 0:
 				Log.info("%s terrain: %d splat layer image(s) were not %dx%d and were rescaled to match"
 					% [map, resized, side, side])
-			if idx_img != null and w_img != null and albs.size() == slices:
+			# The sampler needs a REAL array even when no slice exists (the
+			# virtual-only map): one grey filler layer that splat_slices=0
+			# guarantees is never sampled.
+			if slices == 0 and albs.is_empty():
+				var filler := Image.create_empty(4, 4, false, Image.FORMAT_RGB8)
+				filler.fill(Color(0.5, 0.5, 0.5))
+				filler.generate_mipmaps()
+				var fn := Image.create_empty(4, 4, false, Image.FORMAT_RGB8)
+				fn.fill(Color(0.5, 0.5, 1.0))
+				fn.generate_mipmaps()
+				albs.append(filler)
+				nrms.append(fn)
+			if idx_img != null and w_img != null \
+					and albs.size() == maxi(slices, 1):
 				idx_img.convert(Image.FORMAT_RGBA8)   # indices: MUST stay unfiltered/no mips
 				w_img.convert(Image.FORMAT_RGBA8)
 				var ta := Texture2DArray.new()
@@ -1352,10 +1406,29 @@ func _splat_set(map: String) -> Dictionary:
 					var mpr := float((rows[i] as Dictionary).get("metres_per_repeat", 0.0))
 					if mpr > 0.01:
 						scales[i] = mpr
+				# The computed layers' authored tiling and smoothness (virtual
+				# ids 32..63) - what stops every one of them collapsing onto
+				# the same 4 m fallback tile. See the bake's virtual-slice note.
+				var vscale := PackedFloat32Array()
+				vscale.resize(32)
+				vscale.fill(20.0)
+				var vrough := PackedFloat32Array()
+				vrough.resize(32)
+				vrough.fill(0.92)
+				var vrows: Array = (meta as Dictionary).get("virtual", [])
+				for i in range(mini(32, vrows.size())):
+					var vm := float((vrows[i] as Dictionary).get("metres_per_repeat", 0.0))
+					if vm > 0.01:
+						vscale[i] = vm
+					var sm := float((vrows[i] as Dictionary).get("smoothness", -1.0))
+					if sm >= 0.0:
+						vrough[i] = clampf(1.0 - sm, 0.05, 1.0)
 				out = {
 					"idx": ImageTexture.create_from_image(idx_img),
 					"w": ImageTexture.create_from_image(w_img),
 					"alb": ta, "nrm": tn, "slices": slices, "scales": scales,
+					"vscale": vscale, "vrough": vrough,
+					"vcount": mini(32, vrows.size()),
 					"bounds": Vector4(float(wj.get("x0", 0.0)), float(wj.get("z0", 0.0)),
 						float(wj.get("size", 1.0)), float(wj.get("size", 1.0))),
 				}
@@ -1558,6 +1631,10 @@ func _terrain_shader_mat(map: String) -> ShaderMaterial:
 		m.set_shader_parameter("splat_slices", int(sp["slices"]))
 		if sp.has("scales"):
 			m.set_shader_parameter("layer_scale", sp["scales"])
+		if sp.has("vcount"):
+			m.set_shader_parameter("virt_count", int(sp["vcount"]))
+			m.set_shader_parameter("virt_scale", sp["vscale"])
+			m.set_shader_parameter("virt_rough", sp["vrough"])
 		_splat_active = true
 		_splat_n = int(sp["slices"])
 	# The live material, held so the near-field window can update its uniforms

@@ -1795,12 +1795,13 @@ const CMAP_VERSION := 2
 #   5  the colour map targets 1 m per texel (large maps bake at 8192), and
 #      layers.json carries "linked" so the near-field window can rasterise
 #      street materials without reloading the palette.
-# (The palette now also accepts texture params behind UNKNOWN slot hashes,
-# classified by name suffix. Measured on mp_aftermath it changes NOTHING -
-# the computed layers' records bind only packed noise/mask sheets - so the
-# version deliberately does NOT bump for it: a fleet-wide rebake must buy
-# something visible. Fresh bakes pick the acceptance up for free.)
-const SPLAT_VERSION := 5
+#   6  VIRTUAL SLICES: computed layers (no colour sheet anywhere - measured
+#      three probes deep on aftermath) keep ids of their own (32..63) so the
+#      fallback detail runs at each layer's AUTHORED tiling and smoothness
+#      instead of one global 4 m tile. 87% of aftermath's ground stopped
+#      being one texture for it. The palette also accepts texture params
+#      behind unknown slot hashes, classified by name suffix.
+const SPLAT_VERSION := 6
 # Per-slice detail textures; all slices must match. 1024 rather than 512: the
 # game's layer sheets are mostly 1024+, and at 512 the close-up ground was a
 # quarter of the detail the install holds. The loader compresses the slices to
@@ -2091,6 +2092,32 @@ func terrain_surface(cache_dir: String, force := false,
 		if picked.size() >= 32:
 			break
 
+	# VIRTUAL SLICES for the computed layers (task #86, as far as the data
+	# goes). A layer whose record binds no colour sheet is computed inside the
+	# game's compiled layer-graph shader - measured to the end on mp_aftermath:
+	# no textures behind unknown slots, no colour constants, and the lg res is
+	# only the record table, so the look is colour map plus shader-internal
+	# detail. What the record DOES hold is the layer's own authored TILING and
+	# SMOOTHNESS (aftermath's dominant layer tiles at 20 m where others take
+	# 50 or 100), and 87% of that map's ground rendered as ONE texture because
+	# every computed layer collapsed to the same fallback at the same 4 m
+	# tile. Each gets an id of its own (32..63, above the texture slices) that
+	# drives the fallback detail at the layer's own scale and roughness - all
+	# of it authored numbers, none of it invented.
+	var virt_of := {}
+	var virt_meta: Array = []
+	for l in by_area:
+		var li := int(l)
+		if pal.albedo_of(li) != "" or virt_meta.size() >= 32:
+			continue
+		var lay23: Dictionary = pal.layers[li]
+		virt_of[li] = 32 + virt_meta.size()
+		virt_meta.append({
+			"layer": li,
+			"metres_per_repeat": pal.metres_per_repeat(li, 20.0),
+			"smoothness": float(lay23.get("smoothness", -1.0)),
+		})
+
 	var slice_meta: Array = []
 	var written := 0
 	var t_slices := Time.get_ticks_msec()
@@ -2140,6 +2167,8 @@ func terrain_surface(cache_dir: String, force := false,
 	lut.fill(255)
 	for l in slice_of.keys():
 		lut[int(l)] = int(slice_of[l])
+	for l in virt_of.keys():
+		lut[int(l)] = int(virt_of[l])
 	var idx: PackedByteArray = comp["idx"]
 	var wgt: PackedByteArray = comp["w"]
 	# THE TRUE COVERAGE, KEPT. The loop below overwrites idx IN PLACE through a
@@ -2201,6 +2230,9 @@ func terrain_surface(cache_dir: String, force := false,
 			# span for both axes, silently wrong on any non-square footprint.
 			"size_z": sp.root_max.y - sp.root_min.y},
 		"layers": slice_meta,
+		# The computed layers' authored tiling/smoothness, in virtual-id order
+		# (id 32 + row index). See the virtual-slice note above.
+		"virtual": virt_meta,
 		# THE WHOLE PALETTE, not just the textured slices: one row per layer
 		# with a NAME the scatter can classify (grass vs gravel), taken from
 		# any texture the layer binds - detail and AO slots carry names even
@@ -2298,6 +2330,11 @@ func _window_state(cache_dir: String):
 		var li := int((rows[s] as Dictionary).get("layer", -1))
 		if li >= 0 and li < 256:
 			lut[li] = s
+	var vrows: Array = (meta as Dictionary).get("virtual", [])
+	for s in range(vrows.size()):
+		var li := int((vrows[s] as Dictionary).get("layer", -1))
+		if li >= 0 and li < 256:
+			lut[li] = 32 + s
 	# THE FAR RASTER IS THE SEED. idx_raw.png + w.png are the bake's complete
 	# pre-remap coverage - every coarse page AND the street materials, already
 	# merged - so a window upsamples its region of them (a C++ image op) and
