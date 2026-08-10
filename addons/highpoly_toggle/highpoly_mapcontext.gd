@@ -1106,7 +1106,16 @@ void splat_texel(ivec2 t, vec2 wxz, vec3 fb_a, vec3 fb_n,
 				vec2 vcu = vec2((wxz.x - cmap_bounds.x) / cmap_bounds.z,
 				                (wxz.y - cmap_bounds.y) / cmap_bounds.w);
 				if (vcu.x >= 0.0 && vcu.x <= 1.0 && vcu.y >= 0.0 && vcu.y <= 1.0) {
-					vbase = texture(colormap, vcu).rgb;
+					// THE SLIDER IS THE FOCUS KNOB. At 0 the computed ground
+					// takes only the raster's REGIONAL tint - a deep mip, so
+					// city blocks read grey and parks green with none of the
+					// aerial-photo detail (streets, baked shadows) that made
+					// it look like satellite imagery pasted on the ground.
+					// At 1 it is the sharp raster. One textureLod, blended
+					// by the Ground photo slider.
+					float soft = max(floor(log2(float(textureSize(colormap, 0).x))) - 7.0, 0.0);
+					vbase = textureLod(colormap, vcu,
+						mix(soft, 0.0, clamp(cmap_strength, 0.0, 1.0))).rgb;
 					pacc += wi;    // this share is ALREADY photo-coloured
 				}
 			}
@@ -1162,7 +1171,16 @@ void splat_texel_n(ivec2 t, vec2 wxz, vec3 fb_a, vec3 fb_n,
 				vec2 vcu = vec2((wxz.x - cmap_bounds.x) / cmap_bounds.z,
 				                (wxz.y - cmap_bounds.y) / cmap_bounds.w);
 				if (vcu.x >= 0.0 && vcu.x <= 1.0 && vcu.y >= 0.0 && vcu.y <= 1.0) {
-					vbase = texture(colormap, vcu).rgb;
+					// THE SLIDER IS THE FOCUS KNOB. At 0 the computed ground
+					// takes only the raster's REGIONAL tint - a deep mip, so
+					// city blocks read grey and parks green with none of the
+					// aerial-photo detail (streets, baked shadows) that made
+					// it look like satellite imagery pasted on the ground.
+					// At 1 it is the sharp raster. One textureLod, blended
+					// by the Ground photo slider.
+					float soft = max(floor(log2(float(textureSize(colormap, 0).x))) - 7.0, 0.0);
+					vbase = textureLod(colormap, vcu,
+						mix(soft, 0.0, clamp(cmap_strength, 0.0, 1.0))).rgb;
 					pacc += wi;    // this share is ALREADY photo-coloured
 				}
 			}

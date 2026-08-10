@@ -1108,7 +1108,7 @@ All of it is read from your own Battlefield 6 installation."
 	mapctx_photo.custom_minimum_size = Vector2(150, 0)
 	mapctx_photo.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	mapctx_photo.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	mapctx_photo.tooltip_text = "How much of the game's own terrain colour raster tints the TEXTURED ground layers. Ground whose layers are computed in the game's shaders always wears the raster as its colour - it is the only colour the data holds for them - so this slider does not add a second copy on top of those areas."
+	mapctx_photo.tooltip_text = "How much aerial-photo detail the ground shows. At 0% the ground keeps only the map's regional colours - city blocks grey, parks green, seabed dark - with no photo detail; at 100% it is the game's full ground raster, which on city maps reads like satellite imagery. It also sets how strongly the raster tints the textured layers."
 	mapctx_photo_row.add_child(mapctx_photo)
 	mapctx_photo_val = Label.new()
 	mapctx_photo_val.text = "%d%%" % int(mapctx_photo.value)
