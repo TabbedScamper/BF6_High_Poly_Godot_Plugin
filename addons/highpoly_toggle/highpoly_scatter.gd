@@ -34,14 +34,15 @@ const Y_EPS := 0.02           # lift above the heightfield to dodge z-fighting
 const OUTSIDE := -1.0e9
 
 var active := false
-# How far from the camera clutter grows, metres. The 0.0 that used to sit here
-# was "off until the Grass slider raises it" — and v1.19.0 deleted the Grass
-# slider without deleting the default, leaving set_range() with NO callers and
-# the whole subsystem silently drawing zero instances on every map while the
-# status line still said "49 scatter types". A default the UI cannot reach must
-# carry the value the feature needs, so it is a real range now; the map-context
-# Range slider clamps it via set_range().
-var grass_range := 100.0
+# How far from the camera clutter grows, metres. 0 = off, and OFF IS THE
+# DEFAULT again — but this time the panel has a Grass chip that owns it
+# (HighpolyMapContext.set_grass), so the value is reachable. The history is a
+# warning worth keeping: this default was 0 once before, v1.19.0 deleted the
+# Grass slider without deleting the default, and set_range() sat with no
+# callers for months while the status line said "49 scatter types" over a
+# ground with zero instances. A default the UI cannot reach must carry the
+# value the feature needs; a default the UI CAN reach may be conservative.
+var grass_range := 0.0
 var last_regen_ms := 0        # debug: last regeneration cost
 var last_instances := 0       # debug: instances currently placed
 const HARD_TOTAL := 90000     # absolute instance safety cap across all entries

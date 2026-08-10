@@ -45,6 +45,10 @@ var _show_water := false           # rivers / sea layer on
 # worse bug than mining data nobody asked for.
 var want_lights := true
 var want_fx := true
+# The Grass chip. OFF by default: the clutter had drawn nothing for months, so
+# for most users its arrival would read as a change nobody asked for - and it
+# costs instances. The chip makes it a choice, like Roads.
+var want_grass := false
 var _bd_total := 0                 # skyline build: entries queued
 var _bd_done := 0                  # skyline build: entries processed
 var _bd_ok := 0                    # skyline build: entries that produced a mesh
@@ -3564,6 +3568,9 @@ func _apply_body(root: Node, enabled: bool, show_objects: bool, tex = true,
 				_scatter.y_lift = terrain_lift    # grass sits ON the (possibly lifted) ground
 				_scatter_n = _scatter.setup(self, ctx, map, dir, hm, _scatter_tile(map))
 				if _scatter_n > 0:
+					# The kits exist either way; whether anything DRAWS is the
+					# Grass chip's call, re-applied because setup() starts cold.
+					set_grass(want_grass)
 					var scam := _editor_cam()
 					if scam: _scatter.tick(scam.global_transform.origin)
 				_ph("scatter: set up the vegetation kits",
@@ -5429,18 +5436,37 @@ func set_radius(r: float) -> void:
 	# rather than drawing at the old one for a frame
 	_refresh_mesh_lod()
 	_apply_radius()
-	# The clutter follows the same slider. It was in neither _cells nor
-	# _bd_list, so the one distance control the panel advertises as governing
-	# "everything" governed everything except the grass — and after v1.19.0
-	# deleted the Grass slider, nothing at all reached it. Scaled to a third of
-	# the scenery radius (clutter at full scenery distance is sub-pixel and
-	# pure instance cost), floored so a low slider thins rather than kills it,
-	# and zero still means off.
+	# The clutter follows the same slider WHILE ITS CHIP IS ON. It was in
+	# neither _cells nor _bd_list, so the one distance control the panel
+	# advertises as governing "everything" governed everything except the
+	# grass — and after v1.19.0 deleted the Grass slider, nothing at all
+	# reached it. Scaled to a third of the scenery radius (clutter at full
+	# scenery distance is sub-pixel and pure instance cost), floored so a low
+	# slider thins rather than kills it; the chip off or the slider at zero
+	# both mean off.
 	if _scatter != null and _scatter.active:
 		var cam := _editor_cam()
 		if cam != null:
-			var gr := 0.0 if r <= 0.0 else clampf(r / 3.0, 60.0, 300.0)
-			_scatter.set_range(gr, cam.global_transform.origin)
+			_scatter.set_range(_grass_range_for(r) if want_grass else 0.0,
+				cam.global_transform.origin)
+
+
+func _grass_range_for(r: float) -> float:
+	return 0.0 if r <= 0.0 else clampf(r / 3.0, 60.0, 300.0)
+
+
+# The Grass chip's handler. Applies immediately when the clutter kits are
+# already set up; before that it only records the wish, and the setup path
+# reads want_grass when the ground finishes building.
+func set_grass(on: bool) -> void:
+	want_grass = on
+	if _scatter == null or not _scatter.active:
+		return
+	var cam := _editor_cam()
+	if cam == null:
+		return
+	_scatter.set_range(_grass_range_for(radius) if on else 0.0,
+		cam.global_transform.origin)
 
 func _apply_radius(budget: int = 1 << 30) -> void:
 	# backdrop-only is valid (Show Whole Map without objects) â€” don't early-out

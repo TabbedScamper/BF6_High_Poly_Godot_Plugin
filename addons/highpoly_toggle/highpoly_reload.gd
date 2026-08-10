@@ -71,6 +71,77 @@ static func plugin_dir() -> String:
 	return (HighpolyReload as Script).resource_path.get_base_dir()
 
 
+# ---------------------------------------------------------------------------
+# THE STAGING CHANNEL: updates written OUTSIDE res://, applied by the button.
+#
+# Nothing may write into res:// while the editor is open - the editor
+# hot-reloads changed scripts underneath running code, which is a "Bad address
+# index" crash mid-build, not a feature. But waiting for a closed editor to
+# deliver every fix costs the whole iteration loop this file exists for. So
+# mid-session updates land here instead: user:// is per-project, outside the
+# scan, and the editor never looks at it on its own. "Check for updates" is
+# what moves staged files into the addon and reloads - a moment the USER
+# chose, guarded against running builds by the caller.
+#
+# The stage is FLAT: .gd and .gdshader files only, no subdirectories, matching
+# what _hashes()/reload_code() cover. Binaries (bin/) are not hot-reloadable
+# and do not belong here.
+# ---------------------------------------------------------------------------
+const STAGED_DIR := "user://highpoly/staged"
+
+
+# How many staged files differ from what the addon holds, without applying.
+static func staged_count() -> int:
+	if not DirAccess.dir_exists_absolute(STAGED_DIR):
+		return 0
+	var n := 0
+	var dst := plugin_dir()
+	for f in DirAccess.get_files_at(STAGED_DIR):
+		var fn := str(f)
+		var ext := fn.get_extension().to_lower()
+		if ext != "gd" and not SHADER_EXTS.has(ext):
+			continue
+		if FileAccess.get_md5("%s/%s" % [STAGED_DIR, fn]) \
+				!= FileAccess.get_md5("%s/%s" % [dst, fn]):
+			n += 1
+	return n
+
+
+# Copy staged files whose content differs into the addon, clearing the stage
+# behind them. A staged file identical to the addon's is stale residue and is
+# cleared without a write. -> {"applied": [names], "failed": [names]}
+static func apply_staged() -> Dictionary:
+	var out := {"applied": [], "failed": []}
+	if not DirAccess.dir_exists_absolute(STAGED_DIR):
+		return out
+	var dst := plugin_dir()
+	for f in DirAccess.get_files_at(STAGED_DIR):
+		var fn := str(f)
+		var ext := fn.get_extension().to_lower()
+		if ext != "gd" and not SHADER_EXTS.has(ext):
+			continue
+		var sp := "%s/%s" % [STAGED_DIR, fn]
+		var dp := "%s/%s" % [dst, fn]
+		if FileAccess.get_md5(sp) == FileAccess.get_md5(dp):
+			DirAccess.remove_absolute(sp)
+			continue
+		var bytes := FileAccess.get_file_as_bytes(sp)
+		if bytes.is_empty():
+			(out["failed"] as Array).append(fn)
+			continue
+		var w := FileAccess.open(dp, FileAccess.WRITE)
+		if w == null:
+			(out["failed"] as Array).append(fn)
+			continue
+		w.store_buffer(bytes)
+		w.close()
+		DirAccess.remove_absolute(sp)
+		(out["applied"] as Array).append(fn)
+	(out["applied"] as Array).sort()
+	(out["failed"] as Array).sort()
+	return out
+
+
 static func _hashes() -> Dictionary:
 	var dir := plugin_dir()
 	var out := {}

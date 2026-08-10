@@ -96,6 +96,7 @@ var mapctx_objects: Button   # show original map objects (lives under Detail Mod
 var mapctx_backdrop: Button  # show the distant skyline / out-of-bounds vista
 var mapctx_water: Button     # show the level's rivers / harbour / sea
 var mapctx_roads: Button     # the street network baked onto the ground
+var mapctx_grass: Button     # ground clutter from the level's scatter catalogue
 var _detail_chips: Node      # Detail Mode's chip row (hosts "Original map objects")
 var mapctx_range: HSlider      # object render distance; 0 = objects off, 3500 = no culling
 var mapctx_range_val: Label    # live "%dm" / "No Culling" readout next to the slider
@@ -585,7 +586,7 @@ func _enter_tree() -> void:
 
 	check_btn = Button.new()
 	check_btn.text = "Check for updates"
-	check_btn.tooltip_text = "Applies a plugin update without restarting the editor: any plugin script that changed on disk is reloaded in place. This also happens by itself every hour, so you rarely need to press it."
+	check_btn.tooltip_text = "Applies a plugin update without restarting the editor: staged updates are copied in first, then any plugin script that changed on disk is reloaded in place. Press it when you are told a fix is ready; it refuses while something is building, so it is always safe to press."
 	check_btn.pressed.connect(_check_updates_now)
 	dock.add_child(_centred(check_btn))
 
@@ -898,6 +899,21 @@ All of it is read from your own Battlefield 6 installation."
 			if not mapctx.has_terrain(r0)
 			else "This map has no road network to show"))
 	mc_chips.add_child(mapctx_roads)
+
+	mapctx_grass = Theme_.chip("Grass")
+	mapctx_grass.set_pressed_no_signal(false)
+	mapctx_grass.tooltip_text = "Ground clutter — grass tufts, pebbles and debris from the level's own scatter catalogue, placed around your camera as you move. Off by default because it costs instances. How far it grows follows the Range slider (about a third of the scenery distance)."
+	mapctx_grass.toggled.connect(func(v: bool):
+		if _locked(mapctx_grass): return
+		mapctx.set_grass(v)
+		# Grass draws on the extended terrain, so with no ground built the chip
+		# records the wish and the next terrain build honours it - say which.
+		var r0 := EditorInterface.get_edited_scene_root()
+		lbl.text = ("Grass " + ("on" if v else "off")) \
+			if mapctx.has_terrain(r0) or not v \
+			else "Grass will grow when Extended Terrain is on"
+		_save_mapctx_state())
+	mc_chips.add_child(mapctx_grass)
 
 	mapctx_objects = Theme_.chip("Original map objects")
 	mapctx_objects.tooltip_text = "Swaps the level's shipped assets for the real per-object geometry, so you get the actual buildings, vehicles and clutter instead of the single merged mesh the SDK ships. The merged one is hidden while this is on and comes back exactly as you left it when you turn it off. How they look follows the Detail Mode above; the Range slider in Map Context sets how far away you can still see them."
@@ -2426,6 +2442,29 @@ func _hot_reload() -> bool:
 
 func _check_updates_now() -> void:
 	check_btn.disabled = true
+	# STAGED UPDATES FIRST. Mid-session fixes cannot be written into res://
+	# (the editor hot-reloads changed scripts underneath running code - the
+	# "Bad address index" crash), so they land in user://highpoly/staged and
+	# THIS press - a moment the user chose - is what moves them into the addon
+	# before the normal reload below picks them up. Refused while anything is
+	# building, because swapping code under a live build is the exact crash
+	# the staging exists to avoid. "starting up" counts as quiet: it is the
+	# boot crumb, and nothing has armed a build yet when it still reads that.
+	if HighpolyReload.staged_count() > 0:
+		var _c := HighpolyVitals.crumb_now()
+		if not (HighpolyVitals.crumb_is_idle() or _c == "starting up"):
+			check_btn.disabled = false
+			lbl.text = "An update is staged, but something is building (%s) — press again when it settles" % _c
+			return
+		var staged: Dictionary = HighpolyReload.apply_staged()
+		if not (staged["failed"] as Array).is_empty():
+			check_btn.disabled = false
+			lbl.text = "Some staged files could not be applied — try once more, or restart the editor"
+			Log.error("Staged update could not replace: %s" % str(staged["failed"]))
+			return
+		var _ap := staged["applied"] as Array
+		if not _ap.is_empty():
+			Log.info("Applied %d staged file(s): %s" % [_ap.size(), ", ".join(_ap)])
 	# CODE FIRST, and only what actually moved.
 	#
 	# This button used to be about downloading models. There are no models to
@@ -3890,6 +3929,7 @@ func _save_mapctx_state() -> void:
 		# before this chip existed restores with the streets off, same as any
 		# layer you have not asked for.
 		"roads": mapctx_roads.button_pressed if mapctx_roads else false,
+		"grass": mapctx_grass.button_pressed if mapctx_grass else false,
 		"range": mapctx_range.value if mapctx_range else 800.0,
 		"maptile": false,      # the SDK plugin owns the ground texture now
 		"light": mapctx_light.button_pressed if mapctx_light else false,
@@ -3974,6 +4014,13 @@ func _restore_mapctx_state() -> void:
 		mapctx_roads.set_pressed_no_signal(_rd_on)
 		if mapctx: mapctx.set_roads_shown(
 			EditorInterface.get_edited_scene_root(), _rd_on)
+	# set_pressed_no_signal skips the handler, so the want flag is set by hand;
+	# the terrain build reads it when the kits come up. Defaults OFF, including
+	# for saved states written before the chip existed.
+	if mapctx_grass:
+		var _gr_on := bool(d.get("grass", false))
+		mapctx_grass.set_pressed_no_signal(_gr_on)
+		if mapctx: mapctx.set_grass(_gr_on)
 	if mapctx_gi: mapctx_gi.set_pressed_no_signal(bool(d.get("gi", true)))
 	if mapctx_shadows: mapctx_shadows.set_pressed_no_signal(bool(d.get("shadows", true)))
 	if mapctx_maplights: mapctx_maplights.set_pressed_no_signal(bool(d.get("maplights", false)))
