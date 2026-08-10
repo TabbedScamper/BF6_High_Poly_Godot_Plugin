@@ -170,6 +170,21 @@ var stats := {}
 # given EBX uses is not something to guess at.
 var want_types := {}                   # dashed type guid -> tag
 var want_fields: Array = []            # field name hashes to keep
+# Keep EVERY field of a collected entity instead of the `want_fields` list.
+#
+# For lights the list is right: the caller knows it wants Colour and Intensity
+# and naming them keeps 3,874 records small. The gamemode miner cannot use it,
+# because the fields it needs — a polygon's Points, an OBB's HalfExtents — have
+# no known name hash. The C# type dump in the research corpus names them by
+# NameHashAttribute, and NOT ONE of those values matches the hashes this walk
+# already uses (checked against Members, Transform, Blueprint and Objects: zero
+# overlap), so that table cannot supply them either. The type GUIDs in the same
+# dump DO match, which is how the types were identified in the first place.
+#
+# So the miner identifies fields by SHAPE — the array of Vec3 is the polygon,
+# the lone Vec3 is the half-extents — and that needs the fields present. Off by
+# default; a placement walk is untouched.
+var want_all_fields := false
 var ents: Array = []                   # [{tag, type, xf, f: {hash: value}}]
 var _want_hex := {}                    # type guid hex -> tag, resolved lazily
 var by_name := {}                      # lowercased asset name -> "<name>.ebx"
@@ -456,6 +471,7 @@ var skip_types := true
 # as it did before. The caller fills it with the bundles that own a depot.
 var scope_index := {}
 var _scope := ""
+var _cur_part := ""                    # partition a collected entity came from
 
 var _type_matters_cache := {}          # type guid hex -> bool
 var _layouts := {}                     # type guid hex -> layout, shared by every partition
@@ -537,6 +553,12 @@ func walk(ref, parent: Array, guard: Dictionary, depth := 0) -> void:
 			scope = str(scope_index[bare])
 	var prev_scope := _scope
 	_scope = scope
+	# WHICH PARTITION a collected entity came out of. The scope above is the
+	# subworld that owns the depot, which is deliberately NOT the partition —
+	# and the partition is the only thing that names a gamemode object ("...
+	# conquest_capturepoint_a"), so a label has nowhere else to come from.
+	var prev_part := _cur_part
+	_cur_part = key.trim_suffix(".ebx")
 
 	# THE SPATIAL COMPONENTS THAT CARRY A LIGHT'S PLACEMENT, resolved before the
 	# instance loop because a component sits AFTER the light it places (in
@@ -600,6 +622,7 @@ func walk(ref, parent: Array, guard: Dictionary, depth := 0) -> void:
 	# Restored on the way out: a sibling branch must not inherit the scope a
 	# subworld set for its own subtree.
 	_scope = prev_scope
+	_cur_part = prev_part
 	_light_xf = prev_xf
 
 
@@ -646,7 +669,10 @@ func _collect(tag: String, inst: Dictionary, parent: Array) -> void:
 				break
 	_bump("ent_xf_%s" % which)
 	var f := {}
-	for h in want_fields:
+	var fields: Array = inst.keys() if want_all_fields else want_fields
+	for h in fields:
+		if not (h is int):
+			continue                    # "__type", which is carried separately
 		var v = inst.get(int(h))
 		if v != null:
 			# Vec3-shaped values are flattened here rather than at the consumer:
@@ -659,7 +685,7 @@ func _collect(tag: String, inst: Dictionary, parent: Array) -> void:
 	# volume resolves its texture through a state key — needs the depot of the
 	# subworld that mounted it, and only the walk knows which that was.
 	ents.append({"tag": tag, "type": str(inst.get("__type", "")),
-		"xf": world, "f": f, "scope": _scope})
+		"xf": world, "f": f, "scope": _scope, "src": _cur_part})
 
 
 static func _is_vec(v) -> bool:

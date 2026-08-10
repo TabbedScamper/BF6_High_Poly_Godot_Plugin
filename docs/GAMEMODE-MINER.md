@@ -1,73 +1,123 @@
-# The gamemode miner: what is established, and what is left
+# The gamemode miner: rebuilding a mode out of real Portal objects
 
-`highpoly_gamemode.gd` renders capture rings, objective boxes, spawn spheres,
-zone areas, labels and mode-gated props. It is complete and costs nothing. It
-reads `gamemode_markers.json`, produced by a miner that no longer exists
-(task #37). This is the state of rebuilding that miner against the install.
+Picking a mode in the Variant dropdown puts that mode's actual layout into the
+scene as SDK objects — `CapturePoint`, `SpawnPoint`, `PolygonVolume`,
+`CombatArea`, `OBBVolume` — under a node named for the mode, at the positions
+and with the shapes the game ships. Not a preview of one: nodes you can drag,
+edit, keep and deploy.
 
-## Established, by measurement
+    highpoly_gmmine.gd     install  -> user://mapcontext/<MAP>/gamemode_markers.json
+    highpoly_gamemode.gd   that file -> instanced SDK scenes in the edited scene
 
-**1. The data is not in the placement walk's leftovers.**
+## What had to be established, and what it overturned
 
-The walk drops 1,991 rows on MP_Aftermath as "no geometry", and the log calls
-them gameplay objects. They are not: they are FX heatzones (119 + 119), damage
-volumes, `dwc_debridpile_spawncontroller`, `ve_disable_setup`, audio prefabs and
-destruction markers. Not one capture point among them. Filtering rows we already
-have was the cheap hope and it is dead.
+**1. The default walk never visits the mode subworlds.** Walking the level
+reaches 38,226 placements and not one gameplay entity of any mode. Walking
+`_layers_gameplay/<mode>` **as a root** reaches 2,701.
 
-**2. Gameplay entities are reachable, and the mechanism is proven.**
+**2. `CapturePointEntityData` is not what conquest places.** Its type GUID
+collects exactly zero, from the level walk and from the mode roots alike.
+Dumping every instance type in the 25 conquest partitions and naming them
+through the research tables gives what is really there:
 
-They derive from `SpatialEntityData` with no `ReferenceObjectData` - the same
-reason Portal vehicle spawners are invisible to a placement walk - so they are
-reached as ENTITIES, which `BF6Walk` already supports. `want_types` maps a type
-GUID to a name and `_collect` composes the world transform; that is exactly how
-the level's 3,874 lights arrive.
+    AlternateSpawnEntityData          137   the spawns
+    VolumeVectorShapeData               8   objective volumes
+    OBBData                             2   oriented bounding boxes
+    SpatialPrefabReferenceObjectData   60   the mode's own props
 
-Adding `CombatAreaEntityData`'s GUID to `want_types` and running the walk
-collected **2 CombatArea entities** with composed transforms. The route works.
+A capture point in this data is a **volume**, not a point entity. Looking for a
+point was never going to find one.
 
-**3. Type GUIDs come from joining two research tables.**
+**3. Field names cannot be looked up, so fields are read by shape.** Three
+tables were tried and none is in the hash space `bf6_ebx.gd` keys fields by:
 
-Neither file alone is enough, and this is the non-obvious part:
+| source | field names | matches our hashes |
+|---|---|---|
+| `data/ebx_typehashes.tsv` | no — type names only | — |
+| `research/frosty-bf6-mining/.../DumpedTypes_*.cs` | yes, `NameHashAttribute` | none of Members / Transform / Blueprint / Objects |
+| `bf6-weapon-previewer/data/fieldname_dict.json` | yes | none |
 
-    data/ebx_typehashes.tsv        name_hash -> NAME
-    data/ebx_type_identities.tsv   name_hash -> EBX type GUID
+The **type GUIDs** in those dumps do match, which is how the types above were
+identified, and the C# dump gives each type's own declared fields. That is
+enough, because within one type's own fields every value we want has a distinct
+shape:
 
-Join on the hash:
+    the array of Vec3   -> Points        (VectorShapeData)
+    the lone Vec3       -> HalfExtents   (OBBData; its Transform became the xf)
+    the lone int        -> Team          (Priority is a float, Enabled a bool)
 
-    CapturePointEntityData  0x20A56C13  8cba5d25-59fe-fa86-1c2a-8140e224d7da
-    ObjectiveData           0x43C5B076  e529dbe3-1ef0-5632-37a6-82f9a3ac003f
-    CombatAreaEntityData    0x8214E119  e36c4110-716c-d05f-7615-8f7b8a5d620b
+The **offsets** in those dumps are not usable: the two C# dumps disagree with
+each other (`Points` at 32 in one, 40 in the other), so they are different
+engine versions and neither can be assumed to be this one.
 
-`LIGHT_TYPES` carries TWO GUIDs per name, so the tables likely also hold a
-second encoding per type; the rotated form tried in probe_gm5.gd collected
-nothing, so that guess is unconfirmed.
+`Height` is the one value shape cannot separate — `VolumeVectorShapeData`
+declares it and the `VectorShapeData` it inherits from declares `Tension`, both
+floats. A float of exactly 0.5 is Tension's untouched default and is discarded;
+a single survivor is the height. Otherwise 0, which is `PolygonVolume`'s own
+value for infinite height and the right answer for a capture zone anyway.
 
-## Not established
+## What gets built
 
-**CapturePoint and Objective collected ZERO on MP_Aftermath.** Two readings, and
-they need different work:
+| mined kind | scene | notes |
+|---|---|---|
+| capture | `conquest/CapturePoint.tscn` | + `PolygonVolume` child wired to `CaptureArea` |
+| combat | `common/CombatArea.tscn` | + volume wired to `CombatVolume` |
+| hq | `common/HQ_PlayerSpawner.tscn` | + volume wired to `HQArea` |
+| sector | `common/Sector.tscn` | |
+| objective | `rush/MCOM.tscn` | |
+| spawn | `entities/SpawnPoint.tscn` | added to the nearest flag's `InfantrySpawnPoints_TeamN` |
+| obb | `OBBVolume.tscn` | `size` = 2 × HalfExtents |
 
-  a) the walk traverses the level's default graph and the per-mode subworlds
-     (`_layers_gameplay/conquest/...`) are not referenced from it, so the
-     entities are never visited; or
-  b) conquest capture points are a different type from `CapturePointEntityData`.
+**The spawns are `SpawnPoint`, not `AI_Spawner`,** and the obvious reading is
+the wrong one. The game type is `AlternateSpawnEntityData` and `AI_Spawner.tscn`
+is the scene whose export is literally `AlternateSpawns` — but in Portal that
+export is an `Array[SpawnPoint]`, so the thing the game holds **one** of is a
+`SpawnPoint`, and `AI_Spawner` is a container for a list of them. These entities
+cluster around capture points and carry a `Team`, which is exactly what
+`CapturePoint.InfantrySpawnPoints_TeamN` is for.
 
-Distinguishing them is the next step. (a) is testable by walking a mode
-partition as a root; (b) by dumping every distinct type GUID the mode partitions
-contain and joining those back through the tables above.
+**What a volume is** is not in the volume — `VolumeVectorShapeData` is the same
+type for a capture zone, a deploy area and a combat boundary. The partition name
+decides (`ROLES` in the miner).
 
-`conquest_captureareavisualisation` is the only capture-named partition on the
-map and its single instance is a container of references, not the areas
-themselves - consistent with (a).
+**Names.** Flags are lettered by position, west to east, so "Flag A" is the same
+flag on every run and every machine; each spawn takes the letter of the flag it
+is nearest to. The floating `Label3D` reads "Domination: Flag A" / "Domination:
+Flag A Spawn".
 
-## Tools
+## Ownership, deliberately split
+
+The gameplay objects are **owned** by the edited scene: they save with your
+level, because rebuilding a mode into Portal is the point. Everything else this
+plugin adds is `owner = null`.
+
+The labels are **not** owned. A `Label3D` is not a Portal type and baking one
+into the level file would put a node the deploy validator has never seen into
+every save. They are rebuilt whenever a mode is shown.
+
+Switching modes **hides** the previous one rather than destroying it, so
+switching back is instant and your edits survive. Delete the node and the panel
+rebuilds it from the mined file on the next tick; delete the mined file too and
+the next map open re-mines it from the install.
+
+## Tested
+
+    tools/test_gmmine.gd    shape reading, lettering, spawn-to-flag, volume
+                            geometry. No install, no SDK - runs anywhere.
+    tools/test_gmbuild.gd   the whole chain, in the Portal project: mine, write,
+                            build, read back node types and wiring, then switch
+                            away, switch back and delete-and-rebuild.
+                            NEEDS THE EDITOR CLOSED (it holds the project).
+
+## Probes
 
     tools/probe_gameplay.gd   what the walk drops, by name/kind/scope
     tools/probe_gmlayer.gd    partitions under _layers_gameplay
-    tools/probe_gm3.gd        level partitions matching gameplay words
     tools/probe_gm4.gd        instances and fields of one partition
-    tools/probe_gm5.gd        run the walk with extra want_types  <- the live one
+    tools/probe_gm5.gd        run the walk with extra want_types
+    tools/probe_gm8.gd        every field of every gameplay entity, by shape
 
 All take the level mount only (`catalogue_mount = false`), which is the
-difference between a 40-second probe and one that times out.
+difference between a 40-second probe and one that times out. A probe run while
+the editor is open competes with it for the install and can take many times
+longer than it should — one was killed at 50 minutes having read 1.1 MB.
