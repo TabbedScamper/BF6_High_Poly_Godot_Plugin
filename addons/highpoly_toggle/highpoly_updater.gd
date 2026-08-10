@@ -1,13 +1,22 @@
 @tool
 extends RefCounted
 class_name HighpolyUpdater
-# Registry plumbing shared by the sync manager + map context (manifest URL,
-# throttling-aware fetch) and the plugin's SELF-update. Model downloading
-# itself moved to highpoly_sync.gd in 1.5 — models now sync automatically in
-# the background instead of behind buttons.
-
-const SETTING := "highpoly/manifest_url"
-const DEFAULT_MANIFEST := "https://pub-45114dae448e4a059f488662e3d47b19.r2.dev/plugin-manifest.json"
+# The plugin's SELF-update, and a throttling-aware fetch. Nothing else: model
+# downloading went to highpoly_sync.gd in 1.5, and in 2.0 there stopped being
+# any models to download at all — everything is read from the player's install.
+#
+# THE R2 REGISTRY IS GONE, and so is the last thing that pointed at it. Updates
+# come from GitHub Releases (see github_latest). What used to sit here was a
+# manifest URL on an R2 bucket plus a manifest_url() that nothing called any
+# more — a const naming a host that now answers 404, kept alive by inertia.
+# Left in place it would eventually be read as "the plugin still needs that
+# bucket", which is the wrong conclusion: no part of this plugin fetches
+# anything from R2.
+#
+# The one thing that URL still mattered for is people on v2.0.2 and earlier,
+# whose build knows no other address and so cannot be offered an update at all.
+# That is a one-off problem belonging to those installs, and it cannot be fixed
+# from inside a version they are not running.
 
 # Godot's HTTPRequest.timeout defaults to 0 = wait forever. A connection that is
 # accepted and then goes quiet (dropped wifi, a NAT that forgets the flow, r2.dev
@@ -41,12 +50,8 @@ const MAX_TRANSFER := 1800.0     # backstop so a trickling socket cannot wedge a
 const HEAD_TIMEOUT := 30.0       # metadata only
 const Log = preload("highpoly_log.gd")
 
-static func manifest_url() -> String:
-	if ProjectSettings.has_setting(SETTING):
-		return str(ProjectSettings.get_setting(SETTING))
-	return DEFAULT_MANIFEST
-
-# GET with retry/backoff — the public r2.dev host throttles rapid bursts, so a
+# GET with retry/backoff. api.github.com rate-limits anonymous callers to 60 an
+# hour per address and objects.githubusercontent.com can refuse a burst, so a
 # single failed attempt (403/429/5xx) is usually transient.
 static func _fetch(http: HTTPRequest, url: String,
 		headers := PackedStringArray()) -> PackedByteArray:
