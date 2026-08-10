@@ -4664,18 +4664,19 @@ func _add_water_plane(ctx: Node3D, textured: bool) -> void:
 			var rv := MeshInstance3D.new()
 			rv.name = "RiverSurface"
 			rv.mesh = wcfg["mesh"] as Mesh
-			# THE RIVER PRESET OF OUR OWN WATER SHADER, and deliberately NOT the
-			# mined game look. The plain-material test proved placement and
-			# shape; the shader's own defaults are visible (min_alpha 0.45);
-			# what made the first shader attempt invisible was therefore
-			# _apply_game_look's mapping of tungsten's 27 full-ocean constants
-			# onto our uniforms. That mapping gets verified on-screen on its
-			# own before it touches the river again. The wave sim rides along -
-			# it only drives motion.
+			# THE FULL MINED LOOK IS BACK ON. RESEARCH-WATER2.md acquitted the
+			# game-look mapping with numbers: tungsten's mined ocean colour is
+			# BRIGHTER than the preset that renders, alpha is untouched by the
+			# mapping and floors at 0.45, and dumbo/aftermath bind darker
+			# colours through identical code and always rendered. The
+			# "invisible" conviction came from a confounded experiment - it
+			# predates the stale-answer and stale-node fixes, both of which
+			# were the actual fault. The kind rides in wcfg ("river", set by
+			# the game source), so the preset seeds river ripple scales before
+			# the mined constants land on top.
 			var rmat: Material = null
 			if textured:
-				rmat = HighpolyWater.material(
-					{"kind": "river", "sim": wcfg.get("sim", null)}, null)
+				rmat = HighpolyWater.material(wcfg, game_source)
 			if rmat == null:
 				var rfb := StandardMaterial3D.new()
 				rfb.albedo_color = Color(0.11, 0.34, 0.48, 0.82)

@@ -13,7 +13,8 @@ func _init() -> void:
 	if not gs.open_map("MP_Tungsten"):
 		print("no source"); quit(1); return
 	var t0 := Time.get_ticks_msec()
-	var hf: Dictionary = gs.terrain_water()
+	gs.terrain("user://hmcache_test")   # ground grid for the wet clip (cached: ~0.1 s)
+	var hf: Dictionary = gs.terrain_water("user://hmcache_test")
 	var ms := Time.get_ticks_msec() - t0
 	var fails := 0
 	if hf.is_empty():
@@ -24,12 +25,12 @@ func _init() -> void:
 	var km2 := float(hf["wet_km2"])
 	print("water mesh in %d ms: level %.2f..%.2f m, %.2f km2  [probe: 66.05..76.52, 0.82 km2]"
 		% [ms, y0, y1, km2])
-	if y0 < 60.0 or y0 > 70.0: print("FAIL y0 out of band"); fails += 1
+	if y0 < 64.0 or y0 > 70.0: print("FAIL y0 out of band"); fails += 1
 	if y1 < 72.0 or y1 > 80.0: print("FAIL y1 out of band"); fails += 1
-	if km2 < 0.3 or km2 > 2.0: print("FAIL wet area out of band"); fails += 1
+	if km2 < 0.5 or km2 > 1.2: print("FAIL wet area out of band"); fails += 1
 	if not (hf["mesh"] is ArrayMesh): print("FAIL no mesh"); fails += 1
 	# and the water() wrapper must carry it with the entity's look attached
-	var bodies: Array = gs.water()
+	var bodies: Array = gs.water("user://hmcache_test")
 	var have_mesh := false
 	var have_look := false
 	for b in bodies:

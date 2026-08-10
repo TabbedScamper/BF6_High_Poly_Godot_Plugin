@@ -422,19 +422,44 @@ static func update_plugin(host: Node, status: Callable) -> bool:
 		status.call("Update archive unreadable"); return false
 	var pdir := plugin_dir()
 	var n := 0
+	var same := 0
+	var locked: Array = []
 	for path in zr.get_files():
 		# the zip is rooted at addons/highpoly_toggle/ — ignore anything else,
 		# and extract into wherever THIS install actually lives
 		if path.ends_with("/") or not path.begins_with("addons/highpoly_toggle/"):
 			continue
 		var dest := "%s/%s" % [pdir, path.trim_prefix("addons/highpoly_toggle/")]
+		var bytes := zr.read_file(path)
+		# UNCHANGED FILES ARE NOT REWRITTEN. Most of an update is identical
+		# bytes - and one of them, waves.ogv, is held OPEN by the panel's own
+		# video player, so writing it fails with "file in use" and puts a Load
+		# Error in every updating user's face over a file that did not change.
+		# Hash first; write only what moved.
+		if FileAccess.file_exists(dest):
+			var hc := HashingContext.new()
+			hc.start(HashingContext.HASH_MD5)
+			hc.update(bytes)
+			if hc.finish().hex_encode() == FileAccess.get_md5(dest):
+				same += 1
+				continue
 		HighpolyStore.ensure_dir(dest.get_base_dir())
 		var out := FileAccess.open(dest, FileAccess.WRITE)
 		if out:
-			out.store_buffer(zr.read_file(path)); out.close(); n += 1
+			out.store_buffer(bytes); out.close(); n += 1
+		else:
+			# A CHANGED file that cannot be written - still held open by
+			# something. Not an update failure: everything else applied, and
+			# the restart the button already asks for releases the lock.
+			# Named, so the log says which file waits.
+			locked.append(path.get_file())
 	zr.close()
 	DirAccess.remove_absolute(tmp)
-	if n == 0:
+	if n == 0 and same == 0:
 		status.call("Update archive had no plugin files"); return false
-	status.call("Plugin updated (%d files). Restart the editor to finish." % n)
+	var msg := "Plugin updated (%d changed, %d already current)." % [n, same]
+	if not locked.is_empty():
+		msg += " %d file(s) in use will apply on restart: %s." % [locked.size(),
+			", ".join(PackedStringArray(locked))]
+	status.call(msg + " Restart the editor to finish.")
 	return true

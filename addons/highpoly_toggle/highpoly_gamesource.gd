@@ -1168,7 +1168,7 @@ func refresh_water() -> void:
 	_water_sim.clear()
 	if _map_data.is_empty():
 		return
-	var w := water()
+	var w := water(surface_cache)
 	if w.is_empty():
 		_map_data.erase("water")
 	else:
@@ -1279,7 +1279,7 @@ func _md_fill(cache_dir: String, need: Dictionary, out: Dictionary) -> void:
 		# The second clause is the re-ask: see map_data_would_build. An empty
 		# earlier answer must not outlive the code that produced it.
 		var t_w := Time.get_ticks_msec()
-		var w := water()
+		var w := water(cache_dir)
 		if not w.is_empty():
 			out["water"] = w
 		_md_built["water"] = true
@@ -2674,7 +2674,7 @@ func _counts_water(name: String) -> bool:
 const WATER_GRID := 1024               # ~4 m per sample on a 4 km map: the
                                        # water surface is smooth, unlike ground
 
-func terrain_water() -> Dictionary:
+func terrain_water(cache_dir := "") -> Dictionary:
 	if src == null:
 		return {}
 	var pick := ""
@@ -2730,7 +2730,11 @@ func terrain_water() -> Dictionary:
 		var hi16 := int(minf(65535.0, (yb.y + 0.5) / wy * 65536.0))
 		var best_off := -1
 		var best := -1.0
-		for tail in [0, 17424, 34848, 85024]:
+		# Every colour-trailer size any map family ships (BC7 68/132/260, BC1
+		# 132, the granite mixed pair, the mip pair) - mp_isolated's tails are
+		# {8712, 26136} and the original short list dropped ALL of its nodes
+		# (RESEARCH-WATER2.md). The in-band score still decides.
+		for tail in [0, 4624, 8712, 17424, 26136, 34848, 67600, 85024]:
 			var off: int = raw.size() - int(tail) - dsz
 			if off < dsz:
 				continue
@@ -2753,29 +2757,77 @@ func terrain_water() -> Dictionary:
 		if best_off < 0 or best < 0.9:
 			return PackedByteArray()
 		return raw.slice(best_off, best_off + want)
+	# EXTERNAL NODES ONLY, exactly as the discovery probes measured. Inline
+	# block-2 payloads bypass the per-node AABB-Y vetting the wrapped fetch
+	# applies, and letting them into the composite painted junk water at
+	# 522 m over the mountains. The externals are the river; a node the game
+	# did not spill to a chunk carries no water worth trusting.
+	for n0 in t.nodes:
+		var nd0: Dictionary = n0
+		if not bool(nd0["external"]):
+			nd0["values"] = PackedByteArray()
 	t.resolve_external(dir, fetch2)
 	var g := t.composite(WATER_GRID)
 	if g.is_empty():
 		return {}
-	# The dry fill is the most common value - 86%+ of the map - and water is
-	# strictly above it. A half-metre margin keeps the fill's own quantisation
-	# out of the mesh without eating the shallow braid edges.
+	# WET = WATER ABOVE GROUND, per texel, never a modal fill. The first cut
+	# clipped against the map's most common block-2 value plus half a metre,
+	# which RESEARCH-WATER2.md measured failing in both directions: eastwood
+	# over-selects 113x (3.4 vs 0.03 km2) because its dry fill sits far below
+	# its many small ponds, and mp_isolated's water VANISHES entirely because
+	# its dry fill IS the water level (a flat 100.5 m fjord). The ground is
+	# right there in height_game.r16 - the block-0 heightfield #72 caches -
+	# and block2 > block0 + 2 cm is the same test the probes validated the
+	# discovery with.
 	var grid: PackedByteArray = g["data"]
-	var tally := {}
-	var s := 0
-	while s < grid.size():
-		var v := grid.decode_u16(s)
-		tally[v] = int(tally.get(v, 0)) + 1
-		s += 2 * 97                    # ~5,500 samples: the mode is a landslide
-	var fill := 0
-	var fill_n := 0
-	for k in tally.keys():
-		if int(tally[k]) > fill_n:
-			fill_n = int(tally[k])
-			fill = int(k)
-	var wet_min := fill + int(0.5 / wy * 65536.0)
+	var gnd := PackedByteArray()
+	var gres := 0
+	var gmin := 0.0
+	var gspan := 1.0
+	var gscale := 1.0
+	if cache_dir != "":
+		var mv: Variant = JSON.parse_string(FileAccess.get_file_as_string(
+			"%s/height_game.json" % cache_dir))
+		if mv is Dictionary:
+			var md: Dictionary = mv
+			gnd = FileAccess.get_file_as_bytes("%s/height_game.r16" % cache_dir)
+			gres = int(md.get("res", 0))
+			gmin = float(md.get("world_min", 0.0))
+			gspan = float(md.get("world_max", 0.0)) - gmin
+			gscale = float(md.get("scale", 1.0))
+			if gres <= 1 or gnd.size() != gres * gres * 2:
+				gnd = PackedByteArray()
+	if gnd.is_empty():
+		# No ground grid to clip against (the heightfield has not been built
+		# for this map yet). Refusing is honest; the water layer asks again
+		# after the terrain exists, and a wrong clip is worse than a late one.
+		_say("game source: block-2 water present but the terrain heightfield "
+			+ "is not built yet - switch Extended Terrain on first")
+		return {}
+	var ground_at := func(wx: float, wz: float) -> float:
+		var fx := clampf((wx - gmin) / gspan, 0.0, 1.0) * float(gres - 1)
+		var fz := clampf((wz - gmin) / gspan, 0.0, 1.0) * float(gres - 1)
+		var x0i := int(fx)
+		var z0i := int(fz)
+		var x1i := mini(x0i + 1, gres - 1)
+		var z1i := mini(z0i + 1, gres - 1)
+		var tx := fx - float(x0i)
+		var tz := fz - float(z0i)
+		var h00 := float(gnd.decode_u16((z0i * gres + x0i) * 2))
+		var h10 := float(gnd.decode_u16((z0i * gres + x1i) * 2))
+		var h01 := float(gnd.decode_u16((z1i * gres + x0i) * 2))
+		var h11 := float(gnd.decode_u16((z1i * gres + x1i) * 2))
+		return lerpf(lerpf(h00, h10, tx), lerpf(h01, h11, tx), tz) \
+			* gscale / 65535.0
 	var lo: Vector3 = g["min"]
 	var hi: Vector3 = g["max"]
+	# The block-2 ROOT's own AABB-Y is the authored envelope of every water
+	# level on the map (tungsten 64.0..76.5, isolated 100.5..109.1, eastwood's
+	# lakes inside 215..238). Values outside it are stray texels in coarse
+	# nodes - one on tungsten claimed a 50 m-deep lake on a mountainside at
+	# 522 m, inside its node's band but outside the root's.
+	var env_lo := lo.y - 0.5
+	var env_hi := hi.y + 0.5
 	var step_x := (hi.x - lo.x) / float(WATER_GRID - 1)
 	var step_z := (hi.z - lo.z) / float(WATER_GRID - 1)
 	var st := SurfaceTool.new()
@@ -2789,16 +2841,34 @@ func terrain_water() -> Dictionary:
 			var v10 := grid.decode_u16((gz * WATER_GRID + gx + 1) * 2)
 			var v01 := grid.decode_u16(((gz + 1) * WATER_GRID + gx) * 2)
 			var v11 := grid.decode_u16(((gz + 1) * WATER_GRID + gx + 1) * 2)
-			if v00 < wet_min and v10 < wet_min and v01 < wet_min and v11 < wet_min:
-				continue
 			var x0 := lo.x + gx * step_x
 			var z0 := lo.z + gz * step_z
-			var p00 := Vector3(x0, v00 / 65536.0 * wy, z0)
-			var p10 := Vector3(x0 + step_x, v10 / 65536.0 * wy, z0)
-			var p01 := Vector3(x0, v01 / 65536.0 * wy, z0 + step_z)
-			var p11 := Vector3(x0 + step_x, v11 / 65536.0 * wy, z0 + step_z)
-			y0 = minf(y0, minf(p00.y, p11.y))
-			y1 = maxf(y1, maxf(p00.y, p11.y))
+			# Per corner: wet keeps its water level (and counts toward the
+			# stats); a DRY corner of a wet quad is the bank, and it sits at
+			# its own ground plus the epsilon - never at the raw grid value,
+			# which at composite holes is zero and at coarse texels can be
+			# anything. That is what put 0 m and 522 m into the first mesh's
+			# vertex range while the wet area was already correct.
+			var cy := PackedFloat32Array()
+			var wets := 0
+			for c in [[v00, x0, z0], [v10, x0 + step_x, z0],
+					[v01, x0, z0 + step_z], [v11, x0 + step_x, z0 + step_z]]:
+				var wyv := float((c as Array)[0]) / 65536.0 * wy
+				var gv: float = ground_at.call(float((c as Array)[1]),
+					float((c as Array)[2]))
+				if wyv > gv + 0.02 and wyv >= env_lo and wyv <= env_hi:
+					wets += 1
+					cy.push_back(wyv)
+					y0 = minf(y0, wyv)
+					y1 = maxf(y1, wyv)
+				else:
+					cy.push_back(gv + 0.02)
+			if wets == 0:
+				continue
+			var p00 := Vector3(x0, cy[0], z0)
+			var p10 := Vector3(x0 + step_x, cy[1], z0)
+			var p01 := Vector3(x0, cy[2], z0 + step_z)
+			var p11 := Vector3(x0 + step_x, cy[3], z0 + step_z)
 			st.set_normal(Vector3.UP)
 			st.set_uv(Vector2(x0, z0) * 0.05)
 			st.add_vertex(p00)
@@ -2822,15 +2892,18 @@ func terrain_water() -> Dictionary:
 	return {"mesh": mesh, "y0": y0, "y1": y1, "wet_km2": km2}
 
 
-func water() -> Array:
+func water(cache_dir := "") -> Array:
 	if src == null or types == null:
 		return []
 	var out: Array = []
 	# THE TERRAIN'S OWN WATER FIRST - the block-2 river/lake surface, which is
 	# per-texel truth. The flat entity plane on these maps is authored
 	# UNDERGROUND (tungsten y=0 vs floor 64.8) and acts as the render/material
-	# entity; block 2 is what you actually see in game.
-	var hf := terrain_water()
+	# entity; block 2 is what you actually see in game. cache_dir is where the
+	# block-0 heightfield lives, which the wet clip compares against.
+	var hf := terrain_water(cache_dir if cache_dir != "" else surface_cache)
+	if not hf.is_empty():
+		hf["kind"] = "river"
 	var name := _water_partition()
 	if name == "":
 		if hf.is_empty():

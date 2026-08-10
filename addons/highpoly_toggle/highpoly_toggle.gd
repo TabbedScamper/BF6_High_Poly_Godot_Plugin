@@ -3380,9 +3380,21 @@ func _do_plugin_update() -> void:
 	# the updater fetches into memory, so there is no byte stream to track — it
 	# still takes a turn in the queue so it cannot race a model download
 	var token: int = await jobs.acquire("Plugin update")
+	# RELEASE OUR OWN LOCK FIRST. The panel's video player holds waves.ogv
+	# open, and Windows will not overwrite an open file - the updater's
+	# hash-skip already avoids rewriting an unchanged video, but a release
+	# that DOES change it must not fail on our own player.
+	var _vid_stream = null
+	if video != null and is_instance_valid(video):
+		_vid_stream = video.stream
+		video.stop()
+		video.stream = null
 	var ok: bool = await HighpolyUpdater.update_plugin(dock, func(msg: String):
 		lbl.text = msg
 		Log.info(msg))
+	if _vid_stream != null and video != null and is_instance_valid(video):
+		video.stream = _vid_stream
+		video.play()
 	jobs.release(token, ok, "" if ok else "see the log for what failed")
 	if ok:
 		update_btn.text = "Restart editor to finish update"
