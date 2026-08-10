@@ -901,15 +901,23 @@ func run(level_rel: String) -> bool:
 		# caller should not have to. Anchored on '/levels/<leaf>/<leaf>' rather
 		# than a substring: a loose match would happily pick a neighbouring level
 		# whose name merely CONTAINS this one.
-		var tail := "/levels/%s/%s" % [leaf.to_lower(), leaf.to_lower()]
-		var hits: Array = []
-		for k in by_name.keys():
-			if str(k).ends_with(tail):
-				hits.append(str(k))
-		hits.sort()
-		if not hits.is_empty():
-			start = by_name[hits[0]]
-			stats["resolved_via"] = hits[0]
+		var tails: Array = ["/levels/%s/%s" % [leaf.to_lower(), leaf.to_lower()]]
+		# The SDK names a scene by its display name and the game files the
+		# level under an mp_ id: Portal_Sand is game/glacierportal/levels/
+		# mp_portal_sand. Still anchored - the prefixed spelling of THIS
+		# level, not a substring that could pick a neighbour.
+		if not leaf.to_lower().begins_with("mp_"):
+			tails.append("/levels/mp_%s/mp_%s" % [leaf.to_lower(), leaf.to_lower()])
+		for tail in tails:
+			var hits: Array = []
+			for k in by_name.keys():
+				if str(k).ends_with(str(tail)):
+					hits.append(str(k))
+			hits.sort()
+			if not hits.is_empty():
+				start = by_name[hits[0]]
+				stats["resolved_via"] = hits[0]
+				break
 	if start == null:
 		stats["error"] = "could not resolve the level root for %s" % level_rel
 		return false

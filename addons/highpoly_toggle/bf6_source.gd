@@ -98,10 +98,28 @@ static func _is_level(p: String) -> bool:
 # So  mounts every level's archives, which is what makes the whole
 # placeable catalogue resolvable. It is not the default for reading a level,
 # because a level read does not need it and it is not free.
+# The SDK names a scene by display name while the game files the level under
+# an mp_ id (Portal_Sand -> levels/mp_portal_sand), so both spellings match.
+static func _level_dirs(level: String) -> Array:
+	var l := level.to_lower()
+	var out: Array = ["/levels/%s/" % l]
+	if not l.begins_with("mp_"):
+		out.append("/levels/mp_%s/" % l)
+	return out
+
+
+static func _in_level_dir(path: String, dirs: Array) -> bool:
+	var pl := path.to_lower().replace("\\", "/")
+	for d in dirs:
+		if pl.contains(str(d)):
+			return true
+	return false
+
+
 func _find_tocs(level: String, all_levels := false) -> Array:
 	var shared: Array = []
 	var lvl: Array = []
-	var want := "/levels/%s/" % level.to_lower()
+	var want := _level_dirs(level)
 	var stack: Array = [game]
 	while not stack.is_empty():
 		var dir: String = stack.pop_back()
@@ -115,7 +133,7 @@ func _find_tocs(level: String, all_levels := false) -> Array:
 				continue
 			var p := dir.path_join(f)
 			if _is_level(p):
-				if all_levels or (level != "" and p.to_lower().replace("\\", "/").contains(want)):
+				if all_levels or (level != "" and _in_level_dir(p, want)):
 					lvl.append(p)
 			else:
 				shared.append(p)
@@ -142,11 +160,11 @@ func _find_tocs(level: String, all_levels := false) -> Array:
 	# So: shared archives, then this level, then everything else purely to make
 	# its objects reachable.
 	if all_levels and level != "":
-		var want_lc := "/levels/%s/" % level.to_lower()
+		var want_lc := _level_dirs(level)
 		var others: Array = []
 		var mine: Array = []
 		for p2 in lvl:
-			if str(p2).to_lower().replace("\\", "/").contains(want_lc):
+			if _in_level_dir(str(p2), want_lc):
 				mine.append(p2)
 			else:
 				others.append(p2)
