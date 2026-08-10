@@ -4662,20 +4662,29 @@ func _add_water_plane(ctx: Node3D, textured: bool) -> void:
 		# world space and only needs the water look.
 		if wcfg.has("mesh") and wcfg["mesh"] is Mesh:
 			var rv := MeshInstance3D.new()
-			rv.name = WATER_NODE
+			rv.name = "RiverSurface"
 			rv.mesh = wcfg["mesh"] as Mesh
-			var rmat: Material = HighpolyWater.material(wcfg, game_source) if textured else null
-			if rmat == null:
-				var rfb := StandardMaterial3D.new()
-				rfb.albedo_color = WATER_COLOR
-				rfb.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-				rfb.metallic = 0.3
-				rfb.roughness = 0.1
-				rfb.cull_mode = BaseMaterial3D.CULL_DISABLED
-				rmat = rfb
-			rv.material_override = rmat
+			# PLAIN WATER MATERIAL, deliberately, until the river is CONFIRMED
+			# on screen. The ocean shader's alpha rides the scene depth behind
+			# the surface, which for a 0-6 m river is a suspect for "renders
+			# but reads as nothing" - and a debugging session must change one
+			# variable at a time. Once the shape is confirmed visible, the game
+			# look goes back on.
+			var rfb := StandardMaterial3D.new()
+			rfb.albedo_color = Color(0.11, 0.34, 0.48, 0.82)
+			rfb.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+			rfb.metallic = 0.55
+			rfb.roughness = 0.08
+			rfb.cull_mode = BaseMaterial3D.CULL_DISABLED
+			rv.material_override = rfb
 			rv.layers = EXT_TERRAIN_LAYER
 			ctx.add_child(rv); rv.owner = null
+			# SAY SO. Every earlier stage of this hunt logged, and the one that
+			# did not - this placement - is exactly where the trail went cold.
+			var ab := rv.get_aabb()
+			Log.info("[High-Poly] river surface placed: %d surface(s), AABB %s, visible %s, in tree %s"
+				% [(rv.mesh as Mesh).get_surface_count(), str(ab), str(rv.visible),
+				   str(rv.is_inside_tree())])
 			continue
 		if not wcfg.has("height"): continue
 		var wc: Array = wcfg.get("center", [0.0, 0.0])
