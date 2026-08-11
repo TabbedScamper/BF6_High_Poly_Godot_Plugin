@@ -149,6 +149,17 @@ signal backdrop_progress(done: int, total: int)  # the skyline layer's own lane
 # _props_refresh / _session_checked are read by cleanup_stale.
 signal stage_progress(label: String, done: int, total: int)
 signal build_finished(built: int)              # completed (not emitted when superseded)
+# THE TERRAIN PIPELINE IS OVER. Emitted once per map, when the ground reaches
+# full detail near the camera - or when it is settled that it never will,
+# because the map has no usable splat bake.
+#
+# It exists because "is the terrain finished?" had no answer. The breadcrumb
+# was the only thing to read and it is not a completion signal: it goes idle
+# between the catalogue upgrade and the ground bake, and it went idle for the
+# whole twenty seconds of the near-window sharpening. Anything that waited for
+# idle - a user watching the editor, or the button bench - concluded the
+# terrain was done twice before it was.
+signal terrain_ready(sharpened: bool)
 var job_queue: Node = null
 var _session_checked: Dictionary = {}   # map -> true
 var _props_refresh: Dictionary = {}     # map -> true
@@ -6606,6 +6617,12 @@ func _near_apply(w: Dictionary, mat: ShaderMaterial, c: Vector2) -> void:
 		# splat data at all). Asking again every tick would re-pay the failed
 		# open forever; the next apply resets this.
 		_near_fail = true
+		# STILL A COMPLETION. The terrain is as finished as it is going to get
+		# on this map, and a listener waiting for the pipeline to end must not
+		# wait forever because the sharpening was never available.
+		if not _near_said_ready:
+			_near_said_ready = true
+			terrain_ready.emit(false)
 		return
 	if mat == null or not is_instance_valid(mat) or mat != _tmat_live:
 		return                         # the map or material changed mid-flight
@@ -6621,6 +6638,7 @@ func _near_apply(w: Dictionary, mat: ShaderMaterial, c: Vector2) -> void:
 	# happened for a while" and "everything is finished" looked identical.
 	if not _near_said_ready:
 		_near_said_ready = true
+		terrain_ready.emit(true)
 		Log.info("Extended terrain is finished: the ground is at full detail "
 			+ "around the camera. Moving a long way re-sharpens it, which "
 			+ "takes a few seconds and does not block you.")

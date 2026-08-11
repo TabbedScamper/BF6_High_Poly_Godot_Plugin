@@ -299,6 +299,14 @@ static func run(host: Node, dock: Node, mapctx: Node) -> bool:
 		mapctx.build_finished.connect(func(n: int):
 			built["n"] = n
 			built["done"] = true, CONNECT_ONE_SHOT)
+	# THE TERRAIN PIPELINE'S OWN END. build_finished is the props builder, so a
+	# run measuring a layer that builds no props has nothing to wait for; this
+	# is that run's completion. has_signal rather than a hard reference so an
+	# older plugin without it still runs, falling back to the idle settle.
+	var terrain_done := {"done": false}
+	if mapctx != null and mapctx.has_signal("terrain_ready"):
+		mapctx.terrain_ready.connect(func(_sharp: bool):
+			terrain_done["done"] = true, CONNECT_ONE_SHOT)
 	if mapctx != null and mapctx.has_signal("build_progress"):
 		mapctx.build_progress.connect(func(d: int, tot: int):
 			prog["done"] = d
@@ -335,7 +343,10 @@ static func run(host: Node, dock: Node, mapctx: Node) -> bool:
 	var wait_props: bool = bool(_cfg.get("objects", true))
 	var saw_busy := false
 	var idle_since := 0
-	const IDLE_SETTLE_MS := 3000
+	# 20 s, not 3: the gap between the catalogue upgrade finishing and the
+	# ground bake starting is a real idle window of several seconds, and a
+	# short settle mistakes it for the end of the run.
+	const IDLE_SETTLE_MS := 20000
 	var limit: int = int(_cfg["max_build_s"]) * 1000
 	var stall_ms: int = int(_cfg["stall_s"]) * 1000
 	var last_seen := 0
@@ -363,9 +374,16 @@ static func run(host: Node, dock: Node, mapctx: Node) -> bool:
 		if now - last_change > quiet and last_seen > 0:
 			stalled = true
 			break
-		if not wait_props:
-			# Busy first, then quiet for IDLE_SETTLE_MS. Requiring busy first
-			# stops the wait ending on the tick before the work starts.
+		if not wait_props and bool(terrain_done["done"]):
+			built["done"] = true
+			_say("perfrun: terrain_ready - the ground reached full detail")
+		elif not wait_props:
+			# THE FALLBACK, and only that. Idle is not a completion signal: the
+			# breadcrumb goes idle between the catalogue upgrade and the ground
+			# bake, and the first version of this ended the wait there and
+			# reported a 97.5 s build for a terrain that had not started
+			# baking. It stays for maps that never emit terrain_ready at all,
+			# with a settle long enough to clear that mid-pipeline gap.
 			var idle_now: bool = HighpolyVitals.crumb_is_idle()
 			if not idle_now:
 				saw_busy = true

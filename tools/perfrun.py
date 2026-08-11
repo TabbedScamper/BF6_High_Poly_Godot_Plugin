@@ -103,7 +103,12 @@ def load_breakdown(run_dir, top=12):
                 res_kb, chunk_kb, reads = int(parts[4]), int(parts[5]), int(parts[6])
             except ValueError:
                 continue
-            label = line.split(parts[7], 1)[-1].strip()
+            # The label is everything after the eight fixed columns. Splitting
+            # on the value of column 7 looked equivalent and is not: that value
+            # is usually "0", which also occurs inside the labels, so the split
+            # cut in the wrong place and the table came out with numbers in the
+            # name column and the real phase names truncated.
+            label = " ".join(parts[8:]).strip()
             key = (dur, label)
             if key in seen:
                 continue
