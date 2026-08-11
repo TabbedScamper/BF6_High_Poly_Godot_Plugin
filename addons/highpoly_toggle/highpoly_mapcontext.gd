@@ -1397,6 +1397,10 @@ var _splat_n := 0                          # its texture-array slice count
 var _tmat_live: ShaderMaterial = null      # the live terrain material, or null
 var _cmap_bound := false                   # the live material holds a colour map
 var _near_center := Vector2.INF            # centre of the applied window
+# Said once per map: the first time the near window lands. A line every
+# time the camera moves far enough would be noise, and the question it
+# answers - "is it finished?" - is only asked once.
+var _near_said_ready := false
 var _near_flight := false                  # a recomposite is on the worker
 var _near_last_ms := 0
 var _near_fail := false                    # the map gave {} once - stop asking
@@ -1774,6 +1778,7 @@ func _terrain_shader_mat(map: String) -> ShaderMaterial:
 	_tmat_live = m
 	_near_center = Vector2.INF
 	_near_fail = false
+	_near_said_ready = false
 	return m
 
 
@@ -6573,6 +6578,17 @@ func _tick_near() -> void:
 	var dir := "%s/%s" % [CACHE, _map]
 	var gs = game_source
 	var mat := _tmat_live
+	# IT SAYS WHAT IT IS DOING. This ran anonymously: the recomposite only
+	# starts once the crumb reads idle, so for the twenty seconds it takes the
+	# plugin was telling everyone it had finished - a user watching an editor
+	# that had gone quiet after "terrain done" had no way to know the ground
+	# was still being sharpened, and a freeze in that window was reported
+	# against "idle, nothing building", which reads as a bug in something else
+	# entirely. A user log showed exactly that: 43.7 s blocked, attributed to
+	# idle, with "near window recomposited in 20.3 s" as the very next line.
+	#
+	# Set from the worker, which is safe - HighpolyVitals.crumb takes a lock.
+	HighpolyVitals.crumb("sharpening the ground near the camera")
 	WorkerThreadPool.add_task(func():
 		var w: Dictionary = gs.terrain_window(dir, c.x, c.y)
 		_near_apply.call_deferred(w, mat, c))
@@ -6580,6 +6596,11 @@ func _tick_near() -> void:
 
 func _near_apply(w: Dictionary, mat: ShaderMaterial, c: Vector2) -> void:
 	_near_flight = false
+	# Hand the crumb back, but only if it is still ours: an apply or a build
+	# may have started while the window was in flight, and stamping idle over
+	# one of those would re-arm the same lie in the other direction.
+	if HighpolyVitals.crumb_now() == "sharpening the ground near the camera":
+		HighpolyVitals.crumb("idle, nothing building")
 	if w.is_empty():
 		# No usable bake for a window (old cache version, or a map without
 		# splat data at all). Asking again every tick would re-pay the failed
@@ -6594,3 +6615,12 @@ func _near_apply(w: Dictionary, mat: ShaderMaterial, c: Vector2) -> void:
 		float(w["z0"]), float(w["size"]), NEAR_FEATHER_M))
 	mat.set_shader_parameter("near_on", 1)
 	_near_center = c
+	# SAY IT IS DONE. Until now the terrain pipeline ended in silence: the last
+	# thing anyone saw was the apply returning, and the sharpening that runs
+	# after it neither announced itself nor reported finishing. "Nothing has
+	# happened for a while" and "everything is finished" looked identical.
+	if not _near_said_ready:
+		_near_said_ready = true
+		Log.info("Extended terrain is finished: the ground is at full detail "
+			+ "around the camera. Moving a long way re-sharpens it, which "
+			+ "takes a few seconds and does not block you.")

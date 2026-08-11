@@ -321,6 +321,21 @@ static func run(host: Node, dock: Node, mapctx: Node) -> bool:
 		# started, and those are very different situations.
 		_say("perfrun: no layers that build anything, so no build to wait for")
 		built["done"] = true
+	# A LAYER THAT BUILDS NO PROPS STILL FINISHES. build_finished comes from the
+	# props builder, so a run with objects off - measuring the terrain button on
+	# its own, say - waited out the entire max_build_s budget and then reported
+	# it as the build time. The first button bench duly reported "terrain: 900.0
+	# s", which is the cap and not a measurement.
+	#
+	# For those runs the completion signal is the breadcrumb going quiet and
+	# STAYING quiet. That is only trustworthy because the near-window sharpening
+	# now sets a crumb of its own; before that it ran for twenty seconds under
+	# "idle, nothing building" and this would have called the build finished
+	# while the ground was still being sharpened.
+	var wait_props: bool = bool(_cfg.get("objects", true))
+	var saw_busy := false
+	var idle_since := 0
+	const IDLE_SETTLE_MS := 3000
 	var limit: int = int(_cfg["max_build_s"]) * 1000
 	var stall_ms: int = int(_cfg["stall_s"]) * 1000
 	var last_seen := 0
@@ -348,6 +363,21 @@ static func run(host: Node, dock: Node, mapctx: Node) -> bool:
 		if now - last_change > quiet and last_seen > 0:
 			stalled = true
 			break
+		if not wait_props:
+			# Busy first, then quiet for IDLE_SETTLE_MS. Requiring busy first
+			# stops the wait ending on the tick before the work starts.
+			var idle_now: bool = HighpolyVitals.crumb_is_idle()
+			if not idle_now:
+				saw_busy = true
+				idle_since = 0
+			elif saw_busy:
+				if idle_since == 0:
+					idle_since = now
+				elif now - idle_since >= IDLE_SETTLE_MS:
+					built["done"] = true
+					_say("perfrun: no props layer, so the build is done when "
+						+ "the plugin has been idle for %.1f s"
+						% (IDLE_SETTLE_MS / 1000.0))
 		if now - t >= limit:
 			break
 	_rep["build_ms"] = Time.get_ticks_msec() - t

@@ -568,6 +568,20 @@ func build_report() -> PackedStringArray:
 	return out
 
 
+# 16777216 -> "16,777,216". The splat's texel count is the number that says
+# whether the paint loop is doing too much work or just doing it slowly.
+static func _grouped_i(n: int) -> String:
+	var t := str(absi(n))
+	var out := ""
+	var c := 0
+	for i in range(t.length() - 1, -1, -1):
+		out = t[i] + out
+		c += 1
+		if c % 3 == 0 and i > 0:
+			out = "," + out
+	return ("-" + out) if n < 0 else out
+
+
 func print_build_report() -> void:
 	for line in build_report():
 		_say(line)
@@ -2066,7 +2080,13 @@ func terrain_surface(cache_dir: String, force := false,
 	_say("game source: terrain splat composite, %.1fs" % (t_splat / 1000.0))
 	note_phase("ground: splat composite", t_splat, int(comp.get("pages", 0)),
 		"pages", FROM_INSTALL,
-		"into a %dx%d index and weight raster" % [sres, sres])
+		"into a %dx%d index and weight raster; fetch %.1fs decode %.1fs "
+			% [sres, sres, float(comp.get("us_fetch", 0)) / 1e6,
+				float(comp.get("us_decode", 0)) / 1e6]
+		+ "paint %.1fs over %s texels, tally %.1fs"
+			% [float(comp.get("us_paint", 0)) / 1e6,
+				_grouped_i(int(comp.get("texels", 0))),
+				float(comp.get("us_tally", 0)) / 1e6])
 	if comp.is_empty():
 		_say("game source: terrain splat — %s" % sp.error)
 		return {}

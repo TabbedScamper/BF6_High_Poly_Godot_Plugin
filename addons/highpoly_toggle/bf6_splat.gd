@@ -756,6 +756,19 @@ static func depth_of(key: int) -> int:
 # ARE the neighbour's, byte for byte - and the near-field window (4x denser
 # than the pages) is where the smoothing shows. The whole-map bake stays
 # nearest: its raster density matches the pages, so bilinear would buy blur.
+# WHERE THE SPLAT COMPOSITE'S TIME GOES. It is 155 s of a 229 s first open -
+# 68% of it, larger than the mount, the partition index and the placement walk
+# put together - and "3,929 pages at 39.5 ms" does not say whether that is
+# reading them, decompressing them, or painting them into the raster. Those
+# three want completely different fixes, so they are counted separately before
+# anything is changed.
+var us_fetch := 0
+var us_decode := 0
+var us_paint := 0
+var us_tally := 0
+var texels := 0
+
+
 func composite(dir: Dictionary, fetch: Callable, size: int,
 		progress := Callable(), rect_min := Vector2.INF,
 		rect_size := 0.0, seed_idx := PackedByteArray(),
@@ -806,7 +819,9 @@ func composite(dir: Dictionary, fetch: Callable, size: int,
 					break
 			if not hit:
 				continue
+		var _tf := Time.get_ticks_usec()
 		var pages: Array = node_pages(nd, dir, fetch)
+		us_fetch += Time.get_ticks_usec() - _tf
 		if pages.is_empty():
 			continue
 		for r in nd["records"]:
@@ -821,7 +836,9 @@ func composite(dir: Dictionary, fetch: Callable, size: int,
 			if hi.x <= org.x or hi.y <= org.y \
 					or lo.x >= org.x + span.x or lo.y >= org.y + span.y:
 				continue               # record entirely outside the window
+			var _tdp := Time.get_ticks_usec()
 			var page := decode_page(pages[pi], page_size)
+			us_decode += Time.get_ticks_usec() - _tdp
 			if page.size() < PAGE_SIDE * PAGE_SIDE:
 				continue
 			decoded += 1
@@ -841,6 +858,7 @@ func composite(dir: Dictionary, fetch: Callable, size: int,
 			# scaled every painted shape by 66/64 and shifted paint up to a
 			# full page texel at node edges - the "paints are not quite where
 			# the game has them" misalignment, measured.
+			var _tp := Time.get_ticks_usec()
 			var rw := maxf(hi.x - lo.x, 1e-6)
 			var rh := maxf(hi.y - lo.y, 1e-6)
 			var inner := float(PAGE_SIDE - 2)          # 64
@@ -877,6 +895,8 @@ func composite(dir: Dictionary, fetch: Callable, size: int,
 						var w := int(page[row + 1 + clampi(int(fx * inner), 0, PAGE_SIDE - 3)])
 						if w > 0:
 							_insert(idx, wgt, (drow + gx) * 4, layer, w)
+			us_paint += Time.get_ticks_usec() - _tp
+			texels += (x1 - x0) * (z1 - z0)
 	# COUNTED ACROSS ALL FOUR SLOTS, not just the strongest.
 	#
 	# Counting slot 0 only answers "which layer wins here", and the consumer of
@@ -884,6 +904,7 @@ func composite(dir: Dictionary, fetch: Callable, size: int,
 	# get a texture slice. On mp_dumbo the difference is 2 slices against 12:
 	# grass, sand, cobblestone and the rest are almost never the single strongest
 	# layer at a texel, and dropping them left the map blending two textures.
+	var _tt := Time.get_ticks_usec()
 	var per_layer := {}
 	for i in range(size * size):
 		var o := i * 4
@@ -892,8 +913,10 @@ func composite(dir: Dictionary, fetch: Callable, size: int,
 				break
 			var l := int(idx[o + s])
 			per_layer[l] = int(per_layer.get(l, 0)) + 1
+	us_tally += Time.get_ticks_usec() - _tt
 	return {"idx": idx, "w": wgt, "pages": decoded, "layers": per_layer,
-		"size": size}
+		"size": size, "us_fetch": us_fetch, "us_decode": us_decode,
+		"us_paint": us_paint, "us_tally": us_tally, "texels": texels}
 
 
 # Slot 0 is the strongest. A layer already present is UPDATED rather than added
