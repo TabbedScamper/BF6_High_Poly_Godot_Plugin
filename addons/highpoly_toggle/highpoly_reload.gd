@@ -270,6 +270,63 @@ static func reload_code(force := false) -> Dictionary:
 	return out
 
 
+# THE COLD SWAP - a plugin-only restart, and the end of "now restart the
+# editor". Hot reload rebinds new code onto LIVE instances, and that is where
+# every one of its failure modes lives: members added by the new version are
+# null on old instances (heal_new_members patches the untyped ones), constants
+# folded into callers keep their old values until the CALLER reloads too, and
+# a big script sometimes silently keeps its old bytecode entirely - the
+# rebuilt-with-old-code incidents that made restarts the standing advice.
+#
+# The cold swap removes the live instances instead of rebinding them: disable
+# the plugin (every dock/mapctx/gamesource instance is freed; the scene
+# overlay nodes stay - they are plain built nodes), replace the changed
+# scripts while NOTHING holds them, re-enable. The new instance parses fresh
+# against the complete new set: no heal, no folding staleness, no silent
+# no-ops. Cost: the panel rebuilds and the game source's in-memory caches
+# drop (disk caches remain) - which is what an editor restart cost, minus
+# the editor restart.
+#
+# Runs as a STATIC coroutine so it survives its own caller being freed;
+# trigger it DEFERRED from a signal, never inline from dock code (disabling
+# the plugin frees the dock, and freeing the object whose method is on the
+# stack is the crash).
+static var swap_report := ""
+
+
+static func cold_swap() -> void:
+	var now := _hashes()
+	var p := pending()
+	var todo: Array = (p["changed"] as Array) + (p["added"] as Array)
+	var folder := plugin_dir().get_file()
+	var tree := Engine.get_main_loop() as SceneTree
+	EditorInterface.set_plugin_enabled(folder, false)
+	if tree != null:
+		await tree.process_frame
+		await tree.process_frame              # teardown queue fully drained
+	var dir := plugin_dir()
+	var failed: Array = []
+	var scripts := 0
+	var shaders := 0
+	for f in todo:
+		var fn := str(f)
+		var r := ResourceLoader.load("%s/%s" % [dir, fn], "",
+			ResourceLoader.CACHE_MODE_REPLACE)
+		if r == null:
+			failed.append(fn)
+		elif SHADER_EXTS.has(fn.get_extension().to_lower()):
+			shaders += 1
+		else:
+			scripts += 1
+	_save_state(now)
+	swap_report = "Update applied in place: %d script(s), %d shader(s) swapped cold" \
+		% [scripts, shaders]
+	if not failed.is_empty():
+		swap_report += " - FAILED to parse %s, restart the editor" \
+			% ", ".join(PackedStringArray(failed))
+	EditorInterface.set_plugin_enabled(folder, true)
+
+
 # WHICH FILES CAN CHANGE WHAT IS ALREADY ON SCREEN.
 #
 # A reload should do the cheapest thing that is still correct, and the cheapest

@@ -1896,6 +1896,11 @@ All of it is read from your own Battlefield 6 installation."
 	# startup and that press would otherwise be adopted as "already loaded"
 	# and never applied.
 	HighpolyReload.arm()
+	# The cold swap's hand-off: the OLD panel triggered it and is gone; this
+	# fresh instance is the proof it worked, and the report says what moved.
+	if HighpolyReload.swap_report != "":
+		Log.info(HighpolyReload.swap_report)
+		HighpolyReload.swap_report = ""
 	get_tree().node_added.connect(_on_node_added)
 	# live isolation follows the editor selection
 	EditorInterface.get_selection().selection_changed.connect(_on_selection_changed)
@@ -2579,6 +2584,29 @@ func _check_updates_now() -> void:
 	# Hash-compared rather than mtime-compared on purpose. A zip extraction
 	# stamps every file with the same "now", so an mtime test would replay the
 	# entire addon on every press and re-dress a map for nothing.
+	#
+	# SCRIPT CHANGES TAKE THE COLD SWAP, not the live rebind. Hot reload onto
+	# live instances is where every "now restart the editor" came from: null
+	# new members, constants folded stale into callers, big scripts silently
+	# keeping old bytecode. The cold swap disables the plugin, replaces the
+	# scripts while nothing holds them, and re-enables - a plugin-only
+	# restart in a couple of seconds. Triggered DEFERRED off the tree because
+	# the disable frees THIS dock, and freeing the object whose method is on
+	# the stack is a crash. Shader-only changes keep the cheap live path.
+	var pend: Dictionary = HighpolyReload.pending()
+	var moved: Array = (pend["changed"] as Array) + (pend["added"] as Array)
+	var has_gd := false
+	for f in moved:
+		if str(f).get_extension().to_lower() == "gd":
+			has_gd = true
+			break
+	if has_gd and not bool(pend["first"]):
+		lbl.text = "Applying the update - the panel rebuilds itself in a moment"
+		Log.info("Cold swap: %d changed file(s), restarting the plugin in place"
+			% moved.size())
+		get_tree().process_frame.connect(Callable(HighpolyReload, "cold_swap"),
+			CONNECT_ONE_SHOT | CONNECT_DEFERRED)
+		return
 	if not _hot_reload():
 		check_btn.disabled = false
 		return
