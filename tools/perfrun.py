@@ -816,6 +816,19 @@ def monitor(proc, session, a, t_launch):
                                 "last_heartbeat": None,
                                 "phase_wall_s": phase_wall}
         elif quiet > a.hang_s:
+            # A RUN THAT WROTE ITS REPORT FINISHED. The editor does not always
+            # exit promptly once the session is over - a terrain-only run
+            # reaches phase "done", writes the report, stops heartbeating and
+            # then sits there - and calling that a hang labelled every button
+            # in the bench NOT CLEAN while the numbers underneath were
+            # perfectly good. The report file is the run's own statement that
+            # it got to the end, so it wins over the silence that follows.
+            if os.path.isfile(session["out"]):
+                return "done", {"where": (last_hb or {}).get("phase", "?"),
+                                "quiet_s": round(quiet, 1),
+                                "last_heartbeat": last_hb,
+                                "phase_wall_s": phase_wall,
+                                "note": "report written, editor lingered"}
             return "hang", {"where": (last_hb or {}).get("phase", "?"),
                             "quiet_s": round(quiet, 1),
                             "last_heartbeat": last_hb,
