@@ -107,6 +107,10 @@ var terrain_step: int = 2
 # and deriving the stride keeps every level costing the same, and on a level with
 # finer data the vertices land on real samples instead of repeats.
 const TERRAIN_VERTS_PER_SIDE := 2048
+# Tile skirt depth in metres: a vertical apron hung from every tile rim so a
+# step or LOD mismatch between neighbours shows stretched ground instead of a
+# see-through crack. Oversized is free - the apron hangs inside the earth.
+const SKIRT_DEPTH := 25.0
 
 
 # The stride that spends the budget on this level.  meta is the terrain metadata
@@ -5083,12 +5087,18 @@ func _build_terrain_from_heightmap(dir: String, meta: Dictionary) -> Node3D:
 	# v2 = corrected triangle winding. The cached mesh is the geometry itself, so
 	# anyone with a v1 cache would keep their inside-out terrain forever â€” the
 	# version goes in the filename and the old file is deleted below.
-	# v6 = NO hole cut. v4/v5 cut terrain by block 8, which turned out to be a
-	# crater-denial descriptor, not a render mask: triangle-level ray-casts
-	# proved no ground mesh replaces the terrain there - the streets ARE the
-	# terrain, and the cut drew voids where the road was. The heights behind
-	# the mesh are bilinear-composited.
-	var cache := "%s/terrain_ck%d_s%d_v6.res" % [dir, TERRAIN_CHUNKS, step]
+	# v6 = NO hole cut (block 8 is crater denial, not a render mask).
+	# v7 = ADAPTIVE STEP + SKIRTS. One step for the whole map drew the 0.5 m
+	# city core at 4 m on big maps: measured on aftermath, flat ground is
+	# faithful to millimetres but cliff/embankment cells miss by metres
+	# (worst 13.7 m), because a flat triangle cannot span a wall. Tiles are
+	# now stepped by their own PLANARITY VIOLATION (second difference of the
+	# base lattice - a smooth 45-degree hillside measures ~0 and costs
+	# nothing; a curb wall or cliff face measures metres): cliff tiles
+	# sharpen 2-4x, dead-flat tiles coarsen 2x, and every tile grows a skirt
+	# so mismatched neighbour steps and LOD transitions physically cannot
+	# open a see-through crack - including at the map rim.
+	var cache := "%s/terrain_ck%d_s%d_v7.res" % [dir, TERRAIN_CHUNKS, step]
 	if ResourceLoader.exists(cache):
 		var cached: Variant = ResourceLoader.load(cache)
 		if cached is PackedScene:
@@ -5097,9 +5107,64 @@ func _build_terrain_from_heightmap(dir: String, meta: Dictionary) -> Node3D:
 	var raw := FileAccess.get_file_as_bytes("%s/%s" % [dir, meta.get("file", "height.r16")])
 	if raw.is_empty(): return null
 	var res: int = int(meta.get("res", 4097))
-	# heightmap px per tile, aligned to the vertex step so tile edges share verts
+	# heightmap px per tile, aligned to 16 so EVERY per-tile step {2..16}
+	# lands shared verts on tile borders
 	var cpx := int(ceil(float(res - 1) / float(TERRAIN_CHUNKS)))
-	cpx = int(ceil(float(cpx) / float(step))) * step
+	cpx = int(ceil(float(cpx) / 16.0)) * 16
+	# --- per-tile planarity scan, on the base lattice ---------------------
+	var t_scan := Time.get_ticks_msec()
+	var curv := PackedFloat32Array()
+	curv.resize(TERRAIN_CHUNKS * TERRAIN_CHUNKS)
+	var yscale := float(meta.get("scale", 1.0)) / 65535.0
+	var lat := int(float(res - 1) / float(step))
+	for gz in range(1, lat):
+		var pz := gz * step
+		var row := pz * res
+		var ti_row := int(float(pz) / float(cpx)) * TERRAIN_CHUNKS
+		for gx in range(1, lat):
+			var px := gx * step
+			var h0 := float(raw.decode_u16((row + px) * 2))
+			var cxv := absf(float(raw.decode_u16((row + px - step) * 2))
+				+ float(raw.decode_u16((row + px + step) * 2)) - 2.0 * h0)
+			var czv := absf(float(raw.decode_u16((row - step * res + px) * 2))
+				+ float(raw.decode_u16((row + step * res + px) * 2)) - 2.0 * h0)
+			var c := maxf(cxv, czv) * yscale
+			var ti := ti_row + int(float(px) / float(cpx))
+			if c > curv[ti]:
+				curv[ti] = c
+	# classification, BUDGETED: promotion is ranked by curvature and capped -
+	# a loose threshold promoted 218 of aftermath's 256 tiles (hills carry
+	# real metre-scale curvature) and quadrupled the vertex budget. The top
+	# 12 tiles above 3 m sharpen 4x, the next 32 above 2 m sharpen 2x,
+	# dead-flat tiles (under 12 cm) coarsen 2x. Promotion only helps when
+	# the base is coarse; a map already at step 2 skips it.
+	var tsteps := PackedInt32Array()
+	tsteps.resize(TERRAIN_CHUNKS * TERRAIN_CHUNKS)
+	var ranked: Array = []
+	for i in range(curv.size()):
+		tsteps[i] = step
+		if curv[i] > 2.0:
+			ranked.append(i)
+	ranked.sort_custom(func(a, b): return curv[a] > curv[b])
+	var sharp2 := 0
+	var sharp4 := 0
+	var coarse := 0
+	if step >= 4:
+		for j in range(ranked.size()):
+			var i2: int = ranked[j]
+			if j < 12 and curv[i2] > 3.0:
+				tsteps[i2] = maxi(int(float(step) / 4.0), 2)
+				sharp4 += 1
+			elif j < 44:
+				tsteps[i2] = maxi(int(float(step) / 2.0), 2)
+				sharp2 += 1
+	for i in range(curv.size()):
+		if curv[i] < 0.12 and tsteps[i] == step:
+			tsteps[i] = mini(step * 2, 16)
+			coarse += 1
+	print("MapContext: terrain adaptive step (base %d): %d tile(s) 4x sharper, "
+		% [step, sharp4] + "%d 2x sharper, %d coarsened (scan %d ms)"
+		% [sharp2, coarse, Time.get_ticks_msec() - t_scan])
 	var troot := Node3D.new(); troot.name = "Terrain"
 	for cz in range(TERRAIN_CHUNKS):
 		for cx in range(TERRAIN_CHUNKS):
@@ -5124,11 +5189,25 @@ func _build_terrain_from_heightmap(dir: String, meta: Dictionary) -> Node3D:
 			# edges at every level and no crack can open.
 			#
 			# ~23 ms per tile, so about 6 s for a map, paid once into the same
-			# PackedScene cache as the tiles (hence v3 in its name). Memory does
-			# not move: LODs are extra index buffers over the same vertices.
-			var m := _with_lods(_heightmap_mesh(raw, res, step, meta,
-				cx * cpx, cz * cpx, cpx))
-			if m == null: continue
+			# PackedScene cache as the tiles (hence the version in its name).
+			# Memory does not move: LODs are extra index buffers over the same
+			# vertices.
+			#
+			# THE SKIRT GOES ON AFTER THE LODS. generate_lods simplifies every
+			# surface it is given; a simplified skirt can pull away from the
+			# rim it exists to seal. Appended afterwards it never simplifies -
+			# a few hundred triangles per tile - and with skirts sealing every
+			# border, neighbouring tiles no longer need matching vertex steps.
+			var tstep := int(tsteps[cz * TERRAIN_CHUNKS + cx])
+			var gm := _heightmap_mesh(raw, res, tstep, meta,
+				cx * cpx, cz * cpx, cpx)
+			if gm == null: continue
+			var m := _with_lods(gm)
+			if m is ArrayMesh:
+				var sk := _skirt_arrays(SKIRT_DEPTH)
+				if not sk.is_empty():
+					(m as ArrayMesh).add_surface_from_arrays(
+						Mesh.PRIMITIVE_TRIANGLES, sk)
 			var mi := MeshInstance3D.new()
 			mi.name = "T%d_%d" % [cx, cz]
 			mi.mesh = m
@@ -5141,11 +5220,12 @@ func _build_terrain_from_heightmap(dir: String, meta: Dictionary) -> Node3D:
 	DirAccess.remove_absolute("%s/terrain_s%d.res" % [dir, step])   # legacy single-mesh cache
 	# v1 chunk cache: same chunking, inside-out winding â€” reclaim the space
 	DirAccess.remove_absolute("%s/terrain_ck%d_s%d.res" % [dir, TERRAIN_CHUNKS, step])
-	# v3: nearest-sampled heights. v4/v5: the block-8 cut era - both left
-	# voids where the streets were.
+	# v3: nearest-sampled heights. v4/v5: the block-8 cut era. v6: uniform
+	# step, no skirts.
 	DirAccess.remove_absolute("%s/terrain_ck%d_s%d_v3.res" % [dir, TERRAIN_CHUNKS, step])
 	DirAccess.remove_absolute("%s/terrain_ck%d_s%d_v4.res" % [dir, TERRAIN_CHUNKS, step])
 	DirAccess.remove_absolute("%s/terrain_ck%d_s%d_v5.res" % [dir, TERRAIN_CHUNKS, step])
+	DirAccess.remove_absolute("%s/terrain_ck%d_s%d_v6.res" % [dir, TERRAIN_CHUNKS, step])
 	return troot
 
 func _heightmap_mesh(raw: PackedByteArray, res: int, step: int, meta: Dictionary,
@@ -5206,9 +5286,73 @@ func _heightmap_mesh(raw: PackedByteArray, res: int, step: int, meta: Dictionary
 	arr[Mesh.ARRAY_NORMAL] = norms
 	arr[Mesh.ARRAY_TEX_UV] = uvs
 	arr[Mesh.ARRAY_INDEX] = indices
+	# the rim data the skirt builder reads (single-threaded builder)
+	_last_grid = {"verts": verts, "norms": norms, "uvs": uvs, "nx": nx, "nz": nz}
 	var am := ArrayMesh.new()
 	am.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr)
 	return am
+
+
+var _last_grid := {}
+
+
+# The skirt: every rim vertex of the last-built grid duplicated `depth` metres
+# down, quads sewing rim to drop, BOTH windings so it reads from either side
+# regardless of cull mode. Normals and UVs copy the rim vertex, so the apron
+# shades and paints like the ground it hangs from.
+func _skirt_arrays(depth: float) -> Array:
+	if _last_grid.is_empty():
+		return []
+	var gv: PackedVector3Array = _last_grid["verts"]
+	var gn: PackedVector3Array = _last_grid["norms"]
+	var gu: PackedVector2Array = _last_grid["uvs"]
+	var nx := int(_last_grid["nx"])
+	var nz := int(_last_grid["nz"])
+	# rim vertex indices, walked once around the tile
+	var rim := PackedInt32Array()
+	for gx in range(nx):
+		rim.append(gx)                              # north edge, west->east
+	for gz in range(1, nz):
+		rim.append(gz * nx + nx - 1)                # east edge, north->south
+	for gx in range(nx - 2, -1, -1):
+		rim.append((nz - 1) * nx + gx)              # south edge, east->west
+	for gz in range(nz - 2, 0, -1):
+		rim.append(gz * nx)                         # west edge, south->north
+	var n := rim.size()
+	var verts := PackedVector3Array()
+	var norms := PackedVector3Array()
+	var uvs := PackedVector2Array()
+	verts.resize(n * 2)
+	norms.resize(n * 2)
+	uvs.resize(n * 2)
+	for i in range(n):
+		var ri := int(rim[i])
+		verts[i * 2] = gv[ri]
+		verts[i * 2 + 1] = gv[ri] + Vector3(0, -depth, 0)
+		norms[i * 2] = gn[ri]
+		norms[i * 2 + 1] = gn[ri]
+		uvs[i * 2] = gu[ri]
+		uvs[i * 2 + 1] = gu[ri]
+	var idx := PackedInt32Array()
+	idx.resize(n * 12)                              # 2 tris x 2 windings per quad
+	var k := 0
+	for i in range(n):
+		var a := i * 2                              # rim
+		var b := i * 2 + 1                          # dropped
+		var c := ((i + 1) % n) * 2                  # next rim
+		var d := ((i + 1) % n) * 2 + 1              # next dropped
+		idx[k] = a; idx[k + 1] = c; idx[k + 2] = b
+		idx[k + 3] = c; idx[k + 4] = d; idx[k + 5] = b
+		idx[k + 6] = a; idx[k + 7] = b; idx[k + 8] = c
+		idx[k + 9] = c; idx[k + 10] = b; idx[k + 11] = d
+		k += 12
+	var arr := []
+	arr.resize(Mesh.ARRAY_MAX)
+	arr[Mesh.ARRAY_VERTEX] = verts
+	arr[Mesh.ARRAY_NORMAL] = norms
+	arr[Mesh.ARRAY_TEX_UV] = uvs
+	arr[Mesh.ARRAY_INDEX] = idx
+	return arr
 
 # --- parallel GLB prefetch ---------------------------------------------------
 # Image work is 62% of a cold prop â€” 21.7 ms of 34.8, being 13.0 ms to decode
