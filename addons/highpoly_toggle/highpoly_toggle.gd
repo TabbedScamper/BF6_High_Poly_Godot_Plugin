@@ -531,10 +531,18 @@ func _enter_tree() -> void:
 	# ProjectSettings), so nothing is written into the user's project; the map
 	# context sets their values per apply. Re-registering errors, so guard on
 	# the existing list.
+	# THE SAMPLER IS NEVER NULL. Registering it with a null default and setting
+	# the real colour map later looks harmless and is not: a terrain-blend
+	# material (a kerb apron) can be built and DRAWN before any map sets the
+	# global - during a cold build, or on a map with no colour map at all -
+	# and sampling an unset global sampler took the editor down with an
+	# access violation rather than an error. A 1x1 white stand-in means the
+	# worst case is a kerb drawn white for a moment.
 	var sglobals := RenderingServer.global_shader_parameter_get_list()
 	if not sglobals.has("bf6_ground_col"):
 		RenderingServer.global_shader_parameter_add("bf6_ground_col",
-			RenderingServer.GLOBAL_VAR_TYPE_SAMPLER2D, null)
+			RenderingServer.GLOBAL_VAR_TYPE_SAMPLER2D,
+			MapContextScript.white_texture())
 	if not sglobals.has("bf6_ground_rect"):
 		RenderingServer.global_shader_parameter_add("bf6_ground_rect",
 			RenderingServer.GLOBAL_VAR_TYPE_VEC4, Vector4(0, 0, 0, 0))

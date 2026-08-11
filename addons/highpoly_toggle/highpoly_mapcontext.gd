@@ -2856,11 +2856,33 @@ static func _terrainblend_materials(m: Mesh) -> void:
 func _bind_ground_globals(map: String) -> void:
 	var cm := _colormap_set(map)
 	if cm.is_empty():
+		# NEVER LEAVE THE SAMPLER UNSET. A map with no colour map yet (a cold
+		# build, or one still compositing) would otherwise leave whatever the
+		# LAST map bound - or, at startup, nothing at all, which is an access
+		# violation the moment a blend material draws.
+		RenderingServer.global_shader_parameter_set("bf6_ground_col",
+			white_texture())
+		RenderingServer.global_shader_parameter_set("bf6_ground_rect",
+			Vector4(0, 0, 0, 0))
 		return
 	var b: Vector4 = cm["bounds"]
 	RenderingServer.global_shader_parameter_set("bf6_ground_col", cm["tex"])
 	RenderingServer.global_shader_parameter_set("bf6_ground_rect",
 		Vector4(b.x, b.y, 1.0 / maxf(b.z, 1.0), 1.0 / maxf(b.w, 1.0)))
+
+
+# One shared 1x1 white texture: the safe default for the ground-colour global
+# and the stand-in whenever a map has no colour map. Static so the plugin can
+# register the global with it before any map context exists.
+static var _white_tex: ImageTexture = null
+
+
+static func white_texture() -> ImageTexture:
+	if _white_tex == null:
+		var im := Image.create(1, 1, false, Image.FORMAT_RGBA8)
+		im.fill(Color(1, 1, 1, 1))
+		_white_tex = ImageTexture.create_from_image(im)
+	return _white_tex
 
 
 static func _wind_swap_materials(m: Mesh) -> void:

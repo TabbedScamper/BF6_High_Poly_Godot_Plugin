@@ -2675,6 +2675,81 @@
     },
     "first_heartbeat_s": 19.522222995758057
    }
+  },
+  {
+   "when": "2026-08-10 22:17:46",
+   "map": "MP_Aftermath",
+   "tag": "worstcase",
+   "note": "",
+   "cold": false,
+   "geom_epoch": 7,
+   "outcome": "crash",
+   "valid": false,
+   "wall_s": 46.6,
+   "fx": false,
+   "range_slider": -1,
+   "radius": -1,
+   "boot_s": 0.0,
+   "scan_s": 0.0,
+   "open_s": 0.0,
+   "build_s": 0.0,
+   "first_drawn_s": 0.0,
+   "frames": 0,
+   "frames_under_60": 0,
+   "pct_under_60": 0.0,
+   "fps_1pct_low": 0.0,
+   "stationary_frames": 0,
+   "stationary_jitter_ms": 0.0,
+   "stationary_spikes": 0,
+   "moving_jitter_ms": 0.0,
+   "moving_spikes": 0,
+   "still_spread_ms": 0.0,
+   "still_spread_worst_ms": 0.0,
+   "still_samples": 0,
+   "median_ms": 0.0,
+   "p99_ms": 0.0,
+   "worst_ms": 0.0,
+   "fps_mean": 0.0,
+   "draws_mean": 0,
+   "errors_total": 15,
+   "leaks": 0,
+   "session": {
+    "map": "MP_Aftermath",
+    "scene": "",
+    "tag": "worstcase",
+    "mode": 2,
+    "flight": "C:\\Users\\mwalt\\AppData\\Roaming\\Godot\\app_userdata\\Battlefield\u2122 Portal Project\\bf6_flightpath_MP_Aftermath.json",
+    "out": "C:\\PortalSDK\\GodotProject\\User_Created\\tools\\bf6-portal-highpoly-preview\\native\\perfrun\\worstcase-20260810-221659\\report.json",
+    "heartbeat": "C:\\PortalSDK\\GodotProject\\User_Created\\tools\\bf6-portal-highpoly-preview\\native\\perfrun\\worstcase-20260810-221659\\heartbeat.json",
+    "log": "C:\\PortalSDK\\GodotProject\\User_Created\\tools\\bf6-portal-highpoly-preview\\native\\perfrun\\worstcase-20260810-221659\\godot.log",
+    "settle_frames": 30,
+    "hold_ms": 50,
+    "max_scan_s": 300,
+    "max_open_s": 180,
+    "max_build_s": 900,
+    "stall_s": 60,
+    "min_radius": 100000000.0,
+    "fx": false
+   },
+   "detail": {
+    "exit_code": 3221225477,
+    "last_heartbeat": {
+     "errors": 0,
+     "frame": 0,
+     "of": 0,
+     "phase": "build",
+     "sample": -1,
+     "t_ms": 45363,
+     "unix": 1786418265.606
+    },
+    "phase_wall_s": {
+     "scan": 5.5,
+     "open": 18.5,
+     "dock_sync": 1.0,
+     "build": 3.0
+    },
+    "first_heartbeat_s": 18.52103090286255
+   }
   }
  ]
 }
