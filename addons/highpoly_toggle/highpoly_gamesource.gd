@@ -836,6 +836,24 @@ func open_map(map: String, game_dir := "", progress := Callable(),
 		var v := int(ProjectSettings.get_setting(TEX_DIM_SETTING))
 		if v == 0 or (v >= 64 and v <= 8192):
 			texture_max_dim = v
+	# A RE-OPEN NEVER THROWS AWAY WORK. Toggling a layer re-opens the map with
+	# that moment's want, and this function used to rebuild the source and the
+	# walk from scratch every time: a terrain-only re-open after an objects
+	# session replaced a 38k-row walk with an EMPTY one while placements_ready
+	# stayed true from the earlier open - so the objects layer's ensure-guard
+	# saw "ready", skipped the walk, and "built" zero props from zero rows
+	# (user log 2026-08-11). Same map, already open, nothing missing: return.
+	var want_pl := bool(want.get("placements", true))
+	if src != null and error == "" and level == map.to_lower() \
+			and not src.res.is_empty() \
+			and (not want_pl or placements_ready) \
+			and (surface_cache == "" or _surface_tried == surface_cache):
+		BJournal.event("note", "open %s" % map,
+			"already open, nothing missing - kept as is")
+		return true
+	# and when a full open DOES proceed, the flag tells the truth about THIS
+	# open, so a later layer toggle knows to top the walk up
+	placements_ready = false
 	level = map.to_lower()
 	timings.clear()
 	phases.clear()
