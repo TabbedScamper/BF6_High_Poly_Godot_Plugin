@@ -78,9 +78,19 @@ var _cov_b := Vector4()            # xmin, zmin, sizeX, sizeZ (splat world box)
 # layer index -> class: 0 ground, 1 vegetation. 255 (no layer) counts as
 # ground, so debris still lands on the unpainted background.
 var _cov_cls := PackedByteArray()
+var _debris_layers := 0            # debris-painted layers in this map's palette
 const VEG_WORDS := ["grass", "tuft", "shrub", "weed", "plant", "flower",
 	"fern", "bush", "leaf", "clover", "moss", "ivy", "hay", "wheat", "crop",
 	"reed", "lawn", "fairway", "turf", "iceplant", "oakshrub", "driedgrass"]
+# Hard-debris kits (brick rubble, asphalt chunks, wreckage). The catalogue
+# ships them next to the grass, but "anywhere vegetation does not dominate"
+# is the WRONG where for them: it accepted debris at full weight across every
+# open patch of dirt, and a rubble kit tiled the countryside. Debris keys to
+# the map's own debris-PAINTED layers instead, exactly as grass keys to
+# vegetation layers.
+const DEBRIS_WORDS := ["debris", "rubble", "wreck", "burnt", "trash",
+	"scrap", "junk", "ruin", "demolit", "brickpile", "concretechunk",
+	"asphaltchunk"]
 # ground lift applied by the map context when the splat terrain is active (the
 # extended terrain is raised slightly to win the SDK-bowl depth fight; grass
 # must sit on the lifted surface, not inside it)
@@ -175,15 +185,22 @@ func setup(mc: Object, ctx: Node3D, map: String, dir: String, hm: Dictionary, ti
 				for prow in ((meta as Dictionary)["palette"] as Array):
 					var pd: Dictionary = prow
 					var nm2 := str(pd.get("tex", "")).to_lower()
+					var li2 := int(pd.get("layer", -1))
+					if li2 < 0 or li2 >= 255:
+						continue
 					for wv in VEG_WORDS:
 						if nm2.contains(str(wv)):
-							var li2 := int(pd.get("layer", -1))
-							if li2 >= 0 and li2 < 255:
-								_cov_cls[li2] = 1
-								veg_n += 1
+							_cov_cls[li2] = 1
+							veg_n += 1
 							break
-				print("MapContext[%s]: scatter uses the game's painted coverage (%d vegetation layer(s))"
-					% [map, veg_n])
+					if _cov_cls[li2] == 0:
+						for wd in DEBRIS_WORDS:
+							if nm2.contains(str(wd)):
+								_cov_cls[li2] = 2
+								_debris_layers += 1
+								break
+				print("MapContext[%s]: scatter uses the game's painted coverage (%d vegetation, %d debris layer(s))"
+					% [map, veg_n, _debris_layers])
 	_root = Node3D.new()
 	_root.name = NODE
 	ctx.add_child(_root)
@@ -233,8 +250,8 @@ func setup(mc: Object, ctx: Node3D, map: String, dir: String, hm: Dictionary, ti
 		_entries.append({
 			"kit": kit,
 			# the kit's class, from its own catalogue name: what the painted
-			# coverage matches it against
-			"veg": _name_is_veg(nm),
+			# coverage matches it against (0 neutral, 1 vegetation, 2 debris)
+			"cls": _kit_class(nm),
 			"spacing": dense,
 			# "distance" is what scatter_entries() emits from the game's own DB
 			# (real per-mesh values {30, 50, 55, 75, 100, 150, 200, 300});
@@ -375,7 +392,7 @@ func _gen_entry(e: Dictionary, cam: Vector3) -> PackedFloat32Array:
 				# to this kit's class - grass on vegetation layers, debris on
 				# the rest. This is also what finally answers "which mesh goes
 				# where": the 49 kits stop being 49 identical carpets.
-				wgt = _cov_weight(ax, az, bool(e.get("veg", false)))
+				wgt = _cov_weight(ax, az, int(e.get("cls", 0)))
 			else:
 				wgt = clampf((SLOPE_NONE - sl) / (SLOPE_NONE - SLOPE_FULL), 0.0, 1.0)
 				wgt *= _green_weight(ax, az)
@@ -451,23 +468,33 @@ func _slope(x: float, z: float) -> float:
 # 0 outside the splat box, which is the playable area: no heuristic scatter
 # out in the void.
 # A kit's class from its catalogue name, same vocabulary as the layer table.
-static func _name_is_veg(nm: String) -> bool:
+# 0 neutral ground (pebbles, litter), 1 vegetation, 2 hard debris.
+static func _kit_class(nm: String) -> int:
 	var low := nm.to_lower()
 	for w in VEG_WORDS:
 		if low.contains(str(w)):
-			return true
-	return false
+			return 1
+	for w in DEBRIS_WORDS:
+		if low.contains(str(w)):
+			return 2
+	return 0
 
 
-func _cov_weight(x: float, z: float, veg: bool) -> float:
+func _cov_weight(x: float, z: float, cls: int) -> float:
 	var u := (x - _cov_b.x) / _cov_b.z
 	var v := (z - _cov_b.y) / _cov_b.w
 	if u < 0.0 or u > 1.0 or v < 0.0 or v > 1.0:
 		return 0.0
+	# A debris kit on a map with no debris-painted layers keeps the neutral
+	# rule - there is nothing to key it to, and zero debris everywhere would
+	# be as wrong as debris everywhere.
+	if cls == 2 and _debris_layers == 0:
+		cls = 0
 	var px := clampi(int(u * float(_cov_res - 1) + 0.5), 0, _cov_res - 1)
 	var pz := clampi(int(v * float(_cov_res - 1) + 0.5), 0, _cov_res - 1)
 	var o := (pz * _cov_res + px) * 4
 	var hit := 0
+	var veg_w := 0
 	var total := 0
 	for s in range(4):
 		var w := int(_covw[o + s])
@@ -475,17 +502,24 @@ func _cov_weight(x: float, z: float, veg: bool) -> float:
 			continue
 		total += w
 		var li := int(_cov[o + s])
-		var is_veg := li < 255 and int(_cov_cls[li]) == 1
-		if is_veg == veg:
+		var lc := int(_cov_cls[li]) if li < 255 else 0
+		if lc == 1:
+			veg_w += w
+		if lc == cls:
 			hit += w
-	if veg:
+	if cls == 1:
 		# grass grows by how much of the texel its layers cover
 		return clampf(float(hit) / 255.0, 0.0, 1.0)
-	# ground kits: full weight wherever vegetation does NOT dominate, including
-	# unpainted background (total 0)
+	if cls == 2:
+		# debris piles up by how much of the texel its DEBRIS layers cover -
+		# the same rule as grass, keyed to the rubble paint. "Anywhere the
+		# grass is not" accepted a rubble kit across every open field.
+		return clampf(float(hit) / 255.0, 0.0, 1.0)
+	# neutral kits: full weight wherever vegetation does NOT dominate,
+	# including unpainted background (total 0)
 	if total == 0:
 		return 1.0
-	return clampf(1.0 - float(total - hit) / 255.0, 0.0, 1.0)
+	return clampf(1.0 - float(veg_w) / 255.0, 0.0, 1.0)
 
 # maptile greenness: density weight 0.15..1 inside the satellite footprint,
 # 1 outside it (or when the map has no tile). Grey/asphalt reads low, green
