@@ -207,13 +207,56 @@ func instance_type_bytes(i: int) -> PackedByteArray:
 	return g if g != null else PackedByteArray()
 
 
-func read_instance(idx: int, depth := 0) -> Dictionary:
+# DECODE AN INSTANCE. `want`, when it is not empty, is a set of field name
+# hashes and everything else on the TOP-LEVEL struct is left undecoded.
+#
+# This is where the cold open's time was. A placement walk decodes ~165,000
+# instances and reads eight fields off each one, but _read_struct decodes every
+# field of every one, recursing into each nested struct and array on the way -
+# so the great majority of the work was building Dictionaries that the caller
+# never looked at and the garbage collector then freed.
+#
+# The filter is deliberately TOP-LEVEL ONLY. A kept field still decodes in
+# full, nested structs and all, which is what the walk relies on: a
+# StaticModelGroup's members and the children hanging off Objects/DataRefs
+# arrive as nested Dictionaries of the field that was kept. Filtering at depth
+# would break those and save nothing extra, because the nested work only
+# happens under a field somebody asked for.
+#
+# An empty `want` is the old behaviour exactly, so every other caller is
+# unaffected and a caller that needs everything simply passes nothing.
+func read_instance(idx: int, depth := 0, want: Dictionary = {}) -> Dictionary:
 	if idx < 0 or idx >= instance_offsets.size():
 		return {}
 	var g = _inst_type.get(idx)
 	if g == null:
 		return {}
-	return _read_struct(g, payload + int(instance_offsets[idx]), depth)
+	var base: int = payload + int(instance_offsets[idx])
+	if want.is_empty():
+		return _read_struct(g, base, depth)
+	return _read_struct_only(g, base, depth, want)
+
+
+# _read_struct with a field filter. Kept as its own function rather than a
+# branch inside _read_struct: that function runs for every nested struct at
+# every depth, and paying a dictionary lookup per field there to serve a filter
+# that only ever applies at the top would make the common path slower.
+func _read_struct_only(guid: PackedByteArray, base: int, depth: int,
+		want: Dictionary) -> Dictionary:
+	var lay := _layout(guid)
+	if lay.is_empty() or depth > MAX_DEPTH:
+		return {}
+	var out := {"__type": guid_str(guid)}
+	for fld in lay["fields"]:
+		var nh: int = int(fld["nameHash"])
+		if not want.has(nh):
+			continue
+		var pos: int = base + int(fld["offset"])
+		if pos < 0 or pos + 8 > data.size():
+			out[nh] = null
+			continue
+		out[nh] = _decode(pos, int(fld["typeVA"]), depth)
+	return out
 
 
 # A FIELD THE TYPE TABLES CALL AN INTEGER AND THE BYTES CALL A POINTER.

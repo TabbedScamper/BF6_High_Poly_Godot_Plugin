@@ -367,6 +367,12 @@ static func run(host: Node, dock: Node, mapctx: Node) -> bool:
 				% [int(_cfg["max_build_s"]), _rep["build_done"], _rep["build_total"]])
 	_say("perfrun: built in %.1f s (%d props)"
 			% [float(_rep["build_ms"]) / 1000.0, int(_rep["props_built"])])
+	# THE BUILD JOURNAL, WHERE THE RUN CAN FIND IT. The journal is the only
+	# per-phase account of where load time goes, and it was being written
+	# only when the job queue drained - which a perfrun build never does,
+	# so every run measured the load and then threw the breakdown away.
+	# Loaded rather than preloaded, on purpose: see the note at the top.
+	_save_journal()
 	_phase_end()
 
 	# ---- assert the configuration BEFORE flying ---------------------------
@@ -1387,6 +1393,27 @@ static func _engine() -> Dictionary:
 				Performance.OBJECT_ORPHAN_NODE_COUNT)),
 		"resources": int(Performance.get_monitor(Performance.OBJECT_RESOURCE_COUNT)),
 	}
+
+
+# Write the build journal next to this run's report, so the per-phase account
+# of the load travels with the numbers instead of being overwritten by whoever
+# builds next. Best effort in every direction: a run must not fail because the
+# journal could not be written, and this harness does not preload the journal
+# script (see the note at the top of the file) so a change over there cannot
+# stop a run from starting.
+static func _save_journal() -> void:
+	var j = load("res://addons/highpoly_toggle/highpoly_journal.gd")
+	if j == null:
+		return
+	# Backslashes normalised first: the session hands over a Windows path and
+	# get_base_dir splits on forward slashes only, so the un-normalised form
+	# yields the whole path back and the journal lands somewhere surprising.
+	var out := str(_cfg.get("out", "")).replace("\\", "/")
+	if out == "":
+		return
+	var path := out.get_base_dir() + "/build_journal.txt"
+	j.save(path)
+	_say("perfrun: build journal written to %s" % path)
 
 
 static func _say(s: String) -> void:

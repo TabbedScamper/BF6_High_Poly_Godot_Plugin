@@ -466,6 +466,39 @@ const WALK_FIELDS: Array = [F_SMG_MEMBERS, F_BP_TRANSFORM, F_EXCLUDED,
 # Off makes the walk decode every instance, which is the reference behaviour.
 var skip_types := true
 
+# THE FIELDS A TOP-LEVEL INSTANCE IS DECODED FOR. Everything the traversal
+# reads off an instance, and nothing else: WALK_FIELDS is what visit() looks
+# at, F_TRANSFORM and want_xf_fields are how a collected entity is placed, and
+# want_fields is whatever the caller asked to keep. Handed to
+# BF6Ebx.read_instance so the other fields are never decoded at all.
+#
+# EMPTY WHEN want_all_fields IS SET, which turns the filter off completely -
+# that caller (the gamemode miner) reads inst.keys(), so a filtered instance
+# would hand it a subset and it would silently mine less than it did before.
+#
+# Rebuilt per run rather than cached across runs: want_fields and
+# want_all_fields are set by the caller between construction and run().
+var _decode_want := {}
+# An empty _decode_want means "decode everything", which is also what
+# want_all_fields asks for - so the built/not-built state needs its own flag
+# rather than being inferred from the dictionary being empty.
+var _want_built := false
+
+
+func _build_decode_want() -> void:
+	_want_built = true
+	_decode_want = {}
+	if want_all_fields:
+		return
+	for h in WALK_FIELDS:
+		_decode_want[int(h)] = true
+	for h in want_xf_fields:
+		_decode_want[int(h)] = true
+	_decode_want[F_TRANSFORM] = true
+	for h in want_fields:
+		if h is int:
+			_decode_want[int(h)] = true
+
 # partition asset path (lower, no .ebx) -> an opaque scope id the caller cares
 # about. Left empty makes every row's `scope` "", i.e. the walk behaves exactly
 # as it did before. The caller fills it with the bundles that own a depot.
@@ -517,6 +550,10 @@ func _type_matters(dz, i: int) -> bool:
 func walk(ref, parent: Array, guard: Dictionary, depth := 0) -> void:
 	if depth > MAX_DEPTH or ref == null:
 		return
+	# The object walker enters here rather than through run(), so the decode
+	# set is built on first use as well as at the start of a run.
+	if not _want_built:
+		_build_decode_want()
 	var key := str(ref).to_lower()
 	if guard.has(key):
 		_bump("cycle")
@@ -578,7 +615,9 @@ func walk(ref, parent: Array, guard: Dictionary, depth := 0) -> void:
 			if target < 0:
 				_bump("light_component_unlinked")
 				continue
-			var ci = dz.read_instance(i)
+			# ONE FIELD. This reads the component's Transform and nothing
+			# else, and it runs for every light on the map.
+			var ci = dz.read_instance(i, 0, _XF_ONLY)
 			if not (ci is Dictionary):
 				continue
 			var clt = (ci as Dictionary).get(F_TRANSFORM)
@@ -612,7 +651,7 @@ func walk(ref, parent: Array, guard: Dictionary, depth := 0) -> void:
 		# nested walk() calls inside their own parents' windows and reported
 		# 598 s of decoding inside a 104 s walk.
 		var td := Time.get_ticks_usec()
-		var inst = dz.read_instance(i)
+		var inst = dz.read_instance(i, 0, _decode_want)
 		t_decode += Time.get_ticks_usec() - td
 		if not (inst is Dictionary):
 			_bump("inst_fail")
@@ -638,6 +677,8 @@ var want_xf_fields: Array = [F_TRANSFORM, F_BP_TRANSFORM]
 
 # instance index of the light -> the local matrix its spatial component carries,
 # rebuilt per partition by walk(). Empty for a walk that collects nothing.
+const _XF_ONLY := {F_TRANSFORM: true}
+
 var _light_xf := {}
 var _light_xf_guid: PackedByteArray = raw_guid(LIGHT_XF_COMPONENT)
 # The instance visit() is currently on, which is what joins a collected light to
@@ -889,6 +930,10 @@ func run(level_rel: String) -> bool:
 	rows.clear()
 	ents.clear()
 	stats.clear()
+	# Forced, not lazy: a caller may set want_fields between two runs of the
+	# same walker, and a set built for the previous run would quietly decode
+	# the wrong fields for this one.
+	_build_decode_want()
 	var rel := level_rel.replace("\\", "/").rstrip("/")
 	var leaf := rel.get_file()
 	var start = resolve_name("%s/%s" % [rel, leaf])

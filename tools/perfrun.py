@@ -77,6 +77,56 @@ import re
 import shutil
 import subprocess
 
+def load_breakdown(run_dir, top=12):
+    """WHERE THE LOAD WENT, from the build journal the run just wrote.
+
+    The journal is the only per-phase account of the read from the game -
+    mount, partition index, placement walk, geometry, materials, textures -
+    and without it "the build took 84 s" is a number nobody can act on. Phase
+    rows look like:
+
+        t+ms   phase   dur_ms  items  res_KB  chunk_KB  reads  bar  label
+
+    Duplicate rows are expected: the journal prints the table once in order
+    and once slowest-first, so identical (dur, label) pairs are folded."""
+    path = os.path.join(run_dir, "build_journal.txt")
+    if not os.path.isfile(path):
+        return []
+    seen, rows = set(), []
+    with open(path, encoding="utf-8", errors="ignore") as f:
+        for line in f:
+            parts = line.split()
+            if len(parts) < 9 or parts[1] != "phase":
+                continue
+            try:
+                dur, items = int(parts[2]), int(parts[3])
+                res_kb, chunk_kb, reads = int(parts[4]), int(parts[5]), int(parts[6])
+            except ValueError:
+                continue
+            label = line.split(parts[7], 1)[-1].strip()
+            key = (dur, label)
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append((dur, items, res_kb, chunk_kb, reads, label))
+    rows.sort(reverse=True)
+    return rows[:top]
+
+
+def print_load_breakdown(run_dir):
+    rows = load_breakdown(run_dir)
+    if not rows:
+        return
+    total = sum(r[0] for r in rows)
+    print("")
+    print("WHERE THE LOAD WENT  (top %d phases, %.1f s of them)"
+          % (len(rows), total / 1000.0))
+    print("  %8s %9s %9s %9s  %s" % ("seconds", "items", "res_MB", "chunk_MB", "phase"))
+    for dur, items, res_kb, chunk_kb, reads, label in rows:
+        print("  %8.2f %9d %9.1f %9.1f  %s"
+              % (dur / 1000.0, items, res_kb / 1024.0, chunk_kb / 1024.0, label[:64]))
+
+
 def gpu_used_mb():
     """Video memory the driver reports as in use, or None when nvidia-smi is
     not there. Read-only: this never touches the GPU, it only asks."""
@@ -1100,6 +1150,7 @@ def main():
     digest["log_file_tail"] = tail_file(session["log"], 50)
     digest["stderr_tail"] = tail_file(os.path.join(run_dir, "stderr.txt"), 50)
 
+    print_load_breakdown(run_dir)
     rec = summarise(report, digest, outcome, detail, wall, a, session)
     with open(os.path.join(run_dir, "perfrun.json"), "w", encoding="utf-8") as f:
         json.dump({"run": rec, "log": digest, "report": report}, f, indent=1)
