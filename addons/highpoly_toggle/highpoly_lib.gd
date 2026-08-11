@@ -487,7 +487,25 @@ static func _nofit_for(key: String) -> bool:
 		return false
 	return false
 
+# Paired trace around the whole swap of one placed object. See the note on
+# BF6_MESH_TRACE in the game source: the four layers that build game geometry
+# die inside this part of the build with no engine output, and only FLUSHED
+# lines survive in the orphaned session .tmp.
+static var _swap_trace := OS.get_environment("BF6_MESH_TRACE") == "1"
+
+
 static func apply_one(node: Node3D, key: String, tier: Tier, textured: bool) -> bool:
+	if not _swap_trace:
+		return _apply_one_body(node, key, tier, textured)
+	HighpolyLog.info("mesh trace: SWAP enter %s" % key)
+	HighpolyLog.flush()
+	var _ok := _apply_one_body(node, key, tier, textured)
+	HighpolyLog.info("mesh trace: SWAP leave %s -> %s" % [key, str(_ok)])
+	HighpolyLog.flush()
+	return _ok
+
+
+static func _apply_one_body(node: Node3D, key: String, tier: Tier, textured: bool) -> bool:
 	# LOW MEANS THE SDK'S OWN PROXY. Not our mesh drawn plainly — the actual
 	# thing that gets saved and exported.
 	#

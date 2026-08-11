@@ -4635,8 +4635,18 @@ func _build_props_async(props_root: Node3D, entries: Array, dir: String,
 	# open them. The real parse for this path is inside game_source.mesh_for,
 	# which is a different problem (56.9 s, and the next one worth solving).
 	var from_game: bool = game_source != null and bool(_data.get("from_game", false))
+	# BREADCRUMB PER ENTRY, flushed. The placed-object swap and every mesh_for
+	# were already proved to complete (their paired traces balance exactly), so
+	# whatever kills the four geometry layers is in THIS loop or after it. Only
+	# flushed lines survive in the orphaned session .tmp, so this is what names
+	# the entry it died on. See BF6_MESH_TRACE in the game source.
+	var _bt := OS.get_environment("BF6_MESH_TRACE") == "1"
 	for ei in range(entries.size()):
 		var e = entries[ei]
+		if _bt:
+			HighpolyLog.info("mesh trace: PROP %d/%d %s"
+				% [ei, entries.size(), str(e.get("mesh", "?"))])
+			HighpolyLog.flush()
 		vram_check()      # reports once if memory is getting high; never stops
 		var gp := _prop_path(e, dir)
 		# WHERE THIS MESH IS ABOUT TO COME FROM, sampled before the call because
@@ -6624,9 +6634,32 @@ func _tick_near() -> void:
 	#
 	# Set from the worker, which is safe - HighpolyVitals.crumb takes a lock.
 	HighpolyVitals.crumb("sharpening the ground near the camera")
+	# DELIVERED THROUGH AN ID, NOT A BOUND CALLABLE.
+	#
+	# This deferred `_near_apply` directly, which binds a Callable to THIS
+	# object - and the sharpening runs for twenty seconds on a worker while the
+	# editor is free to reload the addon and free the map context underneath
+	# it. Vulkan validation surfaced the result: "Invalid access to property or
+	# key '_near_apply' on a base object of type 'previously freed'".
+	#
+	# A static Callable is bound to nothing, so deferring it is always safe;
+	# the instance is resolved on the MAIN thread, where it cannot be freed
+	# between the check and the call.
+	var me_id := get_instance_id()
 	WorkerThreadPool.add_task(func():
 		var w: Dictionary = gs.terrain_window(dir, c.x, c.y)
-		_near_apply.call_deferred(w, mat, c))
+		_near_deliver.bind(me_id, w, mat, c).call_deferred())
+
+
+# Main-thread hop for the worker above. Static on purpose: a static Callable
+# holds no object, so it survives the map context being freed mid-flight and
+# simply finds nothing to deliver to.
+static func _near_deliver(id: int, w: Dictionary, mat: ShaderMaterial,
+		c: Vector2) -> void:
+	var me = instance_from_id(id)
+	if me == null or not is_instance_valid(me):
+		return                     # the map context went away while we worked
+	me._near_apply(w, mat, c)
 
 
 func _near_apply(w: Dictionary, mat: ShaderMaterial, c: Vector2) -> void:

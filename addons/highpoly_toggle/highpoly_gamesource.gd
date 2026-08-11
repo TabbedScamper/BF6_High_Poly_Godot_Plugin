@@ -4700,6 +4700,18 @@ var _obj_lights := {}                  # portal name (lower) -> [light record], 
 # resolving and parsing each member MeshSet — is cached inside mesh_for and
 # shared across every placement anyway.
 func object_node(portal_name: String) -> Node3D:
+	if _mesh_trace:
+		HighpolyLog.info("mesh trace: OBJECT-NODE enter %s" % portal_name)
+		HighpolyLog.flush()
+	var _n := _object_node_body(portal_name)
+	if _mesh_trace:
+		HighpolyLog.info("mesh trace: OBJECT-NODE leave %s -> %s"
+			% [portal_name, "null" if _n == null else "node"])
+		HighpolyLog.flush()
+	return _n
+
+
+func _object_node_body(portal_name: String) -> Node3D:
 	var rows := object_rows(portal_name)
 	if rows.is_empty():
 		return null
@@ -5421,15 +5433,29 @@ func _section_keys(res_name: String) -> Array:
 static var _mesh_trace := OS.get_environment("BF6_MESH_TRACE") == "1"
 
 
+# PAIRED, so the .tmp says whether it died INSIDE this or after it returned.
+#
+# The entry-only trace could not tell those apart: the last line was always a
+# mesh name, which is equally consistent with "crashed parsing that mesh" and
+# "handed that mesh back and crashed instancing it". A trailing "enter" with no
+# "leave" means the former; a trailing "leave" means the caller.
+#
+# Wrapped rather than instrumented at each of the nine returns, because a
+# ninth-return-forgotten is exactly how this kind of trace lies.
 func mesh_for(group_key: String, lod := 0) -> Mesh:
+	if not _mesh_trace:
+		return _mesh_for_body(group_key, lod)
+	HighpolyLog.info("mesh trace: ENTER %s lod=%d" % [group_key, lod])
+	HighpolyLog.flush()
+	var _m := _mesh_for_body(group_key, lod)
+	HighpolyLog.info("mesh trace: leave %s -> %s"
+		% [group_key, "null" if _m == null else "mesh"])
+	HighpolyLog.flush()
+	return _m
+
+
+func _mesh_for_body(group_key: String, lod := 0) -> Mesh:
 	var _t0 := Time.get_ticks_usec()
-	if _mesh_trace:
-		# Straight to the session log and straight to disk. _say routes through
-		# the plugin's logger, which batches; this has to survive the process
-		# dying on the very next line.
-		HighpolyLog.info("mesh trace: about to build %s lod=%d"
-			% [group_key, lod])
-		HighpolyLog.flush()
 	var res_name := group_key
 	var scope := ""
 	var var_hash := 0
