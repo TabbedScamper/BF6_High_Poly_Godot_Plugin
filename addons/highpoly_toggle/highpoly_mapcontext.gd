@@ -1566,12 +1566,29 @@ func _colormap_set(map: String) -> Dictionary:
 	var out: Dictionary = {}
 	var png := "%s/%s/colormap.png" % [CACHE, map]
 	var meta_path := "%s/%s/splat/layers.json" % [CACHE, map]
-	if FileAccess.file_exists(png) and FileAccess.file_exists(meta_path):
+	# The png may still be IN FLIGHT on the source's background writer the
+	# first session that builds it; the in-memory copy stands in, so only the
+	# metadata is a hard requirement.
+	var mem_ok: bool = game_source != null \
+		and game_source.colormap_image(map) != null
+	if (FileAccess.file_exists(png) or mem_ok) and FileAccess.file_exists(meta_path):
 		var meta: Variant = JSON.parse_string(FileAccess.get_file_as_string(meta_path))
 		var box: Variant = (meta as Dictionary).get("colormap", null) \
 			if meta is Dictionary else null
 		if box is Dictionary:
-			var img := Image.load_from_file(ProjectSettings.globalize_path(png))
+			# MEMORY FIRST. The source keeps this session's assembled map and
+			# hands the PNG to a background writer, so the file may not exist
+			# yet the first time this runs - and never needs to for THIS
+			# session. The disk copy is only the next session's warm start.
+			var img: Image = null
+			if game_source != null:
+				img = game_source.colormap_image(map)
+				# DUPLICATED, because the compress below mutates in place and
+				# the background writer may still be encoding the original
+				if img != null:
+					img = img.duplicate()
+			if img == null:
+				img = Image.load_from_file(ProjectSettings.globalize_path(png))
 			if img != null and img.get_width() >= 4:
 				img.generate_mipmaps()
 				if not img.is_compressed():

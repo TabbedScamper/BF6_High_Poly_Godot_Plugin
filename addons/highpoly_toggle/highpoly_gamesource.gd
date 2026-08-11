@@ -2016,11 +2016,18 @@ func terrain_surface(cache_dir: String, force := false,
 	var t_asm := Time.get_ticks_msec() - t0
 	t0 = Time.get_ticks_msec()
 	if cmap != null:
-		cmap.save_png("%s/colormap.png" % cache_dir)
+		# THE ENCODE COMES OFF THE COLD PATH. PNG-encoding the 8192 map was
+		# 15.5 s of every cold open (measured in a user log), and nothing in
+		# THIS session needs the file: the assembled Image is kept in memory
+		# and _colormap_set takes it from there, so the disk copy only exists
+		# for the NEXT session and can be written whenever it likes.
+		_cmap_mem = cmap
+		_cmap_mem_level = level
+		var cpath := "%s/colormap.png" % cache_dir
+		WorkerThreadPool.add_task(func(): cmap.save_png(cpath))
 	var t_write := Time.get_ticks_msec() - t0
-	_say("game source: terrain colour map, %d tiles, %dx%d (read %.1fs, assemble %.1fs, write %.1fs)"
-		% [tiles.size(), cres, cres, t_read / 1000.0, t_asm / 1000.0,
-		   t_write / 1000.0])
+	_say("game source: terrain colour map, %d tiles, %dx%d (read %.1fs, assemble %.1fs, write queued)"
+		% [tiles.size(), cres, cres, t_read / 1000.0, t_asm / 1000.0])
 	# THREE SEPARATE COSTS, kept apart. Reading the tiles is CAS I/O plus a BC7
 	# decode per tile, assembling is a blit into one 4096 image, and writing is a
 	# PNG encode. They have nothing in common and a single "colour map" number
@@ -2030,7 +2037,7 @@ func terrain_surface(cache_dir: String, force := false,
 	note_phase("ground: colour assemble", t_asm, tiles.size(), "tiles",
 		FROM_MEMORY, "into one %dx%d image" % [cres, cres])
 	note_phase("ground: colour PNG write", t_write, 1, "file", FROM_MEMORY,
-		"colormap.png")
+		"colormap.png handed to a worker; the 15.5 s encode is off the open")
 
 	# ---- the palette ---------------------------------------------------------
 	if progress.is_valid():
@@ -2919,6 +2926,15 @@ var drape_step := 2
 const TILE_CHUNKS := 16
 var _tsteps := PackedInt32Array()
 var _tcpx := 0
+
+# This session's assembled colour map, so consumers never wait on (or race)
+# the background PNG write that persists it for the next session.
+var _cmap_mem: Image = null
+var _cmap_mem_level := ""
+
+
+func colormap_image(map: String) -> Image:
+	return _cmap_mem if _cmap_mem_level == map.to_lower() else null
 
 
 func tile_steps() -> Dictionary:
