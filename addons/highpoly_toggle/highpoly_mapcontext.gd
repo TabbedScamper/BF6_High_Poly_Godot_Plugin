@@ -2466,7 +2466,8 @@ func _compress_textures(m: Mesh) -> int:
 	# release the group even when it has already finished, and skipping it leaks
 	# the task.
 	var gid := WorkerThreadPool.add_group_task(_compress_job, _cj_src.size(),
-		-1, false, "highpoly texture compression")
+		HighpolyVitals.work_tasks(_cj_src.size()), false,
+		"highpoly texture compression")
 	if is_inside_tree():
 		while not WorkerThreadPool.is_group_task_completed(gid):
 			await get_tree().process_frame

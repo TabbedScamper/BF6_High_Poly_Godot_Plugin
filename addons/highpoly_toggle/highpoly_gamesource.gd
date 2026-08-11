@@ -2293,7 +2293,8 @@ func terrain_surface(cache_dir: String, force := false,
 		var enc := func(i: int) -> void:
 			(pend_img[i] as Image).save_png(pend_path[i])
 		var gid := WorkerThreadPool.add_group_task(enc, pend_img.size(),
-			-1, false, "bf6 layer slice png")
+			HighpolyVitals.work_tasks(pend_img.size()), false,
+			"bf6 layer slice png")
 		WorkerThreadPool.wait_for_group_task_completion(gid)
 
 	# Two decodes and two PNG encodes per slice, so the per-item figure is what

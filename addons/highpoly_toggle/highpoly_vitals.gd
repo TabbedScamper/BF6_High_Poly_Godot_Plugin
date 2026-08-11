@@ -174,6 +174,31 @@ static func crumb_age_ms() -> int:
 # main thread is what is stalled - so a loop that will hold it for minutes has
 # to say so itself. Rate limited per label, so dropping this into a 65,000
 # iteration loop costs one dictionary lookup and one integer compare per turn.
+# HOW MANY CORES THIS MACHINE MAY HAVE FOR BACKGROUND WORK.
+#
+# Parallel work here was asking WorkerThreadPool for one task per element and
+# letting it use everything. On the machine this was written on that is 32
+# cores and it is free speed; on a four core laptop it is the editor going
+# unresponsive for the duration, which is the opposite of what the parallel
+# work was for.
+#
+# TWO CORES ARE RESERVED, not one. The obvious reservation is the main thread,
+# but this project runs rendering/driver/threads/thread_model=2 - the SDK's
+# own setting - so there is a dedicated RENDER thread as well, and starving it
+# stalls the viewport just as visibly as starving the main thread.
+#
+# Callers pass how many items they have; a job smaller than the core count
+# never asks for more tasks than it has work for.
+const RESERVED_CORES := 2
+
+
+static func work_tasks(items: int) -> int:
+	if items <= 1:
+		return maxi(items, 1)
+	var usable := maxi(1, OS.get_processor_count() - RESERVED_CORES)
+	return mini(items, usable)
+
+
 static func tick_long(what: String, done: int, total: int) -> void:
 	var now := Time.get_ticks_msec()
 	var last := int(_long_last.get(what, 0))
