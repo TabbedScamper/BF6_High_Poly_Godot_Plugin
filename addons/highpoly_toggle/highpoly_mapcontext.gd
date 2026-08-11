@@ -5276,11 +5276,19 @@ func _build_terrain_from_heightmap(dir: String, meta: Dictionary) -> Node3D:
 	# source (a pure cache path).
 	var t_scan := Time.get_ticks_msec()
 	var tsteps := PackedInt32Array()
+	# A BISECT ACCUSED THIS OF CRASHING THE EDITOR. It did not. The runs that
+	# died did so the instant the build phase began, with no Godot output at
+	# all, while the surviving runs logged 6,145 MB of video memory - the
+	# level this plugin's own vram_check warns is where cards run out and
+	# Godot dies without reporting it. The table cannot be the cause either
+	# way: both sides compute the base step as round((res-1)/2048) over 16
+	# tiles a side, so the shared table and the local scan below carry the
+	# same numbers and upload the same vertices. Sharing survives because it
+	# is the same answer computed once; the crash is VRAM.
 	if game_source != null:
 		var gt: Dictionary = game_source.tile_steps()
 		var gsteps: PackedInt32Array = gt.get("steps", PackedInt32Array())
-		if gsteps.size() == TERRAIN_CHUNKS * TERRAIN_CHUNKS \
-				and int(gt.get("cpx", 0)) == cpx:
+		if gsteps.size() == TERRAIN_CHUNKS * TERRAIN_CHUNKS and int(gt.get("cpx", 0)) == cpx:
 			tsteps = gsteps
 	if tsteps.is_empty():
 		var curv := PackedFloat32Array()

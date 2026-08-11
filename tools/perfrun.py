@@ -76,6 +76,64 @@ import os
 import re
 import shutil
 import subprocess
+
+def gpu_used_mb():
+    """Video memory the driver reports as in use, or None when nvidia-smi is
+    not there. Read-only: this never touches the GPU, it only asks."""
+    try:
+        r = subprocess.run(["nvidia-smi", "--query-gpu=memory.used",
+                            "--format=csv,noheader,nounits"],
+                           capture_output=True, text=True, timeout=15)
+        if r.returncode != 0:
+            return None
+        return int(r.stdout.strip().splitlines()[0])
+    except Exception:
+        return None
+
+
+def gpu_cooldown(ceiling_mb, max_wait_s, label="launch"):
+    """WAIT FOR THE PREVIOUS EDITOR'S VIDEO MEMORY BACK BEFORE LAUNCHING.
+
+    This exists because of a run history that alternated done, crash, done,
+    crash, done across six runs and made a git bisect accuse an innocent
+    commit. What actually predicted the crash was not the code under test but
+    whether the PREVIOUS run had built a map: a completed build sits at about
+    6.1 GB of video memory, the editor exits, and the driver has not finished
+    handing that memory back when the next editor starts claiming its own. Two
+    builds' worth plus the desktop does not fit in a 16 GB card, so the new
+    process dies at the first heavy upload - instantly, inside the driver,
+    with no Godot output at all, which is exactly what every "crash" in that
+    history looked like.
+
+    So a run now waits for the card to drain rather than trusting a fixed
+    sleep, and reports what it waited for. Without nvidia-smi it falls back to
+    a short fixed pause, which is weaker but still better than nothing."""
+    used = gpu_used_mb()
+    if used is None:
+        print("perfrun: no nvidia-smi, pausing 45 s before %s instead" % label)
+        time.sleep(45)
+        return
+    if used <= ceiling_mb:
+        print("perfrun: GPU at %d MB, under the %d MB ceiling, launching"
+              % (used, ceiling_mb))
+        return
+    t0 = time.time()
+    print("perfrun: GPU still holds %d MB (ceiling %d MB), waiting up to %d s"
+          % (used, ceiling_mb, max_wait_s))
+    while time.time() - t0 < max_wait_s:
+        time.sleep(5)
+        used = gpu_used_mb()
+        if used is None:
+            break
+        if used <= ceiling_mb:
+            print("perfrun: GPU drained to %d MB after %.0f s"
+                  % (used, time.time() - t0))
+            return
+    print("perfrun: GPU STILL at %s MB after %.0f s. Launching anyway, but "
+          "treat a crash in this run as the card, not the code."
+          % (used, time.time() - t0))
+
+
 import sys
 import time
 
@@ -904,6 +962,11 @@ def main():
     ap.add_argument("--gpu-validation", action="store_true",
                     help="run with Vulkan validation and --verbose, to name a "
                          "GPU fault that otherwise kills the editor silently")
+    ap.add_argument("--gpu-ceiling-mb", type=int, default=3600,
+                    help="launch only once the card is back under this, so "
+                         "the previous run's video memory cannot kill this one")
+    ap.add_argument("--gpu-wait-s", type=int, default=180,
+                    help="how long to wait for that drain before giving up")
     ap.add_argument("--dry-run", action="store_true",
                     help="print the command and the session and launch nothing")
     ap.add_argument("--install-hook", action="store_true",
@@ -1001,6 +1064,7 @@ def main():
     # it is opt-in rather than always on.
     if a.gpu_validation:
         args += ["--gpu-validation", "--verbose"]
+    gpu_cooldown(a.gpu_ceiling_mb, a.gpu_wait_s)
     print("launching %s" % " ".join(args))
     t_launch = time.time()
     with open(os.path.join(run_dir, "stdout.txt"), "wb") as out, \
