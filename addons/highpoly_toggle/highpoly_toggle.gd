@@ -3644,18 +3644,25 @@ func _lighting_subs_enabled(on: bool) -> void:
 # contents: no placement walk, no terrain composite. Map Context is the master
 # switch for everything that does.
 func _wants_map_layers() -> bool:
-	# ANY of them, not just the master switch. Original map objects and the
-	# skyline are built FROM the placement walk and can be on while the master
-	# flag reads false - a real session logged "terrain=false objects=true" and
-	# got nothing, twice, because this returned false and the open skipped the
-	# walk.
+	# THE LAYERS THAT CONSUME PLACEMENT ROWS, and only those. Extended Terrain
+	# itself is deliberately NOT in this list: the ground is the streaming
+	# tree, the palette and the colour map, and its texture names resolve
+	# through the partition catalogue that build_catalog makes regardless -
+	# the walk's 38k rows feed props, skyline, lights and FX, none of which
+	# terrain reads. The master chip used to be the last line here, which
+	# made switching terrain on pay the ~50 s cold walk for data nothing
+	# consumed (found by asking exactly that of the build journal). A layer
+	# turned on later still gets its rows: every consumer runs
+	# _ensure_placements_async first.
 	if mapctx_objects != null and mapctx_objects.button_pressed:
 		return true
 	if mapctx_backdrop != null and mapctx_backdrop.button_pressed:
 		return true
 	if mapctx_water != null and mapctx_water.button_pressed:
 		return true
-	return mapctx_on != null and mapctx_on.button_pressed
+	if mapctx_light != null and mapctx_light.button_pressed:
+		return true
+	return mapctx_fx != null and mapctx_fx.button_pressed
 
 
 # Walk the level's placements if a map layer needs them and the open skipped it.
