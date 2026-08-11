@@ -717,6 +717,12 @@ def only_layers(session, button):
     return session
 
 
+# How long a finished run may take to close itself before it is killed.
+# Long enough for the plugin to write its log, short enough that a sweep
+# of nine buttons does not spend two minutes waiting on shutdowns.
+EXIT_GRACE_S = 15
+
+
 def go_cold(project, yes):
     """Clear the caches so the next run measures a FIRST open.
 
@@ -1220,11 +1226,23 @@ def main():
         # failure kill_ours' own comment warns about. Eight of nine buttons
         # produced no run at all because of this.
         if outcome == "done" and proc.poll() is None:
-            kill_ours(proc.pid, "done, editor lingered")
-            try:
-                proc.wait(timeout=20)
-            except Exception:
-                pass
+            # GRACE FIRST, then the axe. The plugin writes its own log on the
+            # way out, and killing the moment the report appears threw that log
+            # away - a whole nine-button sweep produced no plugin log at all,
+            # which is the one artefact with per-phase timestamps in it. Wait
+            # for a clean exit, and only kill an editor that will not leave.
+            for _ in range(EXIT_GRACE_S):
+                if proc.poll() is not None:
+                    break
+                time.sleep(1)
+            if proc.poll() is None:
+                kill_ours(proc.pid, "done, editor lingered")
+                try:
+                    proc.wait(timeout=20)
+                except Exception:
+                    pass
+            else:
+                print("  the editor closed itself, so its log was written")
         if outcome in ("hang", "timeout"):
             print("\n%s: %s" % (outcome.upper(), detail.get("why")
                                 or "no progress for %.0f s" % detail.get("quiet_s", 0)))
