@@ -458,8 +458,21 @@ static func update_plugin(host: Node, status: Callable) -> bool:
 	if n == 0 and same == 0:
 		status.call("Update archive had no plugin files"); return false
 	var msg := "Plugin updated (%d changed, %d already current)." % [n, same]
-	if not locked.is_empty():
-		msg += " %d file(s) in use will apply on restart: %s." % [locked.size(),
-			", ".join(PackedStringArray(locked))]
+	# A DOWNLOADED RELEASE TAKES THE COLD SWAP TOO. The new files are on disk
+	# and the running instances still hold the old code; the swap disables the
+	# plugin, lets the new scripts load with nothing holding them, and
+	# re-enables - what a restart did, without the restart. Only when every
+	# file actually landed: one still held open is stale on disk, and swapping
+	# to a half-written set is worse than asking.
+	if locked.is_empty():
+		status.call(msg + " Applying it now - the panel rebuilds in a moment.")
+		var tree := Engine.get_main_loop() as SceneTree
+		if tree != null:
+			tree.process_frame.connect(
+				Callable(HighpolyReload, "cold_swap"),
+				CONNECT_ONE_SHOT | CONNECT_DEFERRED)
+		return true
+	msg += " %d file(s) in use will apply on restart: %s." % [locked.size(),
+		", ".join(PackedStringArray(locked))]
 	status.call(msg + " Restart the editor to finish.")
 	return true
