@@ -1402,7 +1402,7 @@ All of it is read from your own Battlefield 6 installation."
 	host.add_child(mark_row)
 	var mark_add := Button.new()
 	mark_add.text = "Drop marker"
-	mark_add.tooltip_text = "Places a sphere ahead of the camera with your note attached. Drag it onto the problem. Saving the log records its position and the meshes the map package expects there."
+	mark_add.tooltip_text = "Places a sphere with your note attached. With Pick mode focused on an object, the marker lands exactly on the clicked spot; otherwise it appears ahead of the camera for you to drag onto the problem. Saving the log records its position and the meshes the map package expects there."
 	mark_add.pressed.connect(func():
 		var r := EditorInterface.get_edited_scene_root()
 		if r == null:
@@ -1412,7 +1412,16 @@ All of it is read from your own Battlefield 6 installation."
 		if note == "":
 			lbl.text = "Type what is wrong first, then drop the marker."
 			return
-		var m := HighpolyMarkers.add(r, note, HighpolyMarkers.camera_point())
+		# THE PICK IS THE ANCHOR. Props draw as MultiMesh batches, so the
+		# editor's selection can only name the whole group - a note dropped
+		# from a selection landed in the middle of every look-alike. Pick
+		# mode already resolves the ONE clicked instance and the clicked
+		# point on it; when a focus is live, the marker goes exactly there.
+		var pos := HighpolyMarkers.camera_point()
+		var pp := HighpolyDiagnose.focus_point()
+		if pp.is_finite():
+			pos = pp
+		var m := HighpolyMarkers.add(r, note, pos)
 		if m == null:
 			lbl.text = "Could not place the marker."
 			return

@@ -407,6 +407,19 @@ static func focus_node() -> Node:
 	return _focus.get("node") if has_focus() else null
 
 
+# Where the pick actually LANDED, in world space - the clicked point when the
+# ray recorded one, else the focused instance's own origin. This is what lets
+# a dropped marker sit on the ONE clicked instance instead of the middle of a
+# MultiMesh batch of look-alikes.
+static func focus_point() -> Vector3:
+	if not has_focus():
+		return Vector3.INF
+	var p: Variant = _focus.get("point")
+	if p is Vector3 and (p as Vector3).is_finite():
+		return p
+	return _focus_xform().origin
+
+
 # The transform of whatever the focus currently addresses.
 static func _focus_xform() -> Transform3D:
 	var gi: GeometryInstance3D = _focus["node"]

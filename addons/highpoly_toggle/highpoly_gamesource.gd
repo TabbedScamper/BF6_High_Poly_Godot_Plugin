@@ -781,7 +781,10 @@ const OPEN_STAGES := [ST_MOUNT, ST_TYPES, ST_INDEX, ST_WALK, ST_GROUND,
 #    the old answer forever: the plumes are map-context props, so their material
 #    lives behind this epoch. The correction is only visible once it is bumped,
 #    which is the whole reason this number exists.
-const GEOM_EPOCH := 6
+# 7: blend-keyed materials are NAMED (M_TerrainBlend) so the load-time
+# ground-colour swap can find them, and uv2 carries the declB-resolved unwrap.
+# Epoch 6 bakes have neither and every mesh must re-parse once.
+const GEOM_EPOCH := 7
 
 # A FUNCTION, not read as a constant from outside, and that is load-bearing.
 # GDScript folds a constant into the caller at parse time, so a caller that read
@@ -6287,6 +6290,21 @@ func material_for(state_key: int, scope: String, var_hash := 0,
 	if albedo != null:
 		mat.albedo_texture = albedo
 		any = true
+	# TERRAIN-BLEND KEYING, from the DATA. nh_89d3ad5e is the depot's terrain
+	# colour slot (the engine's object-terrain blending, decoded 2026-08-10);
+	# a material that binds it and has NO real base colour of its own - the
+	# curb aprons and skirts that drew the flat t_ter_defaulttexture white -
+	# exists only to wear the ground. The name is the contract: GLTF export
+	# keeps it, and the load-time swap in the map context replaces any
+	# material named M_TerrainBlend with the ground-colour shader. Materials
+	# with real albedo AND the slot (rocks, rubble) keep their look for now -
+	# their partial height-faded blend is the open v1.5.
+	if slots.has("nh_89d3ad5e"):
+		var bg = slots.get("basecolor_veg", slots.get("basecolor"))
+		var bcn := "" if bg == null or walk == null \
+			else str(walk.gi.get(str(bg), "")).get_file().to_lower()
+		if albedo == null or bcn.begins_with("t_ter_defaulttexture"):
+			mat.resource_name = "M_TerrainBlend"
 	var nrm = _texture_for(slots.get("normal", slots.get("normal_vt")), true)
 	if nrm != null:
 		mat.normal_enabled = true
@@ -6317,6 +6335,16 @@ func material_for(state_key: int, scope: String, var_hash := 0,
 		mat.albedo_color = _srgb_of(tint as Color)
 		tex_stats["tinted"] = int(tex_stats.get("tinted", 0)) + 1
 	if not any:
+		# A TERRAIN-BLEND SKIRT IS THE EXCEPTION to the no-albedo null: it binds
+		# nothing precisely because its whole job is to wear the ground, and a
+		# null here drew it as Godot's default white - the user's marked curb.
+		# The NAMED empty material goes through so the load-time swap can find
+		# it and replace it with the ground-colour shader.
+		if mat.resource_name == "M_TerrainBlend":
+			_mat_cache[ck] = mat
+			_mat_by_look[look] = mat
+			tex_stats["materials"] = int(tex_stats["materials"]) + 1
+			return mat
 		# A state with no albedo is NOT necessarily a failure: some materials are
 		# procedural and bind only noise and weathering sheets. Cached as null so
 		# it is not re-resolved, and counted separately from a missing depot.
