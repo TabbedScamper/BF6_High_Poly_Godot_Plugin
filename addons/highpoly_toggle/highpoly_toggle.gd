@@ -3771,7 +3771,13 @@ func _ensure_placements_async(gs) -> bool:
 	var ground := "%s/%s" % [HighpolyMapContext.CACHE, map]
 	if gs == null or (gs.placements_ready and gs.surface_cache == ground):
 		return gs != null
-	_read_begin(map, false)
+	# COLD IS ASKED, NOT ASSUMED. This passed `false` unconditionally, and
+	# `cold` is the flag that shows the note explaining that a first read of a
+	# map takes minutes and every read after it takes seconds. So the one path
+	# where the wait is longest - Original map objects on a map never read
+	# before - was the one path that explained nothing, and a user watching a
+	# ten minute silence has no way to tell it apart from a hang.
+	_read_begin(map, not _map_read_before(map))
 	HighpolyVitals.crumb("walking the map's placements")
 	var done := [false]
 	var okv := [false]
@@ -3890,7 +3896,7 @@ func _ensure_mapdata_async(gs, want: Dictionary) -> void:
 	if not gs.map_data_would_build(dir, want):
 		return
 	_md_mining = true
-	_read_begin(map, false)
+	_read_begin(map, not _map_read_before(map))
 	HighpolyVitals.crumb("reading %s: terrain, roads and map layers" % map)
 	var done := [false]
 	var tid := WorkerThreadPool.add_task(func() -> void:

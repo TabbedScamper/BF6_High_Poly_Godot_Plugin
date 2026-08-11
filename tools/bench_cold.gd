@@ -55,6 +55,29 @@ func _init() -> void:
 	DirAccess.make_dir_recursive_absolute(cache)
 	print("COLD BENCH: %s, %d cache file(s) wiped%s"
 		% [map, wiped, ", surface cache wiped too" if deep else ""])
+	# WHAT THIS RUN IS AND IS NOT, said out loud every time.
+	#
+	# The wipe above is the mount index, the partition index and the walk -
+	# the three the game invalidates on every patch. It is NOT a first-ever
+	# open, and the difference is not small: without --deep the splat
+	# composite and the colour map are served from user://bench_cold/<map>,
+	# and a run with that directory empty measured 127 s compositing and 147 s
+	# for the terrain surface. Quoting this run's total as "the cold start"
+	# understates a first open by more than the whole rest of the load.
+	#
+	# Nothing here can reset the OS page cache either. After one run the .cas
+	# files and TOCs are in the file cache, so the disk is warm even when
+	# these caches are not. Two runs compare fairly against each other; the
+	# absolute number is optimistic against a fresh boot.
+	print("  cold  : mount index, partition index, placement walk")
+	if deep:
+		print("  cold  : surface cache too (splat composite and colour map)")
+	else:
+		print("  WARM  : surface cache (splat + colour map). A first-ever open "
+			+ "pays ~147 s more for these - pass --deep to include them.")
+	print("  WARM  : the OS page cache, which nothing here can drop")
+	print("  n/a   : bf6_geom, the prop geometry cache - this bench reads the "
+		+ "map, it does not build props")
 	BJournal.clear()
 	var gs = HighpolyGameSource.new()
 	gs.surface_cache = cache

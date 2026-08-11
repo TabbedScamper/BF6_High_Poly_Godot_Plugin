@@ -656,6 +656,59 @@ def build_session(a, run_dir):
             session["shadows"] = False
     if a.no_panel_video:
         session["panel_video"] = False
+    if a.only:
+        # ONE TOGGLE AT A TIME, so a phase table can be attributed to the button
+        # that caused it. Applied last, on purpose: it must win over --fx and
+        # over the defaults above, or "only water" would still be carrying
+        # whatever those turned on.
+        only_layers(session, a.only)
+        # min_draws is a guard for "the map never appeared on screen", and it
+        # is calibrated for a full scene. A single layer legitimately draws
+        # very little - map lights alone draw nothing at all - so the guard
+        # would fail runs that worked.
+        session["min_draws"] = 1
+    return session
+
+
+# THE DOCK'S LAYER TOGGLES, by the name a user would call them, mapped to the
+# session key that drives them. This is the list bench_buttons.py walks, and it
+# is here rather than there so the names cannot drift apart from the session.
+#
+# map_context is the container the rest live inside, so it stays on for every
+# one of these; measuring "objects" means terrain plus objects, and the cost of
+# objects alone is that run minus the terrain-only run.
+BUTTONS = {
+    "terrain":      None,             # the container by itself
+    "objects":      "objects",
+    "roads":        "roads",
+    "water":        "water",
+    "backdrop":     "backdrop",
+    "maplights":    "map_lights",
+    "proplights":   "prop_lighting",
+    "grass":        "grass",
+    "fx":           "fx",
+}
+
+# Every layer key the session understands, so --only can turn the rest off
+# without having to know which ones default to true.
+LAYER_KEYS = ["objects", "backdrop", "water", "lighting", "gi", "shadows",
+              "map_lights", "fx", "roads", "grass", "prop_lighting"]
+
+
+def only_layers(session, button):
+    """Turn every layer off except `button`, leaving map_context on."""
+    if button not in BUTTONS:
+        raise SystemExit("unknown button %r. Known: %s"
+                         % (button, ", ".join(sorted(BUTTONS))))
+    session["map_context"] = True
+    for k in LAYER_KEYS:
+        session[k] = False
+    key = BUTTONS[button]
+    if key:
+        session[key] = True
+    # Lighting and shadows are not layers that read anything - they are how the
+    # scene is lit - so leaving them off for every button keeps the comparison
+    # about the read rather than about the renderer.
     return session
 
 
@@ -675,8 +728,17 @@ def go_cold(project, yes):
     targets = [os.path.join(d, s) for s in
                ("mapcontext", "bf6cache", "fxsheets", "bf6_geom")]
     targets = [t for t in targets if os.path.isdir(t)]
+    # THE LOOSE .idx FILES COUNT AS CACHE TOO, and leaving them behind is why a
+    # "cold" run here was never as cold as bench_cold's. The mount index, the
+    # partition index and the walk are the three the game invalidates on every
+    # patch, and they are loose files rather than a directory, so a wipe that
+    # only removed directories left roughly 50 s of the read already done.
+    loose = [os.path.join(d, f) for f in sorted(os.listdir(d))
+             if f.startswith(("bf6_index_", "bf6_pidx_", "bf6_walk_"))]         if os.path.isdir(d) else []
     print("a cold run deletes, from %s:" % d)
     for t in targets:
+        print("   %s" % os.path.basename(t))
+    for t in loose:
         print("   %s" % os.path.basename(t))
     if not yes:
         print("that is hours of reading from the game. Pass --yes-delete-caches "
@@ -684,6 +746,11 @@ def go_cold(project, yes):
         return False
     for t in targets:
         shutil.rmtree(t, ignore_errors=True)
+    for t in loose:
+        try:
+            os.remove(t)
+        except OSError:
+            pass
     return True
 
 
@@ -1003,6 +1070,10 @@ def main():
     ap.add_argument("--max-under-60", type=float, default=1.0,
                     help="the perf gate: more than this percentage of frames "
                          "under 60 fps fails the run")
+    ap.add_argument("--only", default="",
+                    help="measure ONE dock toggle: turn every layer off "
+                         "except this one (see BUTTONS). Use with --cold "
+                         "--yes-delete-caches for a per-button cold read")
     ap.add_argument("--cold", action="store_true",
                     help="clear the plugin's caches first (see --yes-delete-caches)")
     ap.add_argument("--yes-delete-caches", action="store_true")
