@@ -115,16 +115,59 @@ func _one(buf: PackedByteArray, at: int, csize: int, dsize: int,
 
 
 # Read one CAS reference. Empty return means failure — check last_error().
+# Open .cas handles, path -> FileAccess. Guarded because a seek and the read
+# that follows it are one operation on a shared handle: two threads interleaving
+# there would hand each other the wrong bytes, silently.
+var _fh := {}
+var _fh_mx := Mutex.new()
+const MAX_HANDLES := 192
+
+
+# Caller must hold _fh_mx.
+func _handle(path: String) -> FileAccess:
+	var f = _fh.get(path)
+	if f != null and (f as FileAccess).is_open():
+		return f
+	if _fh.size() >= MAX_HANDLES:
+		# Not an LRU: with 157 files in the install this never runs, and a
+		# real eviction policy would be untested code standing between every
+		# read and its bytes.
+		close_all()
+	f = FileAccess.open(path, FileAccess.READ)
+	if f != null:
+		_fh[path] = f
+	return f
+
+
+# Drop every open handle. The engine would close them when this object is
+# freed anyway; this exists so a caller that knows it is finished with the
+# install can say so.
+func close_all() -> void:
+	_fh.clear()
+
+
 func read(path: String, offset: int, size: int,
 		allow_raw := false) -> PackedByteArray:
 	var _td := Time.get_ticks_usec()
-	var f := FileAccess.open(path, FileAccess.READ)
+	# THE HANDLE STAYS OPEN. This used to open the file, seek, read and close
+	# it on every single call, and the partition index calls it 228,971 times -
+	# once per partition - which measured 20.4 s for 640 MB of 2.9 KB reads.
+	# The open and close WERE the phase: the partitions are tiny, so almost
+	# none of that time was spent moving bytes.
+	#
+	# The whole install is 157 .cas files, so every handle a session can want
+	# fits in the cache at once and it never evicts in practice; the cap is
+	# only there so a future layout with far more files degrades to the old
+	# behaviour instead of exhausting file descriptors.
+	_fh_mx.lock()
+	var f := _handle(path)
 	if f == null:
+		_fh_mx.unlock()
 		_err = "cannot open %s" % path
 		return PackedByteArray()
 	f.seek(offset)
 	var buf := f.get_buffer(size)
-	f.close()
+	_fh_mx.unlock()
 	_us_disk += Time.get_ticks_usec() - _td
 	_bytes_disk += buf.size()
 	_n_reads += 1
