@@ -378,13 +378,31 @@ static func run(host: Node, dock: Node, mapctx: Node) -> bool:
 			built["done"] = true
 			_say("perfrun: terrain_ready - the ground reached full detail")
 		elif not wait_props:
-			# THE FALLBACK, and only that. Idle is not a completion signal: the
-			# breadcrumb goes idle between the catalogue upgrade and the ground
-			# bake, and the first version of this ended the wait there and
-			# reported a 97.5 s build for a terrain that had not started
-			# baking. It stays for maps that never emit terrain_ready at all,
-			# with a settle long enough to clear that mid-pipeline gap.
-			var idle_now: bool = HighpolyVitals.crumb_is_idle()
+			# WAIT ON WHAT THE TOOLS WINDOW SHOWS, not on the breadcrumb.
+			#
+			# The plugin's panel lives in its own "High-Poly Tools" window, and
+			# what it renders while a layer is building is two things: the read
+			# model (non-empty for the whole read) and the job queue. The
+			# breadcrumb is neither, and it is idle in the gap between the
+			# catalogue upgrade and the ground bake - so a wait built on it
+			# ended the run BEFORE the bake had started. Measured on a water
+			# run: the harness declared the build finished at 120.5 s and
+			# wrote its report, and the plugin logged "the ground: blending
+			# layers, 112 of 245 (46%)" a minute afterwards. The layer was
+			# less than half built when the camera pass began, and every
+			# number taken from that run described an unfinished scene.
+			#
+			# So all three have to be quiet, and stay quiet: no read in
+			# flight, no job running, and the breadcrumb idle.
+			var reading := false
+			var rm = host.get("_read_model")
+			if rm is Dictionary:
+				reading = not (rm as Dictionary).is_empty()
+			var jobbing := false
+			var jq = host.get("jobs")
+			if jq != null and is_instance_valid(jq) and jq.has_method("busy"):
+				jobbing = bool(jq.busy())
+			var idle_now: bool = HighpolyVitals.crumb_is_idle() 				and not reading and not jobbing
 			if not idle_now:
 				saw_busy = true
 				idle_since = 0
