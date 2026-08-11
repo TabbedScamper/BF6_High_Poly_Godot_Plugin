@@ -57,6 +57,7 @@ var radius: float = 768.0          # metres; props beyond this are hidden
 var _map := ""
 var _data: Dictionary = {}
 var _cells: Dictionary = {}        # "cx,cz" -> Array[MultiMeshInstance3D] (props)
+var _cells_new: Dictionary = {}    # cells added since the last radius pass
 # Cells replaced by a single baked mesh (highpoly_hlod.gd). Their MultiMeshes
 # are hidden deliberately, so the distance cull in apply_radius has to leave
 # them alone or it switches the whole cell back on at the next tick.
@@ -2832,7 +2833,6 @@ static var _tblend_shader: Shader = null
 
 
 static func _terrainblend_materials(m: Mesh) -> void:
-	if OS.get_environment("BF6_NO_TBLEND") != "": return   # bisect switch
 	if not (m is ArrayMesh): return
 	var am := m as ArrayMesh
 	for i in range(am.get_surface_count()):
@@ -4687,7 +4687,7 @@ func _build_props_async(props_root: Node3D, entries: Array, dir: String,
 			# range check that only matters once the cells exist. Timed
 			# separately so the next recording either convicts it or clears it.
 			var _t2 := Time.get_ticks_msec()
-			_apply_radius()                 # freshly added cells obey the range slider
+			_apply_radius(1 << 30, true)    # freshly added cells obey the range slider
 			# Per CELL, which is the set it walks. If this row's per-item cost is
 			# flat the walk is linear and fine; if it climbs, the suspicion above
 			# is confirmed and the fix is to walk only what the slice added.
@@ -5242,7 +5242,6 @@ func _build_terrain_from_heightmap(dir: String, meta: Dictionary) -> Node3D:
 	# source (a pure cache path).
 	var t_scan := Time.get_ticks_msec()
 	var tsteps := PackedInt32Array()
-	var _no_adapt := OS.get_environment("BF6_NO_ADAPTIVE") != ""
 	if game_source != null:
 		var gt: Dictionary = game_source.tile_steps()
 		var gsteps: PackedInt32Array = gt.get("steps", PackedInt32Array())
@@ -5295,9 +5294,6 @@ func _build_terrain_from_heightmap(dir: String, meta: Dictionary) -> Node3D:
 	var sharp2 := 0
 	var sharp4 := 0
 	var coarse := 0
-	if _no_adapt:
-		for i in range(tsteps.size()):
-			tsteps[i] = step        # bisect: uniform step, the v6 shape
 	for i in range(tsteps.size()):
 		if int(tsteps[i]) <= maxi(int(float(step) / 4.0), 2) and step >= 8:
 			sharp4 += 1
@@ -5347,7 +5343,7 @@ func _build_terrain_from_heightmap(dir: String, meta: Dictionary) -> Node3D:
 			if gm == null: continue
 			var m := _with_lods(gm)
 			if m is ArrayMesh:
-				var sk: Array = [] if OS.get_environment("BF6_NO_SKIRT") != "" else _skirt_arrays(SKIRT_DEPTH)
+				var sk := _skirt_arrays(SKIRT_DEPTH)
 				if not sk.is_empty():
 					(m as ArrayMesh).add_surface_from_arrays(
 						Mesh.PRIMITIVE_TRIANGLES, sk)
@@ -5720,7 +5716,15 @@ func _add_cell_multimeshes(parent: Node3D, mesh: Mesh, xf: Array, textured: bool
 			# follows it, so this is the x axis of the fit in _yield_report.
 			_mmi_add("props", 1)
 			_inst_made += int(gxf.size() / 12)
-			if not _cells.has(key): _cells[key] = []
+			if not _cells.has(key):
+				_cells[key] = []
+				# NEW SINCE THE LAST RADIUS PASS. The build calls _apply_radius
+				# on every yield, and evaluating every cell built so far each
+				# time is quadratic in the number of cells - the single
+				# blocking stretch behind a measured 39.6 s freeze. Only cells
+				# that did not exist last pass can have changed state while
+				# the camera stood still, so only those need looking at.
+				_cells_new[key] = true
 			_cells[key].append(mmi)
 
 # Build ONE layer into an overlay that already exists.
@@ -6334,7 +6338,7 @@ func set_grass(on: bool) -> void:
 	_scatter.set_range(_grass_range_for(radius) if on else 0.0,
 		cam.global_transform.origin)
 
-func _apply_radius(budget: int = 1 << 30) -> void:
+func _apply_radius(budget: int = 1 << 30, only_new := false) -> void:
 	# backdrop-only is valid (Show Whole Map without objects) â€” don't early-out
 	# on empty cells or the skyline loop below never runs
 	if _cells.is_empty() and _bd_list.is_empty(): return
@@ -6351,7 +6355,12 @@ func _apply_radius(budget: int = 1 << 30) -> void:
 	# dirties the render server even standing still.
 	var half_diag := _cell_size * 0.7071
 	var changes: Array = []
-	for key in _cells.keys():
+	# During a build the camera is where it was a moment ago, so the only
+	# cells whose visibility can have changed are the ones just created.
+	var look_at_keys: Array = _cells_new.keys() if only_new else _cells.keys()
+	_cells_new.clear()
+	for key in look_at_keys:
+		if not _cells.has(key): continue
 		var lst: Array = _cells[key]
 		if lst.is_empty() or not is_instance_valid(lst[0]): continue
 		# A BAKED CELL IS NOT THIS PASS'S BUSINESS. Its MultiMeshes are hidden

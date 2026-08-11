@@ -343,7 +343,6 @@ func read_lod(d: PackedByteArray, lod := 0, chunk := PackedByteArray(),
 		#   - no TC4 in declB (or skinned) -> legacy second declared set
 		var uv2 := PackedVector2Array()
 		var uv2_src := ""
-		var _no_uv2 := OS.get_environment("BF6_NO_UV2") != ""   # bisect switch
 		var b_tc0: Array = []
 		var b_tc4: Array = []
 		for el4 in ((s["decl1"] as Dictionary)["elements"] as Array):
@@ -351,8 +350,6 @@ func read_lod(d: PackedByteArray, lod := 0, chunk := PackedByteArray(),
 				b_tc0 = el4
 			elif int(el4[0]) == U_UV4 and b_tc4.is_empty():
 				b_tc4 = el4
-		if _no_uv2:
-			b_tc4 = []                       # bisect: legacy second-set path
 		if not b_tc4.is_empty() and not b_tc0.is_empty():
 			if int(b_tc4[3]) == int(b_tc0[3]) and int(b_tc4[2]) == int(b_tc0[2]):
 				uv2_src = "uv0"

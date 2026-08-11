@@ -3212,6 +3212,84 @@
      "dock_sync": 1.0
     }
    }
+  },
+  {
+   "when": "2026-08-10 22:47:48",
+   "map": "MP_Aftermath",
+   "tag": "gpuval",
+   "note": "",
+   "cold": false,
+   "geom_epoch": 7,
+   "outcome": "hang",
+   "valid": false,
+   "wall_s": 597.0,
+   "fx": false,
+   "range_slider": 3500.0,
+   "radius": 1000000000.0,
+   "boot_s": 18.1,
+   "scan_s": 5.7,
+   "open_s": 6.4,
+   "build_s": 410.3,
+   "first_drawn_s": 444.7,
+   "frames": 3360,
+   "frames_under_60": 861,
+   "pct_under_60": 25.63,
+   "fps_1pct_low": 12.7,
+   "stationary_frames": 2,
+   "stationary_jitter_ms": 8.93,
+   "stationary_spikes": 0,
+   "moving_jitter_ms": 1.98,
+   "moving_spikes": 949,
+   "still_spread_ms": 2.22,
+   "still_spread_worst_ms": 15.03,
+   "still_samples": 281,
+   "median_ms": 5.4,
+   "p99_ms": 70.56,
+   "worst_ms": 149.01,
+   "fps_mean": 57.2,
+   "draws_mean": 5470,
+   "errors_total": 22,
+   "leaks": 0,
+   "session": {
+    "map": "MP_Aftermath",
+    "scene": "",
+    "tag": "gpuval",
+    "mode": 2,
+    "flight": "C:\\Users\\mwalt\\AppData\\Roaming\\Godot\\app_userdata\\Battlefield\u2122 Portal Project\\bf6_flightpath_MP_Aftermath.json",
+    "out": "C:\\PortalSDK\\GodotProject\\User_Created\\tools\\bf6-portal-highpoly-preview\\native\\perfrun\\gpuval-20260810-223751\\report.json",
+    "heartbeat": "C:\\PortalSDK\\GodotProject\\User_Created\\tools\\bf6-portal-highpoly-preview\\native\\perfrun\\gpuval-20260810-223751\\heartbeat.json",
+    "log": "C:\\PortalSDK\\GodotProject\\User_Created\\tools\\bf6-portal-highpoly-preview\\native\\perfrun\\gpuval-20260810-223751\\godot.log",
+    "settle_frames": 30,
+    "hold_ms": 50,
+    "max_scan_s": 300,
+    "max_open_s": 180,
+    "max_build_s": 900,
+    "stall_s": 60,
+    "min_radius": 100000000.0,
+    "fx": false
+   },
+   "detail": {
+    "where": "hlod native ab",
+    "quiet_s": 90.1,
+    "last_heartbeat": {
+     "errors": 0,
+     "frame": 3360,
+     "of": 950,
+     "phase": "hlod native ab",
+     "sample": 949,
+     "t_ms": 505281,
+     "unix": 1786419976.949
+    },
+    "phase_wall_s": {
+     "scan": 5.5,
+     "open": 6.5,
+     "dock_sync": 1.5,
+     "build": 410.7,
+     "settle": 2.0,
+     "flight": 59.1,
+     "census": 1.5
+    }
+   }
   }
  ]
 }
