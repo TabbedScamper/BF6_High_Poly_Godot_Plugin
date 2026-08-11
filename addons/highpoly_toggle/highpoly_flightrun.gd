@@ -941,6 +941,14 @@ static func _drive_dock(plug: Node, cfg: Dictionary) -> Dictionary:
 				 ["mapctx_gi", bool(cfg.get("gi", true))],
 				 ["mapctx_shadows", bool(cfg.get("shadows", true))],
 				 ["mapctx_maplights", bool(cfg.get("map_lights", true))],
+				 # ROADS, GRASS AND PROP LIGHTING WERE NEVER DRIVEN, so every
+				 # "worst case" before this measured a map with three layers
+				 # switched off and called it everything. The target is 60 fps
+				 # with everything on except FX, so everything on except FX is
+				 # what has to be driven.
+				 ["mapctx_roads", bool(cfg.get("roads", true))],
+				 ["mapctx_grass", bool(cfg.get("grass", true))],
+				 ["prop_light_on", bool(cfg.get("prop_lighting", true))],
 				 # FX IS OFF, deliberately and by default. The 60 fps target is
 				 # stated for everything else, and FX is the one layer the
 				 # target explicitly excludes.

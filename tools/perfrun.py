@@ -540,6 +540,7 @@ def build_session(a, run_dir):
         session.update({"mode": 0, "map_context": False, "objects": False,
                         "backdrop": False, "water": False, "lighting": False,
                         "gi": False, "shadows": False, "map_lights": False,
+                        "roads": False, "grass": False, "prop_lighting": False,
                         "fx": False, "expect_build": False, "min_draws": 1})
     else:
         session["fx"] = bool(a.fx)
