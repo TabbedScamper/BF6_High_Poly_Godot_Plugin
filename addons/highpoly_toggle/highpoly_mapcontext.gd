@@ -176,7 +176,14 @@ var build_job := BUILD_JOB_OF3
 # while it runs anyway.
 #
 # Tuned by measurement rather than taste â€” see session.py history.
-const BUILD_FRAME_MS := 500         # per-slice work budget (always >=1 mesh per slice)
+const BUILD_FRAME_MS := 500         # per-slice work budget CEILING
+# The floor, and what the build uses whenever it can afford it: about one
+# frame of work, so the editor keeps answering while it builds.
+const BUILD_FRAME_MS_MIN := 16
+# How much work must be done per millisecond spent in a yielded frame. At 8,
+# a 40 ms yield buys a 320 ms slice, so yields stay near an eighth of the
+# build whatever the scene costs to draw.
+const YIELD_BUDGET_RATIO := 8.0
 const BUILD_REPORT_EVERY := 100     # print / progress-file cadence (meshes)
 var _pressure_said := -1            # last pressure level announced, so it says it once
 
@@ -213,7 +220,34 @@ func _frame_ms() -> int:
 	match p:
 		2: return 60
 		1: return 150
-	return BUILD_FRAME_MS
+	# THE SLICE IS AS SMALL AS THE YIELD CAN AFFORD.
+	#
+	# 500 ms is not a taste: a yielded frame redraws the whole visible scene,
+	# and on a heavy viewpoint that is tens of milliseconds, so yielding often
+	# used to cost more than the build itself (84 s of a 261 s Dumbo build at a
+	# 40 ms slice). The answer was a huge slice, which buys a short build with
+	# an editor that stops responding for half a second at a time - the
+	# freezing this is meant to end.
+	#
+	# But the yield cost is MEASURED (_yield_note keeps it per lane), so the
+	# budget does not have to be guessed. Spend at most a fixed share of the
+	# build in yielded frames: when a yield is cheap the slice can be small and
+	# the editor stays live; when it is expensive the slice grows and the build
+	# still finishes. Same total overhead either way, responsiveness for free
+	# wherever the scene is light.
+	var y := _yield_cost_ms("props")
+	if y <= 0.0:
+		return BUILD_FRAME_MS_MIN       # nothing measured yet: start responsive
+	return clampi(int(y * YIELD_BUDGET_RATIO), BUILD_FRAME_MS_MIN, BUILD_FRAME_MS)
+
+
+# The recent cost of one yielded frame in this lane, or 0 when unmeasured.
+func _yield_cost_ms(lane: String) -> float:
+	var e: Dictionary = _yield_lanes.get(lane, {})
+	var n := int(e.get("n", 0))
+	if n <= 0:
+		return 0.0
+	return float(e.get("ms", 0.0)) / float(n)
 var _build_gen := 0                 # generation: _clear() bumps it, cancelling in-flight builds
 var _building := false              # a background props build is in flight
 var _build_done := 0                # mesh groups processed so far
