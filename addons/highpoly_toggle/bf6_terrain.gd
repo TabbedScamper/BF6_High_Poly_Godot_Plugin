@@ -394,6 +394,13 @@ func native_size() -> int:
 	return (1 << d) * maxi(1, xs - 1 - border * 2) + 1
 
 
+# What the composite spends and how much of it is overdraw. Counted before
+# anything is changed: the splat composite taught that the obvious target (the
+# reads) was 0.7 s of 135 s and the paint was the rest.
+var us_paint := 0
+var texels := 0
+
+
 func composite(size := 4096) -> Dictionary:
 	var with_vals: Array = []
 	var lo := Vector3(INF, INF, INF)
@@ -415,6 +422,14 @@ func composite(size := 4096) -> Dictionary:
 	out.resize(size * size * 2)
 	var span_x: float = maxf(0.001, hi.x - lo.x)
 	var span_z: float = maxf(0.001, hi.z - lo.z)
+	# HOW MUCH OF THIS PAINT IS THROWN AWAY. The pyramid is concentric - a
+	# coarse node covers the whole map and the fine tiers cover the middle - so
+	# painting depth-ascending means the coarse pass writes texels that a finer
+	# node overwrites moments later. Nothing had ever counted how many, and the
+	# phase is 109-118 s cold, so the number decides whether the fix is worth
+	# anything at all.
+	us_paint = 0
+	texels = 0
 	for n in with_vals:
 		var nd: Dictionary = n
 		var v: PackedByteArray = nd["values"]
@@ -440,6 +455,8 @@ func composite(size := 4096) -> Dictionary:
 		var s0 := border
 		var s1 := xs - 1 - border
 		var ssp := float(maxi(1, s1 - s0))
+		texels += (x1 - x0) * (z1 - z0)
+		var _tp := Time.get_ticks_usec()
 		for gz in range(z0, z1):
 			var fz: float = float(gz - z0) / float(maxi(1, z1 - z0 - 1)) if z1 - z0 > 1 else 0.0
 			var sfy: float = clampf(float(s0) + fz * ssp, 0.0, float(xs - 1))
@@ -458,5 +475,7 @@ func composite(size := 4096) -> Dictionary:
 				var h1 := lerpf(float(v.decode_u16(r1)), float(v.decode_u16(r1 + 2)), tx)
 				out.encode_u16((gz * size + gx) * 2,
 					clampi(int(round(lerpf(h0, h1, tz))), 0, 65535))
+		us_paint += Time.get_ticks_usec() - _tp
 	return {"data": out, "size": size, "min": lo, "max": hi,
-		"world_size_y": world_size_y, "nodes": with_vals.size()}
+		"world_size_y": world_size_y, "nodes": with_vals.size(),
+		"us_paint": us_paint, "texels": texels, "grid": size * size}

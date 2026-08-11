@@ -56,15 +56,37 @@ static var _peak_vram_at := ""
 static var _sys_low := -1.0      # least system memory left, in MB
 static var _first_static := -1.0
 
-# THE MACHINE WE HAVE TO FIT ON, stated as numbers rather than as a hope.
+# THE MACHINE WE HAVE TO FIT ON, and it is not a hope or a guess: it is the
+# published MINIMUM SPEC OF BATTLEFIELD 6 ITSELF.
 #
-# 32 GB of system RAM and an 8 GB card. The editor is not the only thing running
-# on that machine, so the budget below is what WE may hold, not what exists:
-# Windows and the SDK's own scene are already several GB before the plugin
-# allocates anything, and a card that reaches its limit does not report an error,
-# it takes Godot down with it.
+# That is the right baseline and nothing else is. Everyone who can use this
+# plugin owns the game, because the plugin reads its install; so the weakest
+# machine that can run BF6 is exactly the weakest machine that can run us.
+#
+#   CPU   Intel Core i5-8400 or AMD Ryzen 5 2600     -> SIX cores
+#   RAM   16 GB
+#   GPU   RTX 2060 / RX 5600 XT                      -> 6 GB of video memory
+#
+# This used to say 32 GB and an 8 GB card, which was twice the real memory
+# floor and let a session that could never have run on the minimum spec report
+# itself as merely close to budget.
+#
+# The budget is what WE may hold, not what exists. On a 16 GB machine Windows
+# and the SDK's own scene are already several GB before this plugin allocates
+# anything, so half the RAM is the most that can be claimed without pushing
+# the machine into the page file - which is what actually kills the editor.
+# The card is worse: it does not report an error when it fills, it takes Godot
+# down, so the video budget stays a clear margin under the 6 GB the minimum
+# card has.
+#
+# The i5-8400 is SIX CORES AND SIX THREADS, no SMT. That is the number
+# work_tasks() has to stay sane at: minus the two reserved for the main and
+# render threads, it leaves four.
+const MIN_SPEC_CPU := "Intel Core i5-8400 / AMD Ryzen 5 2600 (6 cores)"
+const MIN_SPEC_RAM_MB := 16384.0
+const MIN_SPEC_VRAM_MB := 6144.0
 const BUDGET_HEAP_MB := 8192.0
-const BUDGET_VRAM_MB := 6144.0
+const BUDGET_VRAM_MB := 5120.0
 
 # FREE PHYSICAL MEMORY, in MB. Physical, not "available" - the second figure
 # includes the page file, and on one machine here that reads 240 GB against
@@ -192,10 +214,14 @@ static func crumb_age_ms() -> int:
 const RESERVED_CORES := 2
 
 
-static func work_tasks(items: int) -> int:
+# `cores` is here so the policy can be CHECKED at the minimum spec from a
+# machine that is not the minimum spec. Left at 0 it asks the machine.
+static func work_tasks(items: int, cores := 0) -> int:
 	if items <= 1:
 		return maxi(items, 1)
-	var usable := maxi(1, OS.get_processor_count() - RESERVED_CORES)
+	if cores <= 0:
+		cores = OS.get_processor_count()
+	var usable := maxi(1, cores - RESERVED_CORES)
 	return mini(items, usable)
 
 
@@ -404,7 +430,11 @@ static func report() -> String:
 
 	# --- the target machine -------------------------------------------------
 	out.append("")
-	out.append("  AGAINST THE TARGET MACHINE  (32 GB system RAM, 8 GB card)")
+	out.append("  AGAINST BATTLEFIELD 6'S OWN MINIMUM SPEC  (%s," % MIN_SPEC_CPU)
+	out.append("  %d GB RAM, %d GB card). Anyone who can run this plugin owns"
+		% [int(MIN_SPEC_RAM_MB / 1024.0), int(MIN_SPEC_VRAM_MB / 1024.0)])
+	out.append("  the game, so the weakest machine that runs BF6 is the")
+	out.append("  weakest machine that has to run us.")
 	out.append("  The budget is what WE may hold, not what the machine has:")
 	out.append("  Windows and the SDK's own scene are already several GB before")
 	out.append("  this plugin allocates anything, and a card that reaches its")

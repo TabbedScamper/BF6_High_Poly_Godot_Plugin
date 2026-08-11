@@ -582,6 +582,11 @@ static func _grouped_i(n: int) -> String:
 	return ("-" + out) if n < 0 else out
 
 
+var _hm_paint_us := 0
+var _hm_texels := 0
+var _hm_grid := 1
+
+
 func print_build_report() -> void:
 	for line in build_report():
 		_say(line)
@@ -1580,7 +1585,12 @@ func _build_map_data(cache_dir: String, need := {}) -> Dictionary:
 			int(hm.get("res", 0)), "samples per side",
 			FROM_CACHE if _hm_cached else FROM_INSTALL,
 			"read back from height_game.r16" if _hm_cached
-				else "composited from the streaming tree and written for next time")
+				else "composited from the streaming tree and written for next "
+					+ "time; paint %.1fs over %s texels into a %s grid (%.1fx "
+					% [float(_hm_paint_us) / 1e6, _grouped_i(_hm_texels),
+						_grouped_i(_hm_grid),
+						float(_hm_texels) / maxf(1.0, float(_hm_grid))]
+					+ "overdraw)")
 		t = Time.get_ticks_msec()
 		# The ground's appearance: colour map, layer palette, splat. The
 		# expensive one, and skipped outright once the map's cache holds it.
@@ -1744,6 +1754,10 @@ func terrain(cache_dir: String) -> Dictionary:
 		want = 4097
 	want = clampi(want, 1025, 16385)
 	var g := t.composite(want)
+	if not g.is_empty():
+		_hm_paint_us = int(g.get("us_paint", 0))
+		_hm_texels = int(g.get("texels", 0))
+		_hm_grid = int(g.get("grid", 1))
 	if g.is_empty():
 		_say("game source: terrain — %s" % t.error)
 		return {}
