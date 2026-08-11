@@ -4164,6 +4164,20 @@ func _restore_mapctx_state() -> void:
 		LightingScript.clear(r)
 	var map: String = mapctx.map_of(r)
 	if map == "": return
+	# A BOOT STARTS CLEAN. Godot reopens whatever scene was last edited, and
+	# restoring saved layers there began a full build immediately - before the
+	# user had chosen anything - so switching to the scene they actually wanted
+	# fought a build already in flight and the editor locked up hard.
+	#
+	# The restore now only re-syncs the CHIPS to an overlay that is ALREADY
+	# BUILT. That is the soft-reopen case (a plugin reload or the cold swap,
+	# where the owner=null overlay nodes survive in the scene and the chips
+	# would otherwise read "off" over visible terrain). A real boot has no
+	# overlay, so everything stays off and nothing is applied until asked.
+	# The saved entry is left alone rather than cleared: nothing else reads it,
+	# and the next deliberate toggle rewrites it anyway.
+	if r.get_node_or_null(HighpolyMapContext.NODE) == null:
+		return
 	var st: Variant = EditorInterface.get_editor_settings().get_project_metadata(
 			"highpoly_mapctx", map, {})
 	if not (st is Dictionary): return
