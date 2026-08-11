@@ -2872,6 +2872,19 @@ func _map_read_before(map: String) -> bool:
 		% [HighpolyMapContext.CACHE, map])
 
 
+# What the catalogue mount calls itself on the job bar. Named the way a user
+# would describe it rather than after the function, because this string is
+# what they read while they wait.
+const CATALOGUE_BAR := "adding the placeable catalogue"
+
+# Rate limit for the bar's own readout; see _refresh_job_bar_body.
+var _bar_logged_ms := 0
+
+# The stage whose key is currently in the job bar's activity table. Exactly
+# one is live at a time; see _read_refresh for why that matters.
+var _bar_stage := ""
+
+
 func _read_begin(map: String, cold: bool) -> void:
 	_read_model = read_model_new(map, cold, Time.get_ticks_msec())
 	if read_note != null:
@@ -2894,6 +2907,7 @@ func _read_stage_set(stage: String, done: int, total: int) -> void:
 
 
 func _read_end() -> void:
+	_bar_stage = ""
 	if jobs != null and not _read_model.is_empty():
 		for s in HighpolyGameSource.OPEN_STAGES:
 			jobs.clear_activity(str(s))
@@ -2953,13 +2967,26 @@ func _read_refresh() -> void:
 	var here := float(w.get(str(_read_model["stage"]), 1.0))
 	var pos := (before + frac * here) / maxf(total_w, 0.001)
 	if jobs != null:
-		# THE KEY STAYS THE BARE STAGE NAME. _read_end clears activities by
-		# iterating OPEN_STAGES and calling clear_activity(stage), so folding a
-		# live count into this string would leave the bar stuck at the end of
-		# every read with nothing able to clear it. The per-stage counts already
-		# have a home in the read panel's own list.
-		jobs.set_activity(str(_read_model["stage"]),
-			int(round(pos * 1000.0)), 1000)
+		# ONE LIVE KEY AT A TIME, and this is why the bar read zero for most of
+		# a load even after the stages were weighted.
+		#
+		# HighpolyJobs keys activities by label and ratio() returns the
+		# LEAST-finished of them. A key per stage means every finished stage
+		# stays in that dictionary at the value it stopped on - so once
+		# "mounting the install" ended at its weight share, about 8%, it sat
+		# there as the smallest entry and pinned the bar at 8% for the whole
+		# read no matter how far the later stages got.
+		#
+		# The key still names the current stage, because the label beside the
+		# bar is read as much as the bar is. The previous stage is simply
+		# retired as we leave it, so the dictionary holds exactly one entry and
+		# the minimum IS the position. _read_end still sweeps OPEN_STAGES, so
+		# nothing is left behind if a read ends mid-stage.
+		var stage_now := str(_read_model["stage"])
+		if _bar_stage != "" and _bar_stage != stage_now:
+			jobs.clear_activity(_bar_stage)
+		_bar_stage = stage_now
+		jobs.set_activity(stage_now, int(round(pos * 1000.0)), 1000)
 	if job_bar != null and is_instance_valid(job_bar):
 		job_bar.indeterminate = false
 
@@ -3005,6 +3032,16 @@ func _refresh_job_bar_body() -> void:
 	if absf(job_bar.value - jobs.ratio()) > 0.0005:
 		BJournal.bar_tick()
 	job_bar.value = jobs.ratio()
+	# THE BAR'S OWN CURVE, once a second. "It reads zero for most of the load"
+	# is a report nobody could check: the journal counts value CHANGES, which
+	# says the bar moved but not what it moved to, and a bar pinned near zero
+	# by a stale entry still ticks. This prints what a user is looking at, so
+	# the claim becomes a series of numbers.
+	var _now := Time.get_ticks_msec()
+	if _now - _bar_logged_ms >= 1000:
+		_bar_logged_ms = _now
+		Log.info("job bar: %3d%%  %s"
+			% [int(round(jobs.ratio() * 100.0)), jobs.active_label()])
 	job_what.text = jobs.active_label()
 	var pct := "%d%%" % int(round(jobs.ratio() * 100.0))
 	# the "1/2" counts queued DOWNLOADS; local work is not one of a batch
@@ -4630,14 +4667,31 @@ func _upgrade_catalogue_async(gs) -> void:
 	# See HighpolyGameSource.catalogue_upgrading for the crash this prevents.
 	gs.catalogue_upgrading = true
 	var done := [false]
+	# THE LONGEST PHASE OF A COLD OPEN, AND THE BAR SAID NOTHING FOR IT.
+	#
+	# The catalogue mount is ~85 s and it drove no progress at all: it is not
+	# one of the read stages, so the read panel never saw it and the job bar
+	# sat empty for the whole of it. upgrade_catalogue has always taken a
+	# progress callable; nobody passed one.
+	#
+	# Relayed rather than set directly, because the sweep runs on the worker
+	# and the bar is a Control: the worker only writes two ints, and the poll
+	# loop below - already running once a frame - is what touches the panel.
+	var relay := [0, 0]
 	var tid := WorkerThreadPool.add_task(func() -> void:
-		gs.upgrade_catalogue()
+		gs.upgrade_catalogue(func(d: int, t: int, _found: int) -> void:
+			relay[0] = d
+			relay[1] = t)
 		done[0] = true, true, "bf6 placeable catalogue")
 	while not done[0]:
 		if get_tree() == null:
 			break
+		if jobs != null and int(relay[1]) > 0:
+			jobs.set_activity(CATALOGUE_BAR, int(relay[0]), int(relay[1]))
 		await get_tree().process_frame
 	WorkerThreadPool.wait_for_task_completion(tid)
+	if jobs != null:
+		jobs.clear_activity(CATALOGUE_BAR)
 	gs.catalogue_upgrading = false
 	HighpolyVitals.crumb("idle, nothing building")
 	if not gs.catalogue_ready:
