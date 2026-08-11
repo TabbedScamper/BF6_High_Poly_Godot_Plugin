@@ -394,52 +394,8 @@ func native_size() -> int:
 	return (1 << d) * maxi(1, xs - 1 - border * 2) + 1
 
 
-# BELOW THE OUTPUT LIVES ON THE OBJECT, not in a local.
-#
-# A PackedByteArray is a value with copy-on-write, so a lambda that captured a
-# local `out` would paint a COPY and throw it away. The row job reaches the
-# real buffer through self, the same way the texture compression job does.
-var _tj_out := PackedByteArray()
-var _tj_v := PackedByteArray()
-var _tj_x0 := 0
-var _tj_x1 := 0
-var _tj_z0 := 0
-var _tj_z1 := 0
-var _tj_s0 := 0
-var _tj_ssp := 0.0
-var _tj_xs := 0
-var _tj_size := 0
-
-# Under this many rows a node is painted serially - see the call site.
-const PAR_MIN_ROWS := 8
-
-
-# ONE output row of the node currently being painted. `i` is the row's index
-# within the node, so the same function serves the serial loop and the group
-# task and the two cannot drift apart.
-func _terrain_row_job(i: int) -> void:
-	var gz := _tj_z0 + i
-	var fz: float = float(gz - _tj_z0) / float(maxi(1, _tj_z1 - _tj_z0 - 1)) 		if _tj_z1 - _tj_z0 > 1 else 0.0
-	var sfy: float = clampf(float(_tj_s0) + fz * _tj_ssp, 0.0, float(_tj_xs - 1))
-	var sy0: int = mini(int(sfy), _tj_xs - 2)
-	var tz: float = sfy - float(sy0)
-	var span := float(maxi(1, _tj_x1 - _tj_x0 - 1))
-	var one := _tj_x1 - _tj_x0 > 1
-	for gx in range(_tj_x0, _tj_x1):
-		var fx: float = float(gx - _tj_x0) / span if one else 0.0
-		var sfx: float = clampf(float(_tj_s0) + fx * _tj_ssp, 0.0, float(_tj_xs - 1))
-		var sx0: int = mini(int(sfx), _tj_xs - 2)
-		var tx: float = sfx - float(sx0)
-		var r0 := (sy0 * _tj_xs + sx0) * 2
-		var r1 := r0 + _tj_xs * 2
-		if r1 + 3 >= _tj_v.size():
-			continue
-		var h0 := lerpf(float(_tj_v.decode_u16(r0)),
-			float(_tj_v.decode_u16(r0 + 2)), tx)
-		var h1 := lerpf(float(_tj_v.decode_u16(r1)),
-			float(_tj_v.decode_u16(r1 + 2)), tx)
-		_tj_out.encode_u16((gz * _tj_size + gx) * 2,
-			clampi(int(round(lerpf(h0, h1, tz))), 0, 65535))
+# How many bands the paint was cut into.
+var bands := 0
 
 
 # What the composite spends and how much of it is overdraw. Counted before
@@ -466,24 +422,19 @@ func composite(size := 4096) -> Dictionary:
 		return {}
 	with_vals.sort_custom(func(a, b): return int(a["depth"]) < int(b["depth"]))
 
-	_tj_out = PackedByteArray()
-	_tj_out.resize(size * size * 2)
 	var span_x: float = maxf(0.001, hi.x - lo.x)
 	var span_z: float = maxf(0.001, hi.z - lo.z)
-	# HOW MUCH OF THIS PAINT IS THROWN AWAY. The pyramid is concentric - a
-	# coarse node covers the whole map and the fine tiers cover the middle - so
-	# painting depth-ascending means the coarse pass writes texels that a finer
-	# node overwrites moments later. Nothing had ever counted how many, and the
-	# phase is 109-118 s cold, so the number decides whether the fix is worth
-	# anything at all.
 	us_paint = 0
 	texels = 0
+
+	# ---- pass one: every node reduced to a rectangle and its samples -------
+	# Cheap bookkeeping, kept out of the painting so each band can walk the
+	# list without repeating it.
+	var jobs: Array = []
 	for n in with_vals:
 		var nd: Dictionary = n
-		var v: PackedByteArray = nd["values"]
 		var nlo: Vector3 = nd["min"]
 		var nhi: Vector3 = nd["max"]
-		# Destination rectangle for this node, in grid texels.
 		var x0 := int(floorf((nlo.x - lo.x) / span_x * size))
 		var x1 := int(ceilf((nhi.x - lo.x) / span_x * size))
 		var z0 := int(floorf((nlo.z - lo.z) / span_z * size))
@@ -492,48 +443,100 @@ func composite(size := 4096) -> Dictionary:
 		z0 = clampi(z0, 0, size); z1 = clampi(z1, 0, size)
 		if x1 <= x0 or z1 <= z0:
 			continue
-		# The node's own samples run from `border` to `xs-1-border` inclusive;
-		# everything outside that is the neighbour's, repeated.
-		#
-		# BILINEAR, not nearest. The pyramid is concentric - 8 m/sample covers
-		# the whole map while the fine tiers only cover the centre
-		# (fleet-measured: 0.5 m over just 0.4-0.7% of the map) - so away from
-		# the middle a coarse node is upsampled 4-16x into this grid, and
-		# nearest turned every outskirt slope into 8 m stair steps.
-		var s0 := border
-		var s1 := xs - 1 - border
-		var ssp := float(maxi(1, s1 - s0))
+		jobs.append({"v": nd["values"], "x0": x0, "x1": x1,
+			"z0": z0, "z1": z1})
 		texels += (x1 - x0) * (z1 - z0)
-		var _tp := Time.get_ticks_usec()
-		# ONE ROW BODY, two ways of driving it. Rows within a node write to
-		# disjoint output rows, so they are independent; ORDER BETWEEN NODES
-		# still matters and is still serial, which is what keeps the result
-		# identical - the deepest node still writes last.
-		_tj_v = v
-		_tj_x0 = x0
-		_tj_x1 = x1
-		_tj_z0 = z0
-		_tj_z1 = z1
-		_tj_s0 = s0
-		_tj_ssp = ssp
-		_tj_xs = xs
-		_tj_size = size
-		var rows := z1 - z0
-		# Small nodes stay serial: a group task costs more to set up than a
-		# handful of rows costs to paint.
-		if rows >= PAR_MIN_ROWS and HighpolyVitals.work_tasks(rows) > 1:
-			var gid := WorkerThreadPool.add_group_task(_terrain_row_job, rows,
-				HighpolyVitals.work_tasks(rows), false, "bf6 terrain rows")
-			WorkerThreadPool.wait_for_group_task_completion(gid)
-		else:
-			for i in range(rows):
-				_terrain_row_job(i)
-		us_paint += Time.get_ticks_usec() - _tp
-	var res := {"data": _tj_out, "size": size, "min": lo, "max": hi,
+
+	# ---- pass two: paint, one band per task, nothing shared ---------------
+	# The row split alone gave this phase only 5x on thirty cores because every
+	# row wrote into ONE PackedByteArray and each access to a shared packed
+	# array touches its refcount. The splat measured the same wall: 23.6x real
+	# concurrency for no gain. A band owns its buffer outright, so the atomics
+	# go away.
+	#
+	# The node's own samples run from `border` to `xs-1-border` inclusive;
+	# everything outside that is the neighbour's, repeated.
+	#
+	# BILINEAR, not nearest. The pyramid is concentric - 8 m/sample covers the
+	# whole map while the fine tiers only cover the centre (fleet-measured:
+	# 0.5 m over just 0.4-0.7% of the map) - so away from the middle a coarse
+	# node is upsampled 4-16x into this grid, and nearest turned every outskirt
+	# slope into 8 m stair steps.
+	var s0 := border
+	var s1 := xs - 1 - border
+	var ssp := float(maxi(1, s1 - s0))
+	var nband := HighpolyVitals.work_tasks(size)
+	if jobs.is_empty():
+		nband = 1
+	var band_h := int(ceil(float(size) / float(maxi(1, nband))))
+	nband = int(ceil(float(size) / float(maxi(1, band_h))))
+	var bands_out: Array = []
+	for b in range(nband):
+		var zlo := b * band_h
+		var zhi := mini(size, zlo + band_h)
+		var bb := PackedByteArray()
+		bb.resize((zhi - zlo) * size * 2)
+		bands_out.append(bb)
+
+	var band_job := func(b: int) -> void:
+		var zlo: int = b * band_h
+		var zhi: int = mini(size, zlo + band_h)
+		var out_b: PackedByteArray = bands_out[b]
+		for j in jobs:
+			var jd: Dictionary = j
+			var z0: int = jd["z0"]
+			var z1: int = jd["z1"]
+			var jz0: int = maxi(z0, zlo)
+			var jz1: int = mini(z1, zhi)
+			if jz1 <= jz0:
+				continue               # this node misses this band entirely
+			var v: PackedByteArray = jd["v"]
+			var x0: int = jd["x0"]
+			var x1: int = jd["x1"]
+			var zspan := float(maxi(1, z1 - z0 - 1))
+			var xspan := float(maxi(1, x1 - x0 - 1))
+			var zmany := z1 - z0 > 1
+			var xmany := x1 - x0 > 1
+			for gz in range(jz0, jz1):
+				var fz: float = float(gz - z0) / zspan if zmany else 0.0
+				var sfy: float = clampf(float(s0) + fz * ssp, 0.0, float(xs - 1))
+				var sy0: int = mini(int(sfy), xs - 2)
+				var tz: float = sfy - float(sy0)
+				var drow := (gz - zlo) * size
+				for gx in range(x0, x1):
+					var fx: float = float(gx - x0) / xspan if xmany else 0.0
+					var sfx: float = clampf(float(s0) + fx * ssp, 0.0, float(xs - 1))
+					var sx0: int = mini(int(sfx), xs - 2)
+					var tx: float = sfx - float(sx0)
+					var r0 := (sy0 * xs + sx0) * 2
+					var r1 := r0 + xs * 2
+					if r1 + 3 >= v.size():
+						continue
+					var h0 := lerpf(float(v.decode_u16(r0)),
+						float(v.decode_u16(r0 + 2)), tx)
+					var h1 := lerpf(float(v.decode_u16(r1)),
+						float(v.decode_u16(r1 + 2)), tx)
+					out_b.encode_u16((drow + gx) * 2,
+						clampi(int(round(lerpf(h0, h1, tz))), 0, 65535))
+		bands_out[b] = out_b
+
+	var _tp := Time.get_ticks_usec()
+	if nband > 1:
+		var gid := WorkerThreadPool.add_group_task(band_job, nband,
+			nband, false, "bf6 terrain bands")
+		WorkerThreadPool.wait_for_group_task_completion(gid)
+	else:
+		for b in range(nband):
+			band_job.call(b)
+	us_paint += Time.get_ticks_usec() - _tp
+	bands = nband
+
+	# ---- join --------------------------------------------------------------
+	var out := PackedByteArray()
+	for b in range(nband):
+		out.append_array(bands_out[b])
+
+	return {"data": out, "size": size, "min": lo, "max": hi,
 		"world_size_y": world_size_y, "nodes": with_vals.size(),
-		"us_paint": us_paint, "texels": texels, "grid": size * size}
-	# Handed over: the dictionary holds the only reference from here, so the
-	# 512 MB is not kept alive twice by this object as well.
-	_tj_out = PackedByteArray()
-	_tj_v = PackedByteArray()
-	return res
+		"us_paint": us_paint, "texels": texels, "grid": size * size,
+		"bands": bands}
