@@ -1212,6 +1212,19 @@ def main():
         print("  pid %d, and this is the ONLY process this run will ever kill"
               % proc.pid)
         outcome, detail = monitor(proc, session, a, t_launch)
+        # A RUN THAT FINISHED STILL HAS TO BE CLOSED. monitor can now return
+        # "done" while the process is alive: the editor writes its report,
+        # stops heartbeating and lingers, which used to be misread as a hang.
+        # Returning there without killing left the editor holding the project,
+        # and the very next run in a sweep died on it - which is exactly the
+        # failure kill_ours' own comment warns about. Eight of nine buttons
+        # produced no run at all because of this.
+        if outcome == "done" and proc.poll() is None:
+            kill_ours(proc.pid, "done, editor lingered")
+            try:
+                proc.wait(timeout=20)
+            except Exception:
+                pass
         if outcome in ("hang", "timeout"):
             print("\n%s: %s" % (outcome.upper(), detail.get("why")
                                 or "no progress for %.0f s" % detail.get("quiet_s", 0)))

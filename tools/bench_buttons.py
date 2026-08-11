@@ -43,15 +43,24 @@ DEFAULT_ORDER = ["terrain", "objects", "roads", "water", "backdrop",
                  "maplights", "proplights", "grass"]
 
 
-def newest_run(root, tag):
-    """The run directory perfrun just wrote for this tag."""
+def dirs_for(root, tag):
     if not os.path.isdir(root):
+        return set()
+    return {d for d in os.listdir(root) if d.startswith(tag + "-")}
+
+
+def new_run(root, tag, before):
+    """The run directory THIS invocation created, or "" if it created none.
+
+    Deliberately not "the newest one with this tag": when a run failed to
+    start, that returned the directory from a PREVIOUS sweep and the bench
+    reported its numbers as this run's. One sweep reported an "objects: crash,
+    69.6 s" that was an hour old and belonged to a different build of the
+    plugin. A run that produced nothing has to say so."""
+    made = dirs_for(root, tag) - before
+    if not made:
         return ""
-    hits = [d for d in os.listdir(root) if d.startswith(tag + "-")]
-    if not hits:
-        return ""
-    hits.sort()
-    return os.path.join(root, hits[-1])
+    return os.path.join(root, sorted(made)[-1])
 
 
 def read_run(run_dir):
@@ -114,11 +123,12 @@ def main():
         print("[%d/%d] %s" % (i, len(wanted), b))
         print("=" * 72)
         t0 = time.time()
-        subprocess.run(cmd)
-        run_dir = newest_run(root, tag)
-        r = read_run(run_dir) if run_dir else {"outcome": "no run dir",
-                                               "build_s": 0.0, "open_s": 0.0,
-                                               "wall_s": 0.0, "phases": []}
+        before = dirs_for(root, tag)
+        rc = subprocess.run(cmd).returncode
+        run_dir = new_run(root, tag, before)
+        r = read_run(run_dir) if run_dir else {
+            "outcome": "no run (perfrun exit %s)" % rc,
+            "build_s": 0.0, "open_s": 0.0, "wall_s": 0.0, "phases": []}
         r["button"] = b
         r["elapsed_s"] = time.time() - t0
         r["dir"] = run_dir
