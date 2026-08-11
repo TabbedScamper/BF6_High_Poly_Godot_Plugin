@@ -296,7 +296,9 @@ func tick(cam_pos: Vector3) -> void:
 		return
 	if grass_range <= 0.0: return       # grass off: nothing to follow
 	var cell := Vector2i(int(floor(cam_pos.x / REGEN_CELL)), int(floor(cam_pos.z / REGEN_CELL)))
-	if cell == _last_cell: return
+	if cell == _last_cell:
+		_regen_step()                   # still draining the last crossing
+		return
 	_last_cell = cell
 	_regenerate(cam_pos)
 
@@ -309,7 +311,60 @@ func tick(cam_pos: Vector3) -> void:
 func _alive() -> bool:
 	return _root != null and is_instance_valid(_root)
 
+# THE REGENERATE IS SPREAD ACROSS FRAMES, and that is the whole point.
+#
+# Every 32 m of camera travel this rebuilds the clumps, and it used to do all
+# of them in ONE frame: 49 scatter types on aftermath, each generating up to a
+# budget of instance transforms in GDScript and then re-uploading a MultiMesh
+# buffer. That is a guaranteed hitch every 32 m, which while flying is
+# constant - the user called it before the measurement did ("I know its the
+# grass").
+#
+# The entries are independent, so the work divides cleanly: a queue is filled
+# when the camera crosses a cell and drained a few milliseconds at a time. The
+# hitch becomes a spread. Grass appears a frame or two later than it did,
+# which nobody can see; the frame it used to cost is what everybody saw.
+const REGEN_MS_PER_FRAME := 2.0
+var _regen_queue: Array = []
+var _regen_cam := Vector3.ZERO
+
+
+# Drain a few milliseconds of the queue. Called every tick, cheap when empty.
+func _regen_step() -> void:
+	if _regen_queue.is_empty():
+		return
+	var t0 := Time.get_ticks_msec()
+	var made := 0
+	while not _regen_queue.is_empty():
+		var e = _regen_queue.pop_front()
+		var node = e["mmi"]
+		if is_instance_valid(node):
+			var buf := _gen_entry(e, _regen_cam)
+			var cnt := int(buf.size() / 12)
+			var mm: MultiMesh = (node as MultiMeshInstance3D).multimesh
+			mm.instance_count = 0
+			mm.instance_count = cnt
+			if cnt > 0:
+				mm.buffer = buf
+			made += cnt
+		if Time.get_ticks_msec() - t0 >= REGEN_MS_PER_FRAME:
+			break
+	last_instances = made if _regen_queue.is_empty() else last_instances + made
+	last_regen_ms = Time.get_ticks_msec() - t0
+
+
 func _regenerate(cam_pos: Vector3) -> void:
+	# Queue it rather than doing it here: see _regen_step.
+	if grass_range > 0.0:
+		_regen_queue = _entries.duplicate()
+		_regen_cam = cam_pos
+		last_instances = 0
+		_regen_step()
+		return
+	_regenerate_now(cam_pos)
+
+
+func _regenerate_now(cam_pos: Vector3) -> void:
 	var t0 := Time.get_ticks_msec()
 	var total := 0
 	if grass_range <= 0.0:
