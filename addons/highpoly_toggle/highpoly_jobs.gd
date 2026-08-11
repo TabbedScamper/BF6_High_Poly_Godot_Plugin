@@ -15,6 +15,7 @@ class_name HighpolyJobs
 signal changed
 
 const Log = preload("highpoly_log.gd")
+const BJournal = preload("highpoly_journal.gd")
 
 var _waiting: Array = []        # [{id, name}] in the order they asked
 var _active_id := 0
@@ -100,6 +101,14 @@ func acquire(name: String) -> int:
 	var id := _next_id
 	_waiting.append({"id": id, "name": name})
 	_batch = maxi(_batch, _completed + _waiting.size() + (1 if _active_id != 0 else 0))
+	# THE JOURNAL SEES EVERY JOB, whoever asked for it. This one row answers
+	# two standing questions at once: what a second button press does (it
+	# queues, and the row names behind what), and whether work nobody asked
+	# for is running (a job row with no button row upstream of it).
+	BJournal.event("ui", "job requested: %s" % name,
+		"" if _active_id == 0 else
+		"queued behind '%s' (+%d waiting)" % [_active, _waiting.size() - 1])
+	var t_wait := Time.get_ticks_msec()
 	if _active_id != 0:
 		Log.info("Queued: %s: waiting for %s" % [name, _active])
 	changed.emit()
@@ -119,6 +128,9 @@ func acquire(name: String) -> int:
 	_active_id = id
 	_active = name
 	_ratio = 0.0
+	var waited := Time.get_ticks_msec() - t_wait
+	BJournal.event("job", "start: %s" % name,
+		"" if waited < 100 else "sat %.1f s in the queue" % (waited / 1000.0))
 	Log.info("Started: %s  (%d of %d)" % [name, index(), count()])
 	HighpolyProfiler.lane_open(name)
 	HighpolyProfiler.crumb("download", "start %s" % name)
@@ -148,10 +160,16 @@ func release(id: int, ok: bool, note := "") -> void:
 		Log.info("Finished: %s%s" % [name, (" (" + note + ")") if note != "" else ""])
 	else:
 		Log.error("FAILED: %s%s" % [name, (" (" + note + ")") if note != "" else ""])
+	BJournal.event("job", ("done: " if ok else "FAILED: ") + name, note)
 	# the run is over once nothing is left, so the next one counts from 1 again
 	if _waiting.is_empty():
 		_completed = 0
 		_batch = 0
+		# the whole run just ended: the journal is complete, write it where a
+		# user can attach it - user://highpoly/build_journal.txt
+		BJournal.save()
+		Log.info("Build journal written: user://highpoly/build_journal.txt "
+			+ "(what ran, how long, install bytes read, whether the bar moved)")
 	changed.emit()
 
 # Panel teardown: whoever was mid-transfer will never call release(), so the

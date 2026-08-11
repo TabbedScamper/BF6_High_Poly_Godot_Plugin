@@ -120,6 +120,7 @@ static func _step_for(meta: Dictionary) -> int:
 	return maxi(1, int(round(float(res - 1) / float(TERRAIN_VERTS_PER_SIDE))))
 # vegetation scatter (grass/shrub kits from the game's MeshScatteringDatabase);
 # a strict no-op for maps whose package carries no scatter.json
+const BJournal = preload("highpoly_journal.gd")
 const ScatterScript = preload("highpoly_scatter.gd")
 var _scatter = ScatterScript.new()
 var _scatter_n := 0
@@ -267,6 +268,7 @@ func _ph_reset() -> void:
 # One phase sample. `ms` is wall time, `items` is how many of whatever the phase
 # processes, `from` is where the answer came from.
 func _ph(name: String, ms: float, items := 1, from := "") -> void:
+	BJournal.phase("apply: %s" % name, ms, items, from)
 	if not _ph_rows.has(name):
 		_ph_order.append(name)
 		_ph_rows[name] = {"ms": 0.0, "n": 0, "items": 0, "from": from}
@@ -3974,6 +3976,18 @@ func _apply_body(root: Node, enabled: bool, show_objects: bool, tex = true,
 			(_rd as Node3D).visible = _show_roads
 		_ph("roads: place the street mesh", Time.get_ticks_msec() - _t_roads,
 			1, _roads_from)
+		# THE REQUESTED-VS-BUILT AUDIT ROW. "It came in with the button off" is
+		# only diagnosable if the journal records both halves at the moment of
+		# placement: what the chip said, and what the node ended up doing. A row
+		# reading "chip OFF -> visible=true" is the bug, named. Note that the
+		# STREETS PAINTED INTO THE GROUND TEXTURE are the terrain's own splat
+		# (the game paints them; data-true) - this chip only governs the decal
+		# mesh, and the row says so to keep the two from being conflated.
+		BJournal.event("audit", "roads decal node placed",
+			"chip %s, node visible=%s (painted streets in the ground texture "
+			% ["ON" if _show_roads else "OFF",
+				str((_rd as Node3D).visible if _rd is Node3D else false)]
+			+ "are terrain, not this node)")
 	if water:
 		# One plane per body plus its shader, its normal maps and its wave video.
 		# It has its own toggle and its own complaint history ("Water takes a

@@ -48,6 +48,7 @@ light while it is on."
 const LIGHTING_TIP_NONE := "This map has no lighting data yet, so there is \
 nothing to switch on. Everything else in this panel still works."
 
+const BJournal = preload("highpoly_journal.gd")
 const PreviewsScript = preload("highpoly_previews.gd")
 const ProfilerScript = preload("highpoly_profiler.gd")
 const MapContextScript = preload("highpoly_mapcontext.gd")
@@ -2874,6 +2875,10 @@ func _refresh_job_bar_body() -> void:
 	job_row.visible = busy
 	if check_btn: check_btn.visible = not busy
 	if not busy: return
+	# the journal's "did the user see progress" counter: only a VALUE CHANGE
+	# counts - redrawing the same percentage is not progress to a human
+	if absf(job_bar.value - jobs.ratio()) > 0.0005:
+		BJournal.bar_tick()
 	job_bar.value = jobs.ratio()
 	job_what.text = jobs.active_label()
 	var pct := "%d%%" % int(round(jobs.ratio() * 100.0))
@@ -4824,6 +4829,9 @@ var _said_not_map := ""              # scene we have already explained is not a 
 # Render every library icon now, through the same progress queue the other long
 # jobs use, instead of letting the 2-second timer do it a hitch at a time.
 func _build_previews() -> void:
+	# the journal's button row: any preview/library work WITHOUT one of these
+	# upstream of it is work nobody pressed for
+	BJournal.event("ui", "button: Build object previews")
 	if previews == null:
 		return
 	if previews.building:

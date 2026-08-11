@@ -58,6 +58,7 @@ func _say(s: String) -> void:
 # A blueprint X owns the MeshSet X_mesh, falling back to X itself. This is the
 # pipeline's own rule (build_multimat.find_meshset), not a guess, and getting it
 # wrong is silent: looking the blueprint path up directly resolves 0 of 2,727.
+const BJournal = preload("highpoly_journal.gd")
 const MESH_SUFFIX := "_mesh"
 
 const SHADERSTATE := "_win32_shaderstate/"
@@ -280,6 +281,13 @@ func add_phase(name: String, ms: float, items := 0, unit := "items",
 # instead of live. Anything called from the main thread (map_data during a
 # build) does forward live, and that is what this guard is for.
 func _ph_forward(name: String, ms: float) -> void:
+	# The journal takes rows from ANY thread (it carries its own mutex), which
+	# is exactly what the profile below cannot - so the worker-thread phases
+	# (the whole open_map walk, the part where the job bar sits still) land
+	# in the journal live even though they reach the profile late.
+	var ph: Dictionary = phases.get(name, {})
+	BJournal.phase("game source: %s" % name, ms, int(ph.get("items", 0)),
+		str(ph.get("note", "")))
 	if OS.get_thread_caller_id() != OS.get_main_thread_id():
 		return
 	HighpolyProfile.add("game source: %s" % name, int(ms * 1000.0))

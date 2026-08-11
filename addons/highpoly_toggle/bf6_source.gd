@@ -23,6 +23,8 @@ class_name BF6Source
 # whole stack lives under addons/highpoly_toggle: the addon failed to parse with
 # "Preload file res://bf6_toc.gd does not exist" the moment it was packaged.
 
+const BJournal = preload("highpoly_journal.gd")
+
 var game := ""
 var error := ""
 
@@ -576,6 +578,12 @@ func get_res(name: String) -> PackedByteArray:
 	if d.size() != int(e[4]):
 		error = "res %s: declared %d bytes, got %d" % [name, e[4], d.size()]
 		return PackedByteArray()
+	# the build journal's over-fetch audit: every install read is counted, so
+	# a phase can be asked "how much did you pull for what you produced"
+	BJournal._mx.lock()
+	BJournal.res_calls += 1
+	BJournal.res_bytes += d.size()
+	BJournal._mx.unlock()
 	return d
 
 
@@ -713,13 +721,17 @@ func _pidx_cache_path() -> String:
 func get_chunk(guid_hex: String) -> PackedByteArray:
 	var g := guid_hex.to_lower()
 	var e = chunks.get(g)
-	if e != null:
-		return _read_seg(e)
-	var s = chunk_seg.get(g)
-	if s != null:
-		return _read_seg(s)
-	error = "chunk %s is in no chunk map and no bundle" % g.substr(0, 16)
-	return PackedByteArray()
+	if e == null:
+		e = chunk_seg.get(g)
+	if e == null:
+		error = "chunk %s is in no chunk map and no bundle" % g.substr(0, 16)
+		return PackedByteArray()
+	var d := _read_seg(e)
+	BJournal._mx.lock()
+	BJournal.chunk_calls += 1
+	BJournal.chunk_bytes += d.size()
+	BJournal._mx.unlock()
+	return d
 
 
 func has_chunk(guid_hex: String) -> bool:
