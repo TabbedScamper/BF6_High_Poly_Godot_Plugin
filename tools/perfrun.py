@@ -765,6 +765,40 @@ def go_cold(project, yes):
     return True
 
 
+def grab_session_log(project, run_dir, t_launch):
+    """Copy the plugin's own session log into the run directory.
+
+    It is the only artefact with per-phase timestamps in it, and it lives at a
+    fixed path that every session OVERWRITES - so it has to be taken while it
+    still belongs to the run that just ended. The per-run
+    highpoly-log-<stamp>.txt files are not an alternative: those are written
+    only when a user presses Save log, which is why a nine-button sweep
+    produced none of them.
+
+    Godot writes through a sibling .tmp and renames on close, so a session
+    that was killed leaves the previous session's file in place. The copy is
+    therefore stamped with whether it is newer than this run's launch, and a
+    stale one is named so nobody reads it as this run's."""
+    d = userdata(project)
+    if not d:
+        return ""
+    src = os.path.join(d, "highpoly-session.log")
+    if not os.path.isfile(src):
+        return ""
+    fresh = os.path.getmtime(src) >= t_launch
+    dst = os.path.join(run_dir,
+                       "plugin-session.log" if fresh
+                       else "plugin-session.STALE.log")
+    try:
+        shutil.copy2(src, dst)
+    except OSError:
+        return ""
+    if not fresh:
+        print("  the plugin session log is from BEFORE this run (the editor "
+              "was killed before it closed cleanly); kept as STALE")
+    return dst
+
+
 def monitor(proc, session, a, t_launch):
     """Watch the run. Return (outcome, detail).
 
@@ -1254,6 +1288,7 @@ def main():
                 proc.wait(timeout=20)
             except Exception:
                 pass
+    grab_session_log(a.project, run_dir, t_launch)
     wall = time.time() - t_launch
 
     report = load(session["out"])
