@@ -2832,6 +2832,7 @@ static var _tblend_shader: Shader = null
 
 
 static func _terrainblend_materials(m: Mesh) -> void:
+	if OS.get_environment("BF6_NO_TBLEND") != "": return   # bisect switch
 	if not (m is ArrayMesh): return
 	var am := m as ArrayMesh
 	for i in range(am.get_surface_count()):
@@ -5241,6 +5242,7 @@ func _build_terrain_from_heightmap(dir: String, meta: Dictionary) -> Node3D:
 	# source (a pure cache path).
 	var t_scan := Time.get_ticks_msec()
 	var tsteps := PackedInt32Array()
+	var _no_adapt := OS.get_environment("BF6_NO_ADAPTIVE") != ""
 	if game_source != null:
 		var gt: Dictionary = game_source.tile_steps()
 		var gsteps: PackedInt32Array = gt.get("steps", PackedInt32Array())
@@ -5293,6 +5295,9 @@ func _build_terrain_from_heightmap(dir: String, meta: Dictionary) -> Node3D:
 	var sharp2 := 0
 	var sharp4 := 0
 	var coarse := 0
+	if _no_adapt:
+		for i in range(tsteps.size()):
+			tsteps[i] = step        # bisect: uniform step, the v6 shape
 	for i in range(tsteps.size()):
 		if int(tsteps[i]) <= maxi(int(float(step) / 4.0), 2) and step >= 8:
 			sharp4 += 1
@@ -5342,7 +5347,7 @@ func _build_terrain_from_heightmap(dir: String, meta: Dictionary) -> Node3D:
 			if gm == null: continue
 			var m := _with_lods(gm)
 			if m is ArrayMesh:
-				var sk := _skirt_arrays(SKIRT_DEPTH)
+				var sk: Array = [] if OS.get_environment("BF6_NO_SKIRT") != "" else _skirt_arrays(SKIRT_DEPTH)
 				if not sk.is_empty():
 					(m as ArrayMesh).add_surface_from_arrays(
 						Mesh.PRIMITIVE_TRIANGLES, sk)

@@ -900,6 +900,9 @@ def main():
     ap.add_argument("--baseline", action="store_true",
                     help="record this run as the number to beat")
     ap.add_argument("--history", action="store_true")
+    ap.add_argument("--gpu-validation", action="store_true",
+                    help="run with Vulkan validation and --verbose, to name a "
+                         "GPU fault that otherwise kills the editor silently")
     ap.add_argument("--dry-run", action="store_true",
                     help="print the command and the session and launch nothing")
     ap.add_argument("--install-hook", action="store_true",
@@ -989,6 +992,14 @@ def main():
             # no change to the user's project, it gives this run a log of its
             # own, and the plugin tails exactly this file.
             "--log-file", session["log"]]
+    # WHEN A RUN DIES WITHOUT A BACKTRACE, ASK THE DRIVER. An access violation
+    # inside the graphics driver takes the process down before Godot's crash
+    # handler can print anything, so the log simply stops - which is what four
+    # crashed runs looked like. Vulkan validation turns that silence into a
+    # named error on the offending call, at the cost of a much slower run, so
+    # it is opt-in rather than always on.
+    if a.gpu_validation:
+        args += ["--gpu-validation", "--verbose"]
     print("launching %s" % " ".join(args))
     t_launch = time.time()
     with open(os.path.join(run_dir, "stdout.txt"), "wb") as out, \
