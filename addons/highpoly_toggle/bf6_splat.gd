@@ -762,6 +762,8 @@ static func depth_of(key: int) -> int:
 # reading them, decompressing them, or painting them into the raster. Those
 # three want completely different fixes, so they are counted separately before
 # anything is changed.
+var bands := 0
+
 var us_fetch := 0
 var us_decode := 0
 var us_paint := 0
@@ -774,14 +776,26 @@ func composite(dir: Dictionary, fetch: Callable, size: int,
 		rect_size := 0.0, seed_idx := PackedByteArray(),
 		seed_w := PackedByteArray(), max_span := 0.0,
 		smooth := false) -> Dictionary:
-	var idx := PackedByteArray()
-	var wgt := PackedByteArray()
-	if seed_idx.size() == size * size * 4 and seed_w.size() == size * size * 4:
-		idx = seed_idx
-		wgt = seed_w
-	else:
-		idx.resize(size * size * 4)
-		wgt.resize(size * size * 4)
+	# TWO PASSES: DECODE ONCE, THEN PAINT IN BANDS THAT SHARE NOTHING.
+	#
+	# The paint is 128 s of this phase 135 s, and splitting its rows across the
+	# pool did NOT help - measured 23.6x real concurrency (3,011 s of summed
+	# row time inside 127.8 s of wall) for no wall-clock gain at all, because
+	# every thread was writing into ONE PackedByteArray. Each access to a
+	# shared packed array touches its refcount, and _insert makes about ten
+	# accesses per texel, so thirty threads spent their time fighting over one
+	# cache line. The heightfield survived the same treatment only because it
+	# makes a single write per texel.
+	#
+	# So the raster is cut into horizontal bands and each band gets its own
+	# buffer, which one task owns outright. Nothing is shared and the atomics
+	# disappear. The bands are joined at the end.
+	#
+	# ORDER IS PRESERVED EXACTLY, which is what makes this safe: _insert merges
+	# the top four layers BY WEIGHT, so the sequence of records that touch a
+	# texel decides the answer. Every band walks the same flat record list in
+	# the same order, and a texel belongs to exactly one band, so each texel
+	# sees precisely the sequence it saw when this was one serial loop.
 	var span: Vector2 = root_max - root_min
 	if span.x <= 0.0 or span.y <= 0.0:
 		error = "block 1 has an empty world bounds"
@@ -795,6 +809,11 @@ func composite(dir: Dictionary, fetch: Callable, size: int,
 	var decoded := 0
 	var seen := 0
 	var windowed := rect_min.x != INF and rect_size > 0.0
+
+	# ---- pass one: fetch and decode, in traversal order -------------------
+	# Serial on purpose. It is 0.6 s of the 135 s, it does the I/O, and doing
+	# it once here is what lets every band read the pages without repeating it.
+	var jobs: Array = []
 	for n in order:
 		var nd: Dictionary = n
 		seen += 1
@@ -802,10 +821,6 @@ func composite(dir: Dictionary, fetch: Callable, size: int,
 			progress.call(seen, order.size())
 		if int(nd["pages"]) <= 0:
 			continue
-		# A windowed composite must not FETCH pages it will not paint - the
-		# page reads are the cost, and a 1 km window intersects a couple of
-		# percent of an 8 km map's nodes. Checked on the records' rects,
-		# which are in hand before any page is touched.
 		if windowed:
 			var hit := false
 			for r0 in nd["records"]:
@@ -848,55 +863,161 @@ func composite(dir: Dictionary, fetch: Callable, size: int,
 			var z1 := clampi(int(ceil((hi.y - org.y) / span.y * size)), 0, size)
 			if x1 <= x0 or z1 <= z0:
 				continue
-			var layer := int(rd["layer"]) & 0xFF
-			# The page is addressed by the texel's WORLD position inside the
-			# record's own rect, not by its index inside the raster rect -
-			# and through the page's INTERIOR 64x64, not all 66 texels. The
-			# 66x66 page carries a 1-texel apron (proven byte-identical to
-			# the neighbour's first interior column on 400 of 400 adjacent
-			# pairs, tools/test_apron.gd); stretching all 66 across the rect
-			# scaled every painted shape by 66/64 and shifted paint up to a
-			# full page texel at node edges - the "paints are not quite where
-			# the game has them" misalignment, measured.
-			var _tp := Time.get_ticks_usec()
+			jobs.append({"page": page, "layer": int(rd["layer"]) & 0xFF,
+				"lo": lo, "hi": hi, "x0": x0, "x1": x1, "z0": z0, "z1": z1})
+			texels += (x1 - x0) * (z1 - z0)
+
+	# ---- pass two: paint, one band per task --------------------------------
+	var nband := HighpolyVitals.work_tasks(size)
+	if jobs.is_empty():
+		nband = 1
+	var band_h := int(ceil(float(size) / float(maxi(1, nband))))
+	nband = int(ceil(float(size) / float(maxi(1, band_h))))
+	var seeded := seed_idx.size() == size * size * 4 \
+		and seed_w.size() == size * size * 4
+	var b_idx: Array = []
+	var b_wgt: Array = []
+	for b in range(nband):
+		var zlo := b * band_h
+		var zhi := mini(size, zlo + band_h)
+		if seeded:
+			b_idx.append(seed_idx.slice(zlo * size * 4, zhi * size * 4))
+			b_wgt.append(seed_w.slice(zlo * size * 4, zhi * size * 4))
+		else:
+			var bi := PackedByteArray(); bi.resize((zhi - zlo) * size * 4)
+			var bw := PackedByteArray(); bw.resize((zhi - zlo) * size * 4)
+			b_idx.append(bi)
+			b_wgt.append(bw)
+
+	var inner := float(PAGE_SIDE - 2)          # 64
+	var band_job := func(b: int) -> void:
+		var zlo: int = b * band_h
+		var zhi: int = mini(size, zlo + band_h)
+		var bi: PackedByteArray = b_idx[b]
+		var bw: PackedByteArray = b_wgt[b]
+		for j in jobs:
+			var jd: Dictionary = j
+			var jz0: int = maxi(int(jd["z0"]), zlo)
+			var jz1: int = mini(int(jd["z1"]), zhi)
+			if jz1 <= jz0:
+				continue               # this record misses this band entirely
+			var page: PackedByteArray = jd["page"]
+			var layer: int = jd["layer"]
+			var lo: Vector2 = jd["lo"]
+			var hi: Vector2 = jd["hi"]
+			var x0: int = jd["x0"]
+			var x1: int = jd["x1"]
 			var rw := maxf(hi.x - lo.x, 1e-6)
 			var rh := maxf(hi.y - lo.y, 1e-6)
-			var inner := float(PAGE_SIDE - 2)          # 64
-			for gz in range(z0, z1):
+			for gz in range(jz0, jz1):
 				var wz := org.y + (float(gz) + 0.5) / float(size) * span.y
 				var fz := clampf((wz - lo.y) / rh, 0.0, 1.0)
-				var drow := gz * size
-				if smooth:
-					# continuous page coords: interior texel i's centre sits
-					# at fz=(i+0.5)/64, page column 1+i - so cy = fz*64+0.5
-					# hits it exactly, and the apron makes the edge taps
-					# valid without clamping artefacts.
-					var cy := fz * inner + 0.5
-					var iy := clampi(int(cy - 0.5), 0, PAGE_SIDE - 2)
-					var ty := clampf(cy - 0.5 - float(iy), 0.0, 1.0)
-					for gx in range(x0, x1):
-						var wx := org.x + (float(gx) + 0.5) / float(size) * span.x
-						var fx := clampf((wx - lo.x) / rw, 0.0, 1.0)
+				var drow := (gz - zlo) * size
+				# Both per-row setups, computed once per row. The smooth one
+				# uses continuous page coords: interior texel i centre sits at
+				# fz=(i+0.5)/64, page column 1+i, so cy = fz*64+0.5 hits it
+				# exactly and the apron makes the edge taps valid without
+				# clamping artefacts.
+				var cy := fz * inner + 0.5
+				var iy := clampi(int(cy - 0.5), 0, PAGE_SIDE - 2)
+				var ty := clampf(cy - 0.5 - float(iy), 0.0, 1.0)
+				var nrow := (1 + clampi(int(fz * inner), 0, PAGE_SIDE - 3)) * PAGE_SIDE
+				for gx in range(x0, x1):
+					var wx := org.x + (float(gx) + 0.5) / float(size) * span.x
+					var fx := clampf((wx - lo.x) / rw, 0.0, 1.0)
+					var w := 0
+					if smooth:
 						var cx := fx * inner + 0.5
 						var ix := clampi(int(cx - 0.5), 0, PAGE_SIDE - 2)
 						var tx := clampf(cx - 0.5 - float(ix), 0.0, 1.0)
 						var o00 := iy * PAGE_SIDE + ix
 						var a := lerpf(float(page[o00]), float(page[o00 + 1]), tx)
-						var b := lerpf(float(page[o00 + PAGE_SIDE]),
+						var bb := lerpf(float(page[o00 + PAGE_SIDE]),
 							float(page[o00 + PAGE_SIDE + 1]), tx)
-						var w := int(round(lerpf(a, b, ty)))
-						if w > 0:
-							_insert(idx, wgt, (drow + gx) * 4, layer, w)
-				else:
-					var row := (1 + clampi(int(fz * inner), 0, PAGE_SIDE - 3)) * PAGE_SIDE
-					for gx in range(x0, x1):
-						var wx := org.x + (float(gx) + 0.5) / float(size) * span.x
-						var fx := clampf((wx - lo.x) / rw, 0.0, 1.0)
-						var w := int(page[row + 1 + clampi(int(fx * inner), 0, PAGE_SIDE - 3)])
-						if w > 0:
-							_insert(idx, wgt, (drow + gx) * 4, layer, w)
-			us_paint += Time.get_ticks_usec() - _tp
-			texels += (x1 - x0) * (z1 - z0)
+						w = int(round(lerpf(a, bb, ty)))
+					else:
+						w = int(page[nrow + 1
+							+ clampi(int(fx * inner), 0, PAGE_SIDE - 3)])
+					if w <= 0:
+						continue
+					# ---- _insert, INLINED ---------------------------------
+					# This was a static call and the call was the phase: with
+					# it replaced by a bare write the paint measured 4.6 s
+					# against 110.5 s, on the same 455 million texels. Four
+					# slots, so the two search loops unroll into if-chains and
+					# the early returns become a flag - a return here would
+					# leave the whole band, not the texel.
+					var o := (drow + gx) * 4
+					var at := -1
+					if bw[o] > 0 and bi[o] == layer:
+						at = 0
+					elif bw[o + 1] > 0 and bi[o + 1] == layer:
+						at = 1
+					elif bw[o + 2] > 0 and bi[o + 2] == layer:
+						at = 2
+					elif bw[o + 3] > 0 and bi[o + 3] == layer:
+						at = 3
+					var put := -1
+					if at >= 0:
+						# The layer is already here: keep the stronger weight.
+						if w > bw[o + at]:
+							bw[o + at] = w
+							put = at
+					else:
+						var free := -1
+						if bw[o] == 0:
+							free = 0
+						elif bw[o + 1] == 0:
+							free = 1
+						elif bw[o + 2] == 0:
+							free = 2
+						elif bw[o + 3] == 0:
+							free = 3
+						if free >= 0:
+							bi[o + free] = layer
+							bw[o + free] = w
+							put = free
+						elif w > bw[o + 3]:
+							# All four taken and this beats the weakest.
+							bi[o + 3] = layer
+							bw[o + 3] = w
+							put = 3
+					# ---- _bubble, INLINED: keep the four sorted by weight --
+					if put > 0:
+						var k := put
+						while k > 0 and bw[o + k] > bw[o + k - 1]:
+							var tw := bw[o + k]
+							bw[o + k] = bw[o + k - 1]
+							bw[o + k - 1] = tw
+							var tiv := bi[o + k]
+							bi[o + k] = bi[o + k - 1]
+							bi[o + k - 1] = tiv
+							k -= 1
+		# Written back because bi is this task own buffer and nothing else
+		# touches it; the slot in the array is what the join below reads.
+		b_idx[b] = bi
+		b_wgt[b] = bw
+
+	var _tp := Time.get_ticks_usec()
+	if nband > 1:
+		var gid := WorkerThreadPool.add_group_task(band_job, nband,
+			nband, false, "bf6 splat bands")
+		WorkerThreadPool.wait_for_group_task_completion(gid)
+	else:
+		for b in range(nband):
+			band_job.call(b)
+	us_paint += Time.get_ticks_usec() - _tp
+	bands = nband
+
+	# ---- join ---------------------------------------------------------------
+	# One append per band rather than a byte loop: the bands are contiguous and
+	# in order, so the whole raster is thirty memcpys.
+	var idx := PackedByteArray()
+	var wgt := PackedByteArray()
+	for b in range(nband):
+		idx.append_array(b_idx[b])
+		wgt.append_array(b_wgt[b])
+
 	# COUNTED ACROSS ALL FOUR SLOTS, not just the strongest.
 	#
 	# Counting slot 0 only answers "which layer wins here", and the consumer of
@@ -916,7 +1037,8 @@ func composite(dir: Dictionary, fetch: Callable, size: int,
 	us_tally += Time.get_ticks_usec() - _tt
 	return {"idx": idx, "w": wgt, "pages": decoded, "layers": per_layer,
 		"size": size, "us_fetch": us_fetch, "us_decode": us_decode,
-		"us_paint": us_paint, "us_tally": us_tally, "texels": texels}
+		"us_paint": us_paint, "us_tally": us_tally, "texels": texels,
+		"bands": bands}
 
 
 # Slot 0 is the strongest. A layer already present is UPDATED rather than added

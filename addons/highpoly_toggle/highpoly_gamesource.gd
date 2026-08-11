@@ -2123,10 +2123,11 @@ func terrain_surface(cache_dir: String, force := false,
 		"into a %dx%d index and weight raster; fetch %.1fs decode %.1fs "
 			% [sres, sres, float(comp.get("us_fetch", 0)) / 1e6,
 				float(comp.get("us_decode", 0)) / 1e6]
-		+ "paint %.1fs over %s texels, tally %.1fs"
+		+ "paint %.1fs over %s texels, tally %.1fs; "
 			% [float(comp.get("us_paint", 0)) / 1e6,
 				_grouped_i(int(comp.get("texels", 0))),
-				float(comp.get("us_tally", 0)) / 1e6])
+				float(comp.get("us_tally", 0)) / 1e6]
+		+ "in %d band(s)" % int(comp.get("bands", 0)))
 	if comp.is_empty():
 		_say("game source: terrain splat — %s" % sp.error)
 		return {}
