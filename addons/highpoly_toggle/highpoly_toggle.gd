@@ -519,6 +519,18 @@ func _range_label(v: float) -> String:
 	return "%dm" % int(v)
 
 func _enter_tree() -> void:
+	# The terrain-blend GLOBAL shader parameters, registered before any prop
+	# material can compile against them. Session-only (RenderingServer, not
+	# ProjectSettings), so nothing is written into the user's project; the map
+	# context sets their values per apply. Re-registering errors, so guard on
+	# the existing list.
+	var sglobals := RenderingServer.global_shader_parameter_get_list()
+	if not sglobals.has("bf6_ground_col"):
+		RenderingServer.global_shader_parameter_add("bf6_ground_col",
+			RenderingServer.GLOBAL_VAR_TYPE_SAMPLER2D, null)
+	if not sglobals.has("bf6_ground_rect"):
+		RenderingServer.global_shader_parameter_add("bf6_ground_rect",
+			RenderingServer.GLOBAL_VAR_TYPE_VEC4, Vector4(0, 0, 0, 0))
 	dock = VBoxContainer.new()
 	dock.name = "HighPolyContent"   # tab title comes from the scroll wrapper
 

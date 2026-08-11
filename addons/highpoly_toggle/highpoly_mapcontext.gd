@@ -2651,6 +2651,7 @@ func _finish_prop(gp: String, baked: String, out: Array,
 		_fx_animate_materials(m)
 		_wind_swap_materials(m)
 		_parallax_materials(m)
+		_terrainblend_materials(m)
 		# AFTER the material passes, so anything that swaps a material in (wind,
 		# parallax, fx) has its textures compressed too, and BEFORE the sidecar
 		# is written below so the saving is baked into the cache rather than
@@ -2786,6 +2787,65 @@ static func _fx_animate_materials(m: Mesh) -> void:
 # material is alpha-cutout â€” trunks/bark stay put) for foliage_wind.gdshader.
 # Always swapped; wind_strength 0 renders identical to the original, so the
 # dock toggle is a pure live uniform change.
+# OBJECT-TERRAIN COLOUR BLENDING, the engine feature decoded 2026-08-10:
+# ground-hugging meshes sample the terrain's composed surface so curbs, rock
+# bases and rubble sit IN the ground instead of on it. The game keys it per
+# material in the depot (slot 0x89D3AD5E + enable 0x12E7F474); v1 here covers
+# the meshes that name it - the dedicated M_TerrainBlend skirt sections that
+# exist only to be ground-coloured (84 MeshSets game-wide; curb aprons are
+# the visible case). The swap bakes ONLY shader code into the prop caches:
+# the per-map colour map binds through GLOBAL shader parameters at apply, so
+# a shared prop cache can never carry one map's ground onto another.
+const TBLEND_SHADER := """
+shader_type spatial;
+render_mode diffuse_burley;
+global uniform sampler2D bf6_ground_col : source_color, filter_linear_mipmap;
+global uniform vec4 bf6_ground_rect;   // x0, z0, 1/size_x, 1/size_z
+varying vec3 wpos;
+void vertex() { wpos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz; }
+void fragment() {
+	vec2 guv = clamp(vec2((wpos.x - bf6_ground_rect.x) * bf6_ground_rect.z,
+		(wpos.z - bf6_ground_rect.y) * bf6_ground_rect.w), 0.0, 1.0);
+	ALBEDO = texture(bf6_ground_col, guv).rgb;
+	ROUGHNESS = 0.9;
+	SPECULAR = 0.15;
+}
+"""
+static var _tblend_shader: Shader = null
+
+
+static func _terrainblend_materials(m: Mesh) -> void:
+	if not (m is ArrayMesh): return
+	var am := m as ArrayMesh
+	for i in range(am.get_surface_count()):
+		var mat := am.surface_get_material(i)
+		if mat == null or mat is ShaderMaterial: continue
+		if not String(mat.resource_name).to_lower().contains("terrainblend"):
+			continue
+		if _tblend_shader == null:
+			_tblend_shader = Shader.new()
+			_tblend_shader.code = TBLEND_SHADER
+		var sm := ShaderMaterial.new()
+		sm.shader = _tblend_shader
+		sm.resource_name = mat.resource_name
+		am.surface_set_material(i, sm)
+
+
+# The per-map half of the blend: the composited ground colour and its world
+# rectangle, bound as GLOBAL shader parameters so every swapped material on
+# every prop - MultiMeshed or not, cached or fresh - picks the CURRENT map up
+# without a single per-material uniform. Parameters are session-registered by
+# the dock at load; setting them again per apply is the whole refresh.
+func _bind_ground_globals(map: String) -> void:
+	var cm := _colormap_set(map)
+	if cm.is_empty():
+		return
+	var b: Vector4 = cm["bounds"]
+	RenderingServer.global_shader_parameter_set("bf6_ground_col", cm["tex"])
+	RenderingServer.global_shader_parameter_set("bf6_ground_rect",
+		Vector4(b.x, b.y, 1.0 / maxf(b.z, 1.0), 1.0 / maxf(b.w, 1.0)))
+
+
 static func _wind_swap_materials(m: Mesh) -> void:
 	if not (m is ArrayMesh): return
 	# Do NOT replace a material for a feature that is switched off. This used to
@@ -2863,6 +2923,9 @@ func _prefs_walk(n: Node, counts: Dictionary) -> void:
 			# BaseMaterial3D foliage â€” swap them here so Foliage Wind reaches
 			# them live (no-op on already-swapped/non-foliage surfaces)
 			_wind_swap_materials(mesh)
+			# same catch-up for terrain blending: sidecars written before the
+			# feature keep their flat-default skirt material until this walk
+			_terrainblend_materials(mesh)
 			for i in range(mesh.get_surface_count()):
 				_prefs_mat(mesh.surface_get_material(i), counts)
 	for c in n.get_children():
@@ -3796,6 +3859,11 @@ func _apply_body(root: Node, enabled: bool, show_objects: bool, tex = true,
 	#  2. OUR map-context terrain (the centre-fill our terrain adds + the outer
 	#     tiles beyond the SDK bowl) gets the near-exact DETAIL shader: real game
 	#     ground-layer albedo/normal, slope-selected, so it's no longer pixelated.
+	# The terrain-blend globals refresh on EVERY apply, textured or not: the
+	# blend belongs to the props (curb aprons and their kin), not to whether
+	# our extended ground is on, and a stale global would paint last map's
+	# colours onto this map's curbs.
+	_bind_ground_globals(map)
 	var tmat: ShaderMaterial = null
 	if textured:
 		# THE GROUND'S MATERIAL, which is a stack of image loads: the splat index
