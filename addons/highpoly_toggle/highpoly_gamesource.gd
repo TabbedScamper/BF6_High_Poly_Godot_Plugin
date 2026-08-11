@@ -838,6 +838,14 @@ func open_map(map: String, game_dir := "", progress := Callable(),
 	phases.clear()
 	_phase_order.clear()
 	read_was_cold = false
+	# INTENT NEXT TO ACTIVITY. Every phase row of this open now sits under a
+	# row saying what the open was ASKED to do, so "want placements=false"
+	# followed by a placement-walk phase reads as the contradiction it is.
+	# The Extended-Terrain-walks-placements bug lived for months because the
+	# phase table could only say the walk was fast, never that nothing had
+	# asked for it.
+	BJournal.event("note", "open %s" % map, "want: placements=%s"
+		% str(bool(want.get("placements", true))))
 	var t_all := Time.get_ticks_msec()
 	var t := Time.get_ticks_msec()
 	src = BF6Source.new()

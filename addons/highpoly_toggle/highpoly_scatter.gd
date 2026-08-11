@@ -214,6 +214,13 @@ func setup(mc: Object, ctx: Node3D, map: String, dir: String, hm: Dictionary, ti
 		# for every entry anyway.
 		if not from_game and not e.has("kit"): continue
 		var nm := str(e["mesh"])
+		# GRASS IS THE POINT. Neutral kits - pebbles, litter, anything neither
+		# vegetation nor debris - used to place by "anywhere grass is not" and
+		# carpeted every open surface. The user's verdict is the right spec:
+		# vegetation places by its painted coverage, debris by ITS painted
+		# coverage, and the neutral remainder places nothing at all.
+		if _kit_class(str(e.get("name", nm))) == 0 and _kit_class(nm) == 0:
+			continue
 		var mesh := _scatter_mesh(mc, nm)
 		if mesh == null:
 			skipped.append(nm)
@@ -485,11 +492,12 @@ func _cov_weight(x: float, z: float, cls: int) -> float:
 	var v := (z - _cov_b.y) / _cov_b.w
 	if u < 0.0 or u > 1.0 or v < 0.0 or v > 1.0:
 		return 0.0
-	# A debris kit on a map with no debris-painted layers keeps the neutral
-	# rule - there is nothing to key it to, and zero debris everywhere would
-	# be as wrong as debris everywhere.
+	# A debris kit on a map whose palette paints no debris places NOTHING.
+	# The old fallback dropped it to the neutral rule, which accepts anywhere
+	# grass is not - debris everywhere, the exact spam the class exists to
+	# stop.
 	if cls == 2 and _debris_layers == 0:
-		cls = 0
+		return 0.0
 	var px := clampi(int(u * float(_cov_res - 1) + 0.5), 0, _cov_res - 1)
 	var pz := clampi(int(v * float(_cov_res - 1) + 0.5), 0, _cov_res - 1)
 	var o := (pz * _cov_res + px) * 4
