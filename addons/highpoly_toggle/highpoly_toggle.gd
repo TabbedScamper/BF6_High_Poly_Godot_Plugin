@@ -348,11 +348,18 @@ func _set_game_dir(path: String, remember := true) -> void:
 		bf6_status.text = "Battlefield 6 detected"
 		bf6_status.add_theme_color_override("font_color", Color(0.42, 0.86, 0.45))
 		bf6_path.tooltip_text = str(r["why"])
+		Log.info("Battlefield 6 found at %s" % path)
 	else:
 		bf6_status.text = "Battlefield 6 not detected — %s" % (
 			"locate your installation to use this plugin" if path == ""
 			else str(r["why"]))
 		bf6_status.add_theme_color_override("font_color", Color(0.95, 0.35, 0.35))
+		# LOGGED, not just shown. A gate that only fails on screen leaves a log
+		# that looks like an idle session, and the user reports it as whatever
+		# they were trying to do at the time.
+		Log.warn("Battlefield 6 NOT found%s: %s. The panel stays disabled "
+			% [" at " + path if path != "" else "", str(r["why"])]
+			+ "until an install is located, so its buttons will not respond.")
 	_apply_bf6_gate()
 
 
@@ -1949,6 +1956,23 @@ func _settings_snapshot() -> PackedStringArray:
 	# A user reported exactly that: High-Poly selected, a four minute session,
 	# and not one "game source" line. Without these two rows there was no way to
 	# tell that from a read that failed.
+	# THE GATE COMES FIRST, because it is the precondition for every other row
+	# and its failure is INVISIBLE everywhere else: when the install is not
+	# found the whole panel is dimmed and every control disabled, so pressing
+	# Extended Terrain does nothing, writes nothing, and the log shows an idle
+	# session. Three logs from one user read exactly that way before this row
+	# existed - the reports said "the map cannot be found" when the truth was
+	# "the GAME was never found".
+	out.append("%-22s %s" % ["battlefield 6",
+		"detected" if _bf6_ok else "NOT DETECTED - the panel is disabled, "
+			+ "which is why buttons do nothing"])
+	out.append("%-22s %s" % ["install path",
+		bf6_path.text if bf6_path != null and bf6_path.text != ""
+			else "(none set)"])
+	if not _bf6_ok:
+		var _why: Dictionary = GameDir.verify(
+			bf6_path.text if bf6_path != null else "")
+		out.append("%-22s %s" % ["why not", str(_why.get("why", "unknown"))])
 	var _r0 := EditorInterface.get_edited_scene_root()
 	var _map0: String = mapctx.map_of(_r0) if mapctx != null else ""
 	out.append("%-22s %s" % ["scene root",
