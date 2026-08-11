@@ -5409,8 +5409,27 @@ func _section_keys(res_name: String) -> Array:
 	return out
 
 
+# Set BF6_MESH_TRACE=1 to have every mesh name written and FLUSHED before it
+# is touched. Off by default because it is a line and a disk flush per mesh.
+#
+# It exists for one failure: the editor dies inside the first mesh read from
+# the install, taking the whole process with it, and the plugin session log is
+# renamed from its .tmp only on a clean close - so a crashed run leaves the
+# .tmp behind with everything up to the LAST FLUSH in it. Batched lines are
+# lost; flushed ones are not. This turns "it died somewhere in the build" into
+# the name of the mesh it died on.
+static var _mesh_trace := OS.get_environment("BF6_MESH_TRACE") == "1"
+
+
 func mesh_for(group_key: String, lod := 0) -> Mesh:
 	var _t0 := Time.get_ticks_usec()
+	if _mesh_trace:
+		# Straight to the session log and straight to disk. _say routes through
+		# the plugin's logger, which batches; this has to survive the process
+		# dying on the very next line.
+		HighpolyLog.info("mesh trace: about to build %s lod=%d"
+			% [group_key, lod])
+		HighpolyLog.flush()
 	var res_name := group_key
 	var scope := ""
 	var var_hash := 0
