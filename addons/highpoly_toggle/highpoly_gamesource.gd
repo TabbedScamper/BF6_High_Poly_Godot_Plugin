@@ -1651,6 +1651,7 @@ func terrain(cache_dir: String) -> Dictionary:
 					"min": float(md.get("world_min", 0.0)),
 					"max": float(md.get("world_max", 0.0)), "base": 0.0,
 					"scale": float(md.get("scale", 0.0))}
+				_build_tile_steps()
 				_say("game source: terrain %dx%d read back from the cache" % [side, side]
 					+ " (the install's streaming tree is unchanged)")
 				return {
@@ -1722,6 +1723,7 @@ func terrain(cache_dir: String) -> Dictionary:
 	# the place the two copies quietly disagree.
 	_hm = {"data": g["data"], "res": int(g["size"]), "min": lo.x,
 		"max": hi.x, "base": 0.0, "scale": float(g["world_size_y"])}
+	_build_tile_steps()
 	# Says the spacing in METRES, which is the number anyone actually wants and
 	# the one nothing used to print. "4097x4097" cannot be compared against
 	# "the ground looks blocky"; "1.95 m between samples" can.
@@ -2887,6 +2889,71 @@ func _road_material(key: String, priority := -1) -> Material:
 # apart; 2 is that context's default.
 var drape_step := 2
 
+# THE ADAPTIVE LATTICE, computed once while the heights are resident (they
+# are released after the roads drape) and read by BOTH consumers: the map
+# context's terrain mesh build takes this table instead of scanning again,
+# and _height_at picks each sample's step from it - so the drape evaluates
+# the exact triangles the sharpened cliff tiles draw. Same classification
+# as the mesh build by construction, because this IS the mesh build's table.
+const TILE_CHUNKS := 16
+var _tsteps := PackedInt32Array()
+var _tcpx := 0
+
+
+func tile_steps() -> Dictionary:
+	return {"steps": _tsteps, "cpx": _tcpx}
+
+
+func _build_tile_steps() -> void:
+	_tsteps = PackedInt32Array()
+	_tcpx = 0
+	var res: int = int(_hm.get("res", 0))
+	var d: PackedByteArray = _hm.get("data", PackedByteArray())
+	if res < 33 or d.size() < res * res * 2:
+		return
+	var base := maxi(1, int(round(float(res - 1) / 2048.0)))
+	var cpx := int(ceil(float(res - 1) / float(TILE_CHUNKS)))
+	cpx = int(ceil(float(cpx) / 16.0)) * 16
+	var yscale := float(_hm.get("scale", 1.0)) / 65535.0
+	var curv := PackedFloat32Array()
+	curv.resize(TILE_CHUNKS * TILE_CHUNKS)
+	var lat := int(float(res - 1) / float(base))
+	for gz in range(1, lat):
+		var pz := gz * base
+		var row := pz * res
+		var ti_row := int(float(pz) / float(cpx)) * TILE_CHUNKS
+		for gx in range(1, lat):
+			var px := gx * base
+			var h0 := float(d.decode_u16((row + px) * 2))
+			var cxv := absf(float(d.decode_u16((row + px - base) * 2))
+				+ float(d.decode_u16((row + px + base) * 2)) - 2.0 * h0)
+			var czv := absf(float(d.decode_u16((row - base * res + px) * 2))
+				+ float(d.decode_u16((row + base * res + px) * 2)) - 2.0 * h0)
+			var c := maxf(cxv, czv) * yscale
+			var ti := ti_row + int(float(px) / float(cpx))
+			if c > curv[ti]:
+				curv[ti] = c
+	var steps := PackedInt32Array()
+	steps.resize(TILE_CHUNKS * TILE_CHUNKS)
+	var ranked: Array = []
+	for i in range(curv.size()):
+		steps[i] = base
+		if curv[i] > 2.0:
+			ranked.append(i)
+	ranked.sort_custom(func(a, b): return curv[a] > curv[b])
+	if base >= 4:
+		for j in range(ranked.size()):
+			var i2: int = ranked[j]
+			if j < 12 and curv[i2] > 3.0:
+				steps[i2] = maxi(int(float(base) / 4.0), 2)
+			elif j < 44:
+				steps[i2] = maxi(int(float(base) / 2.0), 2)
+	for i in range(curv.size()):
+		if curv[i] < 0.12 and steps[i] == base:
+			steps[i] = mini(base * 2, 16)
+	_tsteps = steps
+	_tcpx = cpx
+
 
 # THE HEIGHT OF THE TERRAIN AS DRAWN, not as stored.
 #
@@ -2909,9 +2976,19 @@ func _height_at(x: float, z: float) -> float:
 	if span <= 0.0 or res < 2:
 		return 0.0
 	var d: PackedByteArray = _hm["data"]
-	var st: int = maxi(1, drape_step)
 	var fx: float = clampf((x - wmin) / span * (res - 1), 0.0, res - 1.001)
 	var fz: float = clampf((z - wmin) / span * (res - 1), 0.0, res - 1.001)
+	# THE TILE'S OWN STEP, not one step for the map. The terrain mesh is
+	# adaptive - cliff tiles draw at 2-4x finer vertices - and a drape that
+	# keeps evaluating the base lattice diverges from the drawn surface by
+	# exactly the error the sharpening removed: on the steep tiles the road
+	# ribbons sank into or floated over the sharpened ground. tile_steps()
+	# is the ONE table both the mesh build and this drape read.
+	var st: int = maxi(1, drape_step)
+	if not _tsteps.is_empty() and _tcpx > 0:
+		var ti := clampi(int(fz / float(_tcpx)), 0, TILE_CHUNKS - 1) \
+			* TILE_CHUNKS + clampi(int(fx / float(_tcpx)), 0, TILE_CHUNKS - 1)
+		st = maxi(1, int(_tsteps[ti]))
 	@warning_ignore("integer_division")
 	var x0: int = clampi((int(fx) / st) * st, 0, res - 1 - st)
 	@warning_ignore("integer_division")

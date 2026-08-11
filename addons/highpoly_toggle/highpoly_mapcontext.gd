@@ -5193,59 +5193,76 @@ func _build_terrain_from_heightmap(dir: String, meta: Dictionary) -> Node3D:
 	# lands shared verts on tile borders
 	var cpx := int(ceil(float(res - 1) / float(TERRAIN_CHUNKS)))
 	cpx = int(ceil(float(cpx) / 16.0)) * 16
-	# --- per-tile planarity scan, on the base lattice ---------------------
+	# --- per-tile adaptive steps: ONE TABLE, TWO CONSUMERS ----------------
+	# The game source computes this table while the heights are resident
+	# (BF6 gamesource._build_tile_steps, same thresholds), and its
+	# _height_at drapes the roads on it - taking the SAME table here is
+	# what makes the sharpened cliff tiles and the ribbons draped on them
+	# agree. The local scan below is the fallback for a build with no live
+	# source (a pure cache path).
 	var t_scan := Time.get_ticks_msec()
-	var curv := PackedFloat32Array()
-	curv.resize(TERRAIN_CHUNKS * TERRAIN_CHUNKS)
-	var yscale := float(meta.get("scale", 1.0)) / 65535.0
-	var lat := int(float(res - 1) / float(step))
-	for gz in range(1, lat):
-		var pz := gz * step
-		var row := pz * res
-		var ti_row := int(float(pz) / float(cpx)) * TERRAIN_CHUNKS
-		for gx in range(1, lat):
-			var px := gx * step
-			var h0 := float(raw.decode_u16((row + px) * 2))
-			var cxv := absf(float(raw.decode_u16((row + px - step) * 2))
-				+ float(raw.decode_u16((row + px + step) * 2)) - 2.0 * h0)
-			var czv := absf(float(raw.decode_u16((row - step * res + px) * 2))
-				+ float(raw.decode_u16((row + step * res + px) * 2)) - 2.0 * h0)
-			var c := maxf(cxv, czv) * yscale
-			var ti := ti_row + int(float(px) / float(cpx))
-			if c > curv[ti]:
-				curv[ti] = c
-	# classification, BUDGETED: promotion is ranked by curvature and capped -
-	# a loose threshold promoted 218 of aftermath's 256 tiles (hills carry
-	# real metre-scale curvature) and quadrupled the vertex budget. The top
-	# 12 tiles above 3 m sharpen 4x, the next 32 above 2 m sharpen 2x,
-	# dead-flat tiles (under 12 cm) coarsen 2x. Promotion only helps when
-	# the base is coarse; a map already at step 2 skips it.
 	var tsteps := PackedInt32Array()
-	tsteps.resize(TERRAIN_CHUNKS * TERRAIN_CHUNKS)
-	var ranked: Array = []
-	for i in range(curv.size()):
-		tsteps[i] = step
-		if curv[i] > 2.0:
-			ranked.append(i)
-	ranked.sort_custom(func(a, b): return curv[a] > curv[b])
+	if game_source != null:
+		var gt: Dictionary = game_source.tile_steps()
+		var gsteps: PackedInt32Array = gt.get("steps", PackedInt32Array())
+		if gsteps.size() == TERRAIN_CHUNKS * TERRAIN_CHUNKS \
+				and int(gt.get("cpx", 0)) == cpx:
+			tsteps = gsteps
+	if tsteps.is_empty():
+		var curv := PackedFloat32Array()
+		curv.resize(TERRAIN_CHUNKS * TERRAIN_CHUNKS)
+		var yscale := float(meta.get("scale", 1.0)) / 65535.0
+		var lat := int(float(res - 1) / float(step))
+		for gz in range(1, lat):
+			var pz := gz * step
+			var row := pz * res
+			var ti_row := int(float(pz) / float(cpx)) * TERRAIN_CHUNKS
+			for gx in range(1, lat):
+				var px := gx * step
+				var h0 := float(raw.decode_u16((row + px) * 2))
+				var cxv := absf(float(raw.decode_u16((row + px - step) * 2))
+					+ float(raw.decode_u16((row + px + step) * 2)) - 2.0 * h0)
+				var czv := absf(float(raw.decode_u16((row - step * res + px) * 2))
+					+ float(raw.decode_u16((row + step * res + px) * 2)) - 2.0 * h0)
+				var c := maxf(cxv, czv) * yscale
+				var ti := ti_row + int(float(px) / float(cpx))
+				if c > curv[ti]:
+					curv[ti] = c
+		# classification, BUDGETED: promotion is ranked by curvature and
+		# capped - a loose threshold promoted 218 of aftermath's 256 tiles
+		# (hills carry real metre-scale curvature) and quadrupled the vertex
+		# budget. Top 12 above 3 m sharpen 4x, next 32 above 2 m sharpen 2x,
+		# dead-flat (under 12 cm) coarsen 2x; a map already at step 2 skips
+		# promotion. MIRRORED in gamesource._build_tile_steps - change both.
+		tsteps.resize(TERRAIN_CHUNKS * TERRAIN_CHUNKS)
+		var ranked: Array = []
+		for i in range(curv.size()):
+			tsteps[i] = step
+			if curv[i] > 2.0:
+				ranked.append(i)
+		ranked.sort_custom(func(a, b): return curv[a] > curv[b])
+		if step >= 4:
+			for j in range(ranked.size()):
+				var i2: int = ranked[j]
+				if j < 12 and curv[i2] > 3.0:
+					tsteps[i2] = maxi(int(float(step) / 4.0), 2)
+				elif j < 44:
+					tsteps[i2] = maxi(int(float(step) / 2.0), 2)
+		for i in range(curv.size()):
+			if curv[i] < 0.12 and tsteps[i] == step:
+				tsteps[i] = mini(step * 2, 16)
 	var sharp2 := 0
 	var sharp4 := 0
 	var coarse := 0
-	if step >= 4:
-		for j in range(ranked.size()):
-			var i2: int = ranked[j]
-			if j < 12 and curv[i2] > 3.0:
-				tsteps[i2] = maxi(int(float(step) / 4.0), 2)
-				sharp4 += 1
-			elif j < 44:
-				tsteps[i2] = maxi(int(float(step) / 2.0), 2)
-				sharp2 += 1
-	for i in range(curv.size()):
-		if curv[i] < 0.12 and tsteps[i] == step:
-			tsteps[i] = mini(step * 2, 16)
+	for i in range(tsteps.size()):
+		if int(tsteps[i]) <= maxi(int(float(step) / 4.0), 2) and step >= 8:
+			sharp4 += 1
+		elif int(tsteps[i]) < step:
+			sharp2 += 1
+		elif int(tsteps[i]) > step:
 			coarse += 1
 	print("MapContext: terrain adaptive step (base %d): %d tile(s) 4x sharper, "
-		% [step, sharp4] + "%d 2x sharper, %d coarsened (scan %d ms)"
+		% [step, sharp4] + "%d 2x sharper, %d coarsened (%d ms)"
 		% [sharp2, coarse, Time.get_ticks_msec() - t_scan])
 	var troot := Node3D.new(); troot.name = "Terrain"
 	for cz in range(TERRAIN_CHUNKS):
