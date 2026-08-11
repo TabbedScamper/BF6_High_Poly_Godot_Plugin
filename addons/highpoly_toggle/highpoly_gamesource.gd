@@ -2644,7 +2644,10 @@ func roads() -> Mesh:
 	road_stats = td.stats()
 
 	var groups := {}
+	var gfirst := {}                     # group key -> earliest record index
+	var ri := -1
 	for r in td.records:
+		ri += 1
 		var rec: Dictionary = r
 		var pr: Dictionary = rec["props"]
 		var cv := _prop_guid(pr, BF6Decals.SLOT_CV)
@@ -2659,7 +2662,28 @@ func roads() -> Mesh:
 			key = "layer:%d" % int(rec["asset_slot"])
 		if not groups.has(key):
 			groups[key] = []
+			gfirst[key] = ri
 		(groups[key] as Array).append(rec)
+
+	# A TOTAL DRAW ORDER, not two classes. Every group needs its OWN priority:
+	# two coplanar detail decals (a manhole over a mud strip) that share one
+	# priority are a sorting tie, and Godot breaks transparent-draw ties by
+	# nothing stable - the overlap shimmers as the camera moves. The order
+	# within each class is the authored record sequence (earliest record
+	# first), which is the only ordering the file carries; fills still go
+	# under all detail. Priorities stay negative so the water overlays
+	# (priority 1 and 2) keep drawing over flooded roads.
+	var fills: Array = []
+	var detail: Array = []
+	for key in groups:
+		(fills if str(key).begins_with("layer:") else detail).append(key)
+	fills.sort_custom(func(a, b): return int(gfirst[a]) < int(gfirst[b]))
+	detail.sort_custom(func(a, b): return int(gfirst[a]) < int(gfirst[b]))
+	var gprio := {}
+	var rank := 0
+	for key in fills + detail:
+		gprio[key] = mini(-100 + rank, -1)
+		rank += 1
 
 	var am := ArrayMesh.new()
 	var tris := 0
@@ -2734,7 +2758,7 @@ func roads() -> Mesh:
 		arr[Mesh.ARRAY_INDEX] = idx
 		am.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr)
 		am.surface_set_material(am.get_surface_count() - 1,
-			_road_material(str(key)))
+			_road_material(str(key), int(gprio[key])))
 		tris += verts.size() / 3
 	road_stats["groups"] = am.get_surface_count()
 	road_stats["drawn_triangles"] = tris
@@ -2783,7 +2807,7 @@ func _road_layer_albedo(layer: int):
 	return ImageTexture.create_from_image(got["image"] as Image)
 
 
-func _road_material(key: String) -> Material:
+func _road_material(key: String, priority := -1) -> Material:
 	if _road_shader == null:
 		_road_shader = Shader.new()
 		_road_shader.code = ROAD_SHADER
@@ -2808,13 +2832,14 @@ func _road_material(key: String) -> Material:
 	# The footprints agree - fills median 1,756 m2 against detail's 518 - but the
 	# binding is the reason, not the area.
 	#
-	# So: fills at priority 0, detail at 1. Godot draws higher priority later.
-	mat.render_priority = 1
+	# So: fills under detail - and every GROUP on its own rung within that
+	# (see roads(): the rung comes from the authored record order, and a
+	# shared rung is a sorting tie that shimmers).
+	mat.render_priority = clampi(priority, -128, -1)
 	# The terrain-layer route. The palette is the same one the ground reads, so
 	# a pavement decal and the pavement under it are painted from one source
 	# rather than two that can disagree.
 	if key.begins_with("layer:"):
-		mat.render_priority = 0
 		var li := int(key.substr(6))
 		var alb = _road_layer_albedo(li)
 		if alb != null:
