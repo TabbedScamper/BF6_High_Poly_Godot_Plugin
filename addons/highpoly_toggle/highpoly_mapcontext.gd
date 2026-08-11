@@ -5255,6 +5255,12 @@ func _add_water_plane(ctx: Node3D, textured: bool) -> void:
 # (slow) build only happens once per detail level.
 const TERRAIN_CHUNKS := 16   # tiles per side (512 m tiles on an 8 km map)
 
+# The tile loop, split three ways. See the print at the end of the loop.
+var _us_tile_build := 0
+var _us_tile_lods := 0
+var _us_tile_skirt := 0
+var _us_tile_save := 0
+
 func _build_terrain_from_heightmap(dir: String, meta: Dictionary) -> Node3D:
 	var step: int = maxi(1, _step_for(meta))
 	# v2 = corrected triangle winding. The cached mesh is the geometry itself, so
@@ -5397,24 +5403,41 @@ func _build_terrain_from_heightmap(dir: String, meta: Dictionary) -> Node3D:
 			# a few hundred triangles per tile - and with skirts sealing every
 			# border, neighbouring tiles no longer need matching vertex steps.
 			var tstep := int(tsteps[cz * TERRAIN_CHUNKS + cx])
+			var _t1 := Time.get_ticks_usec()
 			var gm := _heightmap_mesh(raw, res, tstep, meta,
 				cx * cpx, cz * cpx, cpx)
+			_us_tile_build += Time.get_ticks_usec() - _t1
 			if gm == null: continue
+			var _t2 := Time.get_ticks_usec()
 			var m := _with_lods(gm)
+			_us_tile_lods += Time.get_ticks_usec() - _t2
 			if m is ArrayMesh:
+				var _t3 := Time.get_ticks_usec()
 				var sk := _skirt_arrays(SKIRT_DEPTH)
 				if not sk.is_empty():
 					(m as ArrayMesh).add_surface_from_arrays(
 						Mesh.PRIMITIVE_TRIANGLES, sk)
+				_us_tile_skirt += Time.get_ticks_usec() - _t3
 			var mi := MeshInstance3D.new()
 			mi.name = "T%d_%d" % [cx, cz]
 			mi.mesh = m
 			mark_never_casts(mi)
 			troot.add_child(mi)
 			mi.owner = troot                  # PackedScene.pack needs the owner chain
+	# WHERE THE TILE LOOP WENT. It is ~20 s on the main thread, which is both
+	# load time and a locked editor, and "build the heightfield mesh" does
+	# three quite different things per tile: read the grid into vertices,
+	# simplify it into a LOD chain, and seal the rim with a skirt. They want
+	# different fixes, so they are counted apart before anything is tried.
+	var _t4 := Time.get_ticks_usec()
 	var packed := PackedScene.new()
 	if packed.pack(troot) == OK:
 		ResourceSaver.save(packed, cache)
+	_us_tile_save = Time.get_ticks_usec() - _t4
+	print("MapContext: terrain tiles - vertices %.1fs, LOD chain %.1fs, "
+		% [_us_tile_build / 1e6, _us_tile_lods / 1e6]
+		+ "skirts %.1fs, pack+save %.1fs"
+		% [_us_tile_skirt / 1e6, _us_tile_save / 1e6])
 	DirAccess.remove_absolute("%s/terrain_s%d.res" % [dir, step])   # legacy single-mesh cache
 	# v1 chunk cache: same chunking, inside-out winding â€” reclaim the space
 	DirAccess.remove_absolute("%s/terrain_ck%d_s%d.res" % [dir, TERRAIN_CHUNKS, step])

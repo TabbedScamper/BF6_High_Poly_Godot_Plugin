@@ -2357,15 +2357,24 @@ func terrain_surface(cache_dir: String, force := false,
 			if s == 255 and (i & 3) == 0:
 				out_of_slice += 1
 
+	# THREE 4096x4096 PNG ENCODES, which do not depend on each other. Encoding
+	# them one after another is the same shape that made the layer slices cost
+	# ninety seconds; each Image is its own object and each writes its own
+	# file, so they go to the pool together.
 	var img_idx := Image.create_from_data(sres, sres, false,
 		Image.FORMAT_RGBA8, idx)
 	var img_w := Image.create_from_data(sres, sres, false,
 		Image.FORMAT_RGBA8, wgt)
-	img_idx.save_png("%s/idx.png" % dir_splat)
-	img_w.save_png("%s/w.png" % dir_splat)
 	var img_raw := Image.create_from_data(sres, sres, false,
 		Image.FORMAT_RGBA8, idx_raw)
-	img_raw.save_png("%s/idx_raw.png" % dir_splat)
+	var enc_img: Array = [img_idx, img_w, img_raw]
+	var enc_path := PackedStringArray(["%s/idx.png" % dir_splat,
+		"%s/w.png" % dir_splat, "%s/idx_raw.png" % dir_splat])
+	var enc_one := func(i: int) -> void:
+		(enc_img[i] as Image).save_png(enc_path[i])
+	var enc_gid := WorkerThreadPool.add_group_task(enc_one, enc_img.size(),
+		HighpolyVitals.work_tasks(enc_img.size()), false, "bf6 splat png")
+	WorkerThreadPool.wait_for_group_task_completion(enc_gid)
 	# 16.7 million bytes through a lookup table plus two PNG encodes. It is pure
 	# GDScript over a byte array, which is the shape that used to be a minute
 	# before the LUT went in, so it is worth a row of its own to keep honest.

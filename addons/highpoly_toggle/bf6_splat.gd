@@ -1026,14 +1026,25 @@ func composite(dir: Dictionary, fetch: Callable, size: int,
 	# grass, sand, cobblestone and the rest are almost never the single strongest
 	# layer at a texel, and dropping them left the map blending two textures.
 	var _tt := Time.get_ticks_usec()
-	var per_layer := {}
+	# COUNTED INTO A FLAT ARRAY, not a Dictionary. A layer id is a byte, so
+	# there are only 256 of them, and the Dictionary version did a get and a
+	# set per slot per texel - up to 67 million pairs of hashed lookups, which
+	# measured 6.1 s. A PackedInt64Array indexed by the id is the same answer
+	# for two array operations. 64-bit because a single layer can cover most
+	# of a 16.7M texel raster across four slots.
+	var tally := PackedInt64Array()
+	tally.resize(256)
 	for i in range(size * size):
 		var o := i * 4
 		for s in range(4):
 			if wgt[o + s] == 0:
 				break
 			var l := int(idx[o + s])
-			per_layer[l] = int(per_layer.get(l, 0)) + 1
+			tally[l] = tally[l] + 1
+	var per_layer := {}
+	for l in range(256):
+		if tally[l] > 0:
+			per_layer[l] = tally[l]
 	us_tally += Time.get_ticks_usec() - _tt
 	return {"idx": idx, "w": wgt, "pages": decoded, "layers": per_layer,
 		"size": size, "us_fetch": us_fetch, "us_decode": us_decode,
