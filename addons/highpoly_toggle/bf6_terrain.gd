@@ -394,6 +394,54 @@ func native_size() -> int:
 	return (1 << d) * maxi(1, xs - 1 - border * 2) + 1
 
 
+# BELOW THE OUTPUT LIVES ON THE OBJECT, not in a local.
+#
+# A PackedByteArray is a value with copy-on-write, so a lambda that captured a
+# local `out` would paint a COPY and throw it away. The row job reaches the
+# real buffer through self, the same way the texture compression job does.
+var _tj_out := PackedByteArray()
+var _tj_v := PackedByteArray()
+var _tj_x0 := 0
+var _tj_x1 := 0
+var _tj_z0 := 0
+var _tj_z1 := 0
+var _tj_s0 := 0
+var _tj_ssp := 0.0
+var _tj_xs := 0
+var _tj_size := 0
+
+# Under this many rows a node is painted serially - see the call site.
+const PAR_MIN_ROWS := 8
+
+
+# ONE output row of the node currently being painted. `i` is the row's index
+# within the node, so the same function serves the serial loop and the group
+# task and the two cannot drift apart.
+func _terrain_row_job(i: int) -> void:
+	var gz := _tj_z0 + i
+	var fz: float = float(gz - _tj_z0) / float(maxi(1, _tj_z1 - _tj_z0 - 1)) 		if _tj_z1 - _tj_z0 > 1 else 0.0
+	var sfy: float = clampf(float(_tj_s0) + fz * _tj_ssp, 0.0, float(_tj_xs - 1))
+	var sy0: int = mini(int(sfy), _tj_xs - 2)
+	var tz: float = sfy - float(sy0)
+	var span := float(maxi(1, _tj_x1 - _tj_x0 - 1))
+	var one := _tj_x1 - _tj_x0 > 1
+	for gx in range(_tj_x0, _tj_x1):
+		var fx: float = float(gx - _tj_x0) / span if one else 0.0
+		var sfx: float = clampf(float(_tj_s0) + fx * _tj_ssp, 0.0, float(_tj_xs - 1))
+		var sx0: int = mini(int(sfx), _tj_xs - 2)
+		var tx: float = sfx - float(sx0)
+		var r0 := (sy0 * _tj_xs + sx0) * 2
+		var r1 := r0 + _tj_xs * 2
+		if r1 + 3 >= _tj_v.size():
+			continue
+		var h0 := lerpf(float(_tj_v.decode_u16(r0)),
+			float(_tj_v.decode_u16(r0 + 2)), tx)
+		var h1 := lerpf(float(_tj_v.decode_u16(r1)),
+			float(_tj_v.decode_u16(r1 + 2)), tx)
+		_tj_out.encode_u16((gz * _tj_size + gx) * 2,
+			clampi(int(round(lerpf(h0, h1, tz))), 0, 65535))
+
+
 # What the composite spends and how much of it is overdraw. Counted before
 # anything is changed: the splat composite taught that the obvious target (the
 # reads) was 0.7 s of 135 s and the paint was the rest.
@@ -418,8 +466,8 @@ func composite(size := 4096) -> Dictionary:
 		return {}
 	with_vals.sort_custom(func(a, b): return int(a["depth"]) < int(b["depth"]))
 
-	var out := PackedByteArray()
-	out.resize(size * size * 2)
+	_tj_out = PackedByteArray()
+	_tj_out.resize(size * size * 2)
 	var span_x: float = maxf(0.001, hi.x - lo.x)
 	var span_z: float = maxf(0.001, hi.z - lo.z)
 	# HOW MUCH OF THIS PAINT IS THROWN AWAY. The pyramid is concentric - a
@@ -457,25 +505,35 @@ func composite(size := 4096) -> Dictionary:
 		var ssp := float(maxi(1, s1 - s0))
 		texels += (x1 - x0) * (z1 - z0)
 		var _tp := Time.get_ticks_usec()
-		for gz in range(z0, z1):
-			var fz: float = float(gz - z0) / float(maxi(1, z1 - z0 - 1)) if z1 - z0 > 1 else 0.0
-			var sfy: float = clampf(float(s0) + fz * ssp, 0.0, float(xs - 1))
-			var sy0: int = mini(int(sfy), xs - 2)
-			var tz: float = sfy - float(sy0)
-			for gx in range(x0, x1):
-				var fx: float = float(gx - x0) / float(maxi(1, x1 - x0 - 1)) if x1 - x0 > 1 else 0.0
-				var sfx: float = clampf(float(s0) + fx * ssp, 0.0, float(xs - 1))
-				var sx0: int = mini(int(sfx), xs - 2)
-				var tx: float = sfx - float(sx0)
-				var r0 := (sy0 * xs + sx0) * 2
-				var r1 := r0 + xs * 2
-				if r1 + 3 >= v.size():
-					continue
-				var h0 := lerpf(float(v.decode_u16(r0)), float(v.decode_u16(r0 + 2)), tx)
-				var h1 := lerpf(float(v.decode_u16(r1)), float(v.decode_u16(r1 + 2)), tx)
-				out.encode_u16((gz * size + gx) * 2,
-					clampi(int(round(lerpf(h0, h1, tz))), 0, 65535))
+		# ONE ROW BODY, two ways of driving it. Rows within a node write to
+		# disjoint output rows, so they are independent; ORDER BETWEEN NODES
+		# still matters and is still serial, which is what keeps the result
+		# identical - the deepest node still writes last.
+		_tj_v = v
+		_tj_x0 = x0
+		_tj_x1 = x1
+		_tj_z0 = z0
+		_tj_z1 = z1
+		_tj_s0 = s0
+		_tj_ssp = ssp
+		_tj_xs = xs
+		_tj_size = size
+		var rows := z1 - z0
+		# Small nodes stay serial: a group task costs more to set up than a
+		# handful of rows costs to paint.
+		if rows >= PAR_MIN_ROWS and HighpolyVitals.work_tasks(rows) > 1:
+			var gid := WorkerThreadPool.add_group_task(_terrain_row_job, rows,
+				HighpolyVitals.work_tasks(rows), false, "bf6 terrain rows")
+			WorkerThreadPool.wait_for_group_task_completion(gid)
+		else:
+			for i in range(rows):
+				_terrain_row_job(i)
 		us_paint += Time.get_ticks_usec() - _tp
-	return {"data": out, "size": size, "min": lo, "max": hi,
+	var res := {"data": _tj_out, "size": size, "min": lo, "max": hi,
 		"world_size_y": world_size_y, "nodes": with_vals.size(),
 		"us_paint": us_paint, "texels": texels, "grid": size * size}
+	# Handed over: the dictionary holds the only reference from here, so the
+	# 512 MB is not kept alive twice by this object as well.
+	_tj_out = PackedByteArray()
+	_tj_v = PackedByteArray()
+	return res
