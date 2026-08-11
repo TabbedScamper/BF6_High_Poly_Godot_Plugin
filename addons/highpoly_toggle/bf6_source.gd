@@ -110,6 +110,29 @@ static func _level_dirs(level: String) -> Array:
 	return out
 
 
+# The level ids the install actually carries, by scanning for `.../levels/
+# <name>/` directories. Directory names only - no toc read - so it is cheap
+# enough to run only when a mount has already failed to find its level.
+func _available_levels() -> Array:
+	var found := {}
+	var stack: Array = [game]
+	while not stack.is_empty():
+		var dir: String = stack.pop_back()
+		var da := DirAccess.open(dir)
+		if da == null:
+			continue
+		var here := dir.to_lower().replace("\\", "/")
+		if here.ends_with("/levels"):
+			for sub in da.get_directories():
+				found[str(sub).to_lower()] = true
+			continue                     # the level dirs themselves need no descent
+		for sub in da.get_directories():
+			stack.append(dir.path_join(sub))
+	var out: Array = found.keys()
+	out.sort()
+	return out
+
+
 static func _in_level_dir(path: String, dirs: Array) -> bool:
 	var pl := path.to_lower().replace("\\", "/")
 	for d in dirs:
@@ -472,6 +495,36 @@ func mount(level := "", progress := Callable(), use_cache := true,
 		bundle_limit := 0, all_levels := false) -> bool:
 	var t0 := Time.get_ticks_msec()
 	var paths := _find_tocs(level, all_levels)
+
+	# SELF-DIAGNOSING "map cannot be found". When a single level is asked for
+	# and the sweep found NO level tocs for it, the install has the game but
+	# not this level's archives - a partial or region install, or a level id
+	# we spelled wrong. Say WHICH by listing the level dirs that DO exist, so
+	# "MP_Tungsten cannot be found" stops being a dead end. Cheap: the tree is
+	# already walked, this just re-scans the returned paths for level dirs.
+	if level != "" and not all_levels:
+		var want := _level_dirs(level)
+		var got_mine := false
+		for p in paths:
+			if _is_level(str(p)) and _in_level_dir(str(p), want):
+				got_mine = true
+				break
+		if not got_mine:
+			# The level names the install DOES carry - a direct dir scan for
+			# `/levels/<name>/`, not the filtered toc list above (which dropped
+			# every non-matching level already). Cheap: directory names only,
+			# no toc parse.
+			var names: Array = _available_levels()
+			error = ("this install has no archives for level '%s'. " % level
+				+ ("The install carries these levels: %s. " % ", ".join(names)
+					if not names.is_empty()
+					else "The install carries NO level archives at all - it "
+						+ "looks like the SDK package without the game's own "
+						+ "level data. ")
+				+ "A partial or region install, or a differently-named level "
+				+ "id, is the usual cause; the objects and previews still work "
+				+ "because they read the shared catalogue, not this level.")
+			return false
 
 	# The TOCs still have to be PARSED even on a cache hit: chunk_location()
 	# reads the loose-chunk record straight out of toc.body, so the bodies must
