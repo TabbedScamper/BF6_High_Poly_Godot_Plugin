@@ -2938,6 +2938,20 @@ func _read_refresh() -> void:
 	var frac := 0.0
 	if total > 0:
 		frac = clampf(float(done) / float(total), 0.0, 1.0)
+	# WEIGHTED BY WHAT EACH STAGE COSTS, not one tenth each. See STAGE_WEIGHT:
+	# an even split put the whole first half minute inside the first 30% and
+	# gave the splat composite, which is more than a third of the read, 10% of
+	# the travel. The bar sat near zero and then appeared to freeze at 70%.
+	var w: Dictionary = HighpolyGameSource.STAGE_WEIGHT
+	var before := 0.0
+	var total_w := 0.0
+	for i in range(stages.size()):
+		var sw := float(w.get(stages[i], 1.0))
+		total_w += sw
+		if i < at:
+			before += sw
+	var here := float(w.get(str(_read_model["stage"]), 1.0))
+	var pos := (before + frac * here) / maxf(total_w, 0.001)
 	if jobs != null:
 		# THE KEY STAYS THE BARE STAGE NAME. _read_end clears activities by
 		# iterating OPEN_STAGES and calling clear_activity(stage), so folding a
@@ -2945,7 +2959,7 @@ func _read_refresh() -> void:
 		# every read with nothing able to clear it. The per-stage counts already
 		# have a home in the read panel's own list.
 		jobs.set_activity(str(_read_model["stage"]),
-			int(round((float(at) + frac) * 100.0)), stages.size() * 100)
+			int(round(pos * 1000.0)), 1000)
 	if job_bar != null and is_instance_valid(job_bar):
 		job_bar.indeterminate = false
 

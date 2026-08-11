@@ -769,6 +769,32 @@ const ST_LAYERS := "the ground: layer textures"
 const OPEN_STAGES := [ST_MOUNT, ST_TYPES, ST_INDEX, ST_WALK, ST_GROUND,
 	ST_COLOUR, ST_PAL, ST_SPLAT, ST_BASE, ST_LAYERS]
 
+# WHAT EACH STAGE IS WORTH ON THE BAR, in seconds of a measured cold open.
+#
+# The bar used to give every stage an equal tenth, and a bar whose weights are
+# wrong is worse than no bar: mount, type layouts and indexing together take
+# about 23 s and crawled through the first 30%, so the whole first half minute
+# read as "stuck at zero", while the splat composite - 135 s, more than a third
+# of the entire read - got 10% of the travel and looked frozen at 70%.
+#
+# These are measurements, not guesses: a cold MP_Aftermath through
+# tools/bench_buttons.py, 2026-08-11. They do not have to be exact and they do
+# not have to match every map. They have to be roughly PROPORTIONAL, so that
+# equal bar movement means roughly equal waiting, which is the only thing the
+# bar is for.
+const STAGE_WEIGHT := {
+	ST_MOUNT: 16.0,
+	ST_TYPES: 0.1,
+	ST_INDEX: 7.0,
+	ST_WALK: 25.0,
+	ST_GROUND: 2.0,
+	ST_COLOUR: 2.0,
+	ST_PAL: 0.2,
+	ST_SPLAT: 135.0,
+	ST_BASE: 3.3,
+	ST_LAYERS: 0.5,
+}
+
 # WHAT THE BUILT GEOMETRY IS. Bumped when a change alters the meshes this reader
 # produces: a different cull, a different merge, a corrected winding. NOT bumped
 # for anything that only changes how they are dressed, logged or reported.
@@ -2218,13 +2244,26 @@ func terrain_surface(cache_dir: String, force := false,
 	var slice_meta: Array = []
 	var written := 0
 	var t_slices := Time.get_ticks_msec()
+	# THE ENCODES GO WIDE. Two decodes and two PNG encodes per slice, run one
+	# after another, is what makes this phase sit at "85%" for a minute and a
+	# half: a PNG encode at 1024px is not fast, there are two per slice, and
+	# nothing about slice 4 depends on slice 3.
+	#
+	# The decodes stay serial because they read the install and the reader
+	# serialises that anyway; the encodes are pure CPU on an Image nobody else
+	# holds, so they go to the pool and the phase costs one encode instead of
+	# fourteen.
+	var pend_img: Array = []
+	var pend_path: PackedStringArray = PackedStringArray()
 	for s in range(picked.size()):
-		if progress.is_valid():
-			progress.call(ST_LAYERS, s, picked.size())
 		var li: int = picked[s]
 		var alb := _layer_image(pal.albedo_of(li), false)
 		var nrm := _layer_image(pal.normal_of(li), true)
 		if alb == null:
+			# REPORTED ANYWAY, so a skipped slice cannot stall the readout on
+			# the count before it.
+			if progress.is_valid():
+				progress.call(ST_LAYERS, s + 1, picked.size())
 			continue
 		if nrm == null:
 			# A flat normal rather than dropping the slice: the albedo is the
@@ -2233,8 +2272,10 @@ func terrain_surface(cache_dir: String, force := false,
 			nrm = Image.create_empty(LAYER_TEX_DIM, LAYER_TEX_DIM, false,
 				Image.FORMAT_RGB8)
 			nrm.fill(Color(0.5, 0.5, 1.0))
-		alb.save_png("%s/l%02d_alb.png" % [dir_splat, s])
-		nrm.save_png("%s/l%02d_nrm.png" % [dir_splat, s])
+		pend_img.append(alb)
+		pend_path.append("%s/l%02d_alb.png" % [dir_splat, s])
+		pend_img.append(nrm)
+		pend_path.append("%s/l%02d_nrm.png" % [dir_splat, s])
 		written += 1
 		slice_meta.append({
 			"layer": li,
@@ -2242,6 +2283,18 @@ func terrain_surface(cache_dir: String, force := false,
 			"metres_per_repeat": pal.metres_per_repeat(li),
 			"texels": int(per_layer.get(li, 0)),
 		})
+		# COUNTED AFTER THE WORK, and one-based. It used to report `s` BEFORE
+		# the slice was done, so the last of seven showed 6/7 - "85%" - for the
+		# whole time that slice took, and the phase never displayed 100% at
+		# all. Both of those read as a hang and neither was one.
+		if progress.is_valid():
+			progress.call(ST_LAYERS, s + 1, picked.size())
+	if not pend_img.is_empty():
+		var enc := func(i: int) -> void:
+			(pend_img[i] as Image).save_png(pend_path[i])
+		var gid := WorkerThreadPool.add_group_task(enc, pend_img.size(),
+			-1, false, "bf6 layer slice png")
+		WorkerThreadPool.wait_for_group_task_completion(gid)
 
 	# Two decodes and two PNG encodes per slice, so the per-item figure is what
 	# says whether a map with 32 textured layers is going to cost twice what one
