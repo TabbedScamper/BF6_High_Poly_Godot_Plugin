@@ -8,6 +8,12 @@ extends EditorPlugin
 # and no extracted asset is redistributed. The panel says so at the top and
 # disables itself when no install can be found - see _build_bf6_gate.
 
+# The 1x1 white stand-in bound to the bf6_ground_col global sampler. Held here
+# as well as in the map context's script static because the RenderingServer
+# keeps only the RID: if the last reference dies, the global points at freed
+# memory and the next terrain-blend material to draw takes the editor down.
+var _ground_white: Texture2D
+
 var dock: VBoxContainer
 var dock_scroll: ScrollContainer   # panel wrapper: collapses the VBox's huge min height
 var dock_root: Control             # panel root: scroller + the boot overlay
@@ -538,14 +544,38 @@ func _enter_tree() -> void:
 	# and sampling an unset global sampler took the editor down with an
 	# access violation rather than an error. A 1x1 white stand-in means the
 	# worst case is a kerb drawn white for a moment.
+	# AND IT IS SET EVERY TIME, not only when it is first added.
+	#
+	# The RenderingServer keeps the sampler's RID, not a reference to the
+	# texture behind it. white_texture() holds that texture in a script static,
+	# and a script static dies with the script - so every addon reload (the
+	# editor does one after its import scan, and disable/enable does another)
+	# frees the texture while the global goes on pointing at where it was. The
+	# guard below used to skip the set on that second pass, because the global
+	# still EXISTED, so the dangling RID survived the reload and the first
+	# terrain-blend material to draw sampled freed memory.
+	#
+	# That is the access violation three seconds into a build: no GDScript
+	# backtrace and no engine error, because the fault is on the render thread
+	# sampling a texture that is not there any more.
+	#
+	# Adding is still conditional - re-adding an existing global is an error -
+	# but the VALUE is written unconditionally, which costs nothing and leaves
+	# no path where the global outlives the texture it names.
 	var sglobals := RenderingServer.global_shader_parameter_get_list()
 	if not sglobals.has("bf6_ground_col"):
 		RenderingServer.global_shader_parameter_add("bf6_ground_col",
 			RenderingServer.GLOBAL_VAR_TYPE_SAMPLER2D,
 			MapContextScript.white_texture())
+	else:
+		RenderingServer.global_shader_parameter_set("bf6_ground_col",
+			MapContextScript.white_texture())
 	if not sglobals.has("bf6_ground_rect"):
 		RenderingServer.global_shader_parameter_add("bf6_ground_rect",
 			RenderingServer.GLOBAL_VAR_TYPE_VEC4, Vector4(0, 0, 0, 0))
+	# A SECOND REFERENCE, on the plugin node, so the texture cannot be freed
+	# while this plugin is loaded even if the script static is replaced.
+	_ground_white = MapContextScript.white_texture()
 	dock = VBoxContainer.new()
 	dock.name = "HighPolyContent"   # tab title comes from the scroll wrapper
 
