@@ -56,6 +56,13 @@ static func _settings():
 	return ei.get_editor_settings()
 
 
+# Public because the READER needs the same Steam root the gate uses: see
+# BF6Container.find_game, where a hard-coded C: path was one half of a
+# split-brain discovery bug.
+static func steam_root() -> String:
+	return _steam_root()
+
+
 static func saved() -> String:
 	var es = _settings()
 	if es == null:

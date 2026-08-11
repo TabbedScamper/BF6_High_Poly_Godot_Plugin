@@ -4334,6 +4334,15 @@ func _ensure_game_source(map: String, gen: int = -1) -> bool:
 	if _adopt_open_source(map):
 		return true
 	if not HighpolyGameSource.available():
+		# THE SILENCE WAS THE BUG REPORT. This returned false with nothing
+		# written anywhere, the caller un-pressed the layer chip, and the only
+		# trace was a panel label the user reads as "the map cannot be found".
+		# It is also reachable while the GATE says detected, because the gate
+		# and the reader used to discover the install two different ways.
+		Log.warn("Map context: the reader cannot open your Battlefield 6 "
+			+ "install, so %s was not read. %s" % [map, BF6Container.last_error])
+		Log.warn("  the panel's own check may still say 'detected': set the "
+			+ "folder at the top of the panel with Locate... and try again.")
 		return false
 	while _gs_opening:
 		await get_tree().process_frame
@@ -4648,6 +4657,14 @@ func _mapctx_changed() -> void:
 		return
 	mapctx_on.set_pressed_no_signal(false)
 	mapctx_objects.set_pressed_no_signal(false)
+	# LOGGED, not just labelled. A chip that un-presses itself with only a
+	# panel message is indistinguishable from a button that does nothing, and
+	# the saved log then shows the layer as OFF with no reason recorded.
+	Log.warn("Map context: %s could not be read, so Extended Terrain and "
+		% map + "Original map objects were switched back off. "
+		+ "The install the reader found: '%s'."
+		% (mapctx.game_source.src.game if mapctx.game_source != null
+			and mapctx.game_source.src != null else "none"))
 	lbl.text = "Could not read %s from your Battlefield 6 install. Check the game folder at the top of this panel." % map
 # The models a rung needs come from the install, so make sure it is open before
 # applying one that draws our geometry. Without this, switching to High-Poly in a

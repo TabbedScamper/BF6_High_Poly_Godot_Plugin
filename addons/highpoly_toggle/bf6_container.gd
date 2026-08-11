@@ -186,10 +186,33 @@ static func find_game(explicit := "") -> String:
 			return explicit
 		last_error = "no Data/layout.toc under %s" % explicit
 		return ""
-	var seen := CANDIDATES.duplicate()
-	# Steam libraries can be on any drive; libraryfolders.vdf lists them.
-	var vdf := "C:/Program Files (x86)/Steam/steamapps/libraryfolders.vdf"
-	if FileAccess.file_exists(vdf):
+	# THE FOLDER THE USER ALREADY POINTED US AT COMES FIRST, and its absence
+	# here was a real bug that failed silently. The panel's gate verifies a
+	# path through HighpolyGameDir (registry-aware, and it remembers whatever
+	# Locate... chose) and reports "Battlefield 6 detected". This function is
+	# what the READER uses, and it knew nothing about that path: it searched a
+	# fixed candidate list plus a hard-coded C: Steam vdf. An install neither
+	# covers therefore PASSED the gate and failed every read, and the failure
+	# path un-pressed the layer chip while writing nothing to the log. From
+	# the outside: "it says detected, but the map cannot be found and the
+	# buttons do nothing".
+	var seen: Array = []
+	var chosen := HighpolyGameDir.saved()
+	if chosen != "":
+		seen.append(chosen)
+	seen.append_array(CANDIDATES)
+	# Steam libraries can be on any drive; libraryfolders.vdf lists them. The
+	# root comes from the registry so a Steam that is not on C: is followed
+	# too; the literal path stays as the fallback.
+	var vdf := ""
+	var sroot := HighpolyGameDir.steam_root()
+	if sroot != "" and FileAccess.file_exists(
+			sroot.path_join("steamapps/libraryfolders.vdf")):
+		vdf = sroot.path_join("steamapps/libraryfolders.vdf")
+	elif FileAccess.file_exists(
+			"C:/Program Files (x86)/Steam/steamapps/libraryfolders.vdf"):
+		vdf = "C:/Program Files (x86)/Steam/steamapps/libraryfolders.vdf"
+	if vdf != "":
 		var txt := FileAccess.get_file_as_string(vdf)
 		var re := RegEx.create_from_string('"path"\\s+"([^"]+)"')
 		for m in re.search_all(txt):
@@ -198,7 +221,10 @@ static func find_game(explicit := "") -> String:
 	for p in seen:
 		if FileAccess.file_exists(String(p).path_join("Data/layout.toc")):
 			return p
-	last_error = "could not find a Battlefield 6 installation; pass the path"
+	last_error = ("could not find a Battlefield 6 installation. Looked at the "
+		+ "folder set in the panel (%s), %d known locations and every Steam "
+		+ "library. Set the path at the top of the panel.") % [
+			chosen if chosen != "" else "none set", CANDIDATES.size()]
 	return ""
 
 
