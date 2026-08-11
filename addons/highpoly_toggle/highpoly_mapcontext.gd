@@ -6625,7 +6625,13 @@ func _near_apply(w: Dictionary, mat: ShaderMaterial, c: Vector2) -> void:
 			terrain_ready.emit(false)
 		return
 	if mat == null or not is_instance_valid(mat) or mat != _tmat_live:
-		return                         # the map or material changed mid-flight
+		# NOT a completion: the map or the material changed while the window
+		# was in flight, so this answer is for a scene that no longer exists.
+		# Said out loud because terrain_ready then never fires for that apply,
+		# and a listener waiting on it needs to know why rather than wait.
+		Log.info("the ground sharpening finished for a material that has since "
+			+ "been replaced, so it was discarded. The next apply asks again.")
+		return
 	mat.set_shader_parameter("near_idx", ImageTexture.create_from_image(w["idx"]))
 	mat.set_shader_parameter("near_w", ImageTexture.create_from_image(w["w"]))
 	mat.set_shader_parameter("near_bounds", Vector4(float(w["x0"]),

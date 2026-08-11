@@ -1286,6 +1286,13 @@ static func _finish(tree: SceneTree, code: int) -> void:
 		"head": _head,
 		"tail": _tail,
 	}
+	# THE JOURNAL AGAIN, LAST. It is also written when the build phase ends, and
+	# for a run with props that is the whole story. For a terrain-only run it is
+	# not: the ground bake outlives the build phase, so the table captured there
+	# stopped before the splat composite and the layer textures - the two phases
+	# the run existed to measure. Written twice rather than moved, because the
+	# build-phase copy is what survives a run that dies during the flight.
+	_save_journal()
 	var out := str(_cfg.get("out", "user://perfrun.json"))
 	var f := FileAccess.open(out, FileAccess.WRITE)
 	if f != null:
