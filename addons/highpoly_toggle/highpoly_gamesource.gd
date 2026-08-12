@@ -6447,7 +6447,14 @@ func _geom_open() -> void:
 	# it does not catch us starting to cull destruction overlays, and a stale entry
 	# would keep serving a car with its crash panels inside it forever. Bump
 	# GEOM_EPOCH on any change to what the geometry itself contains.
-	var d := "user://bf6_geom/%s_%s_g%d" % [level, sig, GEOM_EPOCH]
+	# THE LOD RUNG IS PART OF THE DIRECTORY, or PROP_LOD silently does nothing.
+	# This cache holds BUILT geometry, so a directory written from LOD0 is served
+	# to a LOD1 build unchanged - which is exactly what happened the first time
+	# this was measured: zero new sidecars, identical mesh and surface counts,
+	# memory unmoved, and nothing to say why. Absent at rung 0 so every existing
+	# cache directory stays valid and nobody pays a rebuild for a default.
+	var lodsfx := "" if PROP_LOD <= 0 else "_l%d" % PROP_LOD
+	var d := "user://bf6_geom/%s_%s_g%d%s" % [level, sig, GEOM_EPOCH, lodsfx]
 	if DirAccess.make_dir_recursive_absolute(d) != OK and not DirAccess.dir_exists_absolute(d):
 		return
 	_geom_dir = d
