@@ -72,11 +72,17 @@ func add_group(key: String, mesh: Mesh, xf: Array, layers: int,
 		return 0
 	_meshes.append(mesh)                       # hazard 2
 	var rids: Array = []
+	var xforms: Array = []
 	var box := mesh.get_aabb()
 	var whole := AABB()
 	var count := int(xf.size() / 12)
 	for i in range(count):
 		var t := _xform(xf, i * 12)
+		# KEPT, because picking needs them and the server will not give them
+		# back - there is no exposed instance_get_transform. One Transform3D per
+		# instance is under a megabyte across a whole map, which is nothing
+		# beside what the props themselves cost.
+		xforms.append(t)
 		var rid := RenderingServer.instance_create2(mrid, _scenario)
 		RenderingServer.instance_set_transform(rid, t)
 		RenderingServer.instance_set_layer_mask(rid, layers)
@@ -87,16 +93,73 @@ func add_group(key: String, mesh: Mesh, xf: Array, layers: int,
 		var ib := t * box
 		whole = ib if i == 0 else whole.merge(ib)
 	n_instances += count
+	var item := {"mesh": mesh, "rids": rids, "xforms": xforms, "aabb": whole}
 	if _groups.has(key):
 		# Same cell, another mesh: keep both, and grow the bound.
 		var g: Dictionary = _groups[key]
+		(g["items"] as Array).append(item)
 		(g["rids"] as Array).append_array(rids)
-		(g["meshes"] as Array).append(mesh)
 		g["aabb"] = (g["aabb"] as AABB).merge(whole)
 	else:
-		_groups[key] = {"meshes": [mesh], "rids": rids, "visible": true,
+		_groups[key] = {"items": [item], "rids": rids, "visible": true,
 			"aabb": whole}
 	return count
+
+
+# The proxy node for one item of a group: it carries the mesh so material
+# passes, the census and the cell merge all still find what they expect, and
+# draws NOTHING because its layer mask is 0. The RS instances do the drawing.
+#
+# This is what keeps the rest of the plugin working when props stop being
+# MultiMeshes: the scene tree still describes the scene, only the drawing moved.
+func make_proxy(key: String, item_index: int) -> MeshInstance3D:
+	var g = _groups.get(key)
+	if g == null or item_index >= (g["items"] as Array).size():
+		return null
+	var item: Dictionary = (g["items"] as Array)[item_index]
+	var mi := MeshInstance3D.new()
+	mi.name = "RSProps_%s_%d" % [key.replace(",", "_"), item_index]
+	mi.mesh = item["mesh"]
+	mi.layers = 0                    # drawn by the server, not by this node
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	mi.set_meta("rs_key", key)
+	mi.set_meta("rs_xf", item["xforms"])
+	# VISIBILITY FOLLOWS THE NODE, so every existing path that hides props -
+	# the distance cull, the layer toggles, the build hiding the whole Props
+	# node - hides these instances too without knowing they exist. Node3D emits
+	# this for an ancestor's change as well as its own, which is what makes it
+	# cover the build case.
+	mi.visibility_changed.connect(func():
+		_sync_visible(item, mi.is_visible_in_tree()))
+	# AND SO DOES LIFETIME. This is the hazard that can kill an editor: RIDs are
+	# not reference counted, and the teardown that discards props is a sweep
+	# over child NODES by name - it would free this proxy and leak every
+	# instance behind it, once per rebuild, forever. Freeing them here means the
+	# existing teardown is correct BECAUSE it frees the proxy.
+	mi.tree_exited.connect(func(): _free_item(item))
+	return mi
+
+
+func _sync_visible(item: Dictionary, on: bool) -> void:
+	for rid in (item["rids"] as Array):
+		if (rid as RID).is_valid():
+			RenderingServer.instance_set_visible(rid, on)
+
+
+# Frees one item's instances and empties its list, so a second call - a node
+# freed twice, a teardown after a manual free - cannot double-free a RID.
+func _free_item(item: Dictionary) -> void:
+	var rids: Array = item["rids"]
+	for rid in rids:
+		if (rid as RID).is_valid():
+			RenderingServer.free_rid(rid)
+	n_instances -= (item["xforms"] as Array).size()
+	rids.clear()
+
+
+func item_count(key: String) -> int:
+	var g = _groups.get(key)
+	return (g["items"] as Array).size() if g is Dictionary else 0
 
 
 # The cull's other half. A hidden instance costs nothing to draw but is still

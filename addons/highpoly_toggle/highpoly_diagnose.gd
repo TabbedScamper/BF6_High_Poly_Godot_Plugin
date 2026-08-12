@@ -157,6 +157,22 @@ static func pick(camera: Camera3D, pos: Vector2, root: Node) -> Dictionary:
 			continue
 		var gi := n as GeometryInstance3D
 		var gx: Transform3D = (gi as Node3D).global_transform
+		# A GROUP DRAWN BY THE RENDERING SERVER. The node is a proxy: it carries
+		# the mesh so every other tree walk still finds it, draws nothing (layer
+		# mask 0), and keeps one transform per instance in meta. Without this
+		# branch those props would be unpickable and the fault markers would
+		# quietly stop working on them.
+		if gi is MeshInstance3D and gi.has_meta("rs_xf"):
+			var rmesh: Mesh = (gi as MeshInstance3D).mesh
+			var rxf: Array = gi.get_meta("rs_xf")
+			if rmesh != null and not rxf.is_empty():
+				var rb: AABB = rmesh.get_aabb()
+				for i in range(rxf.size()):
+					var ti := _ray_box(o, d, (gx * (rxf[i] as Transform3D)) * rb)
+					if ti >= 0.0:
+						cands.append({"node": gi, "mesh": rmesh, "inst": i,
+							"t": ti, "rs": true})
+			continue
 		if gi is MultiMeshInstance3D:
 			var mm: MultiMesh = (gi as MultiMeshInstance3D).multimesh
 			if mm == null or mm.mesh == null:
@@ -197,7 +213,12 @@ static func pick(camera: Camera3D, pos: Vector2, root: Node) -> Dictionary:
 		var gi2: GeometryInstance3D = cd["node"]
 		var mesh: Mesh = cd["mesh"]
 		var xf: Transform3D = (gi2 as Node3D).global_transform
-		if int(cd["inst"]) >= 0:
+		if bool(cd.get("rs", false)):
+			# The instance transform lives in meta for an RS-drawn group; there
+			# is no MultiMesh to ask.
+			var rl: Array = gi2.get_meta("rs_xf")
+			xf = xf * (rl[int(cd["inst"])] as Transform3D)
+		elif int(cd["inst"]) >= 0:
 			xf = xf * (gi2 as MultiMeshInstance3D).multimesh \
 				.get_instance_transform(int(cd["inst"]))
 		var inv := xf.affine_inverse()

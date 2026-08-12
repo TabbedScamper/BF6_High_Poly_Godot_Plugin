@@ -5964,7 +5964,7 @@ func _add_cell_multimeshes(parent: Node3D, mesh: Mesh, xf: Array, textured: bool
 			if gi == 1:
 				if flipped == null: flipped = _flipped_mesh(mesh)
 				msh = flipped
-			var mmi := _build_mmi(msh, gxf, textured, flat_mat)
+			var mmi := _build_mmi(msh, gxf, textured, flat_mat, true)
 			if src != "": mmi.set_meta("src", src)   # refresh: find MMIs by source file
 			parent.add_child(mmi); mmi.owner = null
 			# COUNTED FOR THE YIELD ANALYSIS. A MultiMeshInstance created in a
@@ -6196,7 +6196,129 @@ func reskin(root: Node, tex_mode: int) -> bool:
 	return n_mm > 0 or n_ti > 0
 
 
-func _build_mmi(mesh: Mesh, xf: Array, textured: bool, flat_mat: Material) -> MultiMeshInstance3D:
+# PROPS AS DIRECT RENDERINGSERVER INSTANCES instead of MultiMeshes.
+#
+# Measured 16% faster at real scale (33.30 ms against MultiMesh's 39.77 ms over
+# 1,400 groups and 16,782 instances) because the cost is CPU per object, not GPU
+# - MultiMesh is the SLOWEST of the options tried while drawing a seventh of the
+# primitives. 33.30 ms is 30 fps, so this is a step toward the 16.67 ms budget
+# and not a way of reaching it.
+#
+# OFF until it has been measured in the real editor. The picker understands the
+# proxy nodes; the census, profiler, markers and cell merge have not been
+# exercised against them.
+# OFF. The 16%% does NOT reproduce in the real editor. Measured on MP_Aftermath
+# against the same code with this false:
+#     frames under 60   79.94%% -> 98.70%%      WORSE
+#     median frame      26.15 ms -> 35.41 ms  WORSE
+#     build             ~147 s -> 61.5 s      2.4x FASTER
+# The synthetic harness (bench_real.gd, 1,400 groups / 16,782 instances) had RS
+# instances 16%% ahead of MultiMesh. At real scale this map has 36,724 instances
+# across 9,939 groups, and 36k individually culled server instances cost more per
+# frame than 9.9k MultiMesh nodes - the opposite of the synthetic result. The
+# harness measured a ratio this map does not have, and it had no editor around it.
+#
+# The BUILD win is real and large and belongs to a different goal (cold start,
+# tasks #71/#109): constructing MultiMeshes is about 2.4x the cost of creating
+# the instances directly. Flipping this to true trades a third of the frame rate
+# for half the build time; that is a real choice, just not the one #38 promised.
+const PROPS_RS := false
+
+# Held by the context so it outlives every proxy that points into it, and freed
+# with the context. Created on demand.
+var _rsprops = null
+
+
+func _rs() -> Object:
+	if _rsprops == null:
+		var s: Script = load(
+			"res://addons/highpoly_toggle/highpoly_rsprops.gd") as Script
+		if s == null:
+			return null
+		_rsprops = s.new()
+	# THE WORLD CAN ONLY BE ASKED OF A Node3D, and a Portal scene root is often
+	# a plain Node - which is why this quietly did nothing and every group fell
+	# back to a MultiMesh. A whole bench run measured "RS props" while the
+	# census reported 9,941 MultiMeshInstances.
+	if not _rsprops.has_scenario():
+		var n3 := _first_node3d(EditorInterface.get_edited_scene_root())
+		if n3 != null:
+			_rsprops.set_scenario(n3.get_world_3d())
+		else:
+			Log.warn("Props: no 3D world could be found, so props are drawn as "
+				+ "MultiMeshes rather than server instances.")
+	return _rsprops
+
+
+# The nearest Node3D at or under `n`. The scene root may not be one.
+func _first_node3d(n: Node) -> Node3D:
+	if n == null:
+		return null
+	if n is Node3D:
+		return n as Node3D
+	for c in n.get_children():
+		var r := _first_node3d(c)
+		if r != null:
+			return r
+	return null
+
+
+# One prop group drawn by the RenderingServer, fronted by a proxy node.
+#
+# The proxy is what keeps everything else working: it carries the mesh so the
+# material passes, the census and the cell merge find what they expect, and its
+# layer mask is 0 so no camera draws it. Visibility and RID lifetime are the
+# proxy's own (see highpoly_rsprops.make_proxy), which is what makes the existing
+# cull and the existing node-sweep teardown correct without changes.
+var _rs_seq := 0
+var _rs_warned := false
+
+
+func _build_rs_group(mesh: Mesh, xf: Array, textured: bool,
+		flat_mat: Material) -> MeshInstance3D:
+	var rs := _rs()
+	if rs == null or not rs.has_scenario():
+		return null
+	_rs_seq += 1
+	var key := "rs%d" % _rs_seq
+	# The same two decisions the MultiMesh path makes: an untextured build wears
+	# the flat study material, a textured one is kept off the map-tile decal's
+	# layer. Applied to the instances, since the proxy draws nothing.
+	var layers: int = 1 if not textured else TEXTURED_LAYER
+	var n: int = rs.add_group(key, mesh, xf, layers, false)
+	if n <= 0:
+		return null
+	var proxy: MeshInstance3D = rs.make_proxy(key, rs.item_count(key) - 1)
+	if proxy == null:
+		return null
+	if not textured and flat_mat != null:
+		proxy.material_override = flat_mat
+		for rid in (rs.group(key)["rids"] as Array):
+			RenderingServer.instance_geometry_set_material_override(rid,
+				flat_mat.get_rid())
+	# The Range slider re-derives per-mesh draw distance from this, so a proxy
+	# without it would be left drawing at whatever the default is.
+	proxy.set_meta("lod_sz", mesh.get_aabb().get_longest_axis_size())
+	return proxy
+
+
+func _build_mmi(mesh: Mesh, xf: Array, textured: bool, flat_mat: Material,
+		use_rs := false) -> GeometryInstance3D:
+	# PROPS ONLY, and only when asked. This builder is shared with the skyline,
+	# which was never measured against the RS path, so the choice is per call
+	# site rather than global.
+	if use_rs and PROPS_RS:
+		var p := _build_rs_group(mesh, xf, textured, flat_mat)
+		if p != null:
+			return p
+		# LOUD, ONCE. A silent fallback here cost a whole bench run that
+		# reported RS props while every group was still a MultiMesh.
+		if not _rs_warned:
+			_rs_warned = true
+			Log.warn("Props: the server-instance path could not build a group, "
+				+ "so props fall back to MultiMeshes for this build.")
+		# The server had no scenario yet, or the mesh had no RID. Fall through
+		# to a MultiMesh rather than dropping the props on the floor.
 	var mm := MultiMesh.new(); mm.transform_format = MultiMesh.TRANSFORM_3D; mm.mesh = mesh
 	var count := int(xf.size() / 12); mm.instance_count = count
 	for i in range(count): mm.set_instance_transform(i, _xform(xf, i * 12))
