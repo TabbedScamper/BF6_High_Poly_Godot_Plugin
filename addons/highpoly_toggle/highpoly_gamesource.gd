@@ -6021,6 +6021,28 @@ func mesh_for(group_key: String, lod := 0) -> Mesh:
 	return _m
 
 
+# WHICH LOD RUNG PROPS ARE BUILT FROM. 0 is what the game shows up close.
+#
+# MEASURED on 250 mp_aftermath meshes, renderable geometry only (the shadow and
+# ZOnly subsets are already dropped, so they are not in these numbers):
+#     LOD0  198.9 MB vertex bytes  100%
+#     LOD1   58.8 MB                29.6%
+#     LOD2   31.0 MB                15.6%
+# and 99.8% of that memory lives in meshes UNDER 3 m - the small props that are
+# everywhere the camera is. So this is a global choice and not a distance one:
+# "coarser when far away" reaches almost none of the memory, because the far
+# cells are nearly empty (2 to 9 groups against roughly 800 downtown).
+#
+# It buys NO draw calls. A coarse rung keeps every material split - measured, the
+# section count is identical on 194 of 200 meshes - so this is memory and parse
+# time only. See lod-rungs-share-lod0-section-count in the research repo.
+#
+# Left at 0 because it is a visible quality choice and belongs to the user, not
+# to a constant I picked. 1 is the artist-authored "slightly less" rung and
+# would give back roughly 70% of the vertex memory.
+const PROP_LOD := 0
+
+
 func _mesh_for_body(group_key: String, lod := 0) -> Mesh:
 	var _t0 := Time.get_ticks_usec()
 	var res_name := group_key
@@ -6108,7 +6130,10 @@ func _mesh_for_body(group_key: String, lod := 0) -> Mesh:
 	var lods: Array = info.get("lods", [])
 	if lods.is_empty():
 		return null
-	var li: int = clampi(lod, 0, lods.size() - 1)
+	# PROP_LOD biases the request rather than replacing it: a caller that asks
+	# for a specific rung (the skyline already asks for a coarse one) keeps what
+	# it asked for, and the floor only ever coarsens.
+	var li: int = clampi(maxi(lod, PROP_LOD), 0, lods.size() - 1)
 	var L: Dictionary = lods[li]
 	# The geometry buffer lives in a chunk unless the MeshSet inlines it; both
 	# happen, and asking for the wrong one gives an empty mesh rather than an

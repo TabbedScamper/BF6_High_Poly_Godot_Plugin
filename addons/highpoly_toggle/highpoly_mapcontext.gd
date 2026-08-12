@@ -2302,10 +2302,16 @@ func _part_suffix(i: int) -> String:
 
 
 func _baked_suffix() -> String:
+	# THE LOD RUNG IS PART OF THE KEY, or the flag silently does nothing. These
+	# sidecars hold built geometry; a cache written from LOD0 would be reused
+	# forever after switching to a coarser rung, and the only symptom would be
+	# "the setting has no effect". Absent for rung 0 so every existing cache
+	# stays valid.
+	var l := "" if HighpolyGameSource.PROP_LOD <= 0 		else "lod%d" % HighpolyGameSource.PROP_LOD
 	match vram_mode:
-		VRAM_LOW: return ".baked5l.res"
-		VRAM_FULL: return ".baked5f.res"
-		_: return ".baked5.res"
+		VRAM_LOW: return ".baked5l%s.res" % l
+		VRAM_FULL: return ".baked5f%s.res" % l
+		_: return ".baked5%s.res" % l
 
 
 # The SHIPPED bake, as opposed to the three above which a user's own machine
