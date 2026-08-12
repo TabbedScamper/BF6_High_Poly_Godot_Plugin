@@ -5966,14 +5966,24 @@ func describe_state(state_key: int, scope: String, var_hash: int,
 	if alpha != null:
 		var an = walk.gi.get(str(alpha)) if walk != null else null
 		var akey := str(an).to_lower().trim_suffix(".ebx") if an != null else ""
-		var m = _mask_for(alpha)
-		d["masked"] = m != null
-		d["cut"] = _cut_for(alpha)
-		if akey != "" and _mask_cache.has(akey):
-			d["mask_shape"] = {"accepted": bool(_mask_cache[akey])}
-		if m == null:
-			d["note"] += ("  alpha slot bound but REJECTED as a cutout "
-				+ "(placeholder or wear mask) - surface drawn opaque")
+		# The record's own switch first, then the content test - the same
+		# order material_for applies. A real mask behind a switched-off gate
+		# is the truckpickup-wheel case: foreign slot filler, never sampled.
+		if not _alpha_gate(dconsts):
+			d["masked"] = false
+			d["cut"] = 0.0
+			d["note"] += ("  alpha slot bound but the record's alpha-test "
+				+ "switch (0x77d10576) is OFF - the game never cuts this "
+				+ "surface, the sheet is slot filler")
+		else:
+			var m = _mask_for(alpha)
+			d["masked"] = m != null
+			d["cut"] = _cut_for(alpha)
+			if akey != "" and _mask_cache.has(akey):
+				d["mask_shape"] = {"accepted": bool(_mask_cache[akey])}
+			if m == null:
+				d["note"] += ("  alpha slot bound but REJECTED as a cutout "
+					+ "(placeholder or wear mask) - surface drawn opaque")
 	var mat = material_for(state_key, scope, var_hash, pal)
 	if mat == null:
 		d["material"] = "none (white)"
@@ -7134,7 +7144,22 @@ func material_for(state_key: int, scope: String, var_hash := 0,
 	# So the test is the CONTENT — a mask has to actually vary — and it is done
 	# once per distinct texture. Not the name: `t_debug_r` is recognisable today
 	# and a name test is a guess about every other map.
-	var mask = _mask_for(slots.get("alpha"))
+	#
+	# AND THE RECORD'S OWN SWITCH COMES FIRST. The bool constant 0x77d10576 is
+	# the shader's alpha-test gate, and a record can bind a REAL, varying mask
+	# with the gate OFF: the truckpickup's offroad wheel carries the VAN
+	# wheel's cutout sheet as slot filler (the offroad wheel ships no _a of
+	# its own), and honouring that mask punched the van wheel's silhouette
+	# through the offroad wheel's UVs — tyres that read as damaged on an
+	# intact prop. Measured over every record carrying the flag in
+	# mp_aftermath's portal_gameplay depot: 182 of 193 records with a real _a
+	# sheet set it to 1, and all 11 with it at 0 are exactly this
+	# foreign-filler class. Content answers "is it a mask"; the flag answers
+	# "does this record USE it". Absent flag = old behaviour, so maps or
+	# shader families that never write it are untouched.
+	var mask = null
+	if _alpha_gate(consts):
+		mask = _mask_for(slots.get("alpha"))
 	if mask != null:
 		var fm = _foliage_material(slots, mask, _cut_for(slots.get("alpha")), tint)
 		if fm != null:
@@ -8362,6 +8387,21 @@ const C_SMOKE_DISTORT := 0x4315DC37
 # 1.000 on the horizontal plumes, 2.000 on the vertical body, 1.000 on its ramp
 # surface. Read as an overall strength; that reading is OURS.
 const C_SMOKE_GAIN := 0x3B6C99D6
+
+
+# The record's alpha-test switch: bool constant 0x77d10576. 1 (or absent, or
+# unreadably short) = the mask may be honoured; an explicit 0 = the shader
+# never alpha-tests this record, whatever the alpha slot carries. See the
+# masked? branch in material_for for the measurement behind it. The name the
+# developers gave it is unknown - a 5,000-candidate FNV1 brute force found
+# nothing - so it lives here as the hash the depot actually stores.
+const C_ALPHA_TEST := 0x77D10576
+
+func _alpha_gate(consts: Dictionary) -> bool:
+	var raw = consts.get(C_ALPHA_TEST)
+	if not (raw is PackedByteArray) or (raw as PackedByteArray).size() < 1:
+		return true
+	return (raw as PackedByteArray)[0] != 0
 
 
 func _vec2_const(consts: Dictionary, hash_id: int, fallback: Vector2) -> Vector2:
