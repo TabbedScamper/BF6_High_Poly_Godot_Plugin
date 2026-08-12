@@ -6386,10 +6386,16 @@ func _build_mmi(mesh: Mesh, xf: Array, textured: bool, flat_mat: Material,
 func _set_mmi_lod(mmi: MultiMeshInstance3D, sz: float) -> void:
 	var r: float = radius
 	if r >= 1.0e8:
-		# "No Culling" end of the slider: honour it literally, no per-mesh limit
-		mmi.visibility_range_end = 0.0
-		mmi.visibility_range_end_margin = 0.0
+		# "No Culling" end of the slider. Distance culling is honoured literally
+		# here - that is the standing rule and the reason the worst case is worth
+		# measuring - but a prop smaller than a couple of pixels is not being
+		# culled in any sense the user would notice. See _subpixel_end.
+		var sp := _subpixel_end(sz)
+		mmi.visibility_range_end = sp
+		mmi.visibility_range_end_margin = 0.0 if sp <= 0.0 else sp * 0.1
 		mmi.visibility_range_fade_mode = GeometryInstance3D.VISIBILITY_RANGE_FADE_DISABLED
+		if sp > 0.0:
+			_subpixel_groups += 1
 		return
 	if sz < 3.0:
 		# small props: HARD cull with a hysteresis buffer. Dither-fade (FADE_SELF)
@@ -6409,6 +6415,54 @@ func _set_mmi_lod(mmi: MultiMeshInstance3D, sz: float) -> void:
 
 # Re-derive every built group's draw distance after the Range slider moves.
 # Cheap: a property write per instanced group (hundreds), not per instance.
+# How far away a prop of world size `sz` shrinks below SUBPIXEL_MIN_PX pixels.
+# 0 means "never, keep drawing it".
+#
+# px = sz * H / (2 * d * tan(fov/2))  ->  d = sz * H / (2 * px * tan(fov/2))
+#
+# This is the only culling that does not trade quality: below a couple of pixels
+# there is nothing on screen to lose. Everything else tried against the draw-call
+# budget either changed how props look (#74 merging) or did not help (#38 server
+# instances, #63 the LOD ladder).
+# OFF, measured. Draws fell 11% (9,414 -> 8,370) and the frame got 56% SLOWER
+# (26.60 -> 41.46 ms, frames under 60 81.68%% -> 99.26%%). visibility_range_end is
+# evaluated per instance per frame, and switching it on for ~9,900 groups costs
+# more than the thousand draw calls it removes - every crossing also adds and
+# removes instances from the render list, dirtying the shadow atlas and SDFGI.
+#
+# _set_mmi_lod already zeroed these ranges at the top of the slider, with the
+# comment "honour it literally, no per-mesh limit". That comment was load-bearing.
+const SUBPIXEL_ON := false
+const SUBPIXEL_MIN_PX := 2.0
+# Never drop anything nearer than this whatever the arithmetic says, so a badly
+# reported viewport or a wide field of view cannot start hiding things underfoot.
+const SUBPIXEL_FLOOR_M := 60.0
+
+var _subpixel_groups := 0
+
+
+func _subpixel_end(sz: float) -> float:
+	if not SUBPIXEL_ON or sz <= 0.0:
+		return 0.0
+	var cam := _editor_cam()
+	if cam == null:
+		return 0.0
+	var vp := cam.get_viewport()
+	if vp == null:
+		return 0.0
+	var h := float(vp.get_visible_rect().size.y)
+	if h <= 0.0:
+		return 0.0
+	var half := tan(deg_to_rad(maxf(1.0, cam.fov) * 0.5))
+	if half <= 0.0:
+		return 0.0
+	var d := sz * h / (2.0 * SUBPIXEL_MIN_PX * half)
+	# A big prop's answer is further than any map is wide; do not bother.
+	if d >= 1.0e7:
+		return 0.0
+	return maxf(d, SUBPIXEL_FLOOR_M)
+
+
 func _refresh_mesh_lod() -> void:
 	var n := 0
 	for key in _cells.keys():
@@ -6420,6 +6474,16 @@ func _refresh_mesh_lod() -> void:
 	if n > 0:
 		Log.debug("map context: re-derived draw distance on %d group(s) at %d m"
 			% [n, int(radius)])
+		# SAID OUT LOUD. This is the one cull that runs at the No Culling end of
+		# the slider, so a run that gets faster because the map is being thinned
+		# has to be distinguishable from one that got faster honestly.
+		if _subpixel_groups > 0:
+			Log.info(("Draw calls: %d of %d prop group(s) stop drawing once they "
+				+ "shrink below %.0f pixels. Nothing visible is removed - that "
+				+ "is the threshold - but it does mean the maximum Range "
+				+ "setting no longer draws literally everything.")
+				% [_subpixel_groups, n, SUBPIXEL_MIN_PX])
+		_subpixel_groups = 0
 
 # Fast path for the "Original map objects" toggle: SHOW/HIDE the already-built
 # props subtree instead of tearing the whole overlay down and re-parsing ~2k
