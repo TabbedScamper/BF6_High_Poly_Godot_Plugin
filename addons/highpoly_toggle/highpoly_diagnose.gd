@@ -152,8 +152,20 @@ static func _tint(node: Node) -> void:
 # ---------------------------------------------------------------------------
 
 # -> {} on a miss, else {node, mesh, inst, surf, point, dist}
+#
+# hover_mode changes two things, both because hovering runs per mouse move
+# where a click runs once:
+#   - candidates whose box CONTAINS the camera are dropped. The terrain tile,
+#     the roads mesh and the water plane all enclose the viewpoint, so they
+#     sort first at distance zero and starve the budget before the prop under
+#     the cursor is ever triangle-tested - which read as "hover does not work
+#     on map objects" while clicks (5x the budget) still resolved.
+#   - a mesh too big to triangle-test inside the budget is not tested AT ALL
+#     (no soup is built for it, which is the expensive part); it previews by
+#     its box through the fallback instead. Big things still highlight, they
+#     just do it cheaply.
 static func pick(camera: Camera3D, pos: Vector2, root: Node,
-		tri_budget := TRI_BUDGET) -> Dictionary:
+		tri_budget := TRI_BUDGET, hover_mode := false) -> Dictionary:
 	if camera == null or root == null:
 		return {}
 	var o := camera.project_ray_origin(pos)
@@ -210,6 +222,10 @@ static func pick(camera: Camera3D, pos: Vector2, root: Node,
 			var t2 := _ray_box(o, d, gx * msh.get_aabb())
 			if t2 >= 0.0:
 				cands.append({"node": gi, "mesh": msh, "inst": -1, "t": t2})
+	if hover_mode:
+		# _ray_box returns exactly 0.0 only when the ray STARTS inside the
+		# box, so this drops the camera-enclosing mega-meshes and nothing else.
+		cands = cands.filter(func(c): return float((c as Dictionary)["t"]) > 0.0)
 	if cands.is_empty():
 		return {}
 	cands.sort_custom(func(a, b): return float(a["t"]) < float(b["t"]))
@@ -229,6 +245,13 @@ static func pick(camera: Camera3D, pos: Vector2, root: Node,
 			break
 		var gi2: GeometryInstance3D = cd["node"]
 		var mesh: Mesh = cd["mesh"]
+		if hover_mode and _tri_estimate(mesh) > HOVER_MESH_CAP:
+			# Too big to test per mouse move. Marking the budget as short lets
+			# the box fallback answer for it, so it still previews. Testing it
+			# would also build its triangle soup, and expanding a building's
+			# indices is the hitch this exists to avoid.
+			budget[1] = true
+			continue
 		var xf: Transform3D = (gi2 as Node3D).global_transform
 		if bool(cd.get("rs", false)):
 			# The instance transform lives in meta for an RS-drawn group; there
@@ -374,6 +397,30 @@ static func _soup(mesh: Mesh) -> Array:
 	return out
 
 
+# How many triangles a mesh carries, WITHOUT building its soup: the index
+# lengths are surface metadata, so this is a handful of integer reads however
+# big the mesh is. Cached because hover asks about the same meshes every move.
+static var _tri_est_cache: Dictionary = {}
+
+static func _tri_estimate(mesh: Mesh) -> int:
+	var id := mesh.get_instance_id()
+	if _tri_est_cache.has(id):
+		return _tri_est_cache[id]
+	var n := 0
+	if mesh is ArrayMesh:
+		var am := mesh as ArrayMesh
+		for s in range(am.get_surface_count()):
+			var ix := am.surface_get_array_index_len(s)
+			n += int((ix if ix > 0 else am.surface_get_array_len(s)) / 3)
+	else:
+		# A primitive mesh is tiny; call it small rather than pay for arrays.
+		n = 12 * mesh.get_surface_count()
+	if _tri_est_cache.size() > 4096:
+		_tri_est_cache.clear()
+	_tri_est_cache[id] = n
+	return n
+
+
 # ---------------------------------------------------------------------------
 # FOCUS: what the pick landed on, and how far Tab has drilled into it
 # ---------------------------------------------------------------------------
@@ -437,11 +484,15 @@ static func focus_on(hit: Dictionary, root: Node) -> Dictionary:
 # moves; the box phase still rejects almost everything before a triangle is
 # ever tested. -> true when the highlight changed.
 const HOVER_TRI_BUDGET := 80000
+# A single mesh bigger than this is never triangle-tested on a hover: it
+# previews by its bounding box instead (see pick's hover_mode). Clicks keep
+# testing it properly with the full budget.
+const HOVER_MESH_CAP := 40000
 
 static func hover(camera: Camera3D, pos: Vector2, root: Node) -> bool:
 	if _confirmed:
 		return false
-	var hit := pick(camera, pos, root, HOVER_TRI_BUDGET)
+	var hit := pick(camera, pos, root, HOVER_TRI_BUDGET, true)
 	if hit.is_empty():
 		if _focus.is_empty():
 			return false
