@@ -95,8 +95,6 @@ var mark_note: LineEdit
 var _pick_last := Vector2(-1e9, -1e9)   # where the last pick click landed
 var _hover_last := Vector2(-1e9, -1e9)  # where the last hover pick ran
 var _hover_ms := 0                       # and when, so mouse moves are throttled
-var _rmb_down := Vector2(-1e9, -1e9)     # where the right button went down, so a
-                                         # click can be told from a freelook drag
 var col_chk: Button          # Show collisions overlay
 var shape_chk: Button        # Godot's own collision outlines (off by default)
 var iso_chk: Button          # Isolate selected: collision only (live w/ selection)
@@ -1584,7 +1582,7 @@ All of it is read from your own Battlefield 6 installation."
 	# A chip, like every other switch in this panel. It was the one CheckButton
 	# left, which made the panel look like two different tools stitched together.
 	diag_pick = Theme_.chip("Pick mode")
-	diag_pick.tooltip_text = "Hover any object in the viewport to highlight it light red, including the original map geometry the editor itself cannot select. Tab drills in while hovering (whole batch, one instance, one part), Shift+Tab steps back out. Left click confirms the highlight bright red and writes what that object is made of into the log: which depot answered, whether the shader state had a record, what textures it bound, and whether its cutout was honoured. With a confirmed pick, type a note above and press Enter to pin it to exactly that spot. Clicking the same spot again drills in, Alt+click steps out, Escape releases the pick. Right click (or H) hides the highlighted object so you can reach what it blocks; Unhide brings everything back."
+	diag_pick.tooltip_text = "Hover any object in the viewport to highlight it light red, including the original map geometry the editor itself cannot select. Tab drills in while hovering (whole batch, one instance, one part), Shift+Tab steps back out. Left click confirms the highlight bright red and writes what that object is made of into the log: which depot answered, whether the shader state had a record, what textures it bound, and whether its cutout was honoured. With a confirmed pick, type a note above and press Enter to pin it to exactly that spot. Clicking the same spot again drills in, Alt+click steps out, Escape releases the pick. Hide picked (or H) hides the highlighted object so you can reach what it blocks; Unhide brings everything back."
 	diag_pick.toggled.connect(func(on: bool):
 		_pick_last = Vector2(-1e9, -1e9)
 		_hover_last = Vector2(-1e9, -1e9)
@@ -1595,6 +1593,23 @@ All of it is read from your own Battlefield 6 installation."
 			lbl.text = HighpolyDiagnose.focus_label(
 				mapctx.game_source if mapctx != null else null))
 	diag_row.add_child(diag_pick)
+	# ---- hide: get the picked object out of the way ----
+	# A button rather than a mouse chord: the right button belongs to
+	# freelook, so a right-click hide fought the camera and was removed.
+	# H in the viewport does the same without a trip to the panel.
+	var hide_btn := Button.new()
+	hide_btn.text = "Hide picked"
+	hide_btn.tooltip_text = "Hides the object Pick mode is highlighting (H in the viewport does the same), so you can reach what stands behind it. Your own placed objects are not touched; hide those from the scene tree. Unhide brings everything back."
+	hide_btn.pressed.connect(func():
+		var r := EditorInterface.get_edited_scene_root()
+		if r == null:
+			lbl.text = "Open a level scene first."
+			return
+		if not HighpolyDiagnose.has_focus():
+			lbl.text = "Nothing is picked. Hover or click an object in Pick mode first."
+			return
+		lbl.text = HighpolyDiagnose.hide_focus(r))
+	diag_row.add_child(hide_btn)
 	# ---- unhide: bring back what pick mode hid ----
 	# Right click / H on a highlighted object gets it out of the way of the
 	# thing behind it; this is the way back. It restores everything at once
@@ -1603,7 +1618,7 @@ All of it is read from your own Battlefield 6 installation."
 	# screen, so "I unhid it and it did not come back" answers itself.
 	var unhide_btn := Button.new()
 	unhide_btn.text = "Unhide"
-	unhide_btn.tooltip_text = "Brings back every object hidden through Pick mode (right click or H hides the highlighted one so you can reach what it blocks). If a restored object still does not appear, its layer chip is off, and this says which one."
+	unhide_btn.tooltip_text = "Brings back every object hidden through Pick mode (Hide picked or H hides the highlighted one so you can reach what it blocks). If a restored object still does not appear, its layer chip is off, and this says which one."
 	unhide_btn.pressed.connect(func():
 		var r := EditorInterface.get_edited_scene_root()
 		if r == null:
@@ -5486,8 +5501,9 @@ func _pick_input_body(camera: Camera3D, event: InputEvent) -> int:
 			if moved: _report_focus(root, gs)
 			return EditorPlugin.AFTER_GUI_INPUT_STOP
 		if k.keycode == KEY_H and HighpolyDiagnose.has_focus():
-			# Hide the highlighted object - the keyboard twin of the
-			# right-click, and the one that cannot collide with freelook.
+			# Hide the highlighted object without leaving the viewport - the
+			# keyboard twin of the panel's Hide picked button. (This was a
+			# right-click once; that collided with freelook and was removed.)
 			lbl.text = HighpolyDiagnose.hide_focus(root)
 			return EditorPlugin.AFTER_GUI_INPUT_STOP
 		if k.keycode == KEY_ESCAPE and HighpolyDiagnose.has_focus():
@@ -5505,21 +5521,6 @@ func _pick_input_body(camera: Camera3D, event: InputEvent) -> int:
 	if not (event is InputEventMouseButton):
 		return EditorPlugin.AFTER_GUI_INPUT_PASS
 	var mb := event as InputEventMouseButton
-
-	# RIGHT CLICK HIDES the highlighted object - but the right button is also
-	# the editor's freelook, so the press always passes through (the camera
-	# must keep working) and the hide fires on a RELEASE that did not drag.
-	# H does the same from the keyboard and cannot collide with freelook.
-	if mb.button_index == MOUSE_BUTTON_RIGHT:
-		if mb.pressed:
-			_rmb_down = mb.position
-			return EditorPlugin.AFTER_GUI_INPUT_PASS
-		if HighpolyDiagnose.has_focus() \
-				and mb.position.distance_to(_rmb_down) <= 6.0:
-			lbl.text = HighpolyDiagnose.hide_focus(root)
-			return EditorPlugin.AFTER_GUI_INPUT_STOP
-		return EditorPlugin.AFTER_GUI_INPUT_PASS
-
 	if mb.button_index != MOUSE_BUTTON_LEFT or not mb.pressed:
 		return EditorPlugin.AFTER_GUI_INPUT_PASS
 
@@ -5539,6 +5540,22 @@ func _pick_input_body(camera: Camera3D, event: InputEvent) -> int:
 			_report_focus(root, gs)
 		else:
 			lbl.text = "That is the last part of this object. Alt+click to step out."
+		return EditorPlugin.AFTER_GUI_INPUT_STOP
+
+	# THE CLICK CONFIRMS THE HOVER - it never re-picks. Hover and click run
+	# the pick with different rules (hover skips the camera-enclosing meshes
+	# and previews big ones by their box), so a fresh full-budget pick here
+	# could resolve to something BEHIND the highlight: the ray slips past the
+	# box-previewed building's actual triangles and lands on the prop inside
+	# it. What is light red is what the click selects, always.
+	if HighpolyDiagnose.has_focus() and not HighpolyDiagnose.is_confirmed():
+		_pick_last = mb.position
+		HighpolyDiagnose.confirm(root)
+		var hn := HighpolyDiagnose.focus_node()
+		if hn != null:
+			EditorInterface.edit_node(hn)
+		lbl.text = HighpolyDiagnose.focus_label(gs)
+		_report_focus(root, gs)
 		return EditorPlugin.AFTER_GUI_INPUT_STOP
 
 	var t0 := Time.get_ticks_msec()
