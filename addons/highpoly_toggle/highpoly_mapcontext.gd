@@ -5010,6 +5010,15 @@ func _build_props_async(props_root: Node3D, entries: Array, dir: String,
 			"game source: %d MeshSet sections merged to %d surfaces (%.2fx)"
 			% [int(game_source.n_sections), int(game_source.n_surfaces),
 			   float(game_source.n_sections) / maxf(1.0, float(game_source.n_surfaces))])
+		# How much geometry could ever be sampled through the second unwrap. Said
+		# out loud because it is the whole basis for deciding whether to build
+		# anything on top of it, and a number kept only in a variable is a number
+		# nobody checks.
+		HighpolyProfiler.mark("phase",
+			"game source: %d of %d surfaces carry a real second unwrap (%.1f%%)"
+			% [int(game_source.n_uv2_surfaces), int(game_source.n_surfaces),
+			   100.0 * float(game_source.n_uv2_surfaces)
+			   / maxf(1.0, float(game_source.n_surfaces))])
 		HighpolyProfiler.mark("phase",
 			"game source: %d meshes parsed, %d served from another scope (%.0f%%)"
 			% [int(game_source.n_meshes), int(game_source.n_mesh_shared),

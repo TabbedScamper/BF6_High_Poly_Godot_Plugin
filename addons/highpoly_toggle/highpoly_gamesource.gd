@@ -864,7 +864,9 @@ const STAGE_WEIGHT := {
 static var n_blend_slot := 0
 static var n_blend_named := 0
 
-const GEOM_EPOCH := 7
+# 8: surfaces now carry ARRAY_TEX_UV2 where the mesh has a genuine second
+# unwrap, so a cached epoch-7 mesh would serve geometry without it forever.
+const GEOM_EPOCH := 8
 
 # A FUNCTION, not read as a constant from outside, and that is load-bearing.
 # GDScript folds a constant into the caller at parse time, so a caller that read
@@ -5454,6 +5456,18 @@ var n_meshes := 0
 # How much the per-material merge below is actually buying, in draw calls.
 var n_sections := 0
 var n_surfaces := 0
+# Of those surfaces, how many carry a REAL second unwrap (declB TexCoord4 on its
+# own stream). AN INSTANCE VAR LIKE ITS SIBLINGS, not a static one: it has to be
+# reset with the game source each build, or the second build in a session
+# reports a running total and reads as a doubling.
+#
+# This is the number that decides whether sampling anything through UV2 is worth
+# building. The livery already maps correctly through UV0 on car BODIES - proven
+# by rasterising the wrap through every channel, tools/test_uv32.gd - so the only
+# open case is the door/panel one, where UV0 tiles and the wrap currently falls
+# back to solid paint. dfanz0r measured 3 batches in 72 on his sample. If this
+# comes back as small, the honest answer is that the fallback stays.
+var n_uv2_surfaces := 0
 # And what the colour-table split costs: meshes built with their surfaces cut by
 # palette entry, and meshes that had to be read from the game again because the
 # cached copy was merged.
@@ -6231,6 +6245,10 @@ func _mesh_for_body(group_key: String, lod := 0) -> Mesh:
 	var order: Array = []           # insertion order, so the result is stable
 	var want_normals := {}
 	var want_uvs := {}
+	# Only ever true for a group whose every section carried a REAL second
+	# unwrap (uv2_src "tc4"). See the uv2 read below for why the other two
+	# sources are not unwraps at all.
+	var want_uv2 := {}
 	for s in secs:
 		var sec: Dictionary = s
 		var verts = sec.get("verts")
@@ -6262,10 +6280,12 @@ func _mesh_for_body(group_key: String, lod := 0) -> Mesh:
 		for bid in bids:
 			if not by_mat.has(bid):
 				by_mat[bid] = [PackedVector3Array(), PackedVector3Array(),
-					PackedVector2Array(), PackedInt32Array()]
+					PackedVector2Array(), PackedInt32Array(),
+					PackedVector2Array()]
 				order.append(bid)
 				want_normals[bid] = true
 				want_uvs[bid] = true
+				want_uv2[bid] = true
 			# PULLED OUT INTO LOCALS AND WRITTEN BACK, which is not stylistic.
 			#
 			# A PackedVector3Array is a VALUE in GDScript, so `acc[0].append_array(v)`
@@ -6278,6 +6298,9 @@ func _mesh_for_body(group_key: String, lod := 0) -> Mesh:
 			var av: PackedVector3Array = acc[0]
 			var an: PackedVector3Array = acc[1]
 			var au: PackedVector2Array = acc[2]
+			# Pulled out for the reason the comment above gives: appending through
+			# acc[4] would append to a temporary and throw it away.
+			var au2: PackedVector2Array = acc[4]
 			# THE WHOLE SECTION GOES INTO EVERY BUCKET IT FEEDS, and the pieces
 			# index into their own copy. Splitting the vertices as well would mean
 			# a remap table per piece to buy back the ~500k vertices the 170 split
@@ -6302,7 +6325,26 @@ func _mesh_for_body(group_key: String, lod := 0) -> Mesh:
 				au.append_array(uv)
 			else:
 				want_uvs[bid] = false
-			by_mat[bid] = [av, an, au, acc[3]]
+			# THE SECOND UNWRAP, and only when it IS one. The reader hands back
+			# three kinds of thing under "uv2" and only one of them is an unwrap:
+			# "tc4" is a genuine second set on its own stream; "uv0" means TC4 is
+			# aliased onto TC0 so the unwrap already IS UV0 and there is nothing
+			# to carry; "second" is the fallback to the second declared set, which
+			# is the atlas slice that turns retail-sign art 90 degrees. Shipping
+			# either of the last two would put a texture somewhere art was never
+			# authored for.
+			#
+			# Gated per group like the others, and for the same reason: one
+			# section short would silently misalign every section after it.
+			if str(sec.get("uv2_src", "")) == "tc4":
+				var u2 = sec.get("uv2")
+				if u2 is PackedVector2Array and (u2 as PackedVector2Array).size() == n:
+					au2.append_array(u2)
+				else:
+					want_uv2[bid] = false
+			else:
+				want_uv2[bid] = false
+			by_mat[bid] = [av, an, au, acc[3], au2]
 		# PER TRIANGLE, on its first vertex's tag. A triangle spans one
 		# destruction part in practice, and requiring all three to be visible
 		# would also drop the seam triangles between a hidden part and a visible
@@ -6369,6 +6411,10 @@ func _mesh_for_body(group_key: String, lod := 0) -> Mesh:
 		if bool(want_uvs[key]) \
 				and (acc[2] as PackedVector2Array).size() == verts.size():
 			arr[Mesh.ARRAY_TEX_UV] = acc[2]
+		if bool(want_uv2.get(key, false)) and acc.size() > 4 \
+				and (acc[4] as PackedVector2Array).size() == verts.size():
+			arr[Mesh.ARRAY_TEX_UV2] = acc[4]
+			n_uv2_surfaces += 1
 		arr[Mesh.ARRAY_INDEX] = acc[3]
 		am.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr)
 		# THE MERGE KEY, STORED AS THE SURFACE'S NAME. It is what decides which
@@ -6543,6 +6589,13 @@ var _dressed: Array = []
 # The mesh currently being built, so _dress can record what it dressed without
 # every caller having to pass it.
 var _dress_name := ""
+# Does the surface being dressed RIGHT NOW carry a real second unwrap?
+#
+# Read from the ArrayMesh's own surface format in _dress, never from a table
+# built during parse: a cached-geometry build never parses, so a table would be
+# empty and the doors would come out different cold and warm. The mesh carries
+# the fact into the cache with it.
+var _dress_uv2 := false
 
 
 func _dress(am: ArrayMesh, keys: Array, scope: String, var_hash := 0) -> void:
@@ -6556,10 +6609,17 @@ func _dress(am: ArrayMesh, keys: Array, scope: String, var_hash := 0) -> void:
 	if alt == scope:
 		alt = ""
 	for i in range(mini(keys.size(), am.get_surface_count())):
+		# PER SURFACE, not per mesh: a van's body and its door panels are
+		# separate surfaces and only some of them carry the second unwrap.
+		_dress_uv2 = (int(am.surface_get_format(i))
+			& int(Mesh.ARRAY_FORMAT_TEX_UV2)) != 0
 		var mat = _material_any(_mkey(keys[i]), scope, alt, var_hash,
 			_mpal(keys[i]))
 		if mat != null:
 			am.surface_set_material(i, mat)
+	# Cleared, so a later caller that reaches a material path WITHOUT going
+	# through _dress cannot inherit the last surface's answer.
+	_dress_uv2 = false
 	t_mat += Time.get_ticks_usec() - _t
 
 
@@ -6779,6 +6839,14 @@ func material_for(state_key: int, scope: String, var_hash := 0,
 	# key alone would hand the second one the first one's colour.
 	var ck := "%s|%s|%d|%s" % [scope, BF6Depot.key_hex(state_key), var_hash,
 		"" if pal.is_empty() else ",".join(Array(pal).map(func(x): return str(x)))]
+	# THE SECOND UNWRAP IS PART OF THE KEY. One record dresses a van's body and
+	# its door panels alike, and the carpaint path below now builds a different
+	# material when the surface has a real second unwrap. Without this the first
+	# one built would be handed to the other - the same class of collision the
+	# palette suffix above exists to prevent. Only appended when true, so the
+	# 99.4% of surfaces that have no second unwrap keep sharing exactly as now.
+	if _dress_uv2:
+		ck += "|uv2"
 	if _mat_cache.has(ck):
 		n_mat_cached += 1
 		return _mat_cache[ck]
@@ -6933,6 +7001,37 @@ func material_for(state_key: int, scope: String, var_hash := 0,
 				member_painted = true
 				tex_stats["carpaint_member_paint"] = \
 					int(tex_stats.get("carpaint_member_paint", 0)) + 1
+			# AND WHERE THE MEMBER HAS A REAL SECOND UNWRAP, the wrap goes on
+			# over that paint through it. Solid paint is the fallback for a door
+			# whose UV0 does not share the body's layout; it is not the answer
+			# where the mesh ships a set that DOES.
+			#
+			# Measured over all 11,875 meshes on this map (tools/fb_uv2census.py):
+			# 117 sections of 19,476 carry declB TexCoord4 on its own stream, on
+			# 32 meshes, and every one of those meshes is a door or a panel -
+			# firetruck doors, delivery-van door panels, semi-trailer rear doors,
+			# licence plates. The same set this path already documents as the
+			# remaining mismatch, and the same trailer doors dfanz0r found.
+			#
+			# DETAIL, not albedo_texture, for two reasons that happen to agree:
+			# albedo_texture can only sample UV1, and the detail slot composites
+			# by the overlay's own alpha - which is what the reference does and
+			# what the note below says is missing. The wrap's alpha is already
+			# known to be a binary cutout, so paint shows wherever the wrap does
+			# not cover.
+			#
+			# The BODY is deliberately not touched. It is measured correct
+			# through UV0, and it is the 0..1 case dfanz0r's rule says must not
+			# be redirected - doing so rendered his backdrop impostors flat red.
+			if _dress_uv2:
+				var wtex = _texture_for(slots.get("wrap"), false)
+				if wtex != null:
+					cm.detail_enabled = true
+					cm.detail_uv_layer = BaseMaterial3D.DETAIL_UV_2
+					cm.detail_albedo = wtex
+					cm.detail_blend_mode = BaseMaterial3D.BLEND_MODE_MIX
+					tex_stats["carpaint_member_uv2"] = \
+						int(tex_stats.get("carpaint_member_uv2", 0)) + 1
 		if wrap != null:
 			cm.albedo_texture = wrap
 			# The body constant is often near-black (0.0199 on the police SUV),
