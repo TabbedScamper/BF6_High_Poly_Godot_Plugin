@@ -526,6 +526,112 @@ static func is_confirmed() -> bool:
 	return _confirmed and has_focus()
 
 
+# ---------------------------------------------------------------------------
+# HIDE / UNHIDE: get an asset out of the way of the thing behind it.
+#
+# Right click (or H) on the highlighted object hides it at the current focus
+# level: a batch or a single object goes node-invisible, one MultiMesh
+# instance is zero-scaled out of its batch (there is no per-instance
+# visibility in Godot; the original transform is what gets remembered).
+#
+# THE RESTORE DATA LIVES IN SCENE METADATA, NOT IN THESE STATICS. A live
+# plugin reload wipes every static in this file, and a zero-scaled instance
+# with no record would be hidden until the next rebuild with nothing able to
+# say why. Metas ride on the nodes themselves, and since everything hideable
+# here is owner-less overlay, they can never be saved into the user's .tscn.
+#
+# OWNED NODES ARE REFUSED. Hiding writes `visible`, and on a node the scene
+# owns that change would serialize into the user's file on the next save -
+# the one thing this plugin must never do. Their own content hides from the
+# scene tree, where the editor tracks it properly.
+# ---------------------------------------------------------------------------
+
+const HIDDEN_VIS := "hp_pick_hidden"          # meta: node hidden by pick mode
+const HIDDEN_INSTS := "hp_pick_hidden_insts"  # meta: {inst: original Transform3D}
+
+# -> the user-facing message; "" only when there is no focus to hide.
+static func hide_focus(root: Node) -> String:
+	if not has_focus():
+		return ""
+	var gi: GeometryInstance3D = _focus["node"]
+	if (gi as Node).owner != null:
+		return "That is your own scene content - hide it from the scene tree instead."
+	var lv: Dictionary = (_focus["levels"] as Array)[int(_focus["idx"])]
+	var kind := str(lv["kind"])
+	var inst := int(lv["inst"])
+	var what := ""
+	if kind != "batch" and inst >= 0 and gi is MultiMeshInstance3D \
+			and (gi as MultiMeshInstance3D).multimesh != null:
+		var mm := (gi as MultiMeshInstance3D).multimesh
+		var held: Dictionary = gi.get_meta(HIDDEN_INSTS) \
+			if gi.has_meta(HIDDEN_INSTS) else {}
+		if not held.has(inst):
+			held[inst] = mm.get_instance_transform(inst)
+			# Zero basis so nothing rasterises, origin dropped far below the
+			# map so even a degenerate artifact cannot sit where it was.
+			mm.set_instance_transform(inst,
+				Transform3D(Basis().scaled(Vector3.ZERO), Vector3(0, -1e5, 0)))
+			gi.set_meta(HIDDEN_INSTS, held)
+		what = "instance %d of %s" % [inst, String(gi.name)]
+	else:
+		gi.set_meta(HIDDEN_VIS, true)
+		(gi as Node3D).visible = false
+		what = String(gi.name)
+	# The focus pointed at something that is no longer there; drop it so the
+	# next hover picks whatever stood behind it.
+	_drop_highlight(root)
+	_focus = {}
+	_confirmed = false
+	return "Hidden: %s. Unhide brings everything back." % what
+
+
+# Restore everything pick mode hid, by sweeping the scene for the metas -
+# which also finds things hidden before a plugin reload. Returns
+# {nodes, insts, gated} where gated names the invisible ancestor groups still
+# keeping a restored object off screen (a switched-off layer chip).
+static func unhide_all(root: Node) -> Dictionary:
+	var nodes := 0
+	var insts := 0
+	var gated: Array = []
+	if root == null:
+		return {"nodes": 0, "insts": 0, "gated": gated}
+	var stack: Array = [root]
+	while not stack.is_empty():
+		var n: Node = stack.pop_back()
+		for c in n.get_children():
+			stack.append(c)
+		if n.has_meta(HIDDEN_VIS):
+			if n is Node3D:
+				(n as Node3D).visible = true
+			n.remove_meta(HIDDEN_VIS)
+			nodes += 1
+			_note_gate(n, gated)
+		if n.has_meta(HIDDEN_INSTS) and n is MultiMeshInstance3D:
+			var mm := (n as MultiMeshInstance3D).multimesh
+			var held: Dictionary = n.get_meta(HIDDEN_INSTS)
+			for k in held.keys():
+				if mm != null and int(k) >= 0 and int(k) < mm.instance_count:
+					mm.set_instance_transform(int(k), held[k])
+					insts += 1
+			n.remove_meta(HIDDEN_INSTS)
+			_note_gate(n, gated)
+	return {"nodes": nodes, "insts": insts, "gated": gated}
+
+
+# The layer check: the object is restored, but is it actually ON SCREEN, or
+# does a switched-off layer above it still hide it? Names the first invisible
+# ancestor so the caller can point at the chip that controls it.
+static func _note_gate(n: Node, gated: Array) -> void:
+	var p: Node = n
+	while p != null:
+		if p is Node3D and not (p as Node3D).visible:
+			var nm := String(p.name)
+			if not gated.has(nm):
+				gated.append(nm)
+			return
+		p = p.get_parent()
+
+
 # Tab / Shift-Tab. delta +1 drills in, -1 steps out. -> true if it moved.
 static func step(delta: int, root: Node) -> bool:
 	if _focus.is_empty():

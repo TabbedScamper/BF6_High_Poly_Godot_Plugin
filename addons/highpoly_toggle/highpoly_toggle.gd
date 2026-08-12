@@ -95,6 +95,8 @@ var mark_note: LineEdit
 var _pick_last := Vector2(-1e9, -1e9)   # where the last pick click landed
 var _hover_last := Vector2(-1e9, -1e9)  # where the last hover pick ran
 var _hover_ms := 0                       # and when, so mouse moves are throttled
+var _rmb_down := Vector2(-1e9, -1e9)     # where the right button went down, so a
+                                         # click can be told from a freelook drag
 var col_chk: Button          # Show collisions overlay
 var shape_chk: Button        # Godot's own collision outlines (off by default)
 var iso_chk: Button          # Isolate selected: collision only (live w/ selection)
@@ -1582,7 +1584,7 @@ All of it is read from your own Battlefield 6 installation."
 	# A chip, like every other switch in this panel. It was the one CheckButton
 	# left, which made the panel look like two different tools stitched together.
 	diag_pick = Theme_.chip("Pick mode")
-	diag_pick.tooltip_text = "Hover any object in the viewport to highlight it light red, including the original map geometry the editor itself cannot select. Tab drills in while hovering (whole batch, one instance, one part), Shift+Tab steps back out. Left click confirms the highlight bright red and writes what that object is made of into the log: which depot answered, whether the shader state had a record, what textures it bound, and whether its cutout was honoured. With a confirmed pick, type a note above and press Enter to pin it to exactly that spot. Clicking the same spot again drills in, Alt+click steps out, Escape releases the pick."
+	diag_pick.tooltip_text = "Hover any object in the viewport to highlight it light red, including the original map geometry the editor itself cannot select. Tab drills in while hovering (whole batch, one instance, one part), Shift+Tab steps back out. Left click confirms the highlight bright red and writes what that object is made of into the log: which depot answered, whether the shader state had a record, what textures it bound, and whether its cutout was honoured. With a confirmed pick, type a note above and press Enter to pin it to exactly that spot. Clicking the same spot again drills in, Alt+click steps out, Escape releases the pick. Right click (or H) hides the highlighted object so you can reach what it blocks; Unhide brings everything back."
 	diag_pick.toggled.connect(func(on: bool):
 		_pick_last = Vector2(-1e9, -1e9)
 		_hover_last = Vector2(-1e9, -1e9)
@@ -1593,6 +1595,37 @@ All of it is read from your own Battlefield 6 installation."
 			lbl.text = HighpolyDiagnose.focus_label(
 				mapctx.game_source if mapctx != null else null))
 	diag_row.add_child(diag_pick)
+	# ---- unhide: bring back what pick mode hid ----
+	# Right click / H on a highlighted object gets it out of the way of the
+	# thing behind it; this is the way back. It restores everything at once
+	# (metas on the nodes, so it also finds things hidden before a plugin
+	# reload) and then says which layer chip is still keeping something off
+	# screen, so "I unhid it and it did not come back" answers itself.
+	var unhide_btn := Button.new()
+	unhide_btn.text = "Unhide"
+	unhide_btn.tooltip_text = "Brings back every object hidden through Pick mode (right click or H hides the highlighted one so you can reach what it blocks). If a restored object still does not appear, its layer chip is off, and this says which one."
+	unhide_btn.pressed.connect(func():
+		var r := EditorInterface.get_edited_scene_root()
+		if r == null:
+			lbl.text = "Open a level scene first."
+			return
+		var st: Dictionary = HighpolyDiagnose.unhide_all(r)
+		var n: int = int(st["nodes"]) + int(st["insts"])
+		if n == 0:
+			lbl.text = "Nothing is hidden."
+			return
+		var msg := "Unhid %d object(s)." % n
+		var gates: Array = st["gated"]
+		if not gates.is_empty():
+			var chips := PackedStringArray()
+			for g in gates:
+				var c := _layer_chip_name(str(g))
+				if not chips.has(c):
+					chips.append(c)
+			msg += " Some are still off screen: switch %s back on to see them." \
+				% ", ".join(chips)
+		lbl.text = msg)
+	diag_row.add_child(unhide_btn)
 
 
 	# ---- performance recorder ----
@@ -5452,6 +5485,11 @@ func _pick_input_body(camera: Camera3D, event: InputEvent) -> int:
 					else "That is the last part of this object.")
 			if moved: _report_focus(root, gs)
 			return EditorPlugin.AFTER_GUI_INPUT_STOP
+		if k.keycode == KEY_H and HighpolyDiagnose.has_focus():
+			# Hide the highlighted object - the keyboard twin of the
+			# right-click, and the one that cannot collide with freelook.
+			lbl.text = HighpolyDiagnose.hide_focus(root)
+			return EditorPlugin.AFTER_GUI_INPUT_STOP
 		if k.keycode == KEY_ESCAPE and HighpolyDiagnose.has_focus():
 			# Two stages, like any selection tool: the first Escape releases a
 			# confirmed selection back to hovering, the second clears the pick.
@@ -5467,6 +5505,21 @@ func _pick_input_body(camera: Camera3D, event: InputEvent) -> int:
 	if not (event is InputEventMouseButton):
 		return EditorPlugin.AFTER_GUI_INPUT_PASS
 	var mb := event as InputEventMouseButton
+
+	# RIGHT CLICK HIDES the highlighted object - but the right button is also
+	# the editor's freelook, so the press always passes through (the camera
+	# must keep working) and the hide fires on a RELEASE that did not drag.
+	# H does the same from the keyboard and cannot collide with freelook.
+	if mb.button_index == MOUSE_BUTTON_RIGHT:
+		if mb.pressed:
+			_rmb_down = mb.position
+			return EditorPlugin.AFTER_GUI_INPUT_PASS
+		if HighpolyDiagnose.has_focus() \
+				and mb.position.distance_to(_rmb_down) <= 6.0:
+			lbl.text = HighpolyDiagnose.hide_focus(root)
+			return EditorPlugin.AFTER_GUI_INPUT_STOP
+		return EditorPlugin.AFTER_GUI_INPUT_PASS
+
 	if mb.button_index != MOUSE_BUTTON_LEFT or not mb.pressed:
 		return EditorPlugin.AFTER_GUI_INPUT_PASS
 
@@ -5525,6 +5578,27 @@ func _report_focus(root: Node, gs) -> void:
 		return
 	var note: String = mark_note.text.strip_edges() if mark_note != null else ""
 	HighpolyDiagnose.run(root, gs, mapctx, note)
+
+
+# Overlay group name -> the panel chip that shows or hides it, so the Unhide
+# report can point at the switch instead of naming an internal node.
+static func _layer_chip_name(group: String) -> String:
+	if group.begins_with("V_"):
+		return "the Variant '%s'" % group.substr(2)
+	match group:
+		"Backdrop":
+			return "Backdrops"
+		"Props":
+			return "Original map objects"
+		"Water":
+			return "Water"
+		"Roads":
+			return "Roads"
+		"FXCards":
+			return "FX"
+		"Terrain", "_MAP_CONTEXT":
+			return "Extended Terrain"
+	return group
 
 
 # The instance of a batch nearest to where the camera is looking: the honest
