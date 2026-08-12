@@ -52,11 +52,12 @@ The EditorPlugin / UI layer. `_enter_tree` runs L534-L1985 (~1450 lines) and is 
 
 **L5065-L5276 — Paced placed-object swap, cull helpers, override, previews.** `SWAP_JOB` L5083, `_apply_scene()` L5092 (lane L5116, budget 400ms→clampi(yield*4,250,2000) L5119/L5145; ALSO writes `lbl` "Swapping placed objects: %d of %d" L5132 — duplicate channel), `_cull_radius()` L5158, `_override_toggled()` L5176, **`prop_light_on`/`previews_btn`/`_said_not_map` DECLARED at L5230-5232, ~4400 lines after first use**, `_build_previews()` L5237 (jobs.acquire/report/release L5262-5265).
 
-**L5278-L5589 — Prop lighting, viewport input, PICK MODE, live handlers.**
-- `_set_prop_lighting()` L5282; `PROP_EMISSION_ON` L5325
-- `_forward_3d_gui_input()` L5337 → body L5346 (doors L5355, variants L5357)
-- **`_pick_input` L5379 → `_pick_input_body` L5388 — Tab/Shift+Tab step L5396, Escape L5403, Alt+click L5416, same-spot drill (6px) L5425, `HighpolyDiagnose.pick` L5434, `EditorInterface.edit_node` L5448**
-- `_report_focus()` L5462, `_collision_changed()` L5468, `_isolate_toggled()` L5490, `_on_selection_changed()` L5508, `_on_node_added()` L5523 → body L5532, `_collision_deferred/_swap_deferred` L5567/L5572
+**L5278-L5589 — Prop lighting, viewport input, PICK MODE, live handlers.** (line numbers pre-v2; grep the names)
+- `_set_prop_lighting()`; `PROP_EMISSION_ON`
+- `_forward_3d_gui_input()` → body (doors, then variants)
+- **`_pick_input` → `_pick_input_body` — PICK MODE V2 (2026-08-12): InputEventMouseMotion at the top = the hover pass (throttled 90 ms + 6 px via `_hover_last`/`_hover_ms` declared beside `_pick_last` ~L95; skipped while any button held or a pick is confirmed; never consumes the event). Tab/Shift+Tab step the ladder on hover OR confirmed focus. Escape is two-stage: first releases a confirmed pick back to hover (`unconfirm`), second clears. Alt+click steps out, same-spot click (6px) drills. A fresh click = `pick` → `focus_on` → `confirm` (bright red) → `edit_node` → `_report_focus`.**
+- Marker paths: the note-box Enter handler prefers a CONFIRMED pick (`focus_point()` + `provenance()` into `hp_note_target`) over the selection; a selected MultiMeshInstance3D anchors to `_nearest_instance_point()` (nearest instance to the camera aim), NEVER the group AABB centre (the old center-of-all-look-alikes bug). "Drop marker" also attaches provenance when a pick focus exists.
+- `_report_focus()`, `_nearest_instance_point()` (after it), `_collision_changed()`, `_isolate_toggled()`, `_on_selection_changed()`, `_on_node_added()`, `_collision_deferred/_swap_deferred`
 
 ## THE JOB BAR — contract
 

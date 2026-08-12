@@ -53,14 +53,15 @@ Profiler API: `event` :92, `crumbs_begin/crumb/crumbs_end/last_session_end` :192
 `class_name HighpolyStore`, static. Live: `ctx_scan` :57, `load_ctx_scene` :93, `ensure_dir` :123 (generic helper stranded here; used by profiler+updater), **`load_external_glb` :332 (the runtime GLB→PackedScene workhorse: WebP ext, corrupt-file detect+delete, tangents, S3TC)**, `ensure_scene_tangents` :380 (worker-safe) / `compress_scene_textures` :396 (main-thread), `thumb_path` :203, `prune_keep` :567. Paths: `ROOT user://highpoly`, `MODELS_DIR` (dormant), `THUMBS_DIR` (live), `CTX_PROPS user://mapcontext/_props`, `INDEX_PATH store.json` (dormant).
 **Dead:** `remote`/`mesh_remote` :112/:116 never assigned (doors:14 and previews:118 read a permanently empty dict); the whole ingest/index API.
 
-## highpoly_diagnose.gd (826) — Pick mode's engine
-`class_name HighpolyDiagnose`, static. Driven entirely by the dock (see toggle.md L5379-5449).
-- `clear()` :92 — restores every tinted node's own `material_overlay`.
-- **`pick(camera, pos, root)` :139 — two-phase raycast: AABB entry-distance sort, then triangles, stop when a hit beats the next box (:200-248).** Budgets `TRI_BUDGET 400000`, `BIG_SURFACE 300000` (AABB-only), `SOUP_KEEP 12`.
-- `focus_on(hit, root)` :395 — builds the batch/object/surface ladder, highlights the "object" rung.
-- `step(delta, root)` :411 — Tab drills in, Shift-Tab out.
-- `focus_label(gs)` :528 (incl. `_surface_tag` naming a part by its bound texture :565), `run(root, gs, mapctx, note)` :597 — the full resolution-chain report (picked → selected → camera aim).
-Duplicates: `_ray_box` :279 ≡ `HighpolyLib._ray_aabb` :822; `_collect` :816 another walk.
+## highpoly_diagnose.gd (~910 after pick v2) — Pick mode's engine
+`class_name HighpolyDiagnose`, static. Driven entirely by the dock (see toggle.md pick region).
+**Pick mode v2 (2026-08-12, Revit-style two-stage selection):** `_confirmed` static + two overlay materials via `_red(hard)` — light red (hover/Tab preview) and bright red (confirmed). `hover(camera, pos, root)` re-picks on mouse moves at `HOVER_TRI_BUDGET 80000`, never replaces a confirmed focus, and keeps the Tab ladder when the hit stays on the same node+instance. `confirm(root)` / `unconfirm(root)` / `is_confirmed()` switch the stage. `provenance(gs)` renders the focused thing's identity as one line (mesh res, scope, variation, surface+state key, instance, world pos) — what a pinned note carries into the saved log.
+- `clear()` — restores every tinted node's own `material_overlay`, resets `_confirmed`.
+- **`pick(camera, pos, root, tri_budget := TRI_BUDGET)` — two-phase raycast: AABB entry-distance sort, then triangles, stop when a hit beats the next box.** Budgets `TRI_BUDGET 400000`, `BIG_SURFACE 300000` (AABB-only), `SOUP_KEEP 12`.
+- `focus_on(hit, root)` — builds the batch/object/surface ladder, ALWAYS unconfirmed (confirming is the click's job).
+- `step(delta, root)` — Tab drills in, Shift-Tab out.
+- `focus_label(gs)` (PICKED prefix + next-action hint; `_surface_tag` names a part by its bound texture), `run(root, gs, mapctx, note)` — the full resolution-chain report (picked → selected → camera aim).
+Duplicates: `_ray_box` ≡ `HighpolyLib._ray_aabb`; `_collect` another walk.
 
 ## highpoly_census.gd (834)
 `class_name HighpolyCensus`, static; one addon caller (flightrun:625 `take(croot)`). Prices the scene as the GPU charges: surfaces, distinct materials/shaders, casting surfaces × MEASURED cascades (`_directional_cascades` :454), dedup recovery, reconciliation vs the engine draw counter. `report()/lines()` :676/:689 reachable only from tools/. Third scene-walk implementation exists in autorun `_surface_census` :902.

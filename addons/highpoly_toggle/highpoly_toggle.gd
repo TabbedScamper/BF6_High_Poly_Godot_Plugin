@@ -93,6 +93,8 @@ var diag_pick: Button        # Pick mode: click-select our own overlay geometry
 # their reports with it: dropping a marker, and picking an object.
 var mark_note: LineEdit
 var _pick_last := Vector2(-1e9, -1e9)   # where the last pick click landed
+var _hover_last := Vector2(-1e9, -1e9)  # where the last hover pick ran
+var _hover_ms := 0                       # and when, so mouse moves are throttled
 var col_chk: Button          # Show collisions overlay
 var shape_chk: Button        # Godot's own collision outlines (off by default)
 var iso_chk: Button          # Isolate selected: collision only (live w/ selection)
@@ -1393,7 +1395,7 @@ All of it is read from your own Battlefield 6 installation."
 	host.add_child(mark_lbl)
 	mark_note = LineEdit.new()
 	mark_note.placeholder_text = "What is wrong here? e.g. wall missing"
-	mark_note.tooltip_text = "Describe the problem, then press Enter to pin it to the selected object, or Drop marker to place it in front of the camera. Either way the note floats in the viewport, so a screenshot carries it."
+	mark_note.tooltip_text = "Describe the problem, then press Enter to pin it. A confirmed pick (bright red, from Pick mode) wins: the note lands on that exact object and carries its identity into the saved log. Otherwise it pins to the selected object, or with nothing selected it drops in front of the camera. The note floats in the viewport, so a screenshot carries it."
 	host.add_child(mark_note)
 	# ENTER PINS THE NOTE TO WHAT IS SELECTED.
 	#
@@ -1421,23 +1423,46 @@ All of it is read from your own Battlefield 6 installation."
 				break
 		var pos := HighpolyMarkers.camera_point()
 		var what := "in front of the camera"
-		if target != null:
-			# Above the object's own bounds. An empty box (a node with no
-			# geometry of its own) falls back to its origin plus a little, which
-			# is still on the thing rather than metres away from it.
-			var ab: AABB = LibScript._global_aabb(target)
-			if ab.size.length() > 0.001:
-				pos = ab.get_center() + Vector3(0, ab.size.y * 0.5 + 0.6, 0)
+		var target_desc := ""
+		# A CONFIRMED PICK BEATS THE SELECTION. Props draw as MultiMesh
+		# batches, so a selection can only name the whole group, and a note
+		# pinned to one landed at the centre of every look-alike. The pick
+		# holds the ONE clicked instance, the clicked point on it, and its
+		# identity in the game files, so the note goes exactly there and the
+		# saved log says exactly what it was about.
+		if HighpolyDiagnose.is_confirmed():
+			pos = HighpolyDiagnose.focus_point() + Vector3(0, 0.3, 0)
+			what = "on the picked object"
+			target_desc = HighpolyDiagnose.provenance(
+				mapctx.game_source if mapctx != null else null)
+		elif target != null:
+			if target is MultiMeshInstance3D \
+					and (target as MultiMeshInstance3D).multimesh != null:
+				# The whole batch is selected. The honest anchor without a
+				# pick is the instance nearest the camera aim - never the
+				# group's centre, which sits in the middle of every look-alike
+				# and on nothing at all.
+				pos = _nearest_instance_point(target as MultiMeshInstance3D) \
+					+ Vector3(0, 0.6, 0)
+				what = "on the nearest %s instance" % target.name
 			else:
-				pos = target.global_position + Vector3(0, 0.6, 0)
-			what = "on %s" % target.name
+				# Above the object's own bounds. An empty box (a node with no
+				# geometry of its own) falls back to its origin plus a little,
+				# which is still on the thing rather than metres away from it.
+				var ab: AABB = LibScript._global_aabb(target)
+				if ab.size.length() > 0.001:
+					pos = ab.get_center() + Vector3(0, ab.size.y * 0.5 + 0.6, 0)
+				else:
+					pos = target.global_position + Vector3(0, 0.6, 0)
+				what = "on %s" % target.name
+			target_desc = str(r.get_path_to(target))
 		var m := HighpolyMarkers.add(r, note, pos)
 		if m == null:
 			lbl.text = "Could not place the note."
 			return
-		if target != null:
+		if target_desc != "":
 			# Which object was being complained about, for the saved log.
-			m.set_meta("hp_note_target", str(r.get_path_to(target)))
+			m.set_meta("hp_note_target", target_desc)
 		mark_note.text = ""
 		lbl.text = "Note %s: %s" % [what, note])
 	var mark_row := HBoxContainer.new()
@@ -1468,6 +1493,13 @@ All of it is read from your own Battlefield 6 installation."
 		if m == null:
 			lbl.text = "Could not place the marker."
 			return
+		if pp.is_finite():
+			# The picked object's identity rides with the note, so the saved
+			# log names the exact mesh/scope/state rather than a position.
+			var pv: String = HighpolyDiagnose.provenance(
+				mapctx.game_source if mapctx != null else null)
+			if pv != "":
+				m.set_meta("hp_note_target", pv)
 		mark_note.text = ""
 		EditorInterface.get_selection().clear()
 		EditorInterface.get_selection().add_node(m)
@@ -1550,9 +1582,10 @@ All of it is read from your own Battlefield 6 installation."
 	# A chip, like every other switch in this panel. It was the one CheckButton
 	# left, which made the panel look like two different tools stitched together.
 	diag_pick = Theme_.chip("Pick mode")
-	diag_pick.tooltip_text = "Click any object in the viewport, including the original map geometry the editor itself cannot select. Every click writes what that object is made of into the log: which depot answered, whether the shader state had a record, what textures it bound, and whether its cutout was honoured. Tab drills in (whole batch, one instance, one part), Shift+Tab steps back out, and clicking the same spot again also drills in. Alt+click steps out. Anything typed in the note box above labels the report."
+	diag_pick.tooltip_text = "Hover any object in the viewport to highlight it light red, including the original map geometry the editor itself cannot select. Tab drills in while hovering (whole batch, one instance, one part), Shift+Tab steps back out. Left click confirms the highlight bright red and writes what that object is made of into the log: which depot answered, whether the shader state had a record, what textures it bound, and whether its cutout was honoured. With a confirmed pick, type a note above and press Enter to pin it to exactly that spot. Clicking the same spot again drills in, Alt+click steps out, Escape releases the pick."
 	diag_pick.toggled.connect(func(on: bool):
 		_pick_last = Vector2(-1e9, -1e9)
+		_hover_last = Vector2(-1e9, -1e9)
 		if not on:
 			HighpolyDiagnose.clear()
 			lbl.text = "Pick mode off."
@@ -5391,6 +5424,25 @@ func _pick_input_body(camera: Camera3D, event: InputEvent) -> int:
 	if root == null:
 		return EditorPlugin.AFTER_GUI_INPUT_PASS
 
+	# HOVER: the light-red preview, the way Revit pre-highlights before a
+	# click. Only mouse MOVES with no button held, and throttled, because this
+	# path runs several times per frame during camera navigation. The event is
+	# never consumed: hovering must not eat the input the camera, the gizmos
+	# and box-select need. A confirmed pick stays put - hover resumes after
+	# Escape releases it.
+	if event is InputEventMouseMotion:
+		var mv := event as InputEventMouseMotion
+		if mv.button_mask != 0 or HighpolyDiagnose.is_confirmed():
+			return EditorPlugin.AFTER_GUI_INPUT_PASS
+		var now := Time.get_ticks_msec()
+		if now - _hover_ms < 90 or mv.position.distance_to(_hover_last) < 6.0:
+			return EditorPlugin.AFTER_GUI_INPUT_PASS
+		_hover_ms = now
+		_hover_last = mv.position
+		if HighpolyDiagnose.hover(camera, mv.position, root):
+			lbl.text = HighpolyDiagnose.focus_label(gs)
+		return EditorPlugin.AFTER_GUI_INPUT_PASS
+
 	if event is InputEventKey and (event as InputEventKey).pressed:
 		var k := event as InputEventKey
 		if k.keycode == KEY_TAB and HighpolyDiagnose.has_focus():
@@ -5401,8 +5453,14 @@ func _pick_input_body(camera: Camera3D, event: InputEvent) -> int:
 			if moved: _report_focus(root, gs)
 			return EditorPlugin.AFTER_GUI_INPUT_STOP
 		if k.keycode == KEY_ESCAPE and HighpolyDiagnose.has_focus():
-			HighpolyDiagnose.clear()
-			lbl.text = "Pick cleared. Click another object."
+			# Two stages, like any selection tool: the first Escape releases a
+			# confirmed selection back to hovering, the second clears the pick.
+			if HighpolyDiagnose.is_confirmed():
+				HighpolyDiagnose.unconfirm(root)
+				lbl.text = HighpolyDiagnose.focus_label(gs)
+			else:
+				HighpolyDiagnose.clear()
+				lbl.text = "Pick cleared. Hover another object."
 			return EditorPlugin.AFTER_GUI_INPUT_STOP
 		return EditorPlugin.AFTER_GUI_INPUT_PASS
 
@@ -5440,6 +5498,9 @@ func _pick_input_body(camera: Camera3D, event: InputEvent) -> int:
 		lbl.text = "Nothing under the cursor."
 		return EditorPlugin.AFTER_GUI_INPUT_PASS
 	HighpolyDiagnose.focus_on(hit, root)
+	# THE CLICK IS THE CONFIRMATION. Hover already showed this thing light red;
+	# the click makes it bright red, and from here the note box pins to it.
+	HighpolyDiagnose.confirm(root)
 	# The Inspector is the closest thing to real selection an owner-less node can
 	# have: it shows the actual overlay MeshInstance/MultiMeshInstance, its mesh,
 	# its material and its transform, live.
@@ -5464,6 +5525,26 @@ func _report_focus(root: Node, gs) -> void:
 		return
 	var note: String = mark_note.text.strip_edges() if mark_note != null else ""
 	HighpolyDiagnose.run(root, gs, mapctx, note)
+
+
+# The instance of a batch nearest to where the camera is looking: the honest
+# anchor for a note when the selection can only name the whole MultiMesh
+# group. Nearest to the camera AIM (a point ahead of the camera), not to the
+# camera itself, so a note pinned while looking down a street lands on the
+# instance being looked at rather than the one behind the viewpoint.
+func _nearest_instance_point(mmi: MultiMeshInstance3D) -> Vector3:
+	var aim := HighpolyMarkers.camera_point()
+	var mm := mmi.multimesh
+	var gx := mmi.global_transform if mmi.is_inside_tree() else mmi.transform
+	var best := aim
+	var bd := 1e30
+	for i in range(mm.instance_count):
+		var p := (gx * mm.get_instance_transform(i)).origin
+		var dd := p.distance_squared_to(aim)
+		if dd < bd:
+			bd = dd
+			best = p
+	return best
 
 func _collision_changed() -> void:
 	var r := EditorInterface.get_edited_scene_root()

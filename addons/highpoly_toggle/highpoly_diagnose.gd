@@ -58,7 +58,13 @@ const TRI_BUDGET := 400000           # triangles a single click may ray-test
 const BIG_SURFACE := 300000          # a surface bigger than this is AABB-only
 
 static var _tinted: Array = []       # [{node, was}]
-static var _overlay: StandardMaterial3D = null
+static var _overlay: StandardMaterial3D = null        # bright red: a CONFIRMED pick
+static var _overlay_soft: StandardMaterial3D = null   # light red: hover / Tab preview
+
+# Revit-style two-stage selection. Hovering (and Tab-cycling) shows a thing
+# LIGHT red; a left click CONFIRMS it BRIGHT red. Only a confirmed focus is a
+# selection: notes pin to it, and hover stops replacing it until Escape.
+static var _confirmed := false
 
 # The current focus: what a pick landed on and how deep Tab has gone.
 #   {node, mesh, inst, levels: Array[Dictionary], idx: int, point: Vector3}
@@ -72,19 +78,28 @@ static var _soup_order: Array = []
 const SOUP_KEEP := 12
 
 
-static func _red() -> StandardMaterial3D:
-	if _overlay == null:
-		_overlay = StandardMaterial3D.new()
-		_overlay.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-		_overlay.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-		_overlay.albedo_color = Color(1.0, 0.1, 0.1, 0.45)
-		_overlay.cull_mode = BaseMaterial3D.CULL_DISABLED
-		# Drawn on top of the thing it marks. Without this a tag on a prop
-		# inside a building is invisible from outside it, which is exactly when
-		# you want to find it again.
-		_overlay.no_depth_test = true
-		_overlay.render_priority = 20
-	return _overlay
+static func _red(hard := true) -> StandardMaterial3D:
+	if hard:
+		if _overlay == null:
+			_overlay = _make_red(Color(1.0, 0.05, 0.05, 0.6))
+		return _overlay
+	if _overlay_soft == null:
+		_overlay_soft = _make_red(Color(1.0, 0.45, 0.45, 0.3))
+	return _overlay_soft
+
+
+static func _make_red(col: Color) -> StandardMaterial3D:
+	var m := StandardMaterial3D.new()
+	m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	m.albedo_color = col
+	m.cull_mode = BaseMaterial3D.CULL_DISABLED
+	# Drawn on top of the thing it marks. Without this a tag on a prop
+	# inside a building is invisible from outside it, which is exactly when
+	# you want to find it again.
+	m.no_depth_test = true
+	m.render_priority = 20
+	return m
 
 
 # Undo every tint and drop the focus highlight. Restores each node's own
@@ -103,6 +118,7 @@ static func clear() -> int:
 		n += 1
 	_drop_highlight()
 	_focus = {}
+	_confirmed = false
 	return n
 
 
@@ -136,7 +152,8 @@ static func _tint(node: Node) -> void:
 # ---------------------------------------------------------------------------
 
 # -> {} on a miss, else {node, mesh, inst, surf, point, dist}
-static func pick(camera: Camera3D, pos: Vector2, root: Node) -> Dictionary:
+static func pick(camera: Camera3D, pos: Vector2, root: Node,
+		tri_budget := TRI_BUDGET) -> Dictionary:
 	if camera == null or root == null:
 		return {}
 	var o := camera.project_ray_origin(pos)
@@ -200,7 +217,7 @@ static func pick(camera: Camera3D, pos: Vector2, root: Node) -> Dictionary:
 	# ---- phase 2: triangles, nearest box first ----
 	# [remaining triangles, "did we have to skip anything"]. The second entry is
 	# what makes the fallback below safe.
-	var budget: Array = [TRI_BUDGET, false]
+	var budget: Array = [tri_budget, false]
 	var best: Dictionary = {}
 	var best_t := 1e20
 	for c in cands:
@@ -392,6 +409,8 @@ static func _levels(hit: Dictionary) -> Array:
 
 
 # Take a hit and make it the focus. -> the focus dictionary (empty on failure).
+# A fresh focus is always UNCONFIRMED (light red): confirming is the click's
+# job, so a hover that lands on something new cannot inherit selected status.
 static func focus_on(hit: Dictionary, root: Node) -> Dictionary:
 	if hit.is_empty():
 		return {}
@@ -403,8 +422,57 @@ static func focus_on(hit: Dictionary, root: Node) -> Dictionary:
 			break
 	_focus = {"node": hit["node"], "mesh": hit["mesh"], "inst": int(hit["inst"]),
 		"levels": lv, "idx": idx, "point": hit["point"]}
+	_confirmed = false
 	_apply_focus(root)
 	return _focus
+
+
+# Hover: the light-red preview. Re-picks under the cursor as the mouse moves
+# and focuses UNCONFIRMED, so Tab can cycle a thing's parts before any click.
+# Two rules keep it honest:
+#   - it never replaces a CONFIRMED focus (that is what confirming means), and
+#   - landing on the SAME object keeps the current ladder depth, so hovering
+#     in place does not undo the Tab steps just taken on it.
+# The triangle budget is a fraction of a click's because this runs on mouse
+# moves; the box phase still rejects almost everything before a triangle is
+# ever tested. -> true when the highlight changed.
+const HOVER_TRI_BUDGET := 80000
+
+static func hover(camera: Camera3D, pos: Vector2, root: Node) -> bool:
+	if _confirmed:
+		return false
+	var hit := pick(camera, pos, root, HOVER_TRI_BUDGET)
+	if hit.is_empty():
+		if _focus.is_empty():
+			return false
+		_drop_highlight(root)
+		_focus = {}
+		return true
+	if has_focus() and _focus.get("node") == hit.get("node") \
+			and int(_focus.get("inst", -2)) == int(hit.get("inst", -3)):
+		return false
+	focus_on(hit, root)
+	return true
+
+
+# The click that turns a hover into a selection: same focus, bright red.
+static func confirm(root: Node) -> bool:
+	if not has_focus():
+		return false
+	_confirmed = true
+	_apply_focus(root)
+	return true
+
+
+# Escape from a confirmed selection back to hovering, keeping the focus.
+static func unconfirm(root: Node) -> void:
+	_confirmed = false
+	if has_focus():
+		_apply_focus(root)
+
+
+static func is_confirmed() -> bool:
+	return _confirmed and has_focus()
 
 
 # Tab / Shift-Tab. delta +1 drills in, -1 steps out. -> true if it moved.
@@ -501,7 +569,7 @@ static func _apply_focus(root: Node) -> void:
 	if node == null or (node is MeshInstance3D and (node as MeshInstance3D).mesh == null):
 		return
 	node.name = HL_NODE
-	node.material_override = _red()
+	node.material_override = _red(_confirmed)
 	node.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	root.add_child(node)
 	node.owner = null                       # never saved into the user's scene
@@ -547,7 +615,9 @@ static func focus_label(gs) -> String:
 				_surface_tag(mesh, int(lv["surf"]), gs)]
 	var depth := "  [Tab] deeper" if int(_focus["idx"]) < (_focus["levels"] as Array).size() - 1 else ""
 	var up := "  [Shift+Tab] out" if int(_focus["idx"]) > 0 else ""
-	return "%s: %s%s%s" % [name, body, depth, up]
+	var state := "PICKED " if _confirmed else ""
+	var next := "  [note + Enter pins here]" if _confirmed else "  [click to confirm]"
+	return "%s%s: %s%s%s%s" % [state, name, body, depth, up, next]
 
 
 static func _mesh_name(mesh: Mesh, gs) -> String:
@@ -580,6 +650,43 @@ static func _surface_tag(mesh: Mesh, s: int, gs) -> String:
 			return "  (no depot record, drawn white)"
 		return "  (%s)" % str(sr["state_key"])
 	return ""
+
+
+# The focused thing's identity as ONE line: enough to find it again in the
+# game files (mesh res name, depot scope, shader state key, variation) and in
+# the scene (instance index, world position). This is what a pinned note
+# carries, so a complaint in a saved log names the exact object rather than
+# "over there" - and a reader can take the mesh/scope/state straight to the
+# install to diagnose it.
+static func provenance(gs) -> String:
+	if not has_focus():
+		return ""
+	var mesh: Mesh = _focus["mesh"]
+	var lv: Dictionary = (_focus["levels"] as Array)[int(_focus["idx"])]
+	var parts: Array = []
+	if gs != null and gs.has_method("describe"):
+		var d: Dictionary = gs.describe(mesh)
+		if bool(d.get("found", false)):
+			parts.append("mesh=%s" % str(d["mesh"]))
+			parts.append("scope=%s" % str(d["scope"]))
+			if int(d.get("variation", 0)) != 0:
+				parts.append("var=%d" % int(d["variation"]))
+			var s := int(lv["surf"])
+			if s >= 0:
+				for sd in d.get("surfaces", []):
+					if int((sd as Dictionary)["index"]) == s:
+						parts.append("surface=%d" % s)
+						parts.append("state=%s" % str((sd as Dictionary)["state_key"]))
+						break
+	if parts.is_empty():
+		parts.append("mesh=(not built by the install reader)")
+	if int(lv["inst"]) >= 0:
+		parts.append("inst=%d" % int(lv["inst"]))
+	parts.append("at=%s" % str(_focus_xform().origin))
+	var strs := PackedStringArray()
+	for p in parts:
+		strs.append(str(p))
+	return " ".join(strs)
 
 
 # ---------------------------------------------------------------------------
