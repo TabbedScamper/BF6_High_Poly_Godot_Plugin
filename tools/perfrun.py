@@ -630,6 +630,7 @@ def build_session(a, run_dir):
         "scene": a.scene,
         "tag": a.tag,
         "cell": a.cell,
+        "vram_mode": a.vram,
         "mode": a.mode,
         "flight": flight,
         "out": os.path.join(run_dir, "report.json"),
@@ -903,6 +904,7 @@ def summarise(report, digest, outcome, detail, wall, a, session):
         "map": a.map,
         "tag": a.tag,
         "cell": a.cell,
+        "vram_mode": a.vram,
         "note": "baseline" if a.baseline else ("sdk-only" if a.sdk_only else ""),
         "cold": bool(a.cold),
         "geom_epoch": geom_epoch(),
@@ -1074,6 +1076,12 @@ def main():
     ap.add_argument("--scene", default="",
                     help="an explicit res:// scene, when the map has variants "
                          "and the wrong one would be found by name")
+    ap.add_argument("--vram", type=int, default=-1,
+                    help="texture memory mode: 0 full, 1 compressed "
+                         "(the default), 2 low - which halves every "
+                         "texture before compressing it, so about a "
+                         "quarter of the texture memory at half the "
+                         "resolution. -1 leaves the plugin default.")
     ap.add_argument("--cell", type=int, default=0,
                     help="streaming cell size in metres (0 = the "
                          "plugin default of 512). Prop groups are keyed "

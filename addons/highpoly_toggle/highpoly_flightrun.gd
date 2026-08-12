@@ -233,6 +233,13 @@ static func run(host: Node, dock: Node, mapctx: Node) -> bool:
 	# BEFORE ANYTHING BUILDS. _cell_size is read when the context loads its
 	# data, so setting this later would leave the props grouped at the old size
 	# and the run would silently measure the default.
+	# TEXTURE MEMORY MODE. Set before the build for the same reason as the cell
+	# size: the sidecars are per mode - their pixels differ - so choosing later
+	# would measure whichever mode's pixels were already on disk.
+	if int(_cfg.get("vram_mode", -1)) >= 0:
+		HighpolyMapContext.vram_mode = int(_cfg["vram_mode"])
+		_say("perfrun: texture memory mode forced to %d"
+			% int(_cfg["vram_mode"]))
 	if int(_cfg.get("cell", 0)) > 0:
 		HighpolyMapContext.cell_override = int(_cfg["cell"])
 		_say("perfrun: streaming/merge cell size forced to %d m"
@@ -541,6 +548,18 @@ static func run(host: Node, dock: Node, mapctx: Node) -> bool:
 		if Time.get_ticks_msec() - t > int(_cfg["max_settle_s"]) * 1000:
 			break
 	_rep["idle_mem_mb"] = idle_mem
+	# VIDEO MEMORY, which is where textures actually live. Without it a texture
+	# experiment can only report its CPU-side half: halving every texture
+	# measured -459 MB of process memory and could say nothing at all about the
+	# GPU, which is the side users run out of. The crash reports that started
+	# the cache work quoted 7,513 MB of VRAM, so this is the number that matters
+	# and it was not being recorded.
+	_rep["vram_mb"] = float(RenderingServer.get_rendering_info(
+		RenderingServer.RENDERING_INFO_VIDEO_MEM_USED)) / 1048576.0
+	_rep["vram_texture_mb"] = float(RenderingServer.get_rendering_info(
+		RenderingServer.RENDERING_INFO_TEXTURE_MEM_USED)) / 1048576.0
+	_rep["vram_buffer_mb"] = float(RenderingServer.get_rendering_info(
+		RenderingServer.RENDERING_INFO_BUFFER_MEM_USED)) / 1048576.0
 	_rep["idle_objects"] = idle_obj
 	_rep["idle_orphans"] = idle_orph
 	if idle_mem.size() >= 2:

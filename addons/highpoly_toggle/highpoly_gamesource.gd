@@ -6454,7 +6454,21 @@ func _geom_open() -> void:
 	# memory unmoved, and nothing to say why. Absent at rung 0 so every existing
 	# cache directory stays valid and nobody pays a rebuild for a default.
 	var lodsfx := "" if PROP_LOD <= 0 else "_l%d" % PROP_LOD
-	var d := "user://bf6_geom/%s_%s_g%d%s" % [level, sig, GEOM_EPOCH, lodsfx]
+	# THE TEXTURE MODE BELONGS IN THE KEY TOO, and for the same reason the LOD
+	# rung does: this directory holds BUILT geometry with its materials and
+	# pixels baked in. Low mode halves every texture before compressing it, so a
+	# directory written in compressed mode hands full-resolution pixels to a low
+	# build and the setting appears to do nothing at all. That is exactly what
+	# the first measurement of each showed - identical counts, memory unmoved,
+	# nothing in the log to say why. Absent in the default mode, so no existing
+	# cache is orphaned by adding this.
+	var vsfx := ""
+	if HighpolyMapContext.vram_mode == HighpolyMapContext.VRAM_LOW:
+		vsfx = "_vlow"
+	elif HighpolyMapContext.vram_mode == HighpolyMapContext.VRAM_FULL:
+		vsfx = "_vfull"
+	var d := "user://bf6_geom/%s_%s_g%d%s%s" % [level, sig, GEOM_EPOCH,
+		lodsfx, vsfx]
 	if DirAccess.make_dir_recursive_absolute(d) != OK and not DirAccess.dir_exists_absolute(d):
 		return
 	_geom_dir = d
