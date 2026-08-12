@@ -629,6 +629,7 @@ def build_session(a, run_dir):
         "map": a.map,
         "scene": a.scene,
         "tag": a.tag,
+        "cell": a.cell,
         "mode": a.mode,
         "flight": flight,
         "out": os.path.join(run_dir, "report.json"),
@@ -901,6 +902,7 @@ def summarise(report, digest, outcome, detail, wall, a, session):
         "when": time.strftime("%Y-%m-%d %H:%M:%S"),
         "map": a.map,
         "tag": a.tag,
+        "cell": a.cell,
         "note": "baseline" if a.baseline else ("sdk-only" if a.sdk_only else ""),
         "cold": bool(a.cold),
         "geom_epoch": geom_epoch(),
@@ -1072,6 +1074,13 @@ def main():
     ap.add_argument("--scene", default="",
                     help="an explicit res:// scene, when the map has variants "
                          "and the wrong one would be found by name")
+    ap.add_argument("--cell", type=int, default=0,
+                    help="streaming cell size in metres (0 = the "
+                         "plugin default of 512). Prop groups are keyed "
+                         "(mesh, cell), so this is ALSO the merge grid: "
+                         "smaller cells make a merged far field possible "
+                         "and cost draw calls in the near field. That "
+                         "trade is the thing to measure.")
     ap.add_argument("--tag", default="",
                     help="names the run and its files (default: worstcase, or "
                          "sdkonly with --sdk-only)")

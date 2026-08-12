@@ -2126,9 +2126,46 @@ func set_water_shown(root: Node, on: bool) -> bool:
 		return false
 	var w := ctx.get_node_or_null("Water")
 	if w == null:
+		# NAMED, not a bare false. "No water node" and "this map has no water"
+		# are different answers and this used to give the same one for both.
+		Log.info("Water: chip %s, but there is no Water node under the map "
+			% ("ON" if on else "off")
+			+ "context to show or hide (either it has not been built yet or "
+			+ "this map has no water body).")
 		return false
 	(w as Node3D).visible = on
+	log_water_state("the Water chip was toggled", root)
 	return true
+
+
+# The chip's state and the node's state, side by side.
+#
+# They can disagree in both directions and every one of those is a bug worth
+# naming: chip on with the node missing, chip on with the node hidden by
+# something else, or a stale visible node the chip no longer controls. A user
+# reported the objects build erasing their water and there was nothing watching
+# either half, so the report could not be checked against anything.
+func log_water_state(when: String, root: Node) -> void:
+	if root == null:
+		return
+	var ctx := root.get_node_or_null(NODE)
+	if ctx == null:
+		return
+	var w := ctx.get_node_or_null("Water")
+	if w == null:
+		Log.info("Water state (%s): chip %s, NO Water node in the scene."
+			% [when, "ON" if _show_water else "off"])
+		return
+	var vis: bool = (w as Node3D).visible
+	var n_surf := w.get_child_count()
+	var msg := ("Water state (%s): chip %s, node present with %d surface(s), "
+		+ "visible=%s") % [when, "ON" if _show_water else "off", n_surf,
+			str(vis)]
+	if _show_water != vis:
+		Log.warn(msg + "  -- THE CHIP AND THE NODE DISAGREE, which is the "
+			+ "fault to report.")
+	else:
+		Log.info(msg)
 
 
 # Every FXCards group under the overlay, wherever it was parented. Both the
@@ -4909,6 +4946,7 @@ func _build_props_async(props_root: Node3D, entries: Array, dir: String,
 	# terrain drape every time, so rebuilding a layer cannot creep the markings
 	# upward pass after pass.
 	await _reproject_roads(props_root)
+	await _bake_hlod(props_root)
 	# and only NOW write the fast-load cache, with the map already on screen
 	var _side_n := maxi(1, _side_writes.size())   # drained by the flush
 	var _t_side := Time.get_ticks_msec()
@@ -4923,6 +4961,14 @@ func _build_props_async(props_root: Node3D, entries: Array, dir: String,
 	_release_texture_images()
 	HighpolyProfiler.mark("phase", "props: build finished, %d built in %.1f s"
 		% [_build_props, (Time.get_ticks_msec() - _t_build) / 1000.0])
+	# THE REPORTED SCENARIO. A user watched the objects layer erase their water,
+	# and nothing was looking at the water either side of this build, so there
+	# was nothing to check the report against. If it happens again this line is
+	# the evidence.
+	if is_instance_valid(props_root):
+		var _wr := props_root.get_parent()
+		log_water_state("the objects layer finished building",
+			_wr.get_parent() if _wr != null else null)
 	HighpolyProfiler.mark("phase", "textures: %d distinct of %d wanted (%d reused), %d GPU"
 		% [int(_ps["misses"]), int(_ps["hits"]) + int(_ps["misses"]),
 		   int(_ps["hits"]), int(_ps["textures"])])
@@ -6032,6 +6078,7 @@ func ensure_layer(root: Node, layer: String, tex_mode: int) -> bool:
 			_add_water_plane(ctx, textured)
 			_ph("water: build the surface", Time.get_ticks_msec() - _t_w, 1,
 				PH_INSTALL)
+			log_water_state("the water surface was just built", root)
 			return ctx.get_node_or_null("Water") != null
 		"backdrop":
 			if ctx.get_node_or_null("Backdrop") != null:
@@ -6468,6 +6515,147 @@ func set_backdrop_shown(root: Node, on: bool, tex_mode := -1) -> bool:
 # still sunk into the sidewalk" and "the pass never ran" look identical on
 # screen and want completely different fixes.
 
+# How many prop cells to merge into single meshes. Each one trades its props'
+# individual draw calls for a single mesh with one averaged colour per material.
+#
+# Twelve is what the bench measured: 24,952 draw calls down to 8,332 at the
+# worst viewpoint, 9,832 nodes replaced. It is the heaviest twelve cells, so the
+# next dial is more of them - 8,332 is still above the roughly 5-6k that a
+# 16.67 ms frame needs at the measured 2.6 us per call.
+#
+# Set to 0 to build without it. Nothing else depends on it.
+# How many prop cells get a merged stand-in. Gated by distance (see
+# hlod_near_m), so a high count costs bake time and cache, not near-field
+# quality - which is why 32 is safe here where 32 always-merged was not.
+# ZERO: NO CELLS ARE BAKED, measured rather than assumed.
+#
+# Baking 32 cells and leaving them HIDDEN is worse than never baking them:
+# 98.49%% of frames under 60 and 10,296 draws, against 79.94%% and 9,439 with no
+# bake at all. Thirty-two merged meshes are large resident vertex buffers and
+# they cost whether or not anything draws them, so the far-field swap cannot be
+# paid for by keeping a merged copy of everything around.
+#
+# Merging IS worth a lot when it actually replaces draws - 12 cells always
+# merged took frames under 60 from 79.94%% to 66.66%% and the 1%% low from 8.9 to
+# 21.6 - but it looks wrong up close, and gating it by distance does not work at
+# this cell size (see hlod_near_m). Raise this only together with a finer merge
+# grid; on its own it is a straight loss.
+# NOTHING IS BAKED UP FRONT. Merged meshes are made on demand, when a cell is
+# first found to be beyond the merge distance - see _hlod_pump. Baking the
+# heaviest N at build time measured worse than not merging at all, twice, because
+# the heaviest cells are the ones the camera stands in.
+const HLOD_CELLS := 0
+# OFF. Nine bench runs, and only ONE configuration ever beat not merging:
+# the 12 heaviest cells merged at every distance (66.66%% of frames under 60 and
+# a 21.6 fps 1%% low, against 79.94%% and 8.9) - which the user rejected on sight,
+# correctly, because it is one averaged colour per material up close.
+#
+# The far-field idea cannot rescue it ON THIS MAP, and the reason is in the data
+# rather than in the tuning: the props are concentrated downtown and the
+# outskirts are nearly empty. A merged far cell replaced 2 to 9 MultiMesh nodes
+# where a merged downtown cell replaced about 800. There is nothing out there
+# worth merging, so every draw call is in the cells the camera stands in.
+#
+# A finer grid does cut draws (128 m cells: 9,465 -> 7,911) and pays for it in
+# stalls - the 1%% low fell to 1.1 fps as on-demand bakes hit the flight.
+#
+# Everything needed to switch this back on is here and gated. The next levers are
+# NOT merging: task #38 (direct RS instances, measured 16%% faster) and #63 (the
+# game's own LOD ladder) reduce per-node cost instead of hiding nodes.
+const HLOD_ON_DEMAND := false
+
+# How far from the camera the real props give way to the merged cell.
+#
+# Merged cells are one averaged colour per material, which reads badly up close
+# and is invisible at distance. This is the line between those. It is NOT the
+# range slider: the slider's maximum means no culling and the bench holds it
+# there deliberately, so gating merges on it would turn them off in exactly the
+# case that needs them. Merging is not culling - nothing disappears, it is the
+# same geometry in fewer calls - so it may apply at full slider.
+# WHY THE FAR-FIELD SWAP DOES NOT WORK YET, measured rather than assumed.
+# _cell_size is 512 m, and the near test subtracts half the cell diagonal
+# (362 m), so at 220 m only cells beyond ~580 m ever merge. The flight stays in
+# the dense downtown where the heaviest cells are, so almost nothing qualified:
+# draws fell only 9,439 -> 7,251 and frames under 60 went to 99.07%, worse than
+# not merging at all once the swap cost is paid.
+#
+# The fix is not this number. A 512 m cell either contains the camera or is one
+# cell away, so it cannot express near-versus-far at all; merging has to happen
+# on a finer grid than the streaming cells it currently borrows.
+var hlod_near_m := 0.0
+
+# Vertex welding grid, in metres, applied WHILE merging rather than after: the
+# eight densest cells carry 143 M vertices between them, and merging at full
+# detail to simplify afterwards would need ~4.6 GB of intermediate.
+const HLOD_WELD := 1.0
+
+
+# Merge the heaviest prop cells into single meshes.
+#
+# SLICED, one cell per frame. The whole set is over a second of solid work even
+# on the native merge, and this runs after the map is already on screen - a
+# freeze here would look exactly like the build having gone wrong.
+func _bake_hlod(props_root: Node3D) -> void:
+	if HLOD_CELLS <= 0 or props_root == null \
+			or not is_instance_valid(props_root):
+		return
+	if _cells.is_empty():
+		return
+	var root := EditorInterface.get_edited_scene_root()
+	if root == null:
+		return
+	var map: String = map_of(root)
+	if map == "":
+		return
+	var dir := "%s/%s" % [CACHE, map]
+	DirAccess.make_dir_recursive_absolute(dir)
+	var hl: Script = load(
+		"res://addons/highpoly_toggle/highpoly_hlod.gd") as Script
+	if hl == null:
+		Log.warn("Draw calls: the HLOD module is missing, so the prop cells "
+			+ "were left as individual draws.")
+		return
+	var t0 := Time.get_ticks_msec()
+	HighpolyVitals.crumb("merging prop cells to cut draw calls")
+	Log.info("Merging the %d heaviest prop cells into single meshes to cut "
+		% HLOD_CELLS
+		+ "draw calls. The props themselves stay in the scene, hidden.")
+	var done := 0
+	var totals := {"cells": 0, "replaced_nodes": 0, "draws_saved": 0,
+		"bake_ms": 0.0, "native_bakes": 0, "gdscript_bakes": 0}
+	while done < HLOD_CELLS:
+		if not is_instance_valid(props_root) or get_tree() == null:
+			return
+		# One NEW cell per call: bake_and_install skips anything already in
+		# hlod_cells, so this walks forward rather than redoing the same cell.
+		var r: Dictionary = hl.bake_and_install(_cells, 1, HLOD_WELD, dir,
+			hlod_cells)
+		if r.is_empty() or int(r.get("cells", 0)) == 0:
+			break                      # no cell left worth merging
+		for k in totals.keys():
+			totals[k] = totals[k] + r.get(k, 0)
+		done += 1
+		decal_progress.emit("merging prop cells", done, HLOD_CELLS)
+		await get_tree().process_frame
+	decal_progress.emit("", 0, 0)
+	HighpolyVitals.crumb("idle, nothing building")
+	_ph("props: merge cells to cut draw calls",
+		Time.get_ticks_msec() - t0, maxi(1, done), PH_CACHE)
+	if done == 0:
+		Log.info("Draw calls: no prop cell was worth merging on this map.")
+		return
+	# WHAT WAS TRADED, both halves. A draw-call number on its own reads as free.
+	Log.info(("Draw calls: merged %d prop cell(s), replacing %d node(s) and "
+		+ "saving about %d draw call(s). %d cell(s) came from the native "
+		+ "merge and %d from GDScript; %.1f s of that was baking, and the "
+		+ "rest was already cached. Merged cells draw one averaged colour "
+		+ "per material, so they are coarser up close than the props they "
+		+ "stand in for.")
+		% [int(totals["cells"]), int(totals["replaced_nodes"]),
+			int(totals["draws_saved"]), int(totals["native_bakes"]),
+			int(totals["gdscript_bakes"]), float(totals["bake_ms"]) / 1000.0])
+
+
 func _reproject_roads(props_root: Node3D) -> void:
 	if props_root == null or not is_instance_valid(props_root):
 		return
@@ -6670,6 +6858,92 @@ func set_context_shown(root: Node, on: bool, tex_mode := -1) -> bool:
 	_active = on
 	return true
 
+# How close a merged cell may come to the camera before its real props take
+# over. Set from the Merge slider; 0 means never merge.
+#
+# Separate from `radius` on purpose. Radius decides what still DRAWS - pulling
+# it in removes scenery - while this only decides whether what draws is the
+# props or one merged mesh standing in for them. Nothing disappears at any
+# setting, which is why it is allowed to act even at the maximum radius, where
+# culling is off by rule.
+func set_merge_distance(m: float) -> void:
+	hlod_near_m = maxf(0.0, m)
+	_apply_radius()
+
+
+# Where merging starts, as a fraction of the Range setting.
+#
+# Merging is not a separate distance the user has to reason about - it is what
+# happens to the far part of the range they already chose. Below MERGE_FROM of
+# it they get the real props; beyond, whole blocks draw as one merged mesh.
+# MEASURED AGAINST THE MAP, not chosen for how it reads. MP_Aftermath's props
+# occupy 27 cells of 512 m - a spread of roughly 2.5 km - so the camera is never
+# more than about 1.5 km from the farthest one. At 0.5 of a 3500 m slider the
+# threshold is 1,750 m plus half a cell diagonal, i.e. 2,112 m: larger than the
+# whole map's prop extent, so nothing could ever merge. Five bench runs reported
+# "merging on" while not one cell had merged.
+#
+# 0.15 puts the threshold near 900 m, which is the outer ring of a map this
+# size. It is a fraction of the Range slider, so a map with a wider spread gets
+# a proportionally wider near field.
+const MERGE_FROM := 0.15
+
+# FROM THE SLIDER VALUE, NOT THE RADIUS. The top notch means "No Culling" and
+# sets radius to 1e9; a fraction of that is effectively infinite and would merge
+# nothing at exactly the setting that needs it most. The 0..3500 slider value
+# stays finite there, so the ramp is computed from it.
+#
+# Zero means the scenery is off entirely, so there is nothing to merge.
+func set_merge_from_range(slider_value: float) -> void:
+	set_merge_distance(0.0 if slider_value <= 0.0
+		else slider_value * MERGE_FROM)
+
+
+# Cells the distance pass has asked to have merged, not yet baked.
+var _hlod_wanted := {}
+var _hlod_made := 0
+
+
+# Bake at most one requested cell.
+#
+# ONE PER PASS. A cold bake is about a second on the GDScript merge and roughly a
+# seventh of that natively; a warm one is a disk load and measures as nothing. So
+# flying into new territory costs one bake per distance tick and no more, which
+# keeps a first look at a district from becoming a stall.
+func _hlod_pump() -> void:
+	if _hlod_wanted.is_empty() or HLOD_ON_DEMAND == false:
+		return
+	var root := EditorInterface.get_edited_scene_root()
+	if root == null:
+		return
+	var map: String = map_of(root)
+	if map == "":
+		return
+	var key := String(_hlod_wanted.keys()[0])
+	_hlod_wanted.erase(key)
+	if hlod_cells.has(key) or not _cells.has(key):
+		return
+	var hl: Script = load(
+		"res://addons/highpoly_toggle/highpoly_hlod.gd") as Script
+	if hl == null:
+		return
+	var dir := "%s/%s" % [CACHE, map]
+	DirAccess.make_dir_recursive_absolute(dir)
+	# A one-entry cell set, so the module's own weight ranking has nothing to
+	# choose between and bakes the cell that was asked for.
+	var r: Dictionary = hl.bake_and_install({key: _cells[key]}, 1, HLOD_WELD,
+		dir, hlod_cells)
+	# SAID OUT LOUD, because five runs in a row reported merging as enabled
+	# while the threshold was larger than the map and nothing ever baked.
+	# A merge that never happens must not look like one that did.
+	_hlod_made += 1
+	if _hlod_made <= 3 or (_hlod_made % 25) == 0:
+		Log.info(("Merging: cell %s is beyond %.0f m, so it now draws as one "
+			+ "mesh (%d merged so far, %d still queued, %d node(s) replaced)")
+			% [key, hlod_near_m, _hlod_made, _hlod_wanted.size(),
+				int(r.get("replaced_nodes", 0))])
+
+
 # ---------- distance streaming (called by the dock on a timer) ----------
 func set_radius(r: float) -> void:
 	radius = r
@@ -6678,6 +6952,7 @@ func set_radius(r: float) -> void:
 	# rather than drawing at the old one for a frame
 	_refresh_mesh_lod()
 	_apply_radius()
+	_hlod_pump()
 	# The clutter follows the same slider WHILE ITS CHIP IS ON. It was in
 	# neither _cells nor _bd_list, so the one distance control the panel
 	# advertises as governing "everything" governed everything except the
@@ -6735,13 +7010,18 @@ func _apply_radius(budget: int = 1 << 30, only_new := false) -> void:
 		if not _cells.has(key): continue
 		var lst: Array = _cells[key]
 		if lst.is_empty() or not is_instance_valid(lst[0]): continue
-		# A BAKED CELL IS NOT THIS PASS'S BUSINESS. Its MultiMeshes are hidden
-		# on purpose and a single merged mesh is drawing in their place, so
-		# deciding their visibility from distance would switch all of them back
-		# on. That is exactly what happened the first time: 3 cells baked, 9,530
-		# nodes hidden, and the measured draw count moved 25,900 -> 25,907,
-		# because this loop undid the hiding within half a second.
-		if hlod_cells.has(key): continue
+		# A BAKED CELL IS THIS PASS'S BUSINESS NOW, and it is the whole point.
+		# The merged mesh is the FAR field: near the camera the real props draw
+		# and the merge is hidden, far away the merge draws and the props are
+		# hidden. Merging everything at every distance was measurably worse
+		# (32 cells: 97.91% of frames under 60, against 66.66% for 12) and the
+		# user's verdict on it was blunt - it makes the models look horrendous.
+		#
+		# This used to `continue` because an earlier version of the pass fought
+		# the bake: 3 cells baked, 9,530 nodes hidden, and the draw count moved
+		# 25,900 -> 25,907 because the loop switched them all back on within
+		# half a second. It now owns both sides of the swap instead, so there is
+		# nothing to fight over.
 		var parts: PackedStringArray = String(key).split(",")
 		# Euclidean distance to the cell CENTRE, margin = half the cell
 		# diagonal. The old test used the cell's min corner with a square
@@ -6751,6 +7031,26 @@ func _apply_radius(budget: int = 1 << 30, only_new := false) -> void:
 		var ckz: float = int(parts[1]) * _cell_size + _world_min + _cell_size * 0.5
 		var dx := ckx - cx
 		var dz := ckz - cz
+		# 0 means never merge, which has to be tested rather than left to the
+		# comparison: a distance of 0 would otherwise merge everything.
+		var want_merge: bool = hlod_near_m > 0.0 \
+			and sqrt(dx * dx + dz * dz) - half_diag > hlod_near_m
+		if hlod_cells.has(key):
+			var hn = hlod_cells[key]
+			if hn is Node3D and is_instance_valid(hn):
+				if (hn as Node3D).visible != want_merge:
+					(hn as Node3D).visible = want_merge
+					for node in lst:
+						if is_instance_valid(node) and node is Node3D:
+							(node as Node3D).visible = not want_merge
+			continue
+		elif want_merge:
+			# THE CAMERA DECIDES WHAT GETS BAKED. Asking here, the first time a
+			# cell is actually far, is what puts merged meshes where they earn
+			# something - the alternative was ranking by weight, which bakes
+			# downtown and merges nothing.
+			if not _hlod_wanted.has(key):
+				_hlod_wanted[key] = true
 		var dist := sqrt(dx * dx + dz * dz)
 		var vis_now: bool = (lst[0] as Node3D).visible
 		# hysteresis: a visible cell gets an extra half-cell of grace before it
@@ -6824,6 +7124,12 @@ func tick() -> void:
 	# Backdrops no longer ride on _active: the skyline is its own layer and can be
 	# shown with Extended Terrain off, so gating it on _active froze its culling
 	# in exactly the case the new toggle makes possible.
+	# THE MERGE QUEUE IS DRAINED HERE, on the same tick the culling runs on.
+	# It was hooked to set_radius alone, which fires ONCE when the slider is set
+	# - before anything is built, when there are no cells to merge - so the
+	# queue filled during the flight and nothing ever emptied it. Three bench
+	# runs measured "merging on" while not one cell had merged.
+	_hlod_pump()
 	if _show_objects or not _bd_list.is_empty():
 		# Budget scaled to how far the camera actually moved. A fixed 4 cells per
 		# half-second tick is fine standing still, but it cannot keep up with

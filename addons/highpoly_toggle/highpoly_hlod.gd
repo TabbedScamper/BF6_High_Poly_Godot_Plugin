@@ -432,10 +432,20 @@ static func bake_and_install(cells: Dictionary, n: int,
 	var replaced := 0
 	var saved_draws := 0
 	var ms := 0.0
+	var native_used := 0
+	var gd_used := 0
 	for e in order:
 		if made >= n:
 			break
 		var key := String(e["key"])
+		# ALREADY DONE IS DONE. `mark` records the cells that have been
+		# installed, for the distance cull; ignoring it here meant a second
+		# call re-baked the same cells, hid an already-hidden set and stacked a
+		# second HLOD node on the first. Honouring it makes repeat calls a
+		# no-op, which is what lets a build bake one cell, give the editor a
+		# frame, and come back for the next.
+		if mark.has(key):
+			continue
 		var list: Array = e["list"]
 		# The cell's own centre, so the baked mesh keeps a tight local bound and
 		# frustum-culls like the props it stands in for. A map-spanning bound is
@@ -455,9 +465,20 @@ static func bake_and_install(cells: Dictionary, n: int,
 			if got is Mesh:
 				mesh = got
 		if mesh == null:
-			var r := bake_cell(list, centre, weld)
+			# NATIVE FIRST. Same output - verified identical triangle and vertex
+			# counts - at about a seventh of the cost, which is the difference
+			# between a bake a build can afford and one it cannot. The
+			# GDScript merge stays as the answer when the extension is not
+			# loaded, and the caller is told which ran rather than left to
+			# wonder why it was slow.
+			var r := bake_cell_native(list, centre, weld)
 			if r.is_empty():
-				continue
+				r = bake_cell(list, centre, weld)
+				if r.is_empty():
+					continue
+				gd_used += 1
+			else:
+				native_used += 1
 			mesh = r["mesh"]
 			ms += float(r["ms"])
 			if cache_dir != "":
@@ -478,12 +499,22 @@ static func bake_and_install(cells: Dictionary, n: int,
 					saved_draws += mm.mesh.get_surface_count()
 				(node as Node3D).visible = false
 				replaced += 1
-		# Tell the distance cull to leave this cell alone, or it will switch
-		# every one of those nodes back on at its next tick.
-		mark[key] = true
+		# THE NODE ITSELF, not a bare true. The distance pass needs to reach
+		# this mesh to swap it against the real props by camera distance;
+		# every existing reader only asks mark.has(key), so recording more
+		# here costs nothing.
+		mark[key] = mi
+		# Hidden on arrival. The distance pass decides within a frame whether
+		# this cell is near enough for its real props, and starting visible
+		# would flash a merged blob over the props for that frame.
+		mi.visible = false
+		for node in list:
+			if is_instance_valid(node) and node is Node3D:
+				(node as Node3D).visible = true
 		made += 1
 	return {"cells": made, "replaced_nodes": replaced,
-		"draws_saved": saved_draws - made, "bake_ms": ms}
+		"draws_saved": saved_draws - made, "bake_ms": ms,
+		"native_bakes": native_used, "gdscript_bakes": gd_used}
 
 
 # The two rankers, exposed so a caller can build the same job list this file

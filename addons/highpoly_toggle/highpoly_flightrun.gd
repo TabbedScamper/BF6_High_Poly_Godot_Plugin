@@ -131,7 +131,13 @@ static func config() -> Dictionary:
 		"out": "",
 		"heartbeat": "",
 		"log": "",                    # the --log-file Godot was launched with
-		"min_draws": 500,             # below this the map is not on screen
+		"min_draws": 500,             # below this the map MAY not be on screen
+		# ...but only together with min_prims. Merging geometry is supposed to
+		# cut draw calls, so calls alone cannot tell "the merge worked" from
+		# "the view is empty". Triangles can: a merge does not change how much
+		# geometry is on screen, only how many calls it takes. Loose on purpose
+		# - a floor for "is anything there", not a quality bar.
+		"min_prims": 50000,
 		# Early aborts, so a broken configuration costs seconds and not ten
 		# minutes. Each span is separately budgeted because they fail for
 		# completely different reasons.
@@ -224,6 +230,13 @@ static func run(host: Node, dock: Node, mapctx: Node) -> bool:
 		EditorInterface.set_main_screen_editor("3D")
 
 	# ---- open the scene ---------------------------------------------------
+	# BEFORE ANYTHING BUILDS. _cell_size is read when the context loads its
+	# data, so setting this later would leave the props grouped at the old size
+	# and the run would silently measure the default.
+	if int(_cfg.get("cell", 0)) > 0:
+		HighpolyMapContext.cell_override = int(_cfg["cell"])
+		_say("perfrun: streaming/merge cell size forced to %d m"
+			% int(_cfg["cell"]))
 	_phase_begin("open")
 	var scene := str(_cfg["scene"])
 	if scene == "" or not ResourceLoader.exists(scene):
@@ -295,6 +308,9 @@ static func run(host: Node, dock: Node, mapctx: Node) -> bool:
 	_phase_begin("configure")
 	var built := {"n": -1, "done": false}
 	var prog := {"done": 0, "total": 0}
+	# Last time any post-props pass reported. Separate from prog because it is
+	# a liveness signal, not a count of anything comparable.
+	var alive := {"at": 0}
 	if mapctx != null and mapctx.has_signal("build_finished"):
 		mapctx.build_finished.connect(func(n: int):
 			built["n"] = n
@@ -311,6 +327,16 @@ static func run(host: Node, dock: Node, mapctx: Node) -> bool:
 		mapctx.build_progress.connect(func(d: int, tot: int):
 			prog["done"] = d
 			prog["total"] = tot)
+	# THE PASSES THAT RUN AFTER THE LAST PROP. The decal projection and the cell
+	# merge happen once the props are placed but before the build reports done,
+	# and they report on their own signal so the dock can give them their own
+	# job-bar lane. This watches that signal purely as a sign of life: without
+	# it the counter above stops moving for a minute or more of real work and
+	# the stall check below kills the run. It deliberately does NOT touch
+	# `prog` - that stays the props counter, which build_done is reported from.
+	if mapctx != null and mapctx.has_signal("decal_progress"):
+		mapctx.decal_progress.connect(func(_phase: String, _d: int, _t: int):
+			alive["at"] = Time.get_ticks_msec())
 
 	var drove := _drive_dock(host, _cfg)
 	_rep["dock_controls"] = drove
@@ -371,7 +397,10 @@ static func run(host: Node, dock: Node, mapctx: Node) -> bool:
 		# that window gets four times the patience.
 		var placed_all: bool = int(prog["total"]) > 0 and last_seen >= int(prog["total"])
 		var quiet: int = stall_ms * 4 if placed_all else stall_ms
-		if now - last_change > quiet and last_seen > 0:
+		# Quiet means NOTHING is reporting, not merely that the props counter
+		# has stopped. A post-props pass ticking is work in progress.
+		var quiet_since: int = maxi(last_change, int(alive["at"]))
+		if now - quiet_since > quiet and last_seen > 0:
 			stalled = true
 			break
 		if not wait_props and bool(terrain_done["done"]):
@@ -533,10 +562,16 @@ static func run(host: Node, dock: Node, mapctx: Node) -> bool:
 	# EVERYTHING ABOVE CAN SUCCEED AND STILL LEAVE AN EMPTY VIEW. It has
 	# happened: 40,581 prop surfaces in the tree, 44 draw calls on screen, 4.1 ms
 	# a frame, and it looked like a spectacular improvement.
-	if draws < int(_cfg["min_draws"]):
+	var prims := vp.get_render_info(Viewport.RENDER_INFO_TYPE_VISIBLE,
+			Viewport.RENDER_INFO_PRIMITIVES_IN_FRAME)
+	_rep["probe_prims"] = prims
+	# BOTH, or it fires on its own success. A cell merge cuts calls by design;
+	# what it cannot do is cut the triangles being rasterised, so those are what
+	# separate "nothing is on screen" from "the same scene in fewer calls".
+	if draws < int(_cfg["min_draws"]) and prims < int(_cfg["min_prims"]):
 		return await _abort(tree, ("the map built but the viewport is drawing "
-				+ "only %d calls, so nothing worth measuring is on screen")
-				% draws)
+				+ "only %d calls and %d primitive(s), so nothing worth "
+				+ "measuring is on screen") % [draws, prims])
 	_phase_end()
 
 	# ---- fly ---------------------------------------------------------------

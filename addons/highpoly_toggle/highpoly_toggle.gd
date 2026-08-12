@@ -698,10 +698,16 @@ func _enter_tree() -> void:
 	mcr_row.add_child(mapctx_range)
 	mapctx_range_val = Label.new(); mapctx_range_val.text = _range_label(800.0)
 	mcr_row.add_child(mapctx_range_val)
+
 	mapctx_range.value_changed.connect(func(v: float):
 		mapctx_range_val.text = _range_label(v)
 		var _rad := 1.0e9 if int(v) >= 3500 else v
 		mapctx.set_radius(_rad)
+		# MERGING RIDES THIS SLIDER. It is not a separate distance: beyond half
+		# of whatever range was chosen, blocks of scenery draw as one merged
+		# mesh instead of thousands of pieces. Fed the slider VALUE, not _rad -
+		# the top notch sets _rad to 1e9 and half of that would merge nothing.
+		mapctx.set_merge_from_range(v)
 		# lights + FX ride the same slider: lights capped at 300 m (the
 		# clustered-lighting GPU budget), FX clamped to their class ranges
 		var _rr := EditorInterface.get_edited_scene_root()
