@@ -5642,6 +5642,87 @@ func _hidden_parts(res_name: String, info: Dictionary) -> Dictionary:
 # NOT touched here, only the in-memory ones.
 #
 # Returns what was released so a caller can say so rather than claiming it.
+# Drop every cached mesh and material the built scene does not reference.
+#
+# NOT AN LRU BUDGET. Dropping a cache slot frees nothing while the scene still
+# holds the resource, so evicting by recency spends evictions on live entries
+# and frees nothing. The freeable set is precisely "what the finished scene does
+# not use", and that is knowable by looking at what was built.
+#
+# Textures come along for free: a surplus material holds its textures, so a
+# texture used only by surplus materials dies with them. Nothing here has to
+# reason about GPU bytes, which is just as well - they are not readable from
+# GDScript.
+#
+# -> a Dictionary of what went, so a caller can report it rather than claim it.
+func compact_caches(root: Node) -> Dictionary:
+	if root == null:
+		return {}
+	# What the scene actually draws, by instance id. Meshes and materials both,
+	# in one walk.
+	var live_mesh := {}
+	var live_mat := {}
+	var stack: Array = [root]
+	while not stack.is_empty():
+		var n: Node = stack.pop_back()
+		for c in n.get_children():
+			stack.append(c)
+		var m: Mesh = null
+		if n is MeshInstance3D:
+			m = (n as MeshInstance3D).mesh
+			var ov := (n as MeshInstance3D).material_override
+			if ov != null:
+				live_mat[ov.get_instance_id()] = true
+		elif n is MultiMeshInstance3D:
+			var mm := (n as MultiMeshInstance3D).multimesh
+			if mm != null:
+				m = mm.mesh
+			var ov2 := (n as MultiMeshInstance3D).material_override
+			if ov2 != null:
+				live_mat[ov2.get_instance_id()] = true
+		if m == null:
+			continue
+		live_mesh[m.get_instance_id()] = true
+		for i in range(m.get_surface_count()):
+			var sm := m.surface_get_material(i)
+			if sm != null:
+				live_mat[sm.get_instance_id()] = true
+
+	var out := {"materials_before": _mat_cache.size(),
+		"meshes_before": _mesh_by_sig.size(),
+		"dressed_before": _dressed.size()}
+
+	var keep_mat := {}
+	for k in _mat_cache.keys():
+		var v = _mat_cache[k]
+		if v is Material and live_mat.has((v as Material).get_instance_id()):
+			keep_mat[k] = v
+	_mat_cache = keep_mat
+
+	var keep_mesh := {}
+	for k in _mesh_by_sig.keys():
+		var v = _mesh_by_sig[k]
+		if v is Mesh and live_mesh.has((v as Mesh).get_instance_id()):
+			keep_mesh[k] = v
+	_mesh_by_sig = keep_mesh
+
+	# _dressed holds a STRONG ArrayMesh reference per row (see its note), so a
+	# row for a mesh the scene dropped keeps that mesh resident on its own. The
+	# rows kept are still enough to re-dress what is on screen, which is all
+	# that list is for.
+	var keep_dressed: Array = []
+	for row in _dressed:
+		var am = (row as Array)[0]
+		if am is ArrayMesh and live_mesh.has((am as ArrayMesh).get_instance_id()):
+			keep_dressed.append(row)
+	_dressed = keep_dressed
+
+	out["materials_after"] = _mat_cache.size()
+	out["meshes_after"] = _mesh_by_sig.size()
+	out["dressed_after"] = _dressed.size()
+	return out
+
+
 func release_caches() -> Dictionary:
 	var before := cache_stats()
 	_tex_cache.clear()
@@ -5737,6 +5818,23 @@ func cache_stats() -> Dictionary:
 		# where nothing is freed afterwards at all, so the users most likely to
 		# hit this are exactly the users who sent us a log.
 	mips = 0
+	# EVERY CACHE release_caches() CLEARS, not the six this used to report.
+	# A ceiling cannot be attributed from a third of what is held, and the
+	# largest holder - _dressed, one ArrayMesh per dressed mesh - was not in the
+	# list at all. Counts rather than bytes: GPU-side sizes are not readable
+	# from here, and a count that is honest beats a byte figure that is not.
+	var side := {
+		"dressed_meshes": _dressed.size(),
+		"keys_for": _keys_for.size(),
+		"group_meta": _group_meta.size(),
+		"mask": _mask_cache.size(),
+		"mask_cut": _mask_cut.size(),
+		"tint_mask": _tint_mask_cache.size(),
+		"decal_tex": _decal_tex_cache.size(),
+		"smooth": _smooth_cache.size(),
+		"litpack": _litpack_cache.size(),
+		"water_look": _water_look_cache.size(),
+	}
 	var meshes := 0
 	var surfaces := 0
 	for k in _mesh_by_sig.keys():
@@ -5756,6 +5854,12 @@ func cache_stats() -> Dictionary:
 		"mesh_surfaces": surfaces,
 		"objects": objs,
 		"depot_entries": _depot_cache.size(),
+		"lookaside": side,
+		# What eviction could actually free: a cached material on no built
+		# surface is surplus, and a cached one that IS on a surface cannot be
+		# freed by dropping the cache slot because the scene holds it too.
+		"materials_over_surfaces": maxi(0,
+			_mat_cache.size() - int(surfaces)),
 		"sky_entries": _sky_cache.size(),
 		# None of these caches evicts. Recorded so the number is not mistaken
 		# for a working set that would come back under pressure.
@@ -6379,8 +6483,16 @@ func _keys_of(am: ArrayMesh) -> Array:
 # with no node touched, no geometry re-parsed and no rebuild - which is the
 # difference between a live iteration loop and restarting the editor.
 #
-# Weak by nature: entries whose ArrayMesh has been freed are skipped and dropped
-# on the next pass, so a scene change does not leak them.
+# NOT WEAK. A GDScript Array holds STRONG references, so every ArrayMesh listed
+# here is kept alive by this list alone - a mesh dropped from the scene stays
+# resident until release_caches() runs. This comment used to claim the opposite
+# ("weak by nature"), and release_caches was written from a list that omitted
+# _dressed as a result; its own note records that the omission "made the mesh
+# half of this a lie", because clearing _mesh_by_sig freed nothing while all
+# 7,222 meshes were still held here.
+#
+# Anything that bounds memory has to treat this as the largest holder, not as a
+# bookkeeping list.
 var _dressed: Array = []
 # The mesh currently being built, so _dress can record what it dressed without
 # every caller having to pass it.

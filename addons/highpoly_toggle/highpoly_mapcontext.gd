@@ -4947,6 +4947,7 @@ func _build_props_async(props_root: Node3D, entries: Array, dir: String,
 	# upward pass after pass.
 	await _reproject_roads(props_root)
 	await _bake_hlod(props_root)
+	_compact_caches(props_root)
 	# and only NOW write the fast-load cache, with the map already on screen
 	var _side_n := maxi(1, _side_writes.size())   # drained by the flush
 	var _t_side := Time.get_ticks_msec()
@@ -6840,6 +6841,40 @@ func _bake_hlod(props_root: Node3D) -> void:
 		% [int(totals["cells"]), int(totals["replaced_nodes"]),
 			int(totals["draws_saved"]), int(totals["native_bakes"]),
 			int(totals["gdscript_bakes"]), float(totals["bake_ms"]) / 1000.0])
+
+
+# Hand back the cache entries the finished scene does not use.
+#
+# The build creates far more than it keeps: the last full build cached 23,534
+# materials against 13,094 built surfaces, so more than ten thousand were on
+# nothing that draws, and every one of them was holding its textures resident.
+# This is where that surplus exists, so this is where to give it back.
+func _compact_caches(props_root: Node3D) -> void:
+	if game_source == null or props_root == null \
+			or not is_instance_valid(props_root):
+		return
+	if not game_source.has_method("compact_caches"):
+		return
+	var root := EditorInterface.get_edited_scene_root()
+	if root == null:
+		return
+	var t := Time.get_ticks_msec()
+	var r: Dictionary = game_source.compact_caches(root)
+	if r.is_empty():
+		return
+	var m_gone: int = int(r["materials_before"]) - int(r["materials_after"])
+	var k_gone: int = int(r["meshes_before"]) - int(r["meshes_after"])
+	var d_gone: int = int(r["dressed_before"]) - int(r["dressed_after"])
+	_ph("props: hand back unused cache entries", Time.get_ticks_msec() - t,
+		maxi(1, m_gone + k_gone), PH_MEMORY)
+	if m_gone + k_gone + d_gone <= 0:
+		return
+	Log.info(("Memory: released %d cached material(s), %d mesh(es) and %d "
+		+ "dressing record(s) that nothing on screen was using. The textures "
+		+ "they were holding go with them. Anything still drawn is untouched, "
+		+ "so this cannot change the picture - a later rebuild just remakes "
+		+ "what it needs.")
+		% [m_gone, k_gone, d_gone])
 
 
 func _reproject_roads(props_root: Node3D) -> void:
