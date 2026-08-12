@@ -1295,8 +1295,27 @@ def main():
     if outcome == "done" and report is None:
         outcome = "crash"
     if outcome == "crash":
-        print("\nCRASH: the editor exited (code %s) without writing a report."
-              % detail.get("exit_code"))
+        # SAY WHAT THIS ACTUALLY MEANS, because it is not "the editor crashed".
+        #
+        # MEASURED: every run exits with 0xC0000005, including the ones that
+        # complete every phase and write a full report - terrain, backdrop and
+        # the three cold-terrain baselines all did. The editor faults on
+        # SHUTDOWN, always, so the exit code carries no information about
+        # whether the run was healthy. This verdict means one thing only: no
+        # report existed when the process went away.
+        #
+        # Seven hypotheses were chased on the assumption that this code meant
+        # a mid-build crash. It never did.
+        _code = detail.get("exit_code")
+        _where = (detail.get("last_heartbeat") or {}).get("phase", "?")
+        print("\nNO REPORT: the editor went away during phase '%s' without "
+              "writing one." % _where)
+        if _code == 3221225477:
+            print("  Exit code 0xC0000005 - but EVERY run exits with this, "
+                  "clean ones included. The editor faults on shutdown; the "
+                  "code says nothing about this run's health.")
+        else:
+            print("  Exit code %s." % _code)
     digest = digest_log(report, (report or {}).get("frames", 0),
                         session.get("log"))
     # THE LAST FIFTY LINES GO IN THE ARTEFACT whatever happened, because on a

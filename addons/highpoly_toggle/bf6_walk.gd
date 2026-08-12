@@ -312,7 +312,9 @@ static func flat_bools(arr) -> Array:
 # depends on a dump or a shipped tsv.
 func build_catalog(progress := Callable()) -> void:
 	by_name.clear()
-	for name in src.ebx.keys():
+	# Snapshot: iterating the live member races the catalogue republish.
+	var t_ebx: Dictionary = src.snap_ebx()
+	for name in t_ebx.keys():
 		var n := str(name)
 		var ref := n + ".ebx"
 		var low := n.to_lower()
@@ -922,6 +924,37 @@ func run_cached(level_rel: String) -> bool:
 		return true
 	if not run(level_rel):
 		return false
+	# WHAT THE WALK DECODED. `want` prunes top-level fields only, so a wanted
+	# struct field still decodes its whole subtree through the unfiltered
+	# reader. If nested dwarfs top-level, that blind spot is the walk's cost
+	# and pushing the filter down is the fix; if not, the cost is elsewhere
+	# and the decoder should be left alone.
+	print("BF6Walk: decode - %s" % BF6Ebx.decode_counts())
+	# A FINGERPRINT OF THE PLACEMENTS THEMSELVES, and nothing else.
+	#
+	# The .idx cache is not usable as an oracle: save_cache stores `stats`
+	# beside the rows, and stats carries per-run counters, so two identical
+	# walks write different bytes. (PackedScene had the same trap - see the
+	# terrain tile cache.) Row COUNTS are not enough either: a transposed basis
+	# moves every prop on the map while leaving every count untouched.
+	#
+	# So this hashes the mesh path and the twelve transform floats of every
+	# row, in row order. It changes if any placement moves and does not change
+	# for anything else.
+	var _ctx := HashingContext.new()
+	_ctx.start(HashingContext.HASH_SHA256)
+	for r in rows:
+		var rd: Dictionary = r
+		_ctx.update(str(rd.get("mesh", "")).to_utf8_buffer())
+		var m = rd.get("xf")
+		if m is Array:
+			var fb := PackedFloat64Array()
+			for v in m:
+				if v is Vector3:
+					fb.append(v.x); fb.append(v.y); fb.append(v.z)
+			_ctx.update(fb.to_byte_array())
+	print("BF6Walk: placements fingerprint %s (%d rows)"
+		% [_ctx.finish().hex_encode().substr(0, 32), rows.size()])
 	save_cache(level_rel)
 	return true
 
@@ -934,6 +967,9 @@ func run(level_rel: String) -> bool:
 	# same walker, and a set built for the previous run would quietly decode
 	# the wrong fields for this one.
 	_build_decode_want()
+	# Zeroed here so the numbers describe THIS walk, not everything the editor
+	# has decoded since it opened.
+	BF6Ebx.reset_counts()
 	var rel := level_rel.replace("\\", "/").rstrip("/")
 	var leaf := rel.get_file()
 	var start = resolve_name("%s/%s" % [rel, leaf])

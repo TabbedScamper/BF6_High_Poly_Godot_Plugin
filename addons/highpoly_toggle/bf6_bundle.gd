@@ -106,9 +106,18 @@ class Payload extends RefCounted:
 		if at < 0 or at >= raw.size():
 			error = "string offset %d is outside the %d-byte payload" % [at, raw.size()]
 			return ""
-		var end := at
-		while end < raw.size() and raw[end] != 0:
-			end += 1
+		# ONE NATIVE SCAN, not a byte loop in GDScript. This ran once per
+		# name over 229,252 ebx and 159,228 res entries on a level mount -
+		# roughly twenty million interpreted iterations to find terminators
+		# the engine can locate in a single call. Payload parse was 6.4 s of
+		# a 16 s mount, and the mount is on the critical path of every button.
+		#
+		# find() returns -1 when there is no terminator at all; the old loop
+		# expressed that by walking to the end, so that is what it falls back
+		# to. Returning "" instead would silently drop the asset.
+		var end := raw.find(0, at)
+		if end < 0:
+			end = raw.size()
 		return raw.slice(at, end).get_string_from_utf8()
 
 	func parse(d: PackedByteArray) -> bool:

@@ -47,8 +47,10 @@ var error := ""
 static func find_res(src: BF6Source, level: String) -> String:
 	var low := level.to_lower()
 	var fallback := ""
-	for rn in src.res.keys():
-		var e = src.res[rn]
+	# Snapshot: iterating the live member races the catalogue republish.
+	var t_res: Dictionary = src.snap_res()
+	for rn in t_res.keys():
+		var e = t_res[rn]
 		if int(e[5]) != RES_TYPE:
 			continue
 		var n := str(rn)
@@ -80,8 +82,8 @@ func parse(d: PackedByteArray) -> bool:
 		# assuming alignment after it, desynchronises the whole walk — which is
 		# exactly why landing on the final byte is the check that matters.
 		var end := p
-		while end < d.size() and d[end] != 0:
-			end += 1
+		var _f := d.find(0, end)
+		end = d.size() if _f < 0 else _f
 		if end >= d.size():
 			error = "record %d: unterminated name at %d" % [i, start]
 			return false

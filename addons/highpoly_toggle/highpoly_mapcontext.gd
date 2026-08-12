@@ -36,7 +36,9 @@ var _show_backdrop := false        # distant skyline / out-of-bounds vista layer
 # ground, and defaulting it on means switching the ground on and then having to
 # switch the streets back off every time. A layer you have to ask for is the
 # same contract as Backdrops and Water, and it is one click either way.
-var _show_roads := false
+# Roads and paths are part of the ground now, not a layer, so they start
+# visible and stay visible unless something explicitly hides them.
+var _show_roads := true
 var _show_water := false           # rivers / sea layer on
 # Set by the dock from its own toggles, because the light and FX layers are
 # switched independently of apply() and this object cannot see those buttons.
@@ -143,6 +145,11 @@ var _props_verified: Dictionary = {}    # map -> true (this session)
 # in-flight build; is_build_done() lets batch consumers (PhotoMatch's render
 # hook) wait for a COMPLETE overlay before shooting.
 signal build_progress(done: int, total: int)   # per work-slice + on completion
+# The road-decal pass, which runs after the objects are already on screen and
+# takes long enough that silence reads as a hang. Carries a PHASE because its
+# two halves fail differently: reading the receiver surfaces off the props, and
+# laying the markings onto them.
+signal decal_progress(phase: String, done: int, total: int)
 signal backdrop_progress(done: int, total: int)  # the skyline layer's own lane
 # Still declared because the build still reports: stage_progress drives the
 # panel's bar, build_finished tells the dock the scenery is up, and
@@ -1655,7 +1662,14 @@ func _colormap_set(map: String) -> Dictionary:
 					"bounds": Vector4(float(bd.get("x0", -4096.0)),
 						float(bd.get("z0", -4096.0)), sz, sz_z),
 				}
-	_cmap_cache[map] = out
+	# SUCCESSES ONLY. `out` is empty when the colour map has not been
+	# composited yet, and caching that made the FIRST call decide the whole
+	# session: every later ask returned the miss, _bind_ground_globals bound
+	# its 1x1 white safety texture, and every ground-blend surface on the map
+	# drew flat white until the editor restarted. Retrying a miss costs two
+	# file-exists checks; not retrying costs a session.
+	if not out.is_empty():
+		_cmap_cache[map] = out
 	return out
 
 
@@ -2386,6 +2400,11 @@ var _merge_who := "props"
 var _cj_src: Array = []              # images to compress
 var _cj_norm: Array = []             # is that image a normal map (BC5, not BC1/3)
 var _cj_out: Array = []              # results, index-matched
+# Guards _cj_out ONLY. Godot's Array is a refcounted copy-on-write container,
+# so assigning an element can reallocate the backing store - and this job runs
+# on every core at once. Reads of _cj_src/_cj_norm need no lock because nothing
+# writes them while the group is running.
+var _cj_mx := Mutex.new()
 
 func _compress_job(i: int) -> void:
 	var c := (_cj_src[i] as Image).duplicate() as Image
@@ -2398,7 +2417,11 @@ func _compress_job(i: int) -> void:
 	else:
 		err = c.compress(Image.COMPRESS_S3TC)
 	if err == OK:
+		# The compress above is the expensive part and stays lock-free; this is
+		# one store per image, and it is the store that was corrupting the heap.
+		_cj_mx.lock()
 		_cj_out[i] = c
+		_cj_mx.unlock()
 
 
 func _compress_textures(m: Mesh) -> int:
@@ -2865,6 +2888,28 @@ static func _fx_animate_materials(m: Mesh) -> void:
 # the visible case). The swap bakes ONLY shader code into the prop caches:
 # the per-map colour map binds through GLOBAL shader parameters at apply, so
 # a shared prop cache can never carry one map's ground onto another.
+# THE BLUR IS REAL AND UNFIXED, recorded so nobody rediscovers it as new. The
+# blend samples bf6_ground_col at roughly ONE METRE PER TEXEL. On a curb apron
+# that is invisible; on the larger skirt sections it reads as a smeared
+# photograph laid over the prop. The game does not paint these from a raster at
+# all - it composes the ground surface at full detail, which we do not have.
+#
+# What was tried and must not be tried again: making them draw nothing. That
+# deleted the sidewalk aprons and took away the very surface the projected
+# decals need to land on. See the note on TBLEND_SHADER below.
+#
+# THERE IS NO LONGER AN OPTION TO DRAW NOTHING, and that is the point.
+#
+# A switch here used to let these surfaces `discard`. It was meant to stop them
+# being painted from a too-coarse raster; what it actually did was delete the
+# sidewalk aprons, and because the shader was cached by nullness and baked into
+# prop sidecars, turning the switch back on did not bring them back. A
+# ground-blending surface that renders nothing is never the right answer, so the
+# option is gone rather than defaulted.
+#
+# The blur is real and unfixed: bf6_ground_col is roughly a metre per texel
+# where the game composes this surface at full detail. A surface that looks
+# wrong is a far smaller problem than a surface that is not there.
 const TBLEND_SHADER := """
 shader_type spatial;
 render_mode diffuse_burley;
@@ -2880,7 +2925,14 @@ void fragment() {
 	SPECULAR = 0.15;
 }
 """
+
 static var _tblend_shader: Shader = null
+
+
+# Surfaces actually swapped to the ground-colour shader. Counted because
+# a swap that never fires and a swap that fires but samples the wrong
+# thing look identical on screen: both are flat white.
+static var n_tblend_swapped := 0
 
 
 static func _terrainblend_materials(m: Mesh) -> void:
@@ -2888,16 +2940,35 @@ static func _terrainblend_materials(m: Mesh) -> void:
 	var am := m as ArrayMesh
 	for i in range(am.get_surface_count()):
 		var mat := am.surface_get_material(i)
-		if mat == null or mat is ShaderMaterial: continue
+		if mat == null: continue
 		if not String(mat.resource_name).to_lower().contains("terrainblend"):
 			continue
-		if _tblend_shader == null:
+		# ALREADY SWAPPED IS NOT ALREADY DONE. This used to skip every
+		# ShaderMaterial, which meant a prop whose sidecar was baked by an
+		# earlier version kept THAT version's shader code forever: the cache
+		# carries the Shader resource, not a reference to ours, so changing this
+		# file could not reach it. Re-pointing an already-swapped surface at the
+		# current shader is what makes the code above the single source of truth
+		# for how these sections look, cached or fresh.
+		# KEYED ON THE CODE, NOT ON NULLNESS. Cached by nullness, this shader
+		# was built once per session and never revisited, so a sidecar baked by
+		# an earlier version - or a static left over from before an update -
+		# kept ITS shader for good. That is exactly how a `discard` outlived
+		# the flag that produced it and left holes where the sidewalk tops
+		# should be. Same fault, same fix as _road_shader.
+		if _tblend_shader == null or _tblend_shader.code != TBLEND_SHADER:
 			_tblend_shader = Shader.new()
 			_tblend_shader.code = TBLEND_SHADER
+		if mat is ShaderMaterial:
+			if (mat as ShaderMaterial).shader != _tblend_shader:
+				(mat as ShaderMaterial).shader = _tblend_shader
+				n_tblend_swapped += 1
+			continue
 		var sm := ShaderMaterial.new()
 		sm.shader = _tblend_shader
 		sm.resource_name = mat.resource_name
 		am.surface_set_material(i, sm)
+		n_tblend_swapped += 1
 
 
 # The per-map half of the blend: the composited ground colour and its world
@@ -2912,12 +2983,20 @@ func _bind_ground_globals(map: String) -> void:
 		# build, or one still compositing) would otherwise leave whatever the
 		# LAST map bound - or, at startup, nothing at all, which is an access
 		# violation the moment a blend material draws.
+		# SAID OUT LOUD. This is what makes curb aprons and sidewalk tops draw
+		# flat white, and it used to happen in silence - indistinguishable from
+		# the blend being broken.
+		Log.warn("Ground blend: this map has no composited colour map yet, so "
+			+ "curb aprons and sidewalk tops will draw FLAT WHITE until the "
+			+ "terrain finishes building and the layer is applied again.")
 		RenderingServer.global_shader_parameter_set("bf6_ground_col",
 			white_texture())
 		RenderingServer.global_shader_parameter_set("bf6_ground_rect",
 			Vector4(0, 0, 0, 0))
 		return
 	var b: Vector4 = cm["bounds"]
+	Log.info("Ground blend: bound this map's colour map, so curb aprons and "
+		+ "sidewalk tops take the ground's colour")
 	RenderingServer.global_shader_parameter_set("bf6_ground_col", cm["tex"])
 	RenderingServer.global_shader_parameter_set("bf6_ground_rect",
 		Vector4(b.x, b.y, 1.0 / maxf(b.z, 1.0), 1.0 / maxf(b.w, 1.0)))
@@ -4373,6 +4452,16 @@ func _build_backdrop_async(bd_root: Node3D, entries: Array, dir: String,
 	HighpolyProfiler.crumb("skyline", "build started, %d piece(s)" % entries.size())
 	_begin_build_draw(bd_root)
 	for ei in range(entries.size()):
+		# SAME BREADCRUMB AS THE PROPS LOOP. Backdrop crashes having built no
+		# props at all, and the one thing it does that terrain does not is
+		# create the skyline's ~653 materials and ~706 textures - so the number
+		# worth watching here is video memory, flushed, per entry.
+		if OS.get_environment("BF6_MESH_TRACE") == "1":
+			HighpolyLog.info("mesh trace: BACKDROP %d/%d vram=%dMB"
+				% [ei, entries.size(),
+					int(Performance.get_monitor(Performance.RENDER_VIDEO_MEM_USED)
+						/ 1048576.0)])
+			HighpolyLog.flush()
 		var e = entries[ei]
 		var meshes: Array = []
 		# FROM THE INSTALL, the same as the props. map_data() splits the walk's
@@ -4643,9 +4732,11 @@ func _build_props_async(props_root: Node3D, entries: Array, dir: String,
 	var _bt := OS.get_environment("BF6_MESH_TRACE") == "1"
 	for ei in range(entries.size()):
 		var e = entries[ei]
-		if _bt:
-			HighpolyLog.info("mesh trace: PROP %d/%d %s"
-				% [ei, entries.size(), str(e.get("mesh", "?"))])
+		if _bt and (ei & 15) == 0:
+			HighpolyLog.info("mesh trace: PROP %d/%d vram=%dMB %s"
+				% [ei, entries.size(),
+					int(Performance.get_monitor(Performance.RENDER_VIDEO_MEM_USED)
+						/ 1048576.0), str(e.get("mesh", "?"))])
 			HighpolyLog.flush()
 		vram_check()      # reports once if memory is getting high; never stops
 		var gp := _prop_path(e, dir)
@@ -4811,6 +4902,13 @@ func _build_props_async(props_root: Node3D, entries: Array, dir: String,
 	_end_build_draw(props_root)   # the finished map appears, here
 	_ph("props: reveal the finished layer", Time.get_ticks_msec() - _t_show,
 		1, PH_ENGINE)
+	# THE DECALS LAND ON THE PROPS, now that there are props to land on. The
+	# terrain build drapes them on the heightfield because that is all it has;
+	# this is the second half, and it is why it lives at the END of the objects
+	# build rather than anywhere in the terrain one. Re-projects from the stored
+	# terrain drape every time, so rebuilding a layer cannot creep the markings
+	# upward pass after pass.
+	await _reproject_roads(props_root)
 	# and only NOW write the fast-load cache, with the map already on screen
 	var _side_n := maxi(1, _side_writes.size())   # drained by the flush
 	var _t_side := Time.get_ticks_msec()
@@ -5414,8 +5512,9 @@ func _build_terrain_from_heightmap(dir: String, meta: Dictionary) -> Node3D:
 			# border, neighbouring tiles no longer need matching vertex steps.
 			var tstep := int(tsteps[cz * TERRAIN_CHUNKS + cx])
 			var _t1 := Time.get_ticks_usec()
+			var grid := {}
 			var gm := _heightmap_mesh(raw, res, tstep, meta,
-				cx * cpx, cz * cpx, cpx)
+				cx * cpx, cz * cpx, cpx, grid)
 			_us_tile_build += Time.get_ticks_usec() - _t1
 			if gm == null: continue
 			var _t2 := Time.get_ticks_usec()
@@ -5423,7 +5522,7 @@ func _build_terrain_from_heightmap(dir: String, meta: Dictionary) -> Node3D:
 			_us_tile_lods += Time.get_ticks_usec() - _t2
 			if m is ArrayMesh:
 				var _t3 := Time.get_ticks_usec()
-				var sk := _skirt_arrays(SKIRT_DEPTH)
+				var sk := _skirt_arrays(SKIRT_DEPTH, grid)
 				if not sk.is_empty():
 					(m as ArrayMesh).add_surface_from_arrays(
 						Mesh.PRIMITIVE_TRIANGLES, sk)
@@ -5444,6 +5543,13 @@ func _build_terrain_from_heightmap(dir: String, meta: Dictionary) -> Node3D:
 	if packed.pack(troot) == OK:
 		ResourceSaver.save(packed, cache)
 	_us_tile_save = Time.get_ticks_usec() - _t4
+	# Said once per build: does the object-terrain blend actually reach the
+	# props? Three numbers, because they fail differently - materials that bind
+	# the terrain slot, those we named for the swap, and surfaces the swap
+	# actually replaced.
+	Log.info("terrain blend: %d material(s) bind the terrain slot, %d named, "
+		% [HighpolyGameSource.n_blend_slot, HighpolyGameSource.n_blend_named]
+		+ "%d surface(s) swapped to the ground shader" % n_tblend_swapped)
 	print("MapContext: terrain tiles - vertices %.1fs, LOD chain %.1fs, "
 		% [_us_tile_build / 1e6, _us_tile_lods / 1e6]
 		+ "skirts %.1fs, pack+save %.1fs"
@@ -5459,8 +5565,15 @@ func _build_terrain_from_heightmap(dir: String, meta: Dictionary) -> Node3D:
 	DirAccess.remove_absolute("%s/terrain_ck%d_s%d_v6.res" % [dir, TERRAIN_CHUNKS, step])
 	return troot
 
+# grid_out RECEIVES the tile's vertex grid, which _skirt_arrays needs.
+#
+# It used to be stashed on the object as `_last_grid` and read back by the very
+# next call - an invisible ordering dependency between two functions that look
+# independent, held together only by nothing running in between. Passing it
+# makes the coupling visible and costs nothing: a Dictionary argument is by
+# reference in GDScript.
 func _heightmap_mesh(raw: PackedByteArray, res: int, step: int, meta: Dictionary,
-		px0 := 0, pz0 := 0, npx := 0) -> ArrayMesh:
+		px0 := 0, pz0 := 0, npx := 0, grid_out := {}) -> ArrayMesh:
 	var wmin: float = float(meta.get("world_min", -2048))
 	var wspan: float = float(meta.get("world_max", 2048)) - wmin
 	var base: float = float(meta.get("base", 0.0))
@@ -5518,27 +5631,32 @@ func _heightmap_mesh(raw: PackedByteArray, res: int, step: int, meta: Dictionary
 	arr[Mesh.ARRAY_TEX_UV] = uvs
 	arr[Mesh.ARRAY_INDEX] = indices
 	# the rim data the skirt builder reads (single-threaded builder)
-	_last_grid = {"verts": verts, "norms": norms, "uvs": uvs, "nx": nx, "nz": nz}
+	grid_out["verts"] = verts
+	grid_out["norms"] = norms
+	grid_out["uvs"] = uvs
+	grid_out["nx"] = nx
+	grid_out["nz"] = nz
 	var am := ArrayMesh.new()
 	am.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr)
 	return am
 
 
-var _last_grid := {}
+# (_last_grid removed: the grid is handed back through grid_out instead, so
+# the skirt can never be built from a different tile's vertices.)
 
 
 # The skirt: every rim vertex of the last-built grid duplicated `depth` metres
 # down, quads sewing rim to drop, BOTH windings so it reads from either side
 # regardless of cull mode. Normals and UVs copy the rim vertex, so the apron
 # shades and paints like the ground it hangs from.
-func _skirt_arrays(depth: float) -> Array:
-	if _last_grid.is_empty():
+func _skirt_arrays(depth: float, grid: Dictionary) -> Array:
+	if grid.is_empty():
 		return []
-	var gv: PackedVector3Array = _last_grid["verts"]
-	var gn: PackedVector3Array = _last_grid["norms"]
-	var gu: PackedVector2Array = _last_grid["uvs"]
-	var nx := int(_last_grid["nx"])
-	var nz := int(_last_grid["nz"])
+	var gv: PackedVector3Array = grid["verts"]
+	var gn: PackedVector3Array = grid["norms"]
+	var gu: PackedVector2Array = grid["uvs"]
+	var nx := int(grid["nx"])
+	var nz := int(grid["nz"])
 	# rim vertex indices, walked once around the tile
 	var rim := PackedInt32Array()
 	for gx in range(nx):
@@ -5837,6 +5955,25 @@ func ensure_layer(root: Node, layer: String, tex_mode: int) -> bool:
 	if ctx == null:
 		return false                       # nothing built: caller does a full apply
 	var map := map_of(root)
+	# THE OBJECTS LAYER NEEDS THE WALK, and this is the only place that can
+	# tell. _load_data below mines map_data with a `want` that does NOT include
+	# placements, so on a source whose walk never ran it happily builds from
+	# ZERO rows, returns true, and the caller reports "Building the map
+	# objects..." over a layer that will never appear.
+	#
+	# That is reachable by the most ordinary sequence there is: switch Extended
+	# Terrain on first. Terrain opens the source with placements=false on
+	# purpose - it does not need them - so the walk is skipped and
+	# placements_ready is false with zero rows, correctly. Clicking Original
+	# map objects then adopts that same open source and takes this fast path,
+	# which never runs the walk. The full path in _mapctx_changed does run it,
+	# and returning false here is what falls through to it.
+	#
+	# (The mirror of this was fixed in HighpolyGameSource.open_async - a
+	# terrain-only RE-open wiping a good walk while placements_ready stayed
+	# true. Same failure, opposite order, and this half was still open.)
+	if layer == "objects" and game_source != null 			and not game_source.placements_ready:
+		return false
 	if map == "" or not _load_data(map):
 		return false
 	var dir := "%s/%s" % [CACHE, map]
@@ -6323,6 +6460,149 @@ func set_backdrop_shown(root: Node, on: bool, tex_mode := -1) -> bool:
 # built, so this never triggers a rebuild. False means there is no Roads node -
 # either the terrain has not been built yet or this map has no street network -
 # and the caller says which rather than treating it as a failure.
+# Lay the road decals on the props they are painted on.
+#
+# Cheap and silent when there is nothing to do: no Roads node, no props, or a
+# map whose decals are all on open ground all come back with lifted=0 and the
+# mesh untouched. The row is journalled either way, because "the markings are
+# still sunk into the sidewalk" and "the pass never ran" look identical on
+# screen and want completely different fixes.
+
+func _reproject_roads(props_root: Node3D) -> void:
+	if props_root == null or not is_instance_valid(props_root):
+		return
+	var ctx := props_root.get_parent()
+	if ctx == null:
+		return
+	var rd := ctx.get_node_or_null("Roads")
+	if not (rd is MeshInstance3D):
+		return
+	# NOT ON THE PROJECTOR'S VOLUMES. When the decals are projected rather than
+	# draped, this mesh is the set of volumes each decal may land in - its
+	# vertices are the top and bottom of those volumes, not points on the road.
+	# Moving them onto prop surfaces would collapse every volume into a sheet
+	# and the whole network would stop drawing. The projector already lands on
+	# props by construction, so there is nothing here to do.
+	var _rm: Mesh = (rd as MeshInstance3D).mesh
+	if _rm is ArrayMesh and _rm.get_surface_count() > 0 \
+			and ((_rm as ArrayMesh).surface_get_format(0)
+				& Mesh.ARRAY_FORMAT_CUSTOM0) != 0:
+		BJournal.event("audit", "road decals are projected, not draped",
+			"the vertex re-projection was skipped: these are projection "
+			+ "volumes and the decal lands on whatever surface is inside "
+			+ "them, props included, without moving a vertex")
+		return
+	var t := Time.get_ticks_msec()
+	# SAY THAT THIS IS HAPPENING. It runs for up to a minute after the objects
+	# are already on screen, and with nothing reported the build looks finished
+	# and the map appears to change on its own a minute later.
+	HighpolyVitals.crumb("projecting the road decals onto the map objects")
+	Log.info("Projecting the road decals onto the map objects. The markings "
+		+ "are on the ground until this finishes.")
+	# Loaded by path, not by class_name: see the note at the top of that file.
+	var pjs: Script = load(
+		"res://addons/highpoly_toggle/highpoly_decalproject.gd") as Script
+	if pjs == null:
+		Log.warn("Roads: the decal projector script is missing, so the "
+			+ "markings stay draped on the terrain.")
+		return
+	var pj: Object = pjs.new()
+	pj.progress_fn = func(phase: String, done: int, total: int) -> void:
+		HighpolyVitals.tick_long("projecting road decals", done, total)
+		# ITS OWN LANE, not the props one. Feeding build_progress here reported
+		# this pass against a build that had already finished, so the minute it
+		# takes was either invisible or blamed on the wrong thing.
+		decal_progress.emit(phase, done, total)
+	var st: Dictionary = await pj.run(get_tree(), rd as MeshInstance3D,
+		props_root)
+	HighpolyVitals.crumb("idle, nothing building")
+	decal_progress.emit("", 0, 0)      # an empty phase closes the lane
+	_ph("roads: project the decals onto the props",
+		Time.get_ticks_msec() - t, maxi(1, int(st.get("lifted", 0))),
+		PH_ENGINE)
+	BJournal.event("audit", "road decals re-projected onto props",
+		("%d of %d decal vertices moved onto a prop surface, from %d "
+		+ "near-horizontal triangles across %d instances (%d instances "
+		+ "rejected on their bounding box). A vertex with no prop under it "
+		+ "keeps the terrain height it was draped at.")
+		% [int(st.get("lifted", 0)), int(st.get("vertices", 0)),
+			int(st.get("tris", 0)), int(st.get("instances", 0)),
+			int(st.get("skipped_instances", 0))])
+	Log.info("Roads: %d of %d decal vertices now sit on a prop surface "
+		% [int(st.get("lifted", 0)), int(st.get("vertices", 0))]
+		+ "instead of the ground under it (%.1f s)"
+		% ((Time.get_ticks_msec() - t) / 1000.0))
+	# THE CAP, SAID OUT LOUD. Partial coverage and full coverage look identical
+	# on screen, and the difference decides whether the next report is about
+	# this budget or about the projection maths.
+	# SAY HOW MANY SURFACES STAYED ON THE GROUND. If a sidewalk still loses its
+	# top after this, the number separates the two possible answers: a zero
+	# means no fill was held back and the opaque-fill diagnosis was wrong,
+	# where a non-zero means fills were held back and something ELSE is
+	# covering it.
+	# ALL OF IT, because "nothing was indexed" and "everything was skipped as a
+	# fill" both printed "0 of 0" and cost a round trip to tell apart.
+	Log.info(("Roads: %d prop triangle(s) indexed from %d instance(s); "
+		+ "%d instance(s) and %d MultiMesh group(s) were nowhere near a "
+		+ "decal.")
+		% [int(st.get("tris", 0)), int(st.get("instances", 0)),
+			int(st.get("skipped_instances", 0)),
+			int(st.get("skipped_groups", 0))])
+	# WHAT THE PER-MESH PREFILTER SAVED, so a future slow index says whether
+	# the cost is meshes it had to read or instances it had to test.
+	Log.info(("Roads: %d of %d prop surface(s) are decal receivers - no albedo "
+		+ "of their own, so their appearance comes from the ground - giving "
+		+ "%d triangle(s) to project onto. Nothing else on the map is "
+		+ "considered.")
+		% [int(st.get("receiver_surfaces", 0)),
+			int(st.get("surfaces_seen", 0)),
+			int(st.get("mesh_tris_kept", 0))])
+	# WHY THE REST STAYED ON THE GROUND, broken out by the test that rejected
+	# them. "no candidate under it" is the honest answer for open road and is
+	# expected to dominate; any of the other three dominating is a bug in that
+	# test, named.
+	Log.info(("Roads: of the vertices that did not move - %d had no receiver "
+		+ "surface under them at all, %d had one nearby but were not inside "
+		+ "it in plan view, %d were rejected by the record's authored height "
+		+ "band, %d were inside the band but further than the search window "
+		+ "from their current height%s")
+		% [int(st.get("r_no_cell", 0)), int(st.get("r_not_inside", 0)),
+			int(st.get("r_band", 0)), int(st.get("r_window", 0)),
+			("" if int(st.get("no_band", 0)) == 0
+				else "  (NOTE: %d surface(s) carried no authored band, so the "
+					% int(st.get("no_band", 0))
+					+ "band test was skipped for them - rebuild the terrain "
+					+ "so the roads mesh carries it)")])
+	# THE RECEIVERS BY NAME. Checkable against the mesh a fault marker reports,
+	# which is the only way to answer "is the thing I clicked on in this set".
+	var _rmesh: Dictionary = st.get("receiver_meshes", {})
+	if not _rmesh.is_empty():
+		var _names: Array = _rmesh.keys()
+		_names.sort_custom(func(a, b):
+			return int((_rmesh[a] as Array)[0]) > int((_rmesh[b] as Array)[0]))
+		var _lines: Array = []
+		for _i in range(mini(10, _names.size())):
+			var _r: Array = _rmesh[_names[_i]]
+			_lines.append("%s (%d tris, %s)"
+				% [_names[_i], int(_r[0]), str(_r[1])])
+		Log.info("Roads: the biggest decal receivers are %s%s"
+			% [", ".join(_lines),
+				"" if _names.size() <= 10
+				else ", and %d more mesh(es)" % (_names.size() - 10)])
+	var _st := int(st.get("straddling", 0))
+	if _st > 0:
+		Log.info(("Roads: %d triangle(s) sat across the edge of a receiver and "
+			+ "were laid flat at its height, so their outer edge floats by "
+			+ "about a kerb's height rather than dropping to the road")
+			% _st)
+	var _tr := int(st.get("index_truncated", 0))
+	if _tr > 0:
+		Log.warn(("Roads: the prop index ran out of its time budget with %d "
+			+ "node(s) unread, so markings in the part of the map it did not "
+			+ "reach are still draped on the terrain rather than on the props.")
+			% _tr)
+
+
 func set_roads_shown(root: Node, on: bool) -> bool:
 	_show_roads = on
 	if root == null: return false
@@ -6663,6 +6943,13 @@ static func _near_deliver(id: int, w: Dictionary, mat: ShaderMaterial,
 
 
 func _near_apply(w: Dictionary, mat: ShaderMaterial, c: Vector2) -> void:
+	# HOW MUCH OF THE RECOMPOSITE ACTUALLY BLOCKS. The log reports the whole
+	# operation ("recomposited in 4.9 s"), which is worker time plus this - and
+	# only this part costs frames. Seven of these land inside a 96 s flight and
+	# the worst frame in that flight is 692 ms, so the split decides whether
+	# the fix is "move the upload off the main thread" or "the worker is fine
+	# and something else is stalling".
+	var _t_apply := Time.get_ticks_msec()
 	_near_flight = false
 	# Hand the crumb back, but only if it is still ours: an apply or a build
 	# may have started while the window was in flight, and stamping idle over
@@ -6680,6 +6967,8 @@ func _near_apply(w: Dictionary, mat: ShaderMaterial, c: Vector2) -> void:
 		if not _near_said_ready:
 			_near_said_ready = true
 			terrain_ready.emit(false)
+		HighpolyLog.info("near window: main-thread apply %d ms (no bake)"
+			% (Time.get_ticks_msec() - _t_apply))
 		return
 	if mat == null or not is_instance_valid(mat) or mat != _tmat_live:
 		# NOT a completion: the map or the material changed while the window
@@ -6695,6 +6984,12 @@ func _near_apply(w: Dictionary, mat: ShaderMaterial, c: Vector2) -> void:
 		float(w["z0"]), float(w["size"]), NEAR_FEATHER_M))
 	mat.set_shader_parameter("near_on", 1)
 	_near_center = c
+	# THE NUMBER THAT MATTERS. Everything above this point runs on the main
+	# thread, so it is frames, not background work - and the user-facing line
+	# below promises the sharpening "does not block you", which is a claim this
+	# measures rather than assumes.
+	HighpolyLog.info("near window: main-thread apply %d ms"
+		% (Time.get_ticks_msec() - _t_apply))
 	# SAY IT IS DONE. Until now the terrain pipeline ended in silence: the last
 	# thing anyone saw was the apply returning, and the sharpening that runs
 	# after it neither announced itself nor reported finishing. "Nothing has

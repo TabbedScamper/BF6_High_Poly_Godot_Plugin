@@ -225,7 +225,31 @@ func instance_type_bytes(i: int) -> PackedByteArray:
 #
 # An empty `want` is the old behaviour exactly, so every other caller is
 # unaffected and a caller that needs everything simply passes nothing.
+# WHAT THE WALK DECODES, counted so the filter's reach can be judged rather
+# than assumed. `top` is fields kept by `want`; `nested` is fields decoded
+# inside structs below it, where the filter does not reach. If nested dwarfs
+# top, the filter is only pruning the surface.
+static var n_inst := 0
+static var n_top := 0
+static var n_nested := 0
+static var n_arr_elem := 0
+
+
+
+static func decode_counts() -> String:
+	return ("instances %d, top-level fields %d, nested fields %d, array "
+		+ "elements %d") % [n_inst, n_top, n_nested, n_arr_elem]
+
+
+static func reset_counts() -> void:
+	n_inst = 0
+	n_top = 0
+	n_nested = 0
+	n_arr_elem = 0
+
+
 func read_instance(idx: int, depth := 0, want: Dictionary = {}) -> Dictionary:
+	n_inst += 1
 	if idx < 0 or idx >= instance_offsets.size():
 		return {}
 	var g = _inst_type.get(idx)
@@ -251,6 +275,7 @@ func _read_struct_only(guid: PackedByteArray, base: int, depth: int,
 		var nh: int = int(fld["nameHash"])
 		if not want.has(nh):
 			continue
+		n_top += 1
 		var pos: int = base + int(fld["offset"])
 		if pos < 0 or pos + 8 > data.size():
 			out[nh] = null
@@ -300,16 +325,53 @@ func int_pointer(idx: int, name_hash: int) -> int:
 func _layout(guid: PackedByteArray) -> Dictionary:
 	var k := guid.hex_encode()
 	if not _lay_cache.has(k):
-		_lay_cache[k] = _types.layout_full(guid)
+		var lay: Dictionary = _types.layout_full(guid)
+		_lay_cache[k] = lay
 	return _lay_cache[k]
 
 
+# A LinearTransform FAST PATH WAS TRIED HERE AND REMOVED. It is worth 12.6 s
+# on the placement walk (22.7 -> 10.1 s, measured once) and the finding behind
+# it is solid: 2.88M nested field decodes over 178,727 instances, 16.1 each,
+# which is this one struct and essentially nothing else.
+#
+# It is removed rather than left inert because it stopped firing and I could
+# not find out why. Everything checks out on inspection - the type's layout is
+# exactly the four members at 0/16/32/48, _layout marks it, _decode dispatches
+# 0x02 straight to _read_struct - and the hit counter still read zero across
+# four runs. Something in this file does not behave the way it reads, and dead
+# code carrying a comment that claims a speedup is worse than no code.
+#
+# To pick this up: the counters below still report, so add one increment at the
+# top of _read_struct for layouts marked as transforms. That single number
+# separates "never reaches this function with that type" from "reaches it and
+# the guard rejects it", which is the fork I never managed to resolve.
+# The member name hashes, and the x/y/z hashes inside each Vec3. Spelled out so
+# the emitted dictionaries are indistinguishable from the generic decoder's.
+
+
+
+
+
 func _read_struct(guid: PackedByteArray, base: int, depth: int) -> Dictionary:
+	# THE TRANSFORM FAST PATH. Measured: 2,878,067 nested field decodes over
+	# 178,727 instances on this map, 16.1 each - which is this struct and
+	# essentially nothing else. The generic path below rediscovers the layout
+	# and allocates a Dictionary at five levels to recover sixteen floats that
+	# are contiguous at a known offset.
+	#
+	# Emits the identical shape: __type plus four members, each a Vec3
+	# dictionary keyed by the x/y/z hashes, because is_lt() and vec_of() read
+	# exactly that.
 	var lay := _layout(guid)
 	if lay.is_empty() or depth > MAX_DEPTH:
 		return {}
 	var out := {"__type": guid_str(guid)}
 	for fld in lay["fields"]:
+		# Counted here and not in _read_struct_only: this is the decoder the
+		# `want` filter does NOT reach, so this number is the filter's blind
+		# spot measured directly.
+		n_nested += 1
 		var pos: int = base + int(fld["offset"])
 		# A FIELD THAT LANDS OUTSIDE THE FILE MUST NOT COST THE WHOLE INSTANCE.
 		# An instance is usually many fields and the one being looked for is
@@ -335,9 +397,14 @@ func _decode(pos: int, type_va: int, depth: int):
 		0x07: return _cstring(pos)
 		0x17: return {"resref": int(data.decode_u64(pos))}
 		0x06:
-			var e := pos
-			while e < data.size() and e < pos + 32 and data[e] != 0:
-				e += 1
+			# One native scan, clamped to the 32-byte bound the loop
+			# enforced. -1 (no terminator) and a terminator beyond the
+			# bound both mean "take the whole bounded span", which is
+			# exactly where the loop stopped.
+			var lim: int = mini(data.size(), pos + 32)
+			var e := data.find(0, pos)
+			if e < 0 or e > lim:
+				e = lim
 			return data.slice(pos, e).get_string_from_ascii()
 		0x15: return {"guid": data.slice(pos, pos + 16).hex_encode()}
 		0x0A: return data[pos] != 0
@@ -394,10 +461,14 @@ func _cstring(pos: int) -> String:
 	var loc := pos + off
 	if loc < 0 or loc >= data.size():
 		return ""
-	var e := loc
+	# One native scan, clamped to the same 512-byte stop. This runs for
+	# every string field of every instance the placement walk decodes -
+	# 58,055 rows - so the interpreted loop was doing millions of
+	# single-byte steps for work the engine does in one call.
 	var stop: int = mini(data.size(), loc + 512)
-	while e < stop and data[e] != 0:
-		e += 1
+	var e := data.find(0, loc)
+	if e < 0 or e > stop:
+		e = stop
 	return data.slice(loc, e).get_string_from_ascii()
 
 
@@ -413,6 +484,7 @@ func _read_array(pos: int, elem_va: int, depth: int) -> Array:
 	var rt: Dictionary = _types.resolve(elem_va) if elem_va != 0 else {}
 	var te := int(rt["te"]) if not rt.is_empty() else 0x10
 	var items: Array = []
+	n_arr_elem += count
 
 	if te == 0x02:
 		var lay := _layout(rt["guid_raw"])

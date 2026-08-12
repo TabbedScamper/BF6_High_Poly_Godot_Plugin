@@ -208,8 +208,10 @@ static func find_res(src, sheet: String) -> String:
 	if _idx_for != src:
 		_idx.clear()
 		_idx_for = src
-		for rn in src.res.keys():
-			if int(src.res[rn][5]) != RES_TYPE:
+		# Snapshot: iterating the live member races the catalogue republish.
+		var t_res: Dictionary = src.snap_res()
+		for rn in t_res.keys():
+			if int(t_res[rn][5]) != RES_TYPE:
 				continue
 			var k := norm_stem(str(rn))
 			# a collision would make the match a coin toss, so drop both rather

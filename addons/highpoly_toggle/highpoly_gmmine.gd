@@ -128,7 +128,9 @@ static func roots_of(gs, level: String) -> Array:
 	if pre == "/_layers_gameplay/":
 		return []
 	var out: Array = []
-	for k in gs.src.ebx.keys():
+	# Snapshot: walking the live member races the catalogue republish.
+	var t_ebx: Dictionary = gs.src.snap_ebx()
+	for k in t_ebx.keys():
 		var s := str(k)
 		if not s.begins_with(pre):
 			continue
@@ -489,7 +491,9 @@ static func mine_to_disk(gs, level: String, map: String, roots: Array = []) -> i
 # The level's partition directory, from a resource the mount already has.
 static func _level_dir(gs, level: String) -> String:
 	var want := "/levels/%s/" % level.to_lower()
-	for k in gs.src.ebx.keys():
+	# Snapshot: walking the live member races the catalogue republish.
+	var t_ebx: Dictionary = gs.src.snap_ebx()
+	for k in t_ebx.keys():
 		var s := str(k)
 		var at := s.findn(want)
 		if at >= 0:

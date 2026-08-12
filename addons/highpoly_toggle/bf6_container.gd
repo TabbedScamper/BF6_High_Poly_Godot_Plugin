@@ -68,8 +68,8 @@ static func read_varint(d: PackedByteArray, pos: int) -> Array:
 
 static func _cstr(d: PackedByteArray, pos: int) -> Array:
 	var end := pos
-	while end < d.size() and d[end] != 0:
-		end += 1
+	var _f := d.find(0, end)
+	end = d.size() if _f < 0 else _f
 	return [d.slice(pos, end).get_string_from_utf8(), end + 1]
 
 

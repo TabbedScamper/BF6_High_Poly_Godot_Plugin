@@ -69,8 +69,10 @@ var error := ""
 static func find_res(src: BF6Source, level: String) -> String:
 	var low := level.to_lower()
 	var fallback := ""
-	for rn in src.res.keys():
-		var e = src.res[rn]
+	# Snapshot: iterating the live member races the catalogue republish.
+	var t_res: Dictionary = src.snap_res()
+	for rn in t_res.keys():
+		var e = t_res[rn]
 		if int(e[5]) != RES_TYPE:
 			continue
 		var n := str(rn)

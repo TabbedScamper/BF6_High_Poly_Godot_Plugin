@@ -109,8 +109,10 @@ func load(src, level: String, pidx: Dictionary) -> bool:
 	var depot_any := ""
 	var depot_n := 0
 	var low := level.to_lower()
-	for rn in src.res.keys():
-		var ty := int(src.res[rn][5])
+	# Snapshot: iterating the live member races the catalogue republish.
+	var t_res: Dictionary = src.snap_res()
+	for rn in t_res.keys():
+		var ty := int(t_res[rn][5])
 		if ty != RES_LAYERGRAPHS and ty != RES_LAYERCOMB and ty != RES_DEPOT:
 			continue
 		var n := str(rn)

@@ -88,7 +88,9 @@ static func _build_dirs(gs) -> void:
 	_dirs = {}
 	_dirs_for = id
 	var have: Dictionary = {}
-	for rn in gs.src.res.keys():
+	# Snapshot: walking the live member races the catalogue republish.
+	var t_res: Dictionary = gs.src.snap_res()
+	for rn in t_res.keys():
 		var n := str(rn)
 		if not n.begins_with(ART):
 			continue

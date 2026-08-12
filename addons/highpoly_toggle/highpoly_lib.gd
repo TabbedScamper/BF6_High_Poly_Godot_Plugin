@@ -492,11 +492,25 @@ static func _nofit_for(key: String) -> bool:
 # die inside this part of the build with no engine output, and only FLUSHED
 # lines survive in the orphaned session .tmp.
 static var _swap_trace := OS.get_environment("BF6_MESH_TRACE") == "1"
+static var _swap_n := 0
 
 
 static func apply_one(node: Node3D, key: String, tier: Tier, textured: bool) -> bool:
 	if not _swap_trace:
 		return _apply_one_body(node, key, tier, textured)
+	# MEMORY EVERY 250 SWAPS, flushed. The swap loop is what is running when the
+	# four geometry layers die - a backdrop run got to 4,458 of 7,792 - and the
+	# question a per-swap name cannot answer is whether something is climbing
+	# into a wall. Every 250 rather than every swap because the flush is the
+	# expensive part and the curve is what matters, not the resolution.
+	_swap_n += 1
+	if (_swap_n % 250) == 0:
+		HighpolyLog.info("mesh trace: SWAP #%d vram=%dMB heap=%dMB objects=%d"
+			% [_swap_n,
+				int(Performance.get_monitor(Performance.RENDER_VIDEO_MEM_USED) / 1048576.0),
+				int(Performance.get_monitor(Performance.MEMORY_STATIC) / 1048576.0),
+				int(Performance.get_monitor(Performance.OBJECT_COUNT))])
+		HighpolyLog.flush()
 	HighpolyLog.info("mesh trace: SWAP enter %s" % key)
 	HighpolyLog.flush()
 	var _ok := _apply_one_body(node, key, tier, textured)

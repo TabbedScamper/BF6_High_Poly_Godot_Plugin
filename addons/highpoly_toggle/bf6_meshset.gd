@@ -117,9 +117,9 @@ func parse(d: PackedByteArray) -> Dictionary:
 func _cstr(d: PackedByteArray, off: int) -> String:
 	if off <= 0 or off >= d.size():
 		return ""
-	var e := off
-	while e < d.size() and d[e] != 0:
-		e += 1
+	var e := d.find(0, off)
+	if e < 0:
+		e = d.size()
 	return d.slice(off, e).get_string_from_ascii()
 
 

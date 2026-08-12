@@ -397,6 +397,11 @@ func native_size() -> int:
 # How many bands the paint was cut into.
 var bands := 0
 
+# Guards the band-slot Array accesses only. See bf6_splat.gd for why: element
+# assignment on a shared copy-on-write Array from several tasks at once
+# reallocates one backing store from several threads.
+var _slot_mx := Mutex.new()
+
 
 # What the composite spends and how much of it is overdraw. Counted before
 # anything is changed: the splat composite taught that the obvious target (the
@@ -481,7 +486,13 @@ func composite(size := 4096) -> Dictionary:
 	var band_job := func(b: int) -> void:
 		var zlo: int = b * band_h
 		var zhi: int = mini(size, zlo + band_h)
+		# UNDER THE LOCK: the buffer is this band's own, but the Array slot
+		# holding it is shared with every other band task, and Array is a
+		# refcounted copy-on-write container whose element assignment can
+		# reallocate the backing store. See the long note in bf6_splat.gd.
+		_slot_mx.lock()
 		var out_b: PackedByteArray = bands_out[b]
+		_slot_mx.unlock()
 		for j in jobs:
 			var jd: Dictionary = j
 			var z0: int = jd["z0"]
@@ -497,28 +508,89 @@ func composite(size := 4096) -> Dictionary:
 			var xspan := float(maxi(1, x1 - x0 - 1))
 			var zmany := z1 - z0 > 1
 			var xmany := x1 - x0 > 1
+			# HOISTED, and the size with it: v.size() was a method call per
+			# texel for a value that never changes inside the node.
+			var vn := v.size()
+			var xs2 := xs * 2
+			var hi_f := float(xs - 1)
+			var sx_max := xs - 2
+
+			# ---- the x mapping, once per COLUMN -------------------------
+			# sfx / sx0 / tx depend only on gx, and were recomputed on every
+			# row of the node: for a node a thousand rows tall that is a
+			# thousand redundant clampf + mini + int per column.
+			#
+			# tx is Float64 on purpose. GDScript floats are doubles, and a
+			# Float32 table would round every weight and change the output
+			# this phase is hash-verified against.
+			var ncol := x1 - x0
+			var col_sx := PackedInt32Array()
+			var col_tx := PackedFloat64Array()
+			col_sx.resize(ncol)
+			col_tx.resize(ncol)
+			for ci in range(ncol):
+				var fx: float = float(ci) / xspan if xmany else 0.0
+				var sfx: float = float(s0) + fx * ssp
+				if sfx < 0.0:
+					sfx = 0.0
+				elif sfx > hi_f:
+					sfx = hi_f
+				var sxi := int(sfx)
+				if sxi > sx_max:
+					sxi = sx_max
+				col_sx[ci] = sxi
+				col_tx[ci] = sfx - float(sxi)
+
 			for gz in range(jz0, jz1):
 				var fz: float = float(gz - z0) / zspan if zmany else 0.0
-				var sfy: float = clampf(float(s0) + fz * ssp, 0.0, float(xs - 1))
-				var sy0: int = mini(int(sfy), xs - 2)
+				# clampf and mini inlined - see the note above the column
+				# table; the same reasoning applies once per row.
+				var sfy: float = float(s0) + fz * ssp
+				if sfy < 0.0:
+					sfy = 0.0
+				elif sfy > hi_f:
+					sfy = hi_f
+				var sy0 := int(sfy)
+				if sy0 > sx_max:
+					sy0 = sx_max
 				var tz: float = sfy - float(sy0)
 				var drow := (gz - zlo) * size
-				for gx in range(x0, x1):
-					var fx: float = float(gx - x0) / xspan if xmany else 0.0
-					var sfx: float = clampf(float(s0) + fx * ssp, 0.0, float(xs - 1))
-					var sx0: int = mini(int(sfx), xs - 2)
-					var tx: float = sfx - float(sx0)
-					var r0 := (sy0 * xs + sx0) * 2
-					var r1 := r0 + xs * 2
-					if r1 + 3 >= v.size():
+				var rowb := sy0 * xs
+				var dbase := (drow + x0) * 2
+				for ci in range(ncol):
+					var r0 := (rowb + col_sx[ci]) * 2
+					var r1 := r0 + xs2
+					if r1 + 3 >= vn:
 						continue
-					var h0 := lerpf(float(v.decode_u16(r0)),
-						float(v.decode_u16(r0 + 2)), tx)
-					var h1 := lerpf(float(v.decode_u16(r1)),
-						float(v.decode_u16(r1 + 2)), tx)
-					out_b.encode_u16((drow + gx) * 2,
-						clampi(int(round(lerpf(h0, h1, tz))), 0, 65535))
+					# ---- decode_u16 x4, INLINED ------------------------
+					# Little-endian, so this is the identical value with two
+					# array reads instead of a builtin call. The calls were
+					# the phase: the same substitution in bf6_splat.gd took
+					# its paint from 128.8 s to 8.3 s.
+					var txc: float = col_tx[ci]
+					var a0 := float(v[r0] | (v[r0 + 1] << 8))
+					var b0 := float(v[r0 + 2] | (v[r0 + 3] << 8))
+					var a1 := float(v[r1] | (v[r1 + 1] << 8))
+					var b1 := float(v[r1 + 2] | (v[r1 + 3] << 8))
+					# lerpf is exactly a + (b - a) * t, so this rounds the
+					# same way the builtin did.
+					var h0 := a0 + (b0 - a0) * txc
+					var h1 := a1 + (b1 - a1) * txc
+					var hv := h0 + (h1 - h0) * tz
+					# int(round(x)) -> int(x + 0.5): agrees for x >= 0, and a
+					# lerp between two u16 samples cannot be negative.
+					var iv := int(hv + 0.5)
+					if iv < 0:
+						iv = 0
+					elif iv > 65535:
+						iv = 65535
+					# ---- encode_u16, INLINED: low byte first ------------
+					var k := dbase + ci * 2
+					out_b[k] = iv & 0xFF
+					out_b[k + 1] = (iv >> 8) & 0xFF
+		_slot_mx.lock()
 		bands_out[b] = out_b
+		_slot_mx.unlock()
 
 	var _tp := Time.get_ticks_usec()
 	if nband > 1:

@@ -43,7 +43,9 @@ var active := false
 # ground with zero instances. A default the UI cannot reach must carry the
 # value the feature needs; a default the UI CAN reach may be conservative.
 var grass_range := 0.0
-var last_regen_ms := 0        # debug: last regeneration cost
+var last_regen_ms := 0
+# Entries skipped whole because their class can place nothing on this map.
+var _skipped_entries := 0        # debug: last regeneration cost
 var last_instances := 0       # debug: instances currently placed
 const HARD_TOTAL := 90000     # absolute instance safety cap across all entries
 
@@ -325,6 +327,8 @@ func _alive() -> bool:
 # hitch becomes a spread. Grass appears a frame or two later than it did,
 # which nobody can see; the frame it used to cost is what everybody saw.
 const REGEN_MS_PER_FRAME := 2.0
+# Anything at or above this is a visible hitch and gets said out loud.
+const REPORT_MS := 8
 var _regen_queue: Array = []
 var _regen_cam := Vector3.ZERO
 
@@ -335,10 +339,14 @@ func _regen_step() -> void:
 		return
 	var t0 := Time.get_ticks_msec()
 	var made := 0
+	# WORST SINGLE ENTRY, because the budget below cannot stop one.
+	var worst := 0
+	var worst_n := 0
 	while not _regen_queue.is_empty():
 		var e = _regen_queue.pop_front()
 		var node = e["mmi"]
 		if is_instance_valid(node):
+			var _te := Time.get_ticks_msec()
 			var buf := _gen_entry(e, _regen_cam)
 			var cnt := int(buf.size() / 12)
 			var mm: MultiMesh = (node as MultiMeshInstance3D).multimesh
@@ -347,10 +355,29 @@ func _regen_step() -> void:
 			if cnt > 0:
 				mm.buffer = buf
 			made += cnt
+			var el := Time.get_ticks_msec() - _te
+			if el > worst:
+				worst = el
+				worst_n = cnt
+		# CHECKED AFTER A WHOLE ENTRY, so this bounds the number of entries per
+		# frame and NOT the length of the frame: _gen_entry runs to completion
+		# whatever it costs, and its cap is HARD_TOTAL * share, which on a map
+		# with few scatter types is a large share of 90,000 transforms built in
+		# GDScript. A 2 ms budget cannot interrupt a 200 ms entry.
 		if Time.get_ticks_msec() - t0 >= REGEN_MS_PER_FRAME:
 			break
 	last_instances = made if _regen_queue.is_empty() else last_instances + made
 	last_regen_ms = Time.get_ticks_msec() - t0
+	# ROUTED, not just recorded. last_regen_ms and last_instances have been
+	# computed since this was written and read by nothing, which is why the
+	# grass hitch never showed up in a bench while being obvious to anyone
+	# flying the map.
+	if last_regen_ms >= REPORT_MS:
+		HighpolyLog.info(("scatter: regen step %d ms, %d instance(s), "
+			+ "%d entr(ies) left; worst single entry %d ms for %d instance(s); "
+			+ "%d entr(ies) skipped as unplaceable")
+			% [last_regen_ms, made, _regen_queue.size(), worst, worst_n,
+			_skipped_entries])
 
 
 func _regenerate(cam_pos: Vector3) -> void:
@@ -401,9 +428,36 @@ func _gen_entry(e: Dictionary, cam: Vector3) -> PackedFloat32Array:
 	# per-entry cap: its share of the hard safety total
 	var cap: int = maxi(64, int(float(HARD_TOTAL) * float(e["share"])))
 	var seed_i: int = e["seed"]
+	var _ge_t0 := Time.get_ticks_msec()
+	# AN ENTRY THAT CAN NEVER PLACE ANYTHING, decided once instead of per cell.
+	#
+	# _cov_weight answers 0 for EVERY position of a debris kit on a map whose
+	# palette paints no debris - a fact about the ENTRY, rediscovered ~55,000
+	# times per crossing because the test lived inside the per-cell weight.
+	# Measured: these zero-instance entries were the most expensive of all,
+	# 150-650 ms each (63-201 ms after the gate reorder), and they fire every
+	# 32 m of camera travel. That is the flying hitch.
+	if _cov_res > 0 and int(e.get("cls", 0)) == 2 and _debris_layers == 0:
+		_skipped_entries += 1
+		return PackedFloat32Array()
+	# COARSE PROBE FIRST. See the note on _cov_probe: the full walk is 55,000
+	# to 162,000 coverage lookups, and for a class with nothing painted nearby
+	# every single one returns zero.
+	if _cov_res > 0 and not _cov_probe(cam, minf(e["radius"], grass_range),
+			int(e.get("cls", 0))):
+		_skipped_entries += 1
+		return PackedFloat32Array()
 	var buf := PackedFloat32Array()
 	buf.resize(cap * 12)
 	var w := 0                          # write cursor (floats)
+	# WHERE THE CELLS GO. Two guesses about why these entries place nothing
+	# have now been wrong (the debris-class shortcut fired 0 times), so count
+	# the outcomes instead of reasoning about them.
+	var n_cells := 0
+	var n_far := 0
+	var n_cov0 := 0
+	var n_slope := 0
+	var n_dice := 0
 	var r2 := radius * radius
 	var near2 := NEAR_R * NEAR_R
 	# NEAREST-FIRST, in square rings outward from the camera's cell. The old
@@ -443,23 +497,52 @@ func _gen_entry(e: Dictionary, cam: Vector3) -> PackedFloat32Array:
 			var dx := ax - cam.x
 			var dz := az - cam.z
 			var d2 := dx * dx + dz * dz
-			if d2 > r2: continue
+			n_cells += 1
+			if d2 > r2:
+				n_far += 1
+				continue
 			# slope: with the real grass mask it is only a cliff SANITY clamp;
 			# without it, it keeps its old fade-band role in the heuristic
-			var sl := _slope(ax, az)
-			if sl >= SLOPE_NONE: continue
+			# THE CHEAP GATE GOES FIRST. Both of these are pure accept/reject
+			# tests, so their order cannot change which cells are placed - but
+			# _slope calls _height four times and each _height does four
+			# decode_u16, about sixteen method calls per cell, and it used to
+			# run BEFORE the coverage lookup that rejects nearly everything.
+			#
+			# Measured: entries that place ZERO instances were the most
+			# expensive of all, 150-650 ms each, because they paid the slope
+			# for every one of ~55,000 candidate cells and then had them all
+			# rejected by the mask anyway. This runs every 32 m of camera
+			# travel with ~38 entries queued, which is the flying hitch.
+			#
+			# With the real mask present the slope is, in this file's own
+			# words, "only a cliff SANITY clamp" - so it belongs after the test
+			# that actually decides.
 			var wgt: float
+			var sl := 0.0
 			if _cov_res > 0:
 				# EXACT accept weight: the game's own painted coverage, matched
 				# to this kit's class - grass on vegetation layers, debris on
 				# the rest. This is also what finally answers "which mesh goes
 				# where": the 49 kits stop being 49 identical carpets.
 				wgt = _cov_weight(ax, az, int(e.get("cls", 0)))
+				if wgt <= 0.0:
+					n_cov0 += 1
+					continue
+				sl = _slope(ax, az)
+				if sl >= SLOPE_NONE:
+					n_slope += 1
+					continue
 			else:
+				# No mask: the slope IS the rule here, so it has to come first.
+				sl = _slope(ax, az)
+				if sl >= SLOPE_NONE: continue
 				wgt = clampf((SLOPE_NONE - sl) / (SLOPE_NONE - SLOPE_FULL), 0.0, 1.0)
 				wgt *= _green_weight(ax, az)
-			if wgt <= 0.0: continue
-			if _hash01(seed_i, cx, cz, 2) > wgt: continue
+				if wgt <= 0.0: continue
+			if _hash01(seed_i, cx, cz, 2) > wgt:
+				n_dice += 1
+				continue
 			var yaw := _hash01(seed_i, cx, cz, 3) * TAU
 			var ca := cos(yaw)
 			var sa := sin(yaw)
@@ -486,6 +569,14 @@ func _gen_entry(e: Dictionary, cam: Vector3) -> PackedFloat32Array:
 				count += 1
 				if count >= cap: break
 			if count >= cap: break
+	# Only a pathological entry now - the coverage probe above skips the
+	# ones that used to sit here at 60-200 ms placing nothing.
+	if Time.get_ticks_msec() - _ge_t0 >= 50:
+		HighpolyLog.info(("scatter: entry cls %d, %d ms: %d cells -> far %d, "
+			+ "cov0 %d, slope %d, dice %d, placed %d (rings %d, radius %.0f, "
+			+ "spacing %.1f)")
+			% [int(e.get("cls", -1)), Time.get_ticks_msec() - _ge_t0, n_cells,
+			n_far, n_cov0, n_slope, n_dice, count, max_ring, radius, spacing])
 	buf.resize(count * 12)
 	return buf
 
@@ -520,6 +611,35 @@ func _slope(x: float, z: float) -> float:
 	var gx := hxp - hxm
 	var gz := hzp - hzm
 	return 1.0 - (2.0 * s) / sqrt(gx * gx + gz * gz + 4.0 * s * s)
+
+# Is there ANY coverage of `cls` within `radius` of `cam`?
+#
+# Sampled on a lattice whose step is four coverage texels, so it cannot miss a
+# patch larger than a few texels while costing a fraction of the full walk: a
+# 300 m radius at 1.5 m spacing is 162,000 candidates, and this is a few
+# hundred samples of the same raster.
+#
+# Conservative in the direction that matters - it answers "walk it" whenever it
+# finds anything at all, and only skips when the whole neighbourhood is empty.
+func _cov_probe(cam: Vector3, radius: float, cls: int) -> bool:
+	if radius <= 0.0:
+		return false
+	# four texels of the coverage raster, in world metres
+	var texel := maxf(_cov_b.z, _cov_b.w) / maxf(1.0, float(_cov_res))
+	var step := maxf(texel * 4.0, 2.0)
+	var r2 := radius * radius
+	var n := int(radius / step)
+	for iz in range(-n, n + 1):
+		var pz := cam.z + float(iz) * step
+		for ix in range(-n, n + 1):
+			var px := cam.x + float(ix) * step
+			var dx := px - cam.x
+			var dz := pz - cam.z
+			if dx * dx + dz * dz > r2:
+				continue
+			if _cov_weight(px, pz, cls) > 0.0:
+				return true
+	return false
 
 # The painted-coverage accept weight at a world position, for one kit class.
 # The texel's four layer slots are summed where their class matches the kit:

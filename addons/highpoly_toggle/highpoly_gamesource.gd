@@ -430,6 +430,16 @@ func print_phases() -> void:
 		_say(line)
 	for line in phase_report():
 		_say(line)
+	# WHERE THE INSTALL READ ACTUALLY WENT: drive time against Oodle time.
+	#
+	# BF6Cas has counted both since it was written and io_report() formats
+	# them - but its only caller was a diagnostics panel a bench run never
+	# opens, so the numbers were gathered every run and read in none. Without
+	# them "mount costs 16 s" cannot be acted on: whether that is the drive,
+	# the decompressor, or the GDScript around them decides whether the fix is
+	# parallel reads, a different path, or fewer calls per record.
+	for line in BF6Cas.io_report():
+		_say(line)
 
 
 # THE PER-MESH HALF OF THE READER, which the open never sees.
@@ -679,6 +689,22 @@ func ensure_ground(cache_dir: String, progress := Callable()) -> bool:
 #
 # Set on the MAIN thread before the worker starts and cleared after it is
 # joined, so a reader can wait on it without a lock.
+#
+# EXCEPT NO READER EVER DID. This flag is written in two places in
+# highpoly_toggle.gd and read in none, so the protection described above never
+# existed and the crash named above was never prevented. A dump later caught
+# the same race from the other side - a null dereference inside CowData::_ref
+# at the instant of the publish, Godot exe +0x3A073D7 on worker thread 13 of
+# 71 - which is what finally made the gap visible.
+#
+# The real protection is BF6Source.snap_res / snap_ebx: every walk takes a
+# reference to the dictionary under the publish lock and iterates THAT, so it
+# can neither straddle a swap nor watch a rehash. A flag could not do this job
+# anyway; it can only ask a reader to wait, and these readers are worker
+# threads with nowhere good to wait.
+#
+# Kept because it is cheap, honest state saying whether the upgrade is in
+# flight. It is not a lock and must not be used as one.
 var catalogue_upgrading := false
 
 
@@ -708,7 +734,9 @@ func upgrade_catalogue(progress := Callable()) -> bool:
 	# not resolve before may resolve now, and _sib_scopes because its sibling
 	# lists were computed from the OLD depot set and nothing else ever reset it.
 	var nb := {}
-	for rn in src.res.keys():
+	# Snapshot: walking the live member races the catalogue republish.
+	var t_res: Dictionary = src.snap_res()
+	for rn in t_res.keys():
 		var n := str(rn)
 		var at := n.find(SHADERSTATE)
 		if at > 0 and n.find("shaderblockdepot", at) > 0:
@@ -829,6 +857,13 @@ const STAGE_WEIGHT := {
 # 7: blend-keyed materials are NAMED (M_TerrainBlend) so the load-time
 # ground-colour swap can find them, and uv2 carries the declB-resolved unwrap.
 # Epoch 6 bakes have neither and every mesh must re-parse once.
+# How many materials bind the terrain-colour slot, and how many of those
+# we actually NAME for the load-time swap. The user reports sidewalks
+# still drawing pure white, so the first question is whether the naming
+# fires at all - and the gap between these two numbers is the answer.
+static var n_blend_slot := 0
+static var n_blend_named := 0
+
 const GEOM_EPOCH := 7
 
 # A FUNCTION, not read as a constant from outside, and that is load-bearing.
@@ -1028,7 +1063,9 @@ func open_map(map: String, game_dir := "", progress := Callable(),
 	# exists between two phases that ARE measured is exactly the kind that hides
 	# for a year inside somebody else's number.
 	var t_scope := Time.get_ticks_msec()
-	for rn in src.res.keys():
+	# Snapshot: walking the live member races the catalogue republish.
+	var t_res: Dictionary = src.snap_res()
+	for rn in t_res.keys():
 		var n := str(rn)
 		var at := n.find(SHADERSTATE)
 		if at > 0 and n.find("shaderblockdepot", at) > 0:
@@ -1687,7 +1724,9 @@ func terrain(cache_dir: String) -> Dictionary:
 	if src == null:
 		return {}
 	var pick := ""
-	for rn in src.res.keys():
+	# Snapshot: walking the live member races the catalogue republish.
+	var t_res: Dictionary = src.snap_res()
+	for rn in t_res.keys():
 		var n := str(rn)
 		if n.contains("streamingtree") and n.to_lower().contains(level):
 			pick = n
@@ -2016,7 +2055,9 @@ func terrain_surface(cache_dir: String, force := false,
 			return got as Dictionary
 
 	var pick := ""
-	for rn in src.res.keys():
+	# Snapshot: walking the live member races the catalogue republish.
+	var t_res: Dictionary = src.snap_res()
+	for rn in t_res.keys():
 		var n := str(rn)
 		if n.contains("streamingtree") and n.to_lower().contains(level):
 			pick = n
@@ -2474,7 +2515,9 @@ func _window_state(cache_dir: String):
 			or int((meta as Dictionary).get("splat_v", 0)) != SPLAT_VERSION:
 		return null                    # window density must match the bake's lut
 	var pick := ""
-	for rn in src.res.keys():
+	# Snapshot: walking the live member races the catalogue republish.
+	var t_res: Dictionary = src.snap_res()
+	for rn in t_res.keys():
 		var n := str(rn)
 		if n.contains("streamingtree") and n.to_lower().contains(level):
 			pick = n
@@ -2724,6 +2767,17 @@ func _write_fallback_layers(pal, by_area: Array, out_dir: String) -> void:
 # _height_at now evaluates the SAME triangle the terrain mesh draws, so the
 # drape lands ON the rendered surface rather than near it and the lift only has
 # to cover float precision. 15 cm was tall enough to cut through car tyres.
+# How far the decal subdivision may go. Each level HALVES the edge length and
+# quadruples the triangles, so two levels is a quarter of the step and sixteen
+# times the triangles. Held at two because the re-projection pass costs time per
+# decal VERTEX, and the user already notices that pass running - buying a finer
+# step by making the projection four times longer is a bad trade. The records
+# that stay coarse at this cap are the big flat road fills, where there is no
+# detail to miss.
+const DECAL_SUBDIV_MAX := 3
+# Per record, so one enormous fill cannot dominate the whole network.
+const DECAL_SUBDIV_MAX_TRIS := 60000
+
 const ROAD_Y_BIAS := 0.01
 
 # COVERAGE IS A SECOND TEXTURE, not an alpha channel, so this cannot be a
@@ -2733,9 +2787,136 @@ const ROAD_Y_BIAS := 0.01
 # The alternative was compositing op into cv's alpha at load. That means
 # decompressing two BC7 images, resizing one and writing a million bytes per
 # material group in GDScript, for a result a sampler gives away free.
+# THE PROJECTOR. Draws the swept volume, not the decal: the decal is wherever
+# the depth buffer says the world is inside that volume.
+#
+# depth_test_disabled is not a trick - the volume is usually BEHIND the surface
+# it paints (it starts above the ground and ends below it), so a depth test
+# would reject the very fragments that do the work. cull_front picks the back
+# faces so each pixel is covered exactly once; drawing both faces would blend
+# the decal onto itself and double its opacity.
+const ROAD_DECAL_SHADER := """
+shader_type spatial;
+render_mode blend_mix, depth_draw_never, depth_test_disabled, cull_front,
+	diffuse_burley;
+uniform sampler2D cv : source_color, filter_linear_mipmap, repeat_enable;
+uniform sampler2D op : filter_linear_mipmap, repeat_enable;
+uniform bool has_cv = false;
+uniform bool has_op = false;
+uniform bool opaque_alpha = false;
+uniform vec4 flat_col : source_color = vec4(0.35, 0.35, 0.35, 1.0);
+// THE DEPTH BUFFER, which is the whole mechanism: it is what tells this shader
+// where the world actually is. Godot 4 removed the DEPTH_TEXTURE built-in in
+// favour of a hinted uniform. filter_nearest because a depth value must be read
+// exactly - interpolating between two depths invents a surface that is at
+// neither, and the reconstructed position would drift at every silhouette.
+uniform sampler2D depth_tex : hint_depth_texture, repeat_disable, filter_nearest;
+
+// The triangle this prism was swept from, constant across all six of its
+// vertices: plan-view corners, the height band, and the authored UV at each
+// corner. CUSTOM channels rather than uniforms because every triangle in a
+// material group carries different ones and they draw in a single call.
+varying flat vec4 tri_ab;      // A.x A.z B.x B.z
+varying flat vec4 tri_c_band;  // C.x C.z  ybot ytop
+varying flat vec4 uv_ab;       // uvA.xy uvB.xy
+varying flat vec4 uv_c_fade;   // uvC.xy  packed corner alphas, spare
+
+void vertex() {
+	tri_ab = CUSTOM0;
+	tri_c_band = CUSTOM1;
+	uv_ab = CUSTOM2;
+	uv_c_fade = CUSTOM3;
+}
+
+void fragment() {
+	// WHERE THE WORLD ACTUALLY IS at this pixel. Everything else follows from
+	// this one reconstruction; nothing depends on where the prism itself sits.
+	float d = texture(depth_tex, SCREEN_UV).r;
+	vec4 view = INV_PROJECTION_MATRIX * vec4(SCREEN_UV * 2.0 - 1.0, d, 1.0);
+	view.xyz /= view.w;
+	vec3 w = (INV_VIEW_MATRIX * vec4(view.xyz, 1.0)).xyz;
+
+	// IS IT IN THE BAND. This is the rooftop guard: a record authored on a deck
+	// carries a band around that deck, so the street underneath is outside it
+	// and receives nothing.
+	if (w.y < tri_c_band.z || w.y > tri_c_band.w) discard;
+
+	// IS IT INSIDE THE TRIANGLE, in plan view. Same barycentric solve the
+	// projector's geometry pass uses, done per pixel against the real surface.
+	vec2 a = tri_ab.xy;
+	vec2 b = tri_ab.zw;
+	vec2 c = tri_c_band.xy;
+	float den = (b.y - c.y) * (a.x - c.x) + (c.x - b.x) * (a.y - c.y);
+	if (abs(den) < 1e-9) discard;
+	float w0 = ((b.y - c.y) * (w.x - c.x) + (c.x - b.x) * (w.z - c.y)) / den;
+	float w1 = ((c.y - a.y) * (w.x - c.x) + (a.x - c.x) * (w.z - c.y)) / den;
+	float w2 = 1.0 - w0 - w1;
+	if (w0 < 0.0 || w1 < 0.0 || w2 < 0.0) discard;
+
+	// The weights that proved containment are the same ones that place the
+	// texture, so the art lands exactly where the authored spline put it.
+	vec2 uvp = uv_ab.xy * w0 + uv_ab.zw * w1 + uv_c_fade.xy * w2;
+
+	// The authored edge fade, three corner alphas packed into one float
+	// because the four CUSTOM channels were full.
+	float p = uv_c_fade.z;
+	float f2 = floor(p / 65536.0);
+	float rem = p - f2 * 65536.0;
+	float f1 = floor(rem / 256.0);
+	float f0 = rem - f1 * 256.0;
+	float fade = (f0 * w0 + f1 * w1 + f2 * w2) / 255.0;
+
+	vec4 col = has_cv ? texture(cv, uvp) : flat_col;
+	ALBEDO = col.rgb * COLOR.rgb;
+	ALPHA = (opaque_alpha ? 1.0 : (has_op ? texture(op, uvp).r : col.a)) * fade;
+	// The surface underneath is what is being painted, and its normal is not
+	// recoverable here. Up is the honest approximation for road markings and
+	// keeps them lit like the ground they sit on rather than flat-bright.
+	NORMAL = normalize((VIEW_MATRIX * vec4(0.0, 1.0, 0.0, 0.0)).xyz);
+	ROUGHNESS = 0.85;
+	SPECULAR = 0.2;
+}
+"""
+
+# OFF UNTIL IT CAN BE RUN BEFORE IT SHIPS.
+#
+# The projector locked the editor at 92 percent of the terrain build. The cause
+# is NOT known - reading the code found nothing, and the two theories that felt
+# obvious were both tested and both wrong (packed arrays pass by reference, so
+# the emit is not quadratic; _say is already thread-safe off the main thread).
+# Shipping a fourth guess would cost another rebuild to disprove.
+#
+# The drape has its own defect - the clamp against the authored AABB band holds
+# decals up where our terrain sits lower than the terrain they were compiled on,
+# which is the floating the user reported - but it WORKS, and a map with some
+# decals too high beats an editor that will not finish a build.
+const ROADS_PROJECTED := false
+
+# How far a ground record's volume reaches DOWN to find our terrain. This is
+# the number that undoes the floating: the authored band stops at the height
+# the decal was compiled at, and our rebuilt ground can sit below it.
+const PROJECT_DOWN := 6.0
+# And up, to catch a sidewalk slab or kerb standing proud of the terrain.
+const PROJECT_UP := 1.5
+# A record whose authored floor stands this far above our terrain was authored
+# on a deck or a roof, not on the ground, so its volume stays tight to itself.
+const ELEVATED_OVER := 2.0
+
 const ROAD_SHADER := """
 shader_type spatial;
 render_mode blend_mix, depth_draw_never, cull_disabled, diffuse_burley;
+// HELD OFF THE SURFACE ALONG THE LINE OF SIGHT, not upward. A vertical lift
+// buys almost no depth separation at the grazing angles a road is normally
+// seen at, so the ground pokes through the markings; a few centimetres toward
+// the camera separates them by the same amount at every angle and moves the
+// decal's apparent position by almost nothing, because the shift is along the
+// direction it is being viewed from. The roads mesh is authored in world
+// space, so VERTEX here is already world.
+uniform float view_bias = 0.04;
+void vertex() {
+	vec3 w = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+	VERTEX += normalize(CAMERA_POSITION_WORLD - w) * view_bias;
+}
 uniform sampler2D cv : source_color, filter_linear_mipmap, repeat_enable;
 uniform sampler2D op : filter_linear_mipmap, repeat_enable;
 uniform bool has_cv = false;
@@ -2773,6 +2954,9 @@ var road_stats := {}
 # be 433 draw calls for a road network.
 func roads() -> Mesh:
 	road_stats = {}
+	# PER CALL. Left accumulating, this reported the sum of every run this
+	# session as though it were one build's triangle count.
+	_road_subdiv_tris = 0
 	if src == null or _hm.is_empty():
 		return null
 	var name := BF6Decals.find_res(src, level)
@@ -2836,6 +3020,16 @@ func roads() -> Mesh:
 		var verts := PackedVector3Array()
 		var uvs := PackedVector2Array()
 		var cols := PackedColorArray()
+		# The projector's per-triangle constants (four vec4 per vertex) and a
+		# real index buffer: a prism is six vertices and twenty-four indices,
+		# where emitting it unindexed would be twenty-four vertices.
+		var custom := PackedFloat32Array()
+		var idx := PackedInt32Array()
+		# THE AUTHORED HEIGHT BAND, per vertex, so it survives into the merged
+		# mesh. The projector runs at the end of the objects build, long after
+		# the records are gone, and without this it has no way to tell a
+		# sidewalk slab from a crate lid. UV2 because no road shader reads it.
+		var bands := PackedVector2Array()
 		for r in recs:
 			var rec: Dictionary = r
 			var vs := td.vertices(rec)
@@ -2870,11 +3064,60 @@ func roads() -> Mesh:
 			# their decks.
 			var ylo := float((rec["aabb_min"] as Vector3).y)
 			var yhi := float((rec["aabb_max"] as Vector3).y)
+			# IS THIS RECORD ACTUALLY OFF THE GROUND? Only an elevated one may
+			# be clamped into its authored band; for anything else the clamp
+			# holds the decal in the air wherever our terrain came out lower
+			# than the terrain it was compiled on. Decided from the ground we
+			# actually built, once per record.
+			var gnd_hi := -INF
+			for i in range(n):
+				gnd_hi = maxf(gnd_hi, _height_at(vs[i * 8], vs[i * 8 + 1]))
+			var elevated := ylo - gnd_hi > ELEVATED_OVER
+			# THE TERRAIN'S STEP, NOT THE DECAL'S. Draping only moves vertices,
+			# so a ribbon two metres between vertices runs straight across
+			# ground the terrain draws with several. Subdivide first, then
+			# every new vertex gets draped too.
+			var lvl := _decal_subdiv(vs)
+			if lvl > 0:
+				vs = _subdivide_tris(vs, lvl)
+				n = vs.size() / 8
+				_road_subdiv_tris += n / 3
+			if ROADS_PROJECTED:
+				# THE VOLUME THIS RECORD MAY PROJECT INTO. Decided per record
+				# from OUR terrain, not from the authored band alone, because
+				# the two disagreeing is the whole reason decals floated.
+				var tlo := INF
+				var thi := -INF
+				for i in range(n):
+					var h := _height_at(vs[i * 8], vs[i * 8 + 1])
+					tlo = minf(tlo, h)
+					thi = maxf(thi, h)
+				var ybot: float
+				var ytop: float
+				if ylo - thi > ELEVATED_OVER:
+					# Authored on a deck or a roof. Tight to its own geometry so
+					# the street below it receives nothing.
+					ybot = ylo - 1.0
+					ytop = yhi + PROJECT_UP
+				else:
+					ybot = minf(ylo, tlo) - PROJECT_DOWN
+					ytop = maxf(yhi, thi) + PROJECT_UP
+				var ti := 0
+				while ti + 2 < n:
+					_emit_prism(verts, uvs, cols, custom, idx, vs, ti,
+						planar, t0, t1, ybot, ytop)
+					ti += 3
+				continue
 			for i in range(n):
 				var x := vs[i * 8]
 				var z := vs[i * 8 + 1]
+				# THE GROUND, not the authored band. The band only gets a say
+				# for a record that is genuinely on a deck or a roof, where it
+				# is the only thing that knows the decal is not on the ground.
+				var gh := _height_at(x, z)
 				verts.push_back(Vector3(x,
-					clampf(_height_at(x, z), ylo, yhi) + ROAD_Y_BIAS, z))
+					(clampf(gh, ylo, yhi) if elevated else gh)
+						+ ROAD_Y_BIAS, z))
 				# TEXTURE X IS ACROSS, TEXTURE Y IS ALONG. The art is authored
 				# with the road's length running down the sheet, so the stored
 				# across-u samples texture x and along-v samples texture y.
@@ -2888,31 +3131,230 @@ func roads() -> Mesh:
 				# (mud strips feathering into the ground).
 				cols.push_back(Color(vs[i * 8 + 4], vs[i * 8 + 5],
 					vs[i * 8 + 6], vs[i * 8 + 7]))
+				bands.push_back(Vector2(ylo, yhi))
 		if verts.is_empty():
 			continue
-		var idx := PackedInt32Array()
-		idx.resize(verts.size())
-		for i in range(verts.size()):
-			idx[i] = i
+		if not ROADS_PROJECTED:
+			idx.resize(verts.size())
+			for i in range(verts.size()):
+				idx[i] = i
 		var arr := []
 		arr.resize(Mesh.ARRAY_MAX)
 		arr[Mesh.ARRAY_VERTEX] = verts
 		arr[Mesh.ARRAY_TEX_UV] = uvs
 		arr[Mesh.ARRAY_COLOR] = cols
 		arr[Mesh.ARRAY_INDEX] = idx
-		am.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr)
+		if bands.size() == verts.size():
+			arr[Mesh.ARRAY_TEX_UV2] = bands
+		var sflags := 0
+		if ROADS_PROJECTED:
+			# Four RGBA_FLOAT custom channels, split out of one flat buffer.
+			# The shader reads them as CUSTOM0..CUSTOM3.
+			arr[Mesh.ARRAY_CUSTOM0] = _custom_slice(custom, 0)
+			arr[Mesh.ARRAY_CUSTOM1] = _custom_slice(custom, 1)
+			arr[Mesh.ARRAY_CUSTOM2] = _custom_slice(custom, 2)
+			arr[Mesh.ARRAY_CUSTOM3] = _custom_slice(custom, 3)
+			sflags = (Mesh.ARRAY_CUSTOM_RGBA_FLOAT
+					<< Mesh.ARRAY_FORMAT_CUSTOM0_SHIFT) \
+				| (Mesh.ARRAY_CUSTOM_RGBA_FLOAT
+					<< Mesh.ARRAY_FORMAT_CUSTOM1_SHIFT) \
+				| (Mesh.ARRAY_CUSTOM_RGBA_FLOAT
+					<< Mesh.ARRAY_FORMAT_CUSTOM2_SHIFT) \
+				| (Mesh.ARRAY_CUSTOM_RGBA_FLOAT
+					<< Mesh.ARRAY_FORMAT_CUSTOM3_SHIFT)
+		am.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr, [], {},
+			sflags)
 		am.surface_set_material(am.get_surface_count() - 1,
 			_road_material(str(key), int(gprio[key])))
-		tris += verts.size() / 3
+		# Indices, not vertices: a prism shares six vertices across eight
+		# triangles, so counting vertices would under-report it fourfold.
+		tris += (idx.size() / 3) if ROADS_PROJECTED else (verts.size() / 3)
 	road_stats["groups"] = am.get_surface_count()
+	road_stats["subdivided_triangles"] = _road_subdiv_tris
 	road_stats["drawn_triangles"] = tris
 	if am.get_surface_count() == 0:
 		return null
+	if _road_subdiv_tris > 0:
+		_say(("game source: roads — subdivided to the terrain's own step "
+			+ "(%.1f m), %d triangles from %d authored")
+			% [maxf(1.0, float(drape_step)), _road_subdiv_tris, td.total_tris])
 	_say("game source: roads — %d records in %d material group(s), %d triangles%s"
 		% [td.records.size(), am.get_surface_count(), tris,
 		   "" if int(td.truncated_at) < 0
 		   else "  (TRUNCATED at record %d — partial)" % td.truncated_at])
 	return am
+
+
+# One decal triangle -> one prism, swept through the band it may project into.
+#
+# Six vertices and twenty-four indices: the two triangle caps and three quad
+# sides. The positions are the ONLY thing that varies between them; all six
+# carry the same per-triangle constants, because the fragment shader needs the
+# whole triangle to solve any pixel of it.
+func _emit_prism(verts: PackedVector3Array, uvs: PackedVector2Array,
+		cols: PackedColorArray, custom: PackedFloat32Array,
+		idx: PackedInt32Array, vs: PackedFloat32Array, ti: int,
+		planar: bool, t0: float, t1: float, ybot: float, ytop: float) -> void:
+	var ax := vs[(ti) * 8]
+	var az := vs[(ti) * 8 + 1]
+	var bx := vs[(ti + 1) * 8]
+	var bz := vs[(ti + 1) * 8 + 1]
+	var cx := vs[(ti + 2) * 8]
+	var cz := vs[(ti + 2) * 8 + 1]
+	# A triangle with no area in plan view can never contain a surface point,
+	# so it would discard every pixel it drew. Dropped instead of drawn.
+	var den := (bz - cz) * (ax - cx) + (cx - bx) * (az - cz)
+	if absf(den) < 1e-9:
+		return
+	var ua: Vector2
+	var ub: Vector2
+	var uc: Vector2
+	if planar:
+		ua = Vector2(ax / t1, az / t0)
+		ub = Vector2(bx / t1, bz / t0)
+		uc = Vector2(cx / t1, cz / t0)
+	else:
+		ua = Vector2(vs[(ti) * 8 + 2], vs[(ti) * 8 + 3])
+		ub = Vector2(vs[(ti + 1) * 8 + 2], vs[(ti + 1) * 8 + 3])
+		uc = Vector2(vs[(ti + 2) * 8 + 2], vs[(ti + 2) * 8 + 3])
+	# The three corner alphas packed into one float: the four CUSTOM channels
+	# were already full, and 24-bit integers are exact in a float32.
+	var fa := int(round(clampf(vs[(ti) * 8 + 7], 0.0, 1.0) * 255.0))
+	var fb := int(round(clampf(vs[(ti + 1) * 8 + 7], 0.0, 1.0) * 255.0))
+	var fc := int(round(clampf(vs[(ti + 2) * 8 + 7], 0.0, 1.0) * 255.0))
+	var fade := float(fa + fb * 256 + fc * 65536)
+	# The occasional authored rgb tint, flat across the triangle. Only the
+	# alpha varies meaningfully corner to corner, and only alpha got a slot.
+	var tint := Color(
+		(vs[(ti) * 8 + 4] + vs[(ti + 1) * 8 + 4] + vs[(ti + 2) * 8 + 4]) / 3.0,
+		(vs[(ti) * 8 + 5] + vs[(ti + 1) * 8 + 5] + vs[(ti + 2) * 8 + 5]) / 3.0,
+		(vs[(ti) * 8 + 6] + vs[(ti + 1) * 8 + 6] + vs[(ti + 2) * 8 + 6]) / 3.0,
+		1.0)
+	var base := verts.size()
+	for k in range(6):
+		var top := k < 3
+		var y := ytop if top else ybot
+		match k % 3:
+			0: verts.push_back(Vector3(ax, y, az))
+			1: verts.push_back(Vector3(bx, y, bz))
+			_: verts.push_back(Vector3(cx, y, cz))
+		uvs.push_back(ua)
+		cols.push_back(tint)
+		custom.append_array(PackedFloat32Array([
+			ax, az, bx, bz,
+			cx, cz, ybot, ytop,
+			ua.x, ua.y, ub.x, ub.y,
+			uc.x, uc.y, fade, 0.0]))
+	# Caps then sides. Winding is consistent so cull_front keeps exactly one
+	# face per pixel; the volume must be closed for that to hold.
+	idx.append_array(PackedInt32Array([
+		base + 0, base + 1, base + 2,
+		base + 5, base + 4, base + 3,
+		base + 0, base + 4, base + 1, base + 0, base + 3, base + 4,
+		base + 1, base + 5, base + 2, base + 1, base + 4, base + 5,
+		base + 2, base + 3, base + 0, base + 2, base + 5, base + 3]))
+
+
+# Pull one RGBA_FLOAT channel out of the interleaved sixteen-float record.
+# Godot wants each CUSTOM channel as its own tightly packed array.
+func _custom_slice(custom: PackedFloat32Array, ch: int) -> PackedFloat32Array:
+	var n := custom.size() / 16
+	var out := PackedFloat32Array()
+	out.resize(n * 4)
+	for i in range(n):
+		var s := i * 16 + ch * 4
+		var d := i * 4
+		out[d] = custom[s]
+		out[d + 1] = custom[s + 1]
+		out[d + 2] = custom[s + 2]
+		out[d + 3] = custom[s + 3]
+	return out
+
+
+# Triangles emitted after subdivision, for the log. A subdivision that quietly
+# did nothing and one that worked look identical on screen.
+var _road_subdiv_tris := 0
+
+
+# How many times to halve this record's edges to reach the terrain's step.
+#
+# PER RECORD, NOT PER TRIANGLE, and that is a correctness requirement rather
+# than a shortcut: midpoint subdivision splits all three edges, so two triangles
+# sharing an edge agree on the vertices along it only if they subdivided the
+# same number of times. Different levels either side of an edge is a crack.
+func _decal_subdiv(vs: PackedFloat32Array) -> int:
+	# CLAMPED, not just floored. drape_step is the terrain's lattice and one of
+	# the user's builds reported it at EIGHT METRES; a decal triangle that
+	# coarse cannot follow a kerb 0.15 m high, so it cuts through or floats
+	# over whatever it crosses. One to two metres follows a kerb closely enough
+	# that the remaining bend reads as a chamfer.
+	var target := clampf(float(drape_step), 1.0, 2.0)
+	var longest := 0.0
+	var i := 0
+	while i + 2 < vs.size() / 8:
+		for e in [[0, 1], [1, 2], [2, 0]]:
+			var a: int = (i + e[0]) * 8
+			var b: int = (i + e[1]) * 8
+			var dx := vs[a] - vs[b]
+			var dz := vs[a + 1] - vs[b + 1]
+			longest = maxf(longest, sqrt(dx * dx + dz * dz))
+		i += 3
+	if longest <= target:
+		return 0
+	var lvl := int(ceil(log(longest / target) / log(2.0)))
+	lvl = clampi(lvl, 0, DECAL_SUBDIV_MAX)
+	# BOUNDED, and it drops a level rather than refusing: a huge fill record
+	# would otherwise turn 4,000 triangles into a quarter of a million on its
+	# own, for ground that is flat anyway.
+	var tris := vs.size() / 24
+	while lvl > 0 and tris * int(pow(4, lvl)) > DECAL_SUBDIV_MAX_TRIS:
+		lvl -= 1
+	return lvl
+
+
+# Midpoint subdivision in the decal's own 8-float vertex layout (x, z, u, v,
+# r, g, b, a). Every attribute interpolates linearly, which is exact: the
+# stored spline UVs and the planar world-XZ UVs are both affine within a
+# triangle, so a midpoint vertex lands where the authored art says it does.
+func _subdivide_tris(vs: PackedFloat32Array, level: int) -> PackedFloat32Array:
+	var cur := vs
+	for _pass in range(level):
+		var out := PackedFloat32Array()
+		out.resize(cur.size() * 4)
+		var w := 0
+		var i := 0
+		while (i + 3) * 8 <= cur.size():
+			var a := i * 8
+			var b := (i + 1) * 8
+			var c := (i + 2) * 8
+			var ab := PackedFloat32Array()
+			var bc := PackedFloat32Array()
+			var ca := PackedFloat32Array()
+			ab.resize(8)
+			bc.resize(8)
+			ca.resize(8)
+			for k in range(8):
+				ab[k] = (cur[a + k] + cur[b + k]) * 0.5
+				bc[k] = (cur[b + k] + cur[c + k]) * 0.5
+				ca[k] = (cur[c + k] + cur[a + k]) * 0.5
+			for tri in [[a, -1, -2], [-1, b, -3], [-2, -3, c], [-1, -3, -2]]:
+				for slot in tri:
+					var src: PackedFloat32Array
+					var off := 0
+					match slot:
+						-1: src = ab
+						-2: src = ca
+						-3: src = bc
+						_:
+							src = cur
+							off = slot
+					for k in range(8):
+						out[w] = src[off + k]
+						w += 1
+			i += 3
+		out.resize(w)
+		cur = out
+	return cur
 
 
 func _prop_guid(props: Dictionary, slot: int) -> String:
@@ -2952,9 +3394,18 @@ func _road_layer_albedo(layer: int):
 
 
 func _road_material(key: String, priority := -1) -> Material:
-	if _road_shader == null:
+	# KEYED ON THE CODE, NOT ON NULLNESS. The game source outlives a rebuild, so
+	# a shader built once was reused for the rest of the session no matter what
+	# changed - which is how the projector's volumes ended up being drawn by the
+	# drape shader, as solid grey boxes.
+	var _want := ROAD_DECAL_SHADER if ROADS_PROJECTED else ROAD_SHADER
+	if _road_shader == null or _road_shader.code != _want:
 		_road_shader = Shader.new()
-		_road_shader.code = ROAD_SHADER
+		_road_shader.code = _want
+		_say("game source: roads use the %s shader"
+			% ("PROJECTOR (decals land on whatever surface is under them)"
+				if ROADS_PROJECTED else "drape (decals are geometry on the "
+					+ "heightfield)"))
 	var mat := ShaderMaterial.new()
 	mat.shader = _road_shader
 	# THE SURFACE GOES UNDER THE MARKINGS, and nothing in the file says so.
@@ -2993,6 +3444,11 @@ func _road_material(key: String, priority := -1) -> Material:
 		# four layers these records point at bind only cv/ao/nhs) and its
 		# basecolor alpha is a blend field rather than a mask.
 		mat.set_shader_parameter("opaque_alpha", true)
+		# NAMED, so the decal projector does not have to re-derive this from a
+		# shader uniform. A fill is the road SURFACE and must stay on the
+		# ground: it draws opaque, so projecting one onto a prop repaints that
+		# prop instead of marking it.
+		mat.resource_name = "bf6_road_fill"
 		return mat
 	var parts := key.split("|")
 	var cv = _texture_for(parts[0] if parts.size() > 0 else "")
@@ -3006,6 +3462,7 @@ func _road_material(key: String, priority := -1) -> Material:
 	# A record with no properties is POSITIONAL rather than broken: its AssetSlot
 	# is a terrain layer index and the surface is that layer's own material. It is
 	# real road either way, so it gets a neutral grey and is drawn.
+	mat.resource_name = "bf6_road_mark"
 	return mat
 
 
@@ -3197,7 +3654,9 @@ func _water_partition() -> String:
 			_water_part = str(cand)
 			return _water_part
 	var rest: Array = []
-	for k in src.ebx.keys():
+	# Snapshot: walking the live member races the catalogue republish.
+	var t_ebx: Dictionary = src.snap_ebx()
+	for k in t_ebx.keys():
 		var n := str(k)
 		if lvl != "" and not n.begins_with(lvl):
 			continue
@@ -3253,7 +3712,9 @@ func terrain_water(cache_dir := "") -> Dictionary:
 	if src == null:
 		return {}
 	var pick := ""
-	for rn in src.res.keys():
+	# Snapshot: walking the live member races the catalogue republish.
+	var t_res: Dictionary = src.snap_res()
+	for rn in t_res.keys():
 		var n := str(rn)
 		if n.contains("streamingtree") and n.to_lower().contains(level):
 			pick = n
@@ -3831,7 +4292,9 @@ func water_sim() -> Dictionary:
 	# the sweep behind it is the answer.
 	var named: Array = []
 	var rest: Array = []
-	for k in src.ebx.keys():
+	# Snapshot: walking the live member races the catalogue republish.
+	var t_ebx: Dictionary = src.snap_ebx()
+	for k in t_ebx.keys():
 		var n := str(k)
 		if lvl != "" and not n.begins_with(lvl):
 			continue
@@ -6480,8 +6943,10 @@ func material_for(state_key: int, scope: String, var_hash := 0,
 		var bg = slots.get("basecolor_veg", slots.get("basecolor"))
 		var bcn := "" if bg == null or walk == null \
 			else str(walk.gi.get(str(bg), "")).get_file().to_lower()
+		n_blend_slot += 1
 		if albedo == null or bcn.begins_with("t_ter_defaulttexture"):
 			mat.resource_name = "M_TerrainBlend"
+			n_blend_named += 1
 	var nrm = _texture_for(slots.get("normal", slots.get("normal_vt")), true)
 	if nrm != null:
 		mat.normal_enabled = true

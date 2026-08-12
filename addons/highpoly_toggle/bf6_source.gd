@@ -272,11 +272,16 @@ func _load_cache(p: String) -> bool:
 
 
 func _adopt_cache(d: Dictionary, st: Dictionary) -> void:
+	# Same lock as _publish_body, for the same reason: this is the OTHER place
+	# the five member pointers are replaced, and a worker taking a reference to
+	# one of them mid-swap is the null dereference in CowData::_ref.
+	_pub_mx.lock()
 	ebx = d["ebx"]
 	res = d["res"]
 	chunks = d["chunks"]
 	chunk_seg = d["chunk_seg"]
 	res_bundle = d.get("res_bundle", {})
+	_pub_mx.unlock()
 	stats = st
 	_pub_done = true
 
@@ -329,6 +334,13 @@ func _sweep(paths: Array, progress := Callable(), bundle_limit := 0,
 	var opened := 0
 	var failed := 0
 	var collisions := 0
+	# WHERE THE MOUNT GOES, in four buckets. io_report already proved the
+	# drive and Oodle are only 1.5 s of 16 s; this says which GDScript owns
+	# the rest, because each candidate wants a different fix.
+	var us_segs := 0
+	var us_read := 0
+	var us_parse := 0
+	var us_recs := 0
 	for p in paths:
 		if bundle_limit > 0 and opened >= bundle_limit:
 			break
@@ -346,53 +358,81 @@ func _sweep(paths: Array, progress := Callable(), bundle_limit := 0,
 		for b in t.bundles:
 			if bundle_limit > 0 and opened >= bundle_limit:
 				break
+			var _ts := Time.get_ticks_usec()
 			var segs := BF6Bundle.read_segments(t.body, b["offset"])
+			us_segs += Time.get_ticks_usec() - _ts
 			if segs.is_empty():
 				failed += 1
 				continue
+			var _tr := Time.get_ticks_usec()
 			var meta := _read_seg(segs[0], true)
+			us_read += Time.get_ticks_usec() - _tr
 			if meta.is_empty():
 				failed += 1
 				continue
 			var pay := BF6Bundle.Payload.new()
-			if not pay.parse(meta):
+			var _tp := Time.get_ticks_usec()
+			var parsed := pay.parse(meta)
+			us_parse += Time.get_ticks_usec() - _tp
+			if not parsed:
 				failed += 1
 				continue
 			opened += 1
-			for a in pay.assets():
-				var kind: String = a[0]
-				var rec: Dictionary = a[1]
-				var si: int = a[2]
-				if si >= segs.size():
-					continue
-				var seg: Array = segs[si]
-				match kind:
-					"ebx":
-						var n: String = rec["name"]
-						if d_ebx.has(n):
-							if int(d_ebx[n][4]) != int(rec["size"]):
-								collisions += 1
-							continue
-						d_ebx[n] = [seg[0], seg[1], seg[2], seg[3], rec["size"]]
-					"res":
-						var rn: String = rec["name"]
-						if d_res.has(rn):
-							if int(d_res[rn][4]) != int(rec["size"]):
-								collisions += 1
-							continue
-						d_res[rn] = [seg[0], seg[1], seg[2], seg[3],
-								rec["size"], rec["type"], rec["rid"]]
-						# WHICH BUNDLE SHIPPED IT, which is the only thing that can
-						# answer "where are this mesh's materials". A ShaderBlockDepot
-						# is named <bundle>_win32_shaderstate/shaderblockdepot_<id>, so
-						# a depot belongs to a BUNDLE. Known right here, once, while
-						# the sweep is already holding it.
+			var _tk := Time.get_ticks_usec()
+			# THE THREE LISTS, WALKED DIRECTLY. pay.assets() merged them into
+			# one Array by allocating a 3-element Array per record - 450,884 of
+			# them on a catalogue mount - only to carry a kind string and a
+			# segment index that these loops know statically. That plus the
+			# per-record `match` on a String was the `records` bucket, the
+			# largest one left in the mount split.
+			#
+			# The index is POSITIONAL and must keep advancing across records
+			# that are skipped: entry i of the combined ebx-then-res-then-chunk
+			# sequence is segment i+1, because segment 0 is the metadata blob.
+			var nseg := segs.size()
+			var si := 1
+			for e in pay.ebx:
+				if si < nseg:
+					var n: String = e["name"]
+					if d_ebx.has(n):
+						if int(d_ebx[n][4]) != int(e["size"]):
+							collisions += 1
+					else:
+						var sg: Array = segs[si]
+						d_ebx[n] = [sg[0], sg[1], sg[2], sg[3], e["size"]]
+				si += 1
+			for r in pay.res:
+				if si < nseg:
+					var rn: String = r["name"]
+					if d_res.has(rn):
+						if int(d_res[rn][4]) != int(r["size"]):
+							collisions += 1
+					else:
+						var sg2: Array = segs[si]
+						d_res[rn] = [sg2[0], sg2[1], sg2[2], sg2[3],
+								r["size"], r["type"], r["rid"]]
+						# WHICH BUNDLE SHIPPED IT, which is the only thing that
+						# can answer "where are this mesh's materials". A
+						# ShaderBlockDepot is named
+						# <bundle>_win32_shaderstate/shaderblockdepot_<id>, so a
+						# depot belongs to a BUNDLE. Set only for a name seen
+						# for the FIRST time, which is what the original
+						# `continue` after the collision check expressed.
 						d_rb[rn] = str(b["name"])
-					_:
-						if not d_cseg.has(rec["id"]):
-							d_cseg[rec["id"]] = seg
+				si += 1
+			for c in pay.chunks:
+				if si < nseg:
+					var cid = c["id"]
+					if not d_cseg.has(cid):
+						d_cseg[cid] = segs[si]
+				si += 1
+			us_recs += Time.get_ticks_usec() - _tk
 		if progress.is_valid():
 			progress.call(tocs.size(), paths.size(), d_ebx.size())
+	print("BF6Source: mount split - segments %.1fs, cas read %.1fs, "
+		% [us_segs / 1e6, us_read / 1e6]
+		+ "payload parse %.1fs, records %.1fs"
+		% [us_parse / 1e6, us_recs / 1e6])
 	return {"opened": opened, "failed": failed, "collisions": collisions}
 
 
@@ -452,6 +492,73 @@ func mount_rest(progress := Callable(), use_cache := true) -> bool:
 # inserting a new key can rehash it under a concurrent reader too.
 var _pub_done := false
 
+# GUARDS THE FIVE MEMBER POINTERS, and nothing else.
+#
+# Running it on the main thread is not enough, which is what the note above
+# missed: it keeps the MAIN thread from reading a member mid-swap, and says
+# nothing about the workers. Publishing "in one assignment" is not atomic
+# either - a Dictionary assignment is CowData::_ref, which loads the source's
+# data pointer and then dereferences it to bump the refcount with a lock
+# cmpxchg. A worker that loaded the pointer just as the publish replaced it
+# dereferences null.
+#
+# A crash dump caught exactly that: Godot exe +0x3A073D7, read from address 0,
+# R8 null, on worker thread 13 of 71. The same offset sits in the Windows fault
+# records twice over, so it is one reproducible path rather than drift.
+#
+# Deliberately NOT _read_mx. That one is held across a CAS segment read, and
+# get_ebx/get_res look a member up and THEN call _read_seg - sharing one
+# non-reentrant Mutex between them would deadlock the moment they nest. This
+# one is only ever held for a pointer copy and never spans I/O.
+var _pub_mx := Mutex.new()
+
+
+# Snapshot accessors: take a REFERENCE to the current dictionary under the
+# lock, then let the caller work through it with nothing held.
+#
+# That is what keeps this cheap. Holding a lock across `for rn in src.res` would
+# serialise a 159,228-entry walk against every install read and hand back the
+# reader speed this project spent a session winning. A reference costs one
+# refcount bump.
+#
+# Iterating afterwards is SAFE because a publish swaps in NEW dictionaries and
+# never mutates the old ones, so a snapshot stays whole - only slightly out of
+# date, which is precisely what a reader mid-walk wants. The first mount does
+# grow these in place, and is the one case where nothing can be reading yet.
+func snap_ebx() -> Dictionary:
+	_pub_mx.lock()
+	var d := ebx
+	_pub_mx.unlock()
+	return d
+
+
+func snap_res() -> Dictionary:
+	_pub_mx.lock()
+	var d := res
+	_pub_mx.unlock()
+	return d
+
+
+func snap_chunks() -> Dictionary:
+	_pub_mx.lock()
+	var d := chunks
+	_pub_mx.unlock()
+	return d
+
+
+func snap_chunk_seg() -> Dictionary:
+	_pub_mx.lock()
+	var d := chunk_seg
+	_pub_mx.unlock()
+	return d
+
+
+func snap_res_bundle() -> Dictionary:
+	_pub_mx.lock()
+	var d := res_bundle
+	_pub_mx.unlock()
+	return d
+
 func _publish(n_ebx: Dictionary, n_res: Dictionary, n_rb: Dictionary,
 		n_chunks: Dictionary, n_cseg: Dictionary, t0: int) -> void:
 	if OS.get_thread_caller_id() == OS.get_main_thread_id():
@@ -468,11 +575,15 @@ func _publish(n_ebx: Dictionary, n_res: Dictionary, n_rb: Dictionary,
 
 func _publish_body(n_ebx: Dictionary, n_res: Dictionary, n_rb: Dictionary,
 		n_chunks: Dictionary, n_cseg: Dictionary, t0: int) -> void:
+	# Under the lock so no worker can be halfway through taking a reference to
+	# one of these while the pointer changes underneath it.
+	_pub_mx.lock()
 	ebx = n_ebx
 	res = n_res
 	res_bundle = n_rb
 	chunks = n_chunks
 	chunk_seg = n_cseg
+	_pub_mx.unlock()
 	stats["ms_rest"] = Time.get_ticks_msec() - t0
 	stats["ebx"] = ebx.size()
 	stats["res"] = res.size()
@@ -607,9 +718,14 @@ func _read_seg(seg: Array, allow_raw := false) -> PackedByteArray:
 
 
 func get_ebx(name: String) -> PackedByteArray:
-	var e = ebx.get(name.to_lower())
+	# THE HOTTEST READER IN THE PLUGIN, and it used to touch the member
+	# directly: two unguarded reads of a pointer another thread may be
+	# replacing. Snapshot once, then look up in the snapshot - one refcount bump
+	# per call, and the two lookups below can no longer straddle a publish.
+	var t: Dictionary = snap_ebx()
+	var e = t.get(name.to_lower())
 	if e == null:
-		e = ebx.get(name)
+		e = t.get(name)
 	if e == null:
 		error = "no ebx named %s" % name
 		return PackedByteArray()
@@ -621,9 +737,11 @@ func get_ebx(name: String) -> PackedByteArray:
 
 
 func get_res(name: String) -> PackedByteArray:
-	var e = res.get(name.to_lower())
+	# Snapshot once, for the reason spelled out in get_ebx.
+	var t: Dictionary = snap_res()
+	var e = t.get(name.to_lower())
 	if e == null:
-		e = res.get(name)
+		e = t.get(name)
 	if e == null:
 		error = "no res named %s" % name
 		return PackedByteArray()

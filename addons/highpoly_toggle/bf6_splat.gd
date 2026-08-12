@@ -764,6 +764,13 @@ static func depth_of(key: int) -> int:
 # anything is changed.
 var bands := 0
 
+# Guards the band-slot Array accesses, and ONLY those. Godot's Array is
+# refcounted copy-on-write, so an element assignment can reallocate the backing
+# store - which means N band tasks assigning their own slot of one shared Array
+# is N threads reallocating the same buffer. The paint itself stays lock-free
+# because each band owns its bytes outright.
+var _slot_mx := Mutex.new()
+
 var us_fetch := 0
 var us_decode := 0
 var us_paint := 0
@@ -893,8 +900,26 @@ func composite(dir: Dictionary, fetch: Callable, size: int,
 	var band_job := func(b: int) -> void:
 		var zlo: int = b * band_h
 		var zhi: int = mini(size, zlo + band_h)
+		# THE SLOT IS SHARED EVEN THOUGH THE BUFFER IS NOT.
+		#
+		# Array is a refcounted copy-on-write container, so assigning an element
+		# can reallocate the backing store. Every band task was reading and
+		# writing slots of this ONE Array at once, which is two threads
+		# reallocating the same buffer: heap corruption, not a lost write.
+		#
+		# It showed up as an access violation at a different place every run -
+		# five cold runs died at five different reader phases - plus a
+		# STATUS_HEAP_CORRUPTION (0xC0000374) in the Windows fault records and a
+		# fault at the SAME ntdll offset on every clean shutdown, which is the
+		# heap being validated on exit and found broken.
+		#
+		# The buffer itself is genuinely private to this task, so the lock is
+		# held only across the slot access, twice per band. That is nothing
+		# against the paint.
+		_slot_mx.lock()
 		var bi: PackedByteArray = b_idx[b]
 		var bw: PackedByteArray = b_wgt[b]
+		_slot_mx.unlock()
 		for j in jobs:
 			var jd: Dictionary = j
 			var jz0: int = maxi(int(jd["z0"]), zlo)
@@ -995,8 +1020,13 @@ func composite(dir: Dictionary, fetch: Callable, size: int,
 							k -= 1
 		# Written back because bi is this task own buffer and nothing else
 		# touches it; the slot in the array is what the join below reads.
+		# UNDER THE LOCK: see the note at the read. The buffer is private, the
+		# Array slot is not, and concurrent element assignment on a COW Array
+		# reallocates the shared backing store.
+		_slot_mx.lock()
 		b_idx[b] = bi
 		b_wgt[b] = bw
+		_slot_mx.unlock()
 
 	var _tp := Time.get_ticks_usec()
 	if nband > 1:

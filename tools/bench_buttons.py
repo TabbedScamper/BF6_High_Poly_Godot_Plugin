@@ -88,8 +88,11 @@ def main():
                     help="comma separated, from: %s"
                          % ", ".join(sorted(perfrun.BUTTONS)))
     ap.add_argument("--gpu-validation", action="store_true",
-                    help="pass through to perfrun; slower but survives the "
-                         "render-thread fault in task 107")
+                    help="pass through to perfrun. Much slower. It was tried "
+                         "as a workaround for a render-thread fault that "
+                         "turned out not to exist (task 107), so reach for it "
+                         "to READ validation messages, not to make a run "
+                         "survive")
     ap.add_argument("--warm", action="store_true",
                     help="do NOT wipe between runs. Measures what a second "
                          "visit costs, which is a different question")
@@ -138,12 +141,34 @@ def main():
     print("=" * 78)
     print("COLD COST PER BUTTON  (%s)" % a.map)
     print("=" * 78)
-    print("  %-12s %9s %9s %9s  %s" % ("button", "open", "build", "wall",
-                                       "outcome"))
+    # TERRAIN IS ON IN EVERY RUN. only_layers() forces map_context true
+    # because the other layers live inside it, so every row below is terrain
+    # PLUS that button, and the terrain row is what you subtract to get the
+    # button on its own. Doing that here rather than leaving it to whoever
+    # reads the table - a correction that has to be applied by hand will
+    # eventually not be.
+    terr = [r["build_s"] for r in results
+            if r["button"] == "terrain" and r["outcome"] == "done"]
+    base = sum(terr) / len(terr) if terr else 0.0
+
+    print("  %-12s %9s %9s %9s %9s  %s"
+          % ("button", "open", "build", "alone", "wall", "outcome"))
     for r in results:
-        print("  %-12s %8.1fs %8.1fs %8.1fs  %s"
-              % (r["button"], r["open_s"], r["build_s"], r["wall_s"],
+        alone = ""
+        if base and r["outcome"] == "done" and r["button"] != "terrain":
+            alone = "%8.1fs" % (r["build_s"] - base)
+        print("  %-12s %8.1fs %8.1fs %9s %8.1fs  %s"
+              % (r["button"], r["open_s"], r["build_s"], alone, r["wall_s"],
                  r["outcome"]))
+    if base:
+        print("\n  'alone' = build minus the terrain run (%.1f s): every run "
+              "builds\n  the terrain container, so the raw build column is "
+              "terrain + that layer." % base)
+    else:
+        print("\n  NOTE: every run also builds the terrain container "
+              "(map_context is\n  forced on), so these are terrain + that "
+              "layer. Include 'terrain' in\n  the sweep to see each layer's "
+              "cost on its own.")
 
     # The phase table per button is the actionable half: "objects cost 300 s"
     # is a complaint, "objects cost 300 s and 155 of them were the splat

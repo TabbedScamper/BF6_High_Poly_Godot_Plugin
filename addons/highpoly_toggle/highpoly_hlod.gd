@@ -338,11 +338,53 @@ static func baked_material() -> StandardMaterial3D:
 # Best effort albedo for a surface's material. ShaderMaterials (which is what
 # props use - all 3,850 of their materials sit on 3 shaders) are asked for the
 # usual albedo parameter names before giving up.
+# Average colour per TEXTURE, not per material: 3,613 materials share far
+# fewer textures, and get_image() has to decompress, which is the cost.
+static var _tex_avg: Dictionary = {}
+
+
+# One texel that stands for a whole texture. Resizing to 1x1 makes the engine
+# do the averaging in C++ rather than walking pixels in GDScript.
+static func _avg_of_texture(t: Texture2D) -> Color:
+	if t == null:
+		return FALLBACK_ALBEDO
+	var key := t.get_rid().get_id()
+	if _tex_avg.has(key):
+		return _tex_avg[key]
+	var c := FALLBACK_ALBEDO
+	var img := t.get_image()
+	if img != null and img.get_width() > 0 and img.get_height() > 0:
+		var w := img.duplicate() as Image
+		if w.is_compressed():
+			# A compressed image cannot be resized; decompressing one 1x1 worth
+			# of texture is cheap next to the bake it feeds.
+			if w.decompress() != OK:
+				_tex_avg[key] = c
+				return c
+		w.resize(1, 1, Image.INTERPOLATE_LANCZOS)
+		c = w.get_pixel(0, 0)
+	_tex_avg[key] = c
+	return c
+
+
 static func _albedo_of(m: Material) -> Color:
 	if m is BaseMaterial3D:
-		return (m as BaseMaterial3D).albedo_color
+		var bm := m as BaseMaterial3D
+		var t := bm.get_texture(BaseMaterial3D.TEXTURE_ALBEDO)
+		if t != null:
+			# The texture IS the colour; albedo_color is the modulate over it
+			# and is white on nearly every prop material, which is why the
+			# placeholder read as pale blobs.
+			var a := _avg_of_texture(t)
+			var mod := bm.albedo_color
+			return Color(a.r * mod.r, a.g * mod.g, a.b * mod.b, 1.0)
+		return bm.albedo_color
 	if m is ShaderMaterial:
 		var sm := m as ShaderMaterial
+		for tn in ["albedo_tex", "albedo_texture", "texture_albedo", "base_tex"]:
+			var tv = sm.get_shader_parameter(tn)
+			if tv is Texture2D:
+				return _avg_of_texture(tv as Texture2D)
 		for n in ["albedo", "albedo_color", "base_color", "tint", "colour"]:
 			var v = sm.get_shader_parameter(n)
 			if v is Color:
@@ -399,7 +441,13 @@ static func bake_and_install(cells: Dictionary, n: int,
 		# frustum-culls like the props it stands in for. A map-spanning bound is
 		# what made the earlier overlay batching slower than doing nothing.
 		var centre := _centre_of(list)
-		var path := "%s/hlod_%s_w%d.res" % [cache_dir, key.replace(",", "_"),
+		# VERSIONED, because the bake's CONTENT can change without its inputs
+		# changing. v1 wrote each material's modulate as the vertex colour -
+		# white on nearly every prop material - so a cached v1 cell is a pale
+		# blob and would be reused forever by a plugin that now bakes the
+		# average texture colour instead. Bump this whenever the bake changes
+		# what it produces from the same props.
+		var path := "%s/hlod_v2_%s_w%d.res" % [cache_dir, key.replace(",", "_"),
 			int(weld * 100.0)]
 		var mesh: Mesh = null
 		if cache_dir != "" and ResourceLoader.exists(path):

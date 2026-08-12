@@ -943,22 +943,14 @@ All of it is read from your own Battlefield 6 installation."
 	#
 	# Starts unchecked: the point of the chip is bare ground, so having to switch
 	# the streets off every time you switch the ground on would defeat it.
-	mapctx_roads = Theme_.chip("Roads and paths")
-	mapctx_roads.set_pressed_no_signal(false)
-	mapctx_roads.tooltip_text = "The street network and its markings, baked from the level's own terrain decals and draped on the ground. They used to arrive with Extended Terrain whether you wanted them or not; now they are their own layer, off until you ask, so you can lay out your own paths and arrays on bare ground. Showing and hiding costs nothing and never rebuilds."
-	mapctx_roads.toggled.connect(func(v: bool):
-		if _locked(mapctx_roads): return
-		var r0 := EditorInterface.get_edited_scene_root()
-		if mapctx.set_roads_shown(r0, v):
-			lbl.text = "Roads " + ("shown" if v else "hidden")
-			_save_mapctx_state()
-			return
-		# No Roads node. Two different situations, and saying which saves a
-		# report: the ground is not built yet, or this map has no streets.
-		lbl.text = ("Turn Extended Terrain on first — the roads are built with it"
-			if not mapctx.has_terrain(r0)
-			else "This map has no road network to show"))
-	mc_chips.add_child(mapctx_roads)
+	# NO CHIP FOR ROADS AND PATHS. The decals are not optional dressing - they
+	# are what the level paints onto whatever surface is under them, terrain or
+	# prop, so they arrive with Extended Terrain and are re-projected when the
+	# objects layer builds. mapctx_roads stays null and every reference to it
+	# is already null-guarded.
+	#
+	# set_roads_shown() is kept: it is how the Roads node would be hidden again
+	# if bare ground is ever wanted back, which is what this chip used to give.
 
 	mapctx_grass = Theme_.chip("Grass")
 	mapctx_grass.set_pressed_no_signal(false)
@@ -1750,6 +1742,20 @@ All of it is read from your own Battlefield 6 installation."
 	# changes when a build writes its geometry cache, and build_finished is
 	# what says so.
 	mapctx.build_finished.connect(func(_n: int): _storage_dirty())
+	# THE ROAD DECALS GET THEIR OWN LANE. set_activity is keyed by label, so
+	# this sits alongside the scenery and skyline lanes without any further
+	# wiring; an empty phase closes it. Before this the pass reported through
+	# the props lane, which had already finished by the time it ran.
+	# ONE STABLE LABEL. set_activity is keyed BY LABEL, so putting the phase in
+	# the label meant the close never matched the lanes it opened and each one
+	# was left on screen forever at whatever it last reported - the stray bar
+	# that appears once the objects have finished. The phase still reaches the
+	# log and the breadcrumb, where it is not part of a key.
+	mapctx.decal_progress.connect(func(phase: String, done: int, total: int):
+		if phase == "":
+			jobs.clear_activity("Laying the road decals")
+		else:
+			jobs.set_activity("Laying the road decals", done, total))
 	mapctx.build_finished.connect(func(_b: int): _storage_dirty())
 	mapctx.build_finished.connect(func(_built: int):
 		jobs.clear_activity("Building the level's scenery")
@@ -2025,7 +2031,12 @@ func _settings_snapshot() -> PackedStringArray:
 	out.append("%-22s %s" % ["map objects", yn.call(mapctx_objects)])
 	out.append("%-22s %s" % ["skyline", yn.call(mapctx_backdrop)])
 	out.append("%-22s %s" % ["water", yn.call(mapctx_water)])
-	out.append("%-22s %s" % ["roads and paths", yn.call(mapctx_roads)])
+	# No chip any more: they arrive with the ground. Reported from the map
+	# context so a saved log still says whether they are on screen - yn() would
+	# print "unavailable" for the missing button, which reads as broken.
+	out.append("%-22s %s" % ["roads and paths",
+		("ON (with the ground)" if mapctx != null and mapctx._show_roads
+		else "off")])
 	out.append("%-22s %s" % ["fx", yn.call(mapctx_fx)])
 	out.append("%-22s %s" % ["lighting", yn.call(mapctx_light)])
 	out.append("%-22s %s" % ["  sdfgi + ssao", yn.call(mapctx_gi)])
@@ -2635,6 +2646,17 @@ func _check_updates_now() -> void:
 		var _ap := staged["applied"] as Array
 		if not _ap.is_empty():
 			Log.info("Applied %d staged file(s): %s" % [_ap.size(), ", ".join(_ap)])
+		# WHAT THIS BUTTON CANNOT DO, said plainly rather than left to be
+		# discovered. Scripts and shaders go live here; anything else - the
+		# native extension, the fx data files, binaries - is only picked up
+		# when the editor next starts, because nothing can swap them under a
+		# running session. Saying so is what makes the button trustworthy
+		# enough to use instead of closing the editor every time.
+		var _ig := (staged.get("ignored", []) as Array)
+		if not _ig.is_empty():
+			Log.warn(("%d staged file(s) are not code and stay where they are "
+				+ "until the editor is next started: %s")
+				% [_ig.size(), ", ".join(_ig)])
 	# CODE FIRST, and only what actually moved.
 	#
 	# This button used to be about downloading models. There are no models to
@@ -3818,10 +3840,32 @@ func _wants_map_layers() -> bool:
 # Walk the level's placements if a map layer needs them and the open skipped it.
 # On a worker, behind the same read panel the open uses, because it is ~49 s cold.
 func _ensure_placements_async(gs) -> bool:
+	# THE READ WORKER WAITS FOR THE SWAP TOO.
+	#
+	# Serialising the BUILD against the swap was not enough: backdrop still died
+	# with build=0.0 s, i.e. while the build was still waiting its turn. What
+	# else a geometry layer starts is this - the placement walk, 58,055 rows,
+	# on a worker - and it is the one thing terrain never asks for, which is
+	# exactly the layer that does not crash.
+	if _swap_busy:
+		await _await_flag("swapping placed objects",
+			func(): return _swap_busy)
 	var map: String = mapctx.map_of(EditorInterface.get_edited_scene_root())
 	var ground := "%s/%s" % [HighpolyMapContext.CACHE, map]
 	if gs == null or (gs.placements_ready and gs.surface_cache == ground):
 		return gs != null
+	# THE SAME GATE THE TERRAIN READ WORKER TAKES. Both paths reach
+	# ensure_ground on this same directory, and only the terrain side was
+	# serialised, so the two could composite the same ground on two threads at
+	# once. See _read_worker_busy for the full account.
+	if not await _await_flag("another layer's install read",
+			func(): return _read_worker_busy):
+		return gs != null
+	# RE-ASKED AFTER THE WAIT, because the worker just queued ahead of this one
+	# may have done exactly this work. This is where the duplicate build goes.
+	if gs.placements_ready and gs.surface_cache == ground:
+		return true
+	_read_worker_busy = true
 	# COLD IS ASKED, NOT ASSUMED. This passed `false` unconditionally, and
 	# `cold` is the flag that shows the note explaining that a first read of a
 	# map takes minutes and every read after it takes seconds. So the one path
@@ -3851,6 +3895,10 @@ func _ensure_placements_async(gs) -> bool:
 	_prog_relay = []
 	_read_end()
 	HighpolyVitals.crumb("idle, nothing building")
+	# RELEASED AFTER THE TASK IS JOINED, not when the loop above exits. The loop
+	# also breaks when the tree goes away, and releasing there would let the
+	# next read worker start while this one is still inside ensure_ground.
+	_read_worker_busy = false
 	return okv[0]
 
 
@@ -3928,25 +3976,92 @@ func _apply_with_placements(r: Node, on: bool, objs: bool, tex, bd: bool, wt: bo
 	return mapctx.apply(r, on, objs, tex, bd, wt)
 
 
-# One worker task around game_source.map_data, behind the same read panel the
-# open uses. Serialised: a second toggle while one is mining waits its turn
-# rather than racing the first into the game source's caches.
-var _md_mining := false
+# ONE READ WORKER AT A TIME, whichever layer asked for it.
+#
+# This used to gate only map_data against map_data, and that is not the pair
+# that collides. The two read workers are:
+#
+#   _ensure_mapdata_async     (Extended terrain) -> ensure_ground, then map_data
+#   _ensure_placements_async  (Objects/backdrop) -> ensure_placements, then
+#                                                   ensure_ground
+#
+# BOTH end up in ensure_ground on the same cache directory, and only the first
+# was gated - so terrain could be part-way through baking the ground while the
+# objects worker started baking the SAME ground on another thread.
+#
+# ensure_ground's own guard does not stop it either, because it is check-then-
+# act with the two halves set at opposite ends:
+#
+#     if surface_cache == cache_dir and _surface_tried == cache_dir: return
+#     surface_cache = cache_dir          # set at the START
+#     ... 30-80 s of compositing ...
+#     _surface_tried = cache_dir         # set at the END
+#
+# A second caller arriving in that window sees surface_cache already matching,
+# _surface_tried not yet set, and falls straight through into a second
+# concurrent build. ensure_placements has the same shape around
+# placements_ready, with walk.rows / walk.ents / walk.by_name as the shared
+# state two walks would then write at once.
+#
+# It is visible in the phase table of the one backdrop run that survived, which
+# lists "terrain surface" TWICE, 33.2 s and 31.6 s - the same ground built
+# twice over. So serialising is not only the safe thing, it gives that time
+# back: the second caller now finds the guard satisfied and skips the work.
+#
+# Named for what it means rather than what it started as.
+# A WAIT THAT CAN SAY WHY IT IS WAITING.
+#
+# Six loops in this file park on a boolean with no timeout and no message, so a
+# flag left set by an early return or an unfinished worker hangs the UI on its
+# last label - "Building the map objects..." forever, with nothing in the log.
+# That is indistinguishable from a button that did nothing.
+#
+# Returns true if the flag cleared, false if the tree went away. Never gives up
+# on its own: whether waiting is still correct depends on the caller, and
+# guessing wrong here would start a second builder while the first is live,
+# which is the crash class the flags exist to prevent.
+func _await_flag(name: String, is_set: Callable) -> bool:
+	if not is_set.call():
+		return true
+	var t0 := Time.get_ticks_msec()
+	var said := 0
+	while is_set.call():
+		if get_tree() == null:
+			return false
+		var waited := Time.get_ticks_msec() - t0
+		# said == 0 makes the second test `waited >= 0`, which is true on the
+		# very first frame - this warned every frame until I read it back.
+		if (said == 0 and waited >= 8000) or (said > 0 and waited >= 30000 * said):
+			said += 1
+			Log.warn(("Still waiting on '%s' after %.0f s. The layer "
+				+ "you switched on cannot start until it clears; if this "
+				+ "never finishes it is a stuck flag, not slow work.")
+				% [name, waited / 1000.0])
+		await get_tree().process_frame
+	return true
+
+
+var _read_worker_busy := false
 
 func _ensure_mapdata_async(gs, want: Dictionary) -> void:
 	if gs == null or mapctx == null:
 		return
+	# Same rule as _ensure_placements_async: no read worker while the scene is
+	# being swapped.
+	if _swap_busy:
+		while _swap_busy and get_tree() != null:
+			await get_tree().process_frame
 	var map: String = mapctx.map_of(EditorInterface.get_edited_scene_root())
 	if map == "":
 		return
 	var dir := "%s/%s" % [HighpolyMapContext.CACHE, map]
-	while _md_mining:
+	while _read_worker_busy:
 		if get_tree() == null:
 			return
 		await get_tree().process_frame
 	if not gs.map_data_would_build(dir, want):
 		return
-	_md_mining = true
+	_read_worker_busy = true
 	_read_begin(map, not _map_read_before(map))
 	HighpolyVitals.crumb("reading %s: terrain, roads and map layers" % map)
 	var done := [false]
@@ -3970,7 +4085,7 @@ func _ensure_mapdata_async(gs, want: Dictionary) -> void:
 	_prog_relay = []
 	_read_end()
 	HighpolyVitals.crumb("idle, nothing building")
-	_md_mining = false
+	_read_worker_busy = false
 
 
 
@@ -4304,11 +4419,19 @@ func _restore_mapctx_state() -> void:
 		mapctx_water.set_pressed_no_signal(bool(d.get("water", false)))
 	# Pushed into the map context by hand: set_pressed_no_signal skips the
 	# handler, so without this the chip and the built node could disagree.
-	if mapctx_roads:
-		var _rd_on := bool(d.get("roads", false))
-		mapctx_roads.set_pressed_no_signal(_rd_on)
-		if mapctx: mapctx.set_roads_shown(
-			EditorInterface.get_edited_scene_root(), _rd_on)
+	# ROADS ARE ALWAYS SHOWN NOW, and this has to be pushed rather than left to
+	# the next build. Visibility is applied when the Roads node is PLACED
+	# ((_rd as Node3D).visible = _show_roads), so a scene built while the old
+	# chip was off keeps a hidden node forever - and "Check for updates" swaps
+	# the scripts without rebuilding anything, so the change appeared to do
+	# nothing at all. Reported by the user as "the decals did not get projected
+	# onto the terrain": they were built, and hidden.
+	#
+	# The saved "roads" key is deliberately ignored: every existing saved state
+	# carries the chip's old default of false, and honouring it would keep them
+	# hidden for everyone who ever used the chip.
+	if mapctx:
+		mapctx.set_roads_shown(EditorInterface.get_edited_scene_root(), true)
 	# set_pressed_no_signal skips the handler, so the want flag is set by hand;
 	# the terrain build reads it when the kits come up. Defaults OFF, including
 	# for saved states written before the chip existed.
@@ -4453,12 +4576,16 @@ func _ensure_game_source(map: String, gen: int = -1) -> bool:
 		Log.warn("  the panel's own check may still say 'detected': set the "
 			+ "folder at the top of the panel with Locate... and try again.")
 		return false
+	# NAMED, and it checks for a newer toggle each pass as before.
 	while _gs_opening:
-		await get_tree().process_frame
+		if not await _await_flag("opening the game install",
+				func(): return _gs_opening):
+			return false
 		if gen >= 0 and gen != _mapctx_gen:
 			return false
 		if _adopt_open_source(map):
 			return true
+		break
 	if _adopt_open_source(map):
 		return true
 	_gs_opening = true
@@ -4705,6 +4832,26 @@ func _upgrade_catalogue_async(gs) -> void:
 
 
 func _mapctx_changed() -> void:
+	# THE BUILD WAITS FOR THE PLACED-OBJECT SWAP TO FINISH.
+	#
+	# These are two loops that both mutate the same scene across their own
+	# yields, and running them together is what kills the four layers that
+	# build game geometry. Measured: terrain plus the swap is fine, a geometry
+	# layer WITHOUT the swap (mode SDK) ran past 225 s, and the two together
+	# die at 24-36 s every time.
+	#
+	# The collision is not rare, it is the default. On a fresh start the plugin
+	# carries the live mode across the editor addon reload, so _apply_open_scene
+	# re-skins every placed object - 7,792 of them on MP_Aftermath - and a user
+	# switching a layer on lands squarely inside that.
+	#
+	# The other direction was already handled: _swap_placed_after_build runs the
+	# swap once the build is done. This is the missing half.
+	if _swap_busy:
+		Log.info("Waiting for the placed objects to finish swapping before "
+			+ "building the map layers.")
+		await _await_flag("swapping placed objects",
+			func(): return _swap_busy)
 	_save_mapctx_state()
 	_mapctx_gen += 1
 	var gen := _mapctx_gen
@@ -4928,6 +5075,12 @@ func _mode_changed() -> void:
 # Scenes small enough to finish inside the first slice never yield at all, so the
 # common case pays nothing for any of this.
 const SWAP_JOB := "Swapping placed objects"
+
+# How many swap passes are inside the loop right now. Should never exceed 1.
+var _swap_live := 0
+# True while a placed-object swap is walking the scene. The map-context build
+# waits on it; see _mapctx_changed.
+var _swap_busy := false
 var _swap_gen := 0
 
 func _apply_scene() -> void:
@@ -4939,6 +5092,17 @@ func _apply_scene() -> void:
 	# of the scene.
 	_swap_gen += 1
 	var gen := _swap_gen
+	_swap_busy = true
+	# WHO IS SWAPPING, AND IS ANYONE ELSE. Two passes over the same scene
+	# nodes, interleaved across their yields, would both be freeing and
+	# re-adding the same children - and the four layers that crash all die
+	# somewhere inside this loop with every breadcrumb balanced, which is what
+	# a second writer looks like from inside the first.
+	if OS.get_environment("BF6_MESH_TRACE") == "1":
+		_swap_live += 1
+		HighpolyLog.info("mesh trace: SWAP-PASS start gen=%d live=%d"
+			% [gen, _swap_live])
+		HighpolyLog.flush()
 	var tier := _mode()
 	var tex := _textured()
 	var todo: Array = HighpolyLib.plan(r)
@@ -4964,10 +5128,23 @@ func _apply_scene() -> void:
 		await tree.process_frame
 		if gen != _swap_gen or EditorInterface.get_edited_scene_root() != r:
 			lane.call(total, total)        # close the bar, leave the rest to the newer pass
+			if gen == _swap_gen:
+				_swap_busy = false
+			if OS.get_environment("BF6_MESH_TRACE") == "1":
+				_swap_live -= 1
+				HighpolyLog.info("mesh trace: SWAP-PASS superseded gen=%d live=%d"
+					% [gen, _swap_live])
+				HighpolyLog.flush()
 			return
 		budget = clampi((Time.get_ticks_msec() - y0) * 4, 250, 2000)
 		slice_t0 = Time.get_ticks_msec()
 	lane.call(total, total)
+	_swap_busy = false
+	if OS.get_environment("BF6_MESH_TRACE") == "1":
+		_swap_live -= 1
+		HighpolyLog.info("mesh trace: SWAP-PASS done gen=%d live=%d"
+			% [gen, _swap_live])
+		HighpolyLog.flush()
 	lbl.text = "%s: %d piece(s)" % [mode_btn.get_item_text(mode_btn.selected), n]
 
 # current placed-object cull distance from the Range slider (mirrors the slider

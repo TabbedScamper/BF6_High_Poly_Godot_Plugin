@@ -233,8 +233,8 @@ static func _cstr(d: PackedByteArray, at: int) -> String:
 		return ""
 	var e := at
 	var stop: int = mini(d.size(), at + 256)
-	while e < stop and d[e] != 0:
-		e += 1
+	var _f := d.find(0, e)
+	e = stop if (_f < 0 or _f > stop) else _f
 	return d.slice(at, e).get_string_from_utf8()
 
 

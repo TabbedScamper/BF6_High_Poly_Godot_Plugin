@@ -111,7 +111,7 @@ static func staged_count() -> int:
 # behind them. A staged file identical to the addon's is stale residue and is
 # cleared without a write. -> {"applied": [names], "failed": [names]}
 static func apply_staged() -> Dictionary:
-	var out := {"applied": [], "failed": []}
+	var out := {"applied": [], "failed": [], "ignored": []}
 	if not DirAccess.dir_exists_absolute(STAGED_DIR):
 		return out
 	var dst := plugin_dir()
@@ -119,6 +119,15 @@ static func apply_staged() -> Dictionary:
 		var fn := str(f)
 		var ext := fn.get_extension().to_lower()
 		if ext != "gd" and not SHADER_EXTS.has(ext):
+			# NAMED, NOT SWALLOWED. This used to `continue` in silence: the file
+			# was not applied, not removed, and not mentioned, so the button
+			# reported success while a staged data file sat here forever. A
+			# button that quietly does nothing is worse than one that refuses,
+			# because the only way to find out is to notice the change missing.
+			#
+			# Left in the stage on purpose - a later closed-editor deploy can
+			# still pick it up - but the caller now says so.
+			(out["ignored"] as Array).append(fn)
 			continue
 		var sp := "%s/%s" % [STAGED_DIR, fn]
 		var dp := "%s/%s" % [dst, fn]

@@ -173,9 +173,9 @@ func name_at(off: int) -> String:
 	if compressed_names:
 		return str(names.get(off, ""))
 	var at := names_off + off
-	var end := at
-	while end < body.size() and body[end] != 0:
-		end += 1
+	var end := body.find(0, at)
+	if end < 0:
+		end = body.size()
 	return body.slice(at, end).get_string_from_utf8()
 
 
