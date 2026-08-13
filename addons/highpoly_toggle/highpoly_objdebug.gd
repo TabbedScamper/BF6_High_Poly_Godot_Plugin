@@ -502,7 +502,13 @@ func _build_window() -> void:
 	done.text = "Close"
 	done.pressed.connect(close)
 	row.add_child(done)
-	win.popup_centered(Vector2i(420, 640))
+	# NEVER popup() this window: popup_centered() force-sets transient, and a
+	# transient window cannot be always-on-top - the OS refuses the pair with
+	# "Windows with the 'on top' can't become transient", once per open.
+	# Centre it over the editor window by hand and just show it.
+	var pw := EditorInterface.get_base_control().get_window()
+	win.position = pw.position + (pw.size - win.size) / 2
+	win.show()
 
 
 func _row_label(_v: VBoxContainer, t: String) -> Label:

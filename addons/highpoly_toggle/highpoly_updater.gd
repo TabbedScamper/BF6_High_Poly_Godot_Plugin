@@ -63,10 +63,17 @@ static func _fetch(http: HTTPRequest, url: String,
 	# request is in flight yet on this node.
 	http.use_threads = true
 	http.timeout = 0.0            # see STALL_SECS: a size ceiling, not a safety net
+	# The tree is captured ONCE and every await re-checks the node: the http
+	# node rides on the dock, and a plugin cold swap ("Check for updates" with
+	# staged files) frees the dock while this loop is parked on a timer. The
+	# resumed loop then called get_downloaded_bytes() on a freed instance.
+	var tree := http.get_tree()
 	for attempt in range(4):
 		if attempt > 0:
 			# 0.4s, 0.8s, 1.6s between retries
-			await http.get_tree().create_timer(0.4 * pow(2, attempt - 1)).timeout
+			await tree.create_timer(0.4 * pow(2, attempt - 1)).timeout
+			if not is_instance_valid(http):
+				return PackedByteArray()
 		var state := {"done": false, "res": []}
 		# Held in a var so it can be disconnected again: CONNECT_ONE_SHOT only
 		# cleans up when the signal FIRES, and cancel_request() does not fire it.
@@ -90,7 +97,9 @@ static func _fetch(http: HTTPRequest, url: String,
 		var spent := 0.0
 		var last := 0
 		while not state["done"]:
-			await http.get_tree().create_timer(poll).timeout
+			await tree.create_timer(poll).timeout
+			if not is_instance_valid(http):
+				return PackedByteArray()
 			spent += poll
 			var d := http.get_downloaded_bytes()
 			if d > last:
@@ -146,9 +155,14 @@ static func fetch_to_file(http: HTTPRequest, url: String, dest: String) -> bool:
 	http.use_threads = true
 	http.timeout = 0.0
 	var part := dest + ".part"
+	# same freed-mid-await hazard as _fetch: tree captured once, node
+	# re-checked after every await
+	var tree := http.get_tree()
 	for attempt in range(4):
 		if attempt > 0:
-			await http.get_tree().create_timer(0.4 * pow(2, attempt - 1)).timeout
+			await tree.create_timer(0.4 * pow(2, attempt - 1)).timeout
+			if not is_instance_valid(http):
+				break
 		http.download_file = part
 		var state := {"done": false, "ok": false}
 		var on_done := func(r: int, c: int, _h: PackedStringArray, _b: PackedByteArray):
@@ -164,7 +178,11 @@ static func fetch_to_file(http: HTTPRequest, url: String, dest: String) -> bool:
 		var spent := 0.0
 		var last := 0
 		while not state["done"]:
-			await http.get_tree().create_timer(poll).timeout
+			await tree.create_timer(poll).timeout
+			if not is_instance_valid(http):
+				if FileAccess.file_exists(part):
+					DirAccess.remove_absolute(part)
+				return false
 			spent += poll
 			var d := http.get_downloaded_bytes()
 			if d > last:
@@ -196,9 +214,12 @@ static func fetch_to_file(http: HTTPRequest, url: String, dest: String) -> bool:
 # context to detect republished map packages without downloading them.
 static func remote_etag(http: HTTPRequest, url: String) -> String:
 	http.timeout = HEAD_TIMEOUT
+	var tree := http.get_tree()
 	for attempt in range(3):
 		if attempt > 0:
-			await http.get_tree().create_timer(0.4 * pow(2, attempt - 1)).timeout
+			await tree.create_timer(0.4 * pow(2, attempt - 1)).timeout
+			if not is_instance_valid(http):
+				return ""
 		var rqh := http.request(url, PackedStringArray(), HTTPClient.METHOD_HEAD)
 		if rqh != OK:
 			Log.warn("Could not check %s for a newer version: %s" % [url, error_string(rqh)])
@@ -289,6 +310,11 @@ static func github_latest(host: Node) -> Dictionary:
 	var body := await _fetch(http, GITHUB_LATEST % github_repo(),
 		PackedStringArray(["User-Agent: bf6-highpoly-preview",
 			"Accept: application/vnd.github+json"]))
+	# The host (the dock) can be freed by a cold swap while _fetch is parked
+	# on an await, which frees http with it - queue_free on a freed instance
+	# is an error, and the caller's world no longer exists to answer into.
+	if not is_instance_valid(http):
+		return {"error": "the plugin reloaded while the check was in flight"}
 	http.queue_free()
 	if body.is_empty():
 		# Distinguish the three, because they need three different fixes.
@@ -332,6 +358,11 @@ static func github_latest(host: Node) -> Dictionary:
 # already up to date or the check failed.
 static func check_plugin_update(host: Node, cb: Callable) -> void:
 	var got := await github_latest(host)
+	# A cold swap mid-check frees the dock the callback closes over; calling
+	# it then is "call on a null instance". The freshly loaded plugin runs its
+	# own check, so dropping this stale one loses nothing.
+	if not is_instance_valid(host):
+		return
 	if got.has("error"):
 		# Said out loud rather than failing quiet. An updater that silently does
 		# nothing is indistinguishable from one that has nothing to offer, and

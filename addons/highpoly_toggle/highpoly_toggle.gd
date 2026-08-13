@@ -3457,9 +3457,14 @@ func _set_tools_visible(on: bool) -> void:
 	if _win_rect.size.x > 0 and _usable(_win_rect):
 		win.position = _win_rect.position
 		win.size = _win_rect.size
-		win.show()
 	else:
-		win.popup_centered(WIN_SIZE)
+		# NOT popup_centered(): popup() force-sets transient, and the OS
+		# refuses a transient window that is always-on-top ("Windows with the
+		# 'on top' can't become transient", once per open). Centre by hand.
+		win.size = WIN_SIZE
+		var pw := EditorInterface.get_base_control().get_window()
+		win.position = pw.position + (pw.size - win.size) / 2
+	win.show()
 	_maybe_play_splash()      # after show(): the sequence needs a visible panel
 
 # Closing mid-sequence drops it. A hidden Window still processes, so left alone
