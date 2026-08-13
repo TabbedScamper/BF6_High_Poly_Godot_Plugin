@@ -131,6 +131,9 @@ Size at `16fed50`: 65 scripts, ~56k lines. The big three: `highpoly_gamesource.g
 | Ray vs AABB | `HighpolyLib._ray_aabb` | another slab test |
 | Orphan-proof layer clear | the name-`contains` sweep, canonical in `HighpolyFx.clear` (fx:104) | `get_node_or_null` (misses orphaned twins) |
 | Epoch reads | `HighpolyGameSource.geom_epoch()` | the const (folds) |
+| Machine-readable event | `HighpolyLog.event(ev, d, lvl, cid)` → events.jsonl | a second log file |
+| "Where am I" snapshot | `HighpolyLog.write_state(d)` from the dock heartbeat | polling from outside |
+| Which rule fired | `gs.decide(mesh, state, var, surface, mat, rules)` | leaving it implicit |
 
 ---
 
@@ -262,3 +265,38 @@ Single-layer path with no teardown: `ensure_layer()` (6013).
 - Build journal: `user://highpoly/build_journal.txt`.
 - Geometry cache: `user://bf6_geom/<level>_<sig>_g<EPOCH><lod><vram>/`.
 - Map caches: `user://mapcontext/<map>/`.
+
+### The machine-readable set (readable WHILE the editor runs)
+Added 2026-08-13. The session log is the PREVIOUS session until a clean exit
+(law C11), which made every diagnosis a quit-and-paste round trip. These three
+are not:
+- `user://highpoly/events.jsonl` — one JSON object per line
+  `{t,unix,sess,seq,lvl,ev,cid,d}`, flushed per line, opened READ_WRITE so no
+  `.tmp` rename is involved. Rolls to `events-prev.jsonl` per session.
+  `HighpolyLog.event()`; warns and errors route themselves in.
+- `user://highpoly/state.json` — plugin version and staleness, geometry epoch,
+  map, build state, cache dirs, counts, last pick, settings probe. Written from
+  the dock heartbeat, throttled 2 s (`_write_state_snapshot`, toggle.gd).
+- `user://mapcontext/<MAP>/decisions.jsonl` — WHICH RULE FIRED per material
+  state (uv primary/wrap, alpha gate) with inputs, output and a plain why.
+  `gs.decide()` / `gs.flush_decisions()`; deduped on
+  (mesh, state key, variation, surface).
+Regression: `tools/test_events.gd` (asserts mid-session readability, the
+envelope, sequence monotonicity, warn routing, no temp left behind).
+Run it with the scratchpad's `run_test.py`, same sandbox trick as the gate.
+
+### The query side (pipeline repo `tools/`)
+- `hp.py` — state / log / watch / decisions / errors / find / where. Read-only.
+- `dossier.py` — everything the GAME says about one asset, as one JSON doc.
+  Selectors: name, res path, `state:0x...`, or a pick provenance line.
+  Carries the KNOWN-FLAG table (wrap texcoord `0x4f5f0664`, alpha test
+  `0x77d10576`) with each row's ABSENT default, which must stay in step with
+  `highpoly_gamesource._alpha_gate` / `_wrap_channel_fix`.
+- `explain.py` — the joint oracle: game truth vs our decision trace, diffed.
+- `golden.py` — freeze the decisions for the props that have gone wrong
+  before; `check` exits 1 on any change. Snapshots live in this repo under
+  `tools/golden/<MAP>.json` and belong in the same commit as the rule change.
+- `bf6_mcp.py` — all of the above as MCP tools. Registered in `~/.claude.json`
+  as `bf6`. Read-only by design: no deploy verb.
+- `sysprobe.py` / `doctor.py` — what the editor process is doing to the
+  machine, and which settings and addons are signing up for per-frame work.

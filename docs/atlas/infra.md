@@ -18,8 +18,13 @@ Decision table:
 | a per-frame microsecond bucket | `HighpolyProfile.begin/end(name)` | `HighpolyProfile.report()/stats()` |
 | "which phase runs now" for the stall detector | `HighpolyVitals.crumb(what)`, `IDLE`-prefixed when done | vitals report + perfrun idle check |
 | "still going" inside a long main-thread loop | `HighpolyVitals.tick_long(what, done, total)` | log, flushed |
+| a fact an OUTSIDE TOOL must read while the editor still runs | `HighpolyLog.event(ev, d, lvl, cid)` | `highpoly/events.jsonl`, one JSON object per line, flushed per line |
+| the current state of everything | `HighpolyLog.write_state(d)` (dock heartbeat assembles it) | `highpoly/state.json`, rewritten whole |
+| which RULE a resolver applied | `gs.decide(mesh, state, var, surface, mat, rules)` | `mapcontext/<MAP>/decisions.jsonl` at build end |
 
-**The `.tmp`-under-lock rule** (log.gd:357-370, profiler.gd:196-220): Godot's FileAccess writes through a sibling `.tmp` and renames on close. While the editor runs, `highpoly-session.log` on disk is the LAST cleanly-closed session. `Log.save()` builds from the in-memory ring, never re-reads the file. `crumbs_begin()` (profiler:192-230) is the only code that salvages a crashed session's `.tmp`. Anything that must survive a hard kill goes through `HighpolyProfiler.crumb()` (flushed every write) or is followed by `HighpolyLog.flush()`.
+**The `.tmp`-under-lock rule** (log.gd:357-370, profiler.gd:196-220): Godot's FileAccess writes through a sibling `.tmp` and renames on close. While the editor runs, `highpoly-session.log` on disk is the LAST cleanly-closed session.
+
+**...and the dodge** (log.gd, `_ev_open`): the `.tmp` dance belongs to WRITE mode. `READ_WRITE` opens the real path in place, so `events.jsonl` is created once in WRITE, closed, then reopened READ_WRITE and appended to with a flush per line. That is the entire reason the event stream is readable from outside a live editor while the session log is not. `tools/test_events.gd` asserts it by reading the file back mid-session, so the property cannot regress quietly. `state.json` deliberately does the opposite: it is written whole through a `.new` and renamed, because a reader must never catch a half-written object. `Log.save()` builds from the in-memory ring, never re-reads the file. `crumbs_begin()` (profiler:192-230) is the only code that salvages a crashed session's `.tmp`. Anything that must survive a hard kill goes through `HighpolyProfiler.crumb()` (flushed every write) or is followed by `HighpolyLog.flush()`.
 
 Three "crumb" mechanisms exist — `HighpolyProfiler.crumb` (file, crash-safe), `HighpolyVitals.crumb` (one static string, stall detector), `BJournal.event` (row table). Same word, unrelated systems.
 
