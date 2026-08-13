@@ -313,7 +313,10 @@ static func run(host: Node, dock: Node, mapctx: Node) -> bool:
 	_phase_end()
 
 	_phase_begin("configure")
-	var built := {"n": -1, "done": false}
+	# "props" is the props builder reporting in; "done" is the WHOLE build being
+	# over. They were the same flag until 2026-08-13 and that was wrong: see the
+	# note on the wait loop below.
+	var built := {"n": -1, "done": false, "props": false, "at": 0}
 	var prog := {"done": 0, "total": 0}
 	# Last time any post-props pass reported. Separate from prog because it is
 	# a liveness signal, not a count of anything comparable.
@@ -321,7 +324,8 @@ static func run(host: Node, dock: Node, mapctx: Node) -> bool:
 	if mapctx != null and mapctx.has_signal("build_finished"):
 		mapctx.build_finished.connect(func(n: int):
 			built["n"] = n
-			built["done"] = true, CONNECT_ONE_SHOT)
+			built["at"] = Time.get_ticks_msec()
+			built["props"] = true, CONNECT_ONE_SHOT)
 	# THE TERRAIN PIPELINE'S OWN END. build_finished is the props builder, so a
 	# run measuring a layer that builds no props has nothing to wait for; this
 	# is that run's completion. has_signal rather than a hard reference so an
@@ -407,13 +411,24 @@ static func run(host: Node, dock: Node, mapctx: Node) -> bool:
 		# Quiet means NOTHING is reporting, not merely that the props counter
 		# has stopped. A post-props pass ticking is work in progress.
 		var quiet_since: int = maxi(last_change, int(alive["at"]))
-		if now - quiet_since > quiet and last_seen > 0:
+		# Once the props are placed the counters legitimately stop moving while
+		# the terrain finishes, so the stall check would fire on a healthy run.
+		# The tail is bounded by `limit` and ended by the settle below instead.
+		if now - quiet_since > quiet and last_seen > 0 and not bool(built["props"]):
 			stalled = true
 			break
-		if not wait_props and bool(terrain_done["done"]):
+		# THE PROPS FINISHING IS NOT THE BUILD FINISHING. build_finished comes
+		# from the props builder alone. On a cold run the ground bake is still
+		# going when the last prop is placed, so a wait that ended here stopped
+		# the clock on a half built map and called it the build time - the same
+		# error that produced the "114 s per button" table on 2026-08-11, which
+		# had to be withdrawn. A user cannot start building against a map whose
+		# ground has not arrived, so the run ends when BOTH are done.
+		var props_ok: bool = (not wait_props) or bool(built["props"])
+		if props_ok and bool(terrain_done["done"]):
 			built["done"] = true
 			_say("perfrun: terrain_ready - the ground reached full detail")
-		elif not wait_props:
+		elif props_ok:
 			# WAIT ON WHAT THE TOOLS WINDOW SHOWS, not on the breadcrumb.
 			#
 			# The plugin's panel lives in its own "High-Poly Tools" window, and
@@ -447,12 +462,16 @@ static func run(host: Node, dock: Node, mapctx: Node) -> bool:
 					idle_since = now
 				elif now - idle_since >= IDLE_SETTLE_MS:
 					built["done"] = true
-					_say("perfrun: no props layer, so the build is done when "
-						+ "the plugin has been idle for %.1f s"
+					_say("perfrun: terrain_ready never came, so the build is "
+						+ "done when the plugin has been idle for %.1f s"
 						% (IDLE_SETTLE_MS / 1000.0))
 		if now - t >= limit:
 			break
 	_rep["build_ms"] = Time.get_ticks_msec() - t
+	# The two halves separately, because they are two different waits and the
+	# split is the whole reason a build feels long: props_ms is the props
+	# builder, build_ms includes the ground finishing after it.
+	_rep["props_ms"] = (int(built["at"]) - t) if int(built["at"]) > 0 else -1
 	_rep["build_done"] = int(prog["done"])
 	_rep["build_total"] = int(prog["total"])
 	_rep["build_stalled"] = stalled

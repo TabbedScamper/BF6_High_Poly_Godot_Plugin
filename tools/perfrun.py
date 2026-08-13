@@ -919,6 +919,10 @@ def summarise(report, digest, outcome, detail, wall, a, session):
         "scan_s": round(spans.get("scan", 0) / 1000.0, 1),
         "open_s": round(spans.get("open", 0) / 1000.0, 1),
         "build_s": round(fl.get("build_ms", 0) / 1000.0, 1),
+        # The props builder's own span, when there was one. build_s includes the
+        # ground finishing after the last prop, and the gap between the two is
+        # what a user experiences as "it looked done but the map kept moving".
+        "props_s": round(fl.get("props_ms", -1) / 1000.0, 1),
         "first_drawn_s": round(fl.get("first_drawn_ms", 0) / 1000.0, 1),
         # the headline
         "frames": fl.get("frames", 0),

@@ -65,7 +65,7 @@ def new_run(root, tag, before):
 
 def read_run(run_dir):
     out = {"outcome": "?", "build_s": 0.0, "open_s": 0.0, "wall_s": 0.0,
-           "phases": []}
+           "props_s": -1.0, "phases": []}
     j = os.path.join(run_dir, "perfrun.json")
     if os.path.isfile(j):
         try:
@@ -75,6 +75,7 @@ def read_run(run_dir):
             out["build_s"] = float(r.get("build_s", 0.0) or 0.0)
             out["open_s"] = float(r.get("open_s", 0.0) or 0.0)
             out["wall_s"] = float(r.get("wall_s", 0.0) or 0.0)
+            out["props_s"] = float(r.get("props_s", -1.0) or -1.0)
         except (ValueError, OSError):
             pass
     out["phases"] = perfrun.load_breakdown(run_dir, top=6)
@@ -151,15 +152,16 @@ def main():
             if r["button"] == "terrain" and r["outcome"] == "done"]
     base = sum(terr) / len(terr) if terr else 0.0
 
-    print("  %-12s %9s %9s %9s %9s  %s"
-          % ("button", "open", "build", "alone", "wall", "outcome"))
+    print("  %-12s %9s %9s %9s %9s %9s  %s"
+          % ("button", "open", "props", "build", "alone", "wall", "outcome"))
     for r in results:
         alone = ""
         if base and r["outcome"] == "done" and r["button"] != "terrain":
             alone = "%8.1fs" % (r["build_s"] - base)
-        print("  %-12s %8.1fs %8.1fs %9s %8.1fs  %s"
-              % (r["button"], r["open_s"], r["build_s"], alone, r["wall_s"],
-                 r["outcome"]))
+        props = "%8.1fs" % r["props_s"] if r["props_s"] >= 0 else "       -"
+        print("  %-12s %8.1fs %9s %8.1fs %9s %8.1fs  %s"
+              % (r["button"], r["open_s"], props, r["build_s"], alone,
+                 r["wall_s"], r["outcome"]))
     if base:
         print("\n  'alone' = build minus the terrain run (%.1f s): every run "
               "builds\n  the terrain container, so the raw build column is "
