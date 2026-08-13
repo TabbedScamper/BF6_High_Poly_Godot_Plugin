@@ -9750,6 +9750,3671 @@
    "force_killed": false,
    "when": "2026-08-08 01:10:18",
    "note": ""
+  },
+  {
+   "apply_status": "driven through the dock",
+   "backdrop_done": 76,
+   "backdrop_ms": 1673,
+   "backdrop_surfaces": 152,
+   "backdrop_total": 76,
+   "boot_ms": 17133,
+   "build_done": 9004,
+   "build_ms": 132259,
+   "build_sampled": false,
+   "build_stalled": true,
+   "build_timed_out": false,
+   "build_total": 9022,
+   "cell": 0,
+   "census": {
+    "Backdrop": {
+     "instances": 76,
+     "nodes": 77,
+     "surfaces": 152,
+     "visible": true,
+     "visible_in_tree": true
+    },
+    "Props": {
+     "instances": 36159,
+     "nodes": 11354,
+     "surfaces": 17755,
+     "visible": true,
+     "visible_in_tree": true
+    },
+    "Roads": {
+     "instances": 1,
+     "nodes": 1,
+     "surfaces": 42,
+     "visible": true,
+     "visible_in_tree": true
+    },
+    "Terrain": {
+     "instances": 256,
+     "nodes": 257,
+     "surfaces": 512,
+     "visible": true,
+     "visible_in_tree": true
+    },
+    "Water": {
+     "instances": 1,
+     "nodes": 2,
+     "surfaces": 1,
+     "visible": true,
+     "visible_in_tree": true
+    },
+    "_MAP_CONTEXT": {
+     "instances": 0,
+     "nodes": 0,
+     "surfaces": 0,
+     "visible": true,
+     "visible_in_tree": true
+    },
+    "_SCATTER": {
+     "instances": 0,
+     "nodes": 39,
+     "surfaces": 38,
+     "visible": true,
+     "visible_in_tree": true
+    }
+   },
+   "census_surfaces": 18500,
+   "dialogs_dismissed": 0,
+   "dialogs_seen": {},
+   "dock_controls": {
+    "mapctx_backdrop": true,
+    "mapctx_gi": true,
+    "mapctx_light": true,
+    "mapctx_maplights": true,
+    "mapctx_objects": true,
+    "mapctx_on": true,
+    "mapctx_shadows": true,
+    "mapctx_water": true,
+    "mode": 2,
+    "range": 3500.0
+   },
+   "dock_sync_ms": 666,
+   "draws_mean": 9865,
+   "draws_peak": 25077,
+   "editor_cam_stuck": 950,
+   "editor_cam_tried": 950,
+   "engine": {
+    "buffer_mb": 2153.5,
+    "mem_static_mb": 11391.0,
+    "nodes": 67880,
+    "objects": 261259,
+    "orphans": 294,
+    "prims": 3708680,
+    "resources": 899,
+    "texture_mb": 4077.9,
+    "vram_mb": 6843.2
+   },
+   "flight_samples": 950,
+   "foliage_shot": "user://bf6_autorun_MP_Aftermath_foliage.png",
+   "frames": 1632,
+   "godot": "4.6.3-stable (official)",
+   "headless": false,
+   "hitches33": 791,
+   "hitches50": 577,
+   "import_scan_ms": 4737,
+   "last_crumb": "",
+   "lighting": "MP_Aftermath game lighting: sun az 238\u00c2\u00b0 el 13\u00c2\u00b0, 24000 lux",
+   "low1_ms": 212.22,
+   "map": "MP_Aftermath",
+   "map_lights": "Map lights: 3874 loaded (nearest 300 m lit)",
+   "mean_ms": 42.19,
+   "median_ms": 30.65,
+   "open_ms": 7344,
+   "p95_ms": 89.02,
+   "p99_ms": 133.88,
+   "phases": {
+    "apply: clear the old overlay": {
+     "each_ms": 27.0,
+     "n": 2,
+     "s": 0.054
+    },
+    "apply: map data": {
+     "each_ms": 37.0,
+     "n": 2,
+     "s": 0.074
+    },
+    "decals: maptile and SDK decal": {
+     "each_ms": 0.5,
+     "n": 2,
+     "s": 0.001
+    },
+    "game source: depot scope index": {
+     "each_ms": 65.0,
+     "n": 1,
+     "s": 0.065
+    },
+    "game source: geometry cache open": {
+     "each_ms": 2.0,
+     "n": 1,
+     "s": 0.002
+    },
+    "game source: mount": {
+     "each_ms": 804.0,
+     "n": 1,
+     "s": 0.804
+    },
+    "game source: partition index": {
+     "each_ms": 552.0,
+     "n": 1,
+     "s": 0.552
+    },
+    "game source: typeinfo": {
+     "each_ms": 30.0,
+     "n": 1,
+     "s": 0.03
+    },
+    "map lights: attach holder": {
+     "each_ms": 53.0,
+     "n": 1,
+     "s": 0.053
+    },
+    "panel tick: map-light culling": {
+     "each_ms": 0.03,
+     "n": 152,
+     "s": 0.005
+    },
+    "panel tick: prop cell culling": {
+     "each_ms": 0.24,
+     "n": 152,
+     "s": 0.036
+    },
+    "panel tick: total": {
+     "each_ms": 2.53,
+     "n": 152,
+     "s": 0.384
+    },
+    "props: apply_radius on every yield": {
+     "each_ms": 0.11,
+     "n": 65,
+     "s": 0.007
+    },
+    "props: create multimesh cells": {
+     "each_ms": 0.07,
+     "n": 9028,
+     "s": 0.666
+    },
+    "props: final apply_radius": {
+     "each_ms": 0.0,
+     "n": 1,
+     "s": 0.0
+    },
+    "props: load mesh (GLB parse + cache)": {
+     "each_ms": 3.44,
+     "n": 9028,
+     "s": 31.032
+    },
+    "props: mesh, from the geometry cache (of which)": {
+     "each_ms": 2.69,
+     "n": 6778,
+     "s": 18.263
+    },
+    "props: mesh, read from the install (of which)": {
+     "each_ms": 53.65,
+     "n": 228,
+     "s": 12.233
+    },
+    "props: mesh, shared in memory (of which)": {
+     "each_ms": 0.27,
+     "n": 2022,
+     "s": 0.536
+    },
+    "props: reveal the finished layer": {
+     "each_ms": 4.0,
+     "n": 1,
+     "s": 0.004
+    },
+    "props: sort the queue nearest first": {
+     "each_ms": 34.0,
+     "n": 2,
+     "s": 0.068
+    },
+    "props: waiting for the yielded frame": {
+     "each_ms": 414.48,
+     "n": 65,
+     "s": 26.941
+    },
+    "roads: place the street mesh": {
+     "each_ms": 0.0,
+     "n": 2,
+     "s": 0.0
+    },
+    "scatter: set up the vegetation kits": {
+     "each_ms": 610.0,
+     "n": 2,
+     "s": 1.22
+    },
+    "skyline: apply_radius on every yield": {
+     "each_ms": 0.25,
+     "n": 4,
+     "s": 0.001
+    },
+    "skyline: flush the fast-load sidecars": {
+     "each_ms": 0.0,
+     "n": 1,
+     "s": 0.0
+    },
+    "skyline: load mesh (game source)": {
+     "each_ms": 19.06,
+     "n": 77,
+     "s": 1.468
+    },
+    "skyline: place multimesh": {
+     "each_ms": 0.04,
+     "n": 77,
+     "s": 0.003
+    },
+    "skyline: reveal the finished layer": {
+     "each_ms": 0.0,
+     "n": 1,
+     "s": 0.0
+    },
+    "skyline: sort the queue nearest first": {
+     "each_ms": 0.0,
+     "n": 2,
+     "s": 0.0
+    },
+    "skyline: waiting for the yielded frame": {
+     "each_ms": 5313.75,
+     "n": 4,
+     "s": 21.255
+    },
+    "terrain: build the heightfield mesh": {
+     "each_ms": 115.0,
+     "n": 2,
+     "s": 0.23
+    },
+    "terrain: ground material (splat + colour map)": {
+     "each_ms": 609.5,
+     "n": 2,
+     "s": 1.219
+    },
+    "water: build the surface": {
+     "each_ms": 11.0,
+     "n": 2,
+     "s": 0.022
+    }
+   },
+   "probe_draws": 14711,
+   "props_built": -1,
+   "props_per_s": 260.9,
+   "radius": 1000000000.0,
+   "reused_open_scene": true,
+   "scene": "res://Levels/MP_Aftermath.tscn",
+   "scene_nodes": 45532,
+   "scene_nodes_at_open": 19304,
+   "screenshot": "user://bf6_autorun_MP_Aftermath.png",
+   "shadow_draws_mean": 295,
+   "shadow_draws_peak": 1342,
+   "started_unix": 1786638197.925,
+   "sweep": {
+    "_all_on": {
+     "draws_mean": 10274,
+     "frames": 390,
+     "median_ms": 35.96
+    },
+    "_engine_floor_scene_hidden": {
+     "draws_mean": 15,
+     "engine": {
+      "buffer_mb": 2069.8,
+      "mem_static_mb": 11275.5,
+      "nodes": 67880,
+      "objects": 253523,
+      "orphans": 294,
+      "prims": 15914,
+      "resources": 899,
+      "texture_mb": 4077.9,
+      "vram_mb": 6759.5
+     },
+     "frames": 800,
+     "median_ms": 17.08,
+     "objects_in_frame": 3037,
+     "physics_ms": 0.02,
+     "prims_in_frame": 15914,
+     "process_ms": 28.65
+    },
+    "_floor_no_backdrop_no_objects": {
+     "draws_mean": 2633,
+     "frames": 637,
+     "median_ms": 19.51
+    },
+    "mapctx_backdrop": {
+     "draws_mean": 9984,
+     "frames": 405,
+     "median_ms": 29.75
+    },
+    "mapctx_gi": {
+     "draws_mean": 9814,
+     "frames": 405,
+     "median_ms": 32.45
+    },
+    "mapctx_light": {
+     "draws_mean": 9460,
+     "frames": 439,
+     "median_ms": 22.65
+    },
+    "mapctx_maplights": {
+     "draws_mean": 10331,
+     "frames": 398,
+     "median_ms": 33.95
+    },
+    "mapctx_objects": {
+     "draws_mean": 2508,
+     "frames": 740,
+     "median_ms": 18.23
+    },
+    "mapctx_shadows": {
+     "draws_mean": 10439,
+     "frames": 374,
+     "median_ms": 37.18
+    },
+    "mapctx_water": {
+     "draws_mean": 10327,
+     "frames": 391,
+     "median_ms": 32.36
+    }
+   },
+   "total_ms": 409352,
+   "vram_mode": 1,
+   "worst_ms": 487.46,
+   "wall_s": 413.4,
+   "vram_mb": 6843.2,
+   "texture_mb": 4077.9,
+   "mem_static_mb": 11391.0,
+   "force_killed": false,
+   "when": "2026-08-13 11:29:54",
+   "note": ""
+  },
+  {
+   "apply_status": "driven through the dock",
+   "backdrop_done": 76,
+   "backdrop_ms": 1818,
+   "backdrop_surfaces": 152,
+   "backdrop_total": 76,
+   "boot_ms": 17426,
+   "build_done": 9022,
+   "build_ms": 116292,
+   "build_sampled": false,
+   "build_stalled": false,
+   "build_timed_out": false,
+   "build_total": 9022,
+   "cell": 0,
+   "census": {
+    "Backdrop": {
+     "instances": 76,
+     "nodes": 77,
+     "surfaces": 152,
+     "visible": true,
+     "visible_in_tree": true
+    },
+    "Props": {
+     "instances": 36159,
+     "nodes": 11354,
+     "surfaces": 17755,
+     "visible": true,
+     "visible_in_tree": true
+    },
+    "Roads": {
+     "instances": 1,
+     "nodes": 1,
+     "surfaces": 42,
+     "visible": false,
+     "visible_in_tree": false
+    },
+    "Terrain": {
+     "instances": 256,
+     "nodes": 257,
+     "surfaces": 512,
+     "visible": false,
+     "visible_in_tree": false
+    },
+    "Water": {
+     "instances": 1,
+     "nodes": 2,
+     "surfaces": 1,
+     "visible": false,
+     "visible_in_tree": false
+    },
+    "_MAP_CONTEXT": {
+     "instances": 0,
+     "nodes": 0,
+     "surfaces": 0,
+     "visible": true,
+     "visible_in_tree": true
+    },
+    "_SCATTER": {
+     "instances": 0,
+     "nodes": 39,
+     "surfaces": 38,
+     "visible": false,
+     "visible_in_tree": false
+    }
+   },
+   "census_surfaces": 18500,
+   "dialogs_dismissed": 0,
+   "dialogs_seen": {},
+   "dock_controls": {
+    "mapctx_backdrop": true,
+    "mapctx_gi": true,
+    "mapctx_light": true,
+    "mapctx_maplights": true,
+    "mapctx_objects": true,
+    "mapctx_on": true,
+    "mapctx_shadows": true,
+    "mapctx_water": true,
+    "mode": 2,
+    "range": 3500.0
+   },
+   "dock_sync_ms": 101,
+   "draws_mean": 14676,
+   "draws_peak": 25076,
+   "editor_cam_stuck": 950,
+   "editor_cam_tried": 950,
+   "engine": {
+    "buffer_mb": 2070.5,
+    "mem_static_mb": 11354.3,
+    "nodes": 67880,
+    "objects": 261322,
+    "orphans": 294,
+    "prims": 20736,
+    "resources": 899,
+    "texture_mb": 4079.0,
+    "vram_mb": 6761.3
+   },
+   "flight_samples": 950,
+   "foliage_shot": "user://bf6_autorun_MP_Aftermath_foliage.png",
+   "frames": 950,
+   "godot": "4.6.3-stable (official)",
+   "headless": false,
+   "hitches33": 950,
+   "hitches50": 950,
+   "import_scan_ms": 5294,
+   "last_crumb": "",
+   "lighting": "MP_Aftermath game lighting: sun az 238\u00c2\u00b0 el 13\u00c2\u00b0, 24000 lux",
+   "low1_ms": 154.21,
+   "map": "MP_Aftermath",
+   "map_lights": "Map lights: 3874 loaded (nearest 300 m lit)",
+   "mean_ms": 99.98,
+   "median_ms": 99.94,
+   "open_ms": 7394,
+   "p95_ms": 100.98,
+   "p99_ms": 116.03,
+   "phases": {
+    "apply: clear the old overlay": {
+     "each_ms": 16.5,
+     "n": 2,
+     "s": 0.033
+    },
+    "apply: map data": {
+     "each_ms": 35.0,
+     "n": 2,
+     "s": 0.07
+    },
+    "decals: maptile and SDK decal": {
+     "each_ms": 0.0,
+     "n": 2,
+     "s": 0.0
+    },
+    "game source: depot scope index": {
+     "each_ms": 64.0,
+     "n": 1,
+     "s": 0.064
+    },
+    "game source: geometry cache open": {
+     "each_ms": 2.0,
+     "n": 1,
+     "s": 0.002
+    },
+    "game source: mount": {
+     "each_ms": 830.0,
+     "n": 1,
+     "s": 0.83
+    },
+    "game source: partition index": {
+     "each_ms": 572.0,
+     "n": 1,
+     "s": 0.572
+    },
+    "game source: typeinfo": {
+     "each_ms": 31.0,
+     "n": 1,
+     "s": 0.031
+    },
+    "map lights: attach holder": {
+     "each_ms": 43.5,
+     "n": 2,
+     "s": 0.087
+    },
+    "panel tick: map-light culling": {
+     "each_ms": 0.04,
+     "n": 135,
+     "s": 0.006
+    },
+    "panel tick: prop cell culling": {
+     "each_ms": 0.2,
+     "n": 135,
+     "s": 0.027
+    },
+    "panel tick: total": {
+     "each_ms": 2.56,
+     "n": 135,
+     "s": 0.346
+    },
+    "props: apply_radius on every yield": {
+     "each_ms": 0.19,
+     "n": 57,
+     "s": 0.011
+    },
+    "props: create multimesh cells": {
+     "each_ms": 0.09,
+     "n": 9027,
+     "s": 0.784
+    },
+    "props: final apply_radius": {
+     "each_ms": 1.0,
+     "n": 1,
+     "s": 0.001
+    },
+    "props: flush the fast-load sidecars": {
+     "each_ms": 0.0,
+     "n": 1,
+     "s": 0.0
+    },
+    "props: game source, depot parse (of which)": {
+     "each_ms": 247.0,
+     "n": 1,
+     "s": 0.247
+    },
+    "props: game source, load cached geometry": {
+     "each_ms": 2686.0,
+     "n": 1,
+     "s": 2.686
+    },
+    "props: game source, materials (depot + textures)": {
+     "each_ms": 11593.0,
+     "n": 1,
+     "s": 11.593
+    },
+    "props: game source, parse + build the ArrayMesh": {
+     "each_ms": 9654.0,
+     "n": 1,
+     "s": 9.654
+    },
+    "props: game source, read the resource (CAS)": {
+     "each_ms": 190.0,
+     "n": 1,
+     "s": 0.19
+    },
+    "props: game source, save geometry to the cache": {
+     "each_ms": 0.0,
+     "n": 1,
+     "s": 0.0
+    },
+    "props: game source, texture decode (of which)": {
+     "each_ms": 8476.0,
+     "n": 1,
+     "s": 8.476
+    },
+    "props: hand back unused cache entries": {
+     "each_ms": 78.0,
+     "n": 1,
+     "s": 0.078
+    },
+    "props: load mesh (GLB parse + cache)": {
+     "each_ms": 2.91,
+     "n": 9027,
+     "s": 26.297
+    },
+    "props: mesh, from the geometry cache (of which)": {
+     "each_ms": 2.3,
+     "n": 6778,
+     "s": 15.613
+    },
+    "props: mesh, read from the install (of which)": {
+     "each_ms": 44.59,
+     "n": 228,
+     "s": 10.167
+    },
+    "props: mesh, shared in memory (of which)": {
+     "each_ms": 0.26,
+     "n": 2021,
+     "s": 0.517
+    },
+    "props: reveal the finished layer": {
+     "each_ms": 3.0,
+     "n": 1,
+     "s": 0.003
+    },
+    "props: sort the queue nearest first": {
+     "each_ms": 34.0,
+     "n": 2,
+     "s": 0.068
+    },
+    "props: waiting for the yielded frame": {
+     "each_ms": 433.74,
+     "n": 57,
+     "s": 24.723
+    },
+    "roads: place the street mesh": {
+     "each_ms": 0.0,
+     "n": 2,
+     "s": 0.0
+    },
+    "roads: project the decals onto the props": {
+     "each_ms": 52883.0,
+     "n": 1,
+     "s": 52.883
+    },
+    "scatter: set up the vegetation kits": {
+     "each_ms": 584.0,
+     "n": 2,
+     "s": 1.168
+    },
+    "skyline: apply_radius on every yield": {
+     "each_ms": 0.5,
+     "n": 2,
+     "s": 0.001
+    },
+    "skyline: flush the fast-load sidecars": {
+     "each_ms": 0.0,
+     "n": 1,
+     "s": 0.0
+    },
+    "skyline: load mesh (game source)": {
+     "each_ms": 1.19,
+     "n": 77,
+     "s": 0.092
+    },
+    "skyline: place multimesh": {
+     "each_ms": 0.06,
+     "n": 77,
+     "s": 0.005
+    },
+    "skyline: reveal the finished layer": {
+     "each_ms": 0.0,
+     "n": 1,
+     "s": 0.0
+    },
+    "skyline: sort the queue nearest first": {
+     "each_ms": 0.5,
+     "n": 2,
+     "s": 0.001
+    },
+    "skyline: waiting for the yielded frame": {
+     "each_ms": 9732.0,
+     "n": 2,
+     "s": 19.464
+    },
+    "terrain: build the heightfield mesh": {
+     "each_ms": 116.0,
+     "n": 2,
+     "s": 0.232
+    },
+    "terrain: ground material (splat + colour map)": {
+     "each_ms": 565.5,
+     "n": 2,
+     "s": 1.131
+    },
+    "water: build the surface": {
+     "each_ms": 10.5,
+     "n": 2,
+     "s": 0.021
+    }
+   },
+   "probe_draws": 14709,
+   "props_built": 9022,
+   "props_per_s": 72.7,
+   "radius": 1000000000.0,
+   "reused_open_scene": true,
+   "scene": "res://Levels/MP_Aftermath.tscn",
+   "scene_nodes": 45532,
+   "scene_nodes_at_open": 19304,
+   "screenshot": "user://bf6_autorun_MP_Aftermath.png",
+   "shadow_draws_mean": 294,
+   "shadow_draws_peak": 1357,
+   "started_unix": 1786644024.016,
+   "sweep": {
+    "_all_on": {
+     "draws_mean": 14685,
+     "frames": 238,
+     "median_ms": 99.87
+    },
+    "_engine_floor_scene_hidden": {
+     "draws_mean": 14,
+     "engine": {
+      "buffer_mb": 2070.4,
+      "mem_static_mb": 11242.3,
+      "nodes": 67880,
+      "objects": 253576,
+      "orphans": 294,
+      "prims": 20852,
+      "resources": 899,
+      "texture_mb": 4111.0,
+      "vram_mb": 6793.2
+     },
+     "frames": 238,
+     "median_ms": 99.96,
+     "objects_in_frame": 2651,
+     "physics_ms": 0.03,
+     "prims_in_frame": 20852,
+     "process_ms": 22.23
+    },
+    "_floor_no_backdrop_no_objects": {
+     "draws_mean": 3251,
+     "frames": 238,
+     "median_ms": 100.01
+    },
+    "_floor_overlay_FREED_scene_hidden": {
+     "draws_mean": 14,
+     "engine": {
+      "buffer_mb": 2154.1,
+      "mem_static_mb": 11314.2,
+      "nodes": 67880,
+      "objects": 253604,
+      "orphans": 294,
+      "prims": 20736,
+      "resources": 899,
+      "texture_mb": 4079.0,
+      "vram_mb": 6844.9
+     },
+     "frames": 238,
+     "median_ms": 99.91,
+     "nodes_before": 67880
+    },
+    "mapctx_backdrop": {
+     "draws_mean": 14591,
+     "frames": 238,
+     "median_ms": 99.88
+    },
+    "mapctx_gi": {
+     "draws_mean": 14684,
+     "frames": 238,
+     "median_ms": 99.97
+    },
+    "mapctx_light": {
+     "draws_mean": 14624,
+     "frames": 239,
+     "median_ms": 99.92
+    },
+    "mapctx_maplights": {
+     "draws_mean": 14684,
+     "frames": 238,
+     "median_ms": 99.94
+    },
+    "mapctx_objects": {
+     "draws_mean": 3332,
+     "frames": 239,
+     "median_ms": 99.99
+    },
+    "mapctx_shadows": {
+     "draws_mean": 14684,
+     "frames": 238,
+     "median_ms": 99.94
+    },
+    "mapctx_water": {
+     "draws_mean": 14623,
+     "frames": 239,
+     "median_ms": 99.94
+    }
+   },
+   "total_ms": 589649,
+   "vram_mode": 1,
+   "worst_ms": 218.71,
+   "wall_s": 593.6,
+   "vram_mb": 6761.3,
+   "texture_mb": 4079.0,
+   "mem_static_mb": 11354.3,
+   "force_killed": false,
+   "when": "2026-08-13 13:10:00",
+   "note": ""
+  },
+  {
+   "apply_status": "driven through the dock",
+   "backdrop_done": 76,
+   "backdrop_ms": 1862,
+   "backdrop_surfaces": 152,
+   "backdrop_total": 76,
+   "boot_ms": 17164,
+   "build_done": 8905,
+   "build_ms": 122626,
+   "build_sampled": false,
+   "build_stalled": true,
+   "build_timed_out": false,
+   "build_total": 8926,
+   "cell": 0,
+   "census": {
+    "Backdrop": {
+     "instances": 76,
+     "nodes": 77,
+     "surfaces": 152,
+     "visible": true,
+     "visible_in_tree": true
+    },
+    "Props": {
+     "instances": 36159,
+     "nodes": 11258,
+     "surfaces": 17463,
+     "visible": true,
+     "visible_in_tree": true
+    },
+    "Roads": {
+     "instances": 1,
+     "nodes": 1,
+     "surfaces": 42,
+     "visible": false,
+     "visible_in_tree": false
+    },
+    "Terrain": {
+     "instances": 256,
+     "nodes": 257,
+     "surfaces": 512,
+     "visible": false,
+     "visible_in_tree": false
+    },
+    "Water": {
+     "instances": 1,
+     "nodes": 2,
+     "surfaces": 1,
+     "visible": false,
+     "visible_in_tree": false
+    },
+    "_MAP_CONTEXT": {
+     "instances": 0,
+     "nodes": 0,
+     "surfaces": 0,
+     "visible": true,
+     "visible_in_tree": true
+    },
+    "_SCATTER": {
+     "instances": 0,
+     "nodes": 39,
+     "surfaces": 38,
+     "visible": false,
+     "visible_in_tree": false
+    }
+   },
+   "census_surfaces": 18208,
+   "dialogs_dismissed": 0,
+   "dialogs_seen": {},
+   "dock_controls": {
+    "mapctx_backdrop": true,
+    "mapctx_gi": true,
+    "mapctx_light": true,
+    "mapctx_maplights": true,
+    "mapctx_objects": true,
+    "mapctx_on": true,
+    "mapctx_shadows": true,
+    "mapctx_water": true,
+    "mode": 2,
+    "range": 3500.0
+   },
+   "dock_sync_ms": 644,
+   "draws_mean": 10638,
+   "draws_peak": 25084,
+   "editor_cam_stuck": 950,
+   "editor_cam_tried": 950,
+   "engine": {
+    "buffer_mb": 2058.4,
+    "mem_static_mb": 11251.9,
+    "nodes": 67784,
+    "objects": 260828,
+    "orphans": 294,
+    "prims": 16002,
+    "resources": 899,
+    "texture_mb": 4077.9,
+    "vram_mb": 6700.4
+   },
+   "flight_samples": 950,
+   "foliage_shot": "user://bf6_autorun_MP_Aftermath_foliage.png",
+   "frames": 1459,
+   "godot": "4.6.3-stable (official)",
+   "headless": false,
+   "hitches33": 806,
+   "hitches50": 611,
+   "import_scan_ms": 4716,
+   "last_crumb": "",
+   "lighting": "MP_Aftermath game lighting: sun az 238\u00c2\u00b0 el 13\u00c2\u00b0, 24000 lux",
+   "low1_ms": 223.83,
+   "map": "MP_Aftermath",
+   "map_lights": "Map lights: 3874 loaded (nearest 300 m lit)",
+   "mean_ms": 47.49,
+   "mean_pos_ms": 58.77,
+   "median_ms": 40.13,
+   "median_pos_ms": 62.26,
+   "open_ms": 7227,
+   "p95_ms": 92.67,
+   "p95_pos_ms": 97.44,
+   "p99_ms": 139.45,
+   "phases": {
+    "apply: clear the old overlay": {
+     "each_ms": 9.0,
+     "n": 2,
+     "s": 0.018
+    },
+    "apply: map data": {
+     "each_ms": 35.5,
+     "n": 2,
+     "s": 0.071
+    },
+    "decals: maptile and SDK decal": {
+     "each_ms": 0.0,
+     "n": 2,
+     "s": 0.0
+    },
+    "game source: depot scope index": {
+     "each_ms": 63.0,
+     "n": 1,
+     "s": 0.063
+    },
+    "game source: geometry cache open": {
+     "each_ms": 2.0,
+     "n": 1,
+     "s": 0.002
+    },
+    "game source: mount": {
+     "each_ms": 822.0,
+     "n": 1,
+     "s": 0.822
+    },
+    "game source: partition index": {
+     "each_ms": 581.0,
+     "n": 1,
+     "s": 0.581
+    },
+    "game source: typeinfo": {
+     "each_ms": 30.0,
+     "n": 1,
+     "s": 0.03
+    },
+    "map lights: attach holder": {
+     "each_ms": 43.0,
+     "n": 2,
+     "s": 0.086
+    },
+    "panel tick: map-light culling": {
+     "each_ms": 0.05,
+     "n": 148,
+     "s": 0.007
+    },
+    "panel tick: prop cell culling": {
+     "each_ms": 0.24,
+     "n": 148,
+     "s": 0.035
+    },
+    "panel tick: total": {
+     "each_ms": 2.6,
+     "n": 148,
+     "s": 0.385
+    },
+    "props: apply_radius on every yield": {
+     "each_ms": 0.14,
+     "n": 58,
+     "s": 0.008
+    },
+    "props: create multimesh cells": {
+     "each_ms": 0.09,
+     "n": 8932,
+     "s": 0.848
+    },
+    "props: final apply_radius": {
+     "each_ms": 0.0,
+     "n": 1,
+     "s": 0.0
+    },
+    "props: load mesh (GLB parse + cache)": {
+     "each_ms": 3.01,
+     "n": 8932,
+     "s": 26.901
+    },
+    "props: mesh, from the geometry cache (of which)": {
+     "each_ms": 2.41,
+     "n": 6706,
+     "s": 16.177
+    },
+    "props: mesh, read from the install (of which)": {
+     "each_ms": 44.42,
+     "n": 230,
+     "s": 10.216
+    },
+    "props: mesh, shared in memory (of which)": {
+     "each_ms": 0.25,
+     "n": 1996,
+     "s": 0.508
+    },
+    "props: reveal the finished layer": {
+     "each_ms": 4.0,
+     "n": 1,
+     "s": 0.004
+    },
+    "props: sort the queue nearest first": {
+     "each_ms": 32.5,
+     "n": 2,
+     "s": 0.065
+    },
+    "props: waiting for the yielded frame": {
+     "each_ms": 404.55,
+     "n": 58,
+     "s": 23.464
+    },
+    "roads: place the street mesh": {
+     "each_ms": 0.0,
+     "n": 2,
+     "s": 0.0
+    },
+    "scatter: set up the vegetation kits": {
+     "each_ms": 597.5,
+     "n": 2,
+     "s": 1.195
+    },
+    "skyline: apply_radius on every yield": {
+     "each_ms": 0.0,
+     "n": 2,
+     "s": 0.0
+    },
+    "skyline: flush the fast-load sidecars": {
+     "each_ms": 0.0,
+     "n": 1,
+     "s": 0.0
+    },
+    "skyline: load mesh (game source)": {
+     "each_ms": 1.08,
+     "n": 77,
+     "s": 0.083
+    },
+    "skyline: place multimesh": {
+     "each_ms": 0.08,
+     "n": 77,
+     "s": 0.006
+    },
+    "skyline: reveal the finished layer": {
+     "each_ms": 0.0,
+     "n": 1,
+     "s": 0.0
+    },
+    "skyline: sort the queue nearest first": {
+     "each_ms": 0.5,
+     "n": 2,
+     "s": 0.001
+    },
+    "skyline: waiting for the yielded frame": {
+     "each_ms": 9164.0,
+     "n": 2,
+     "s": 18.328
+    },
+    "terrain: build the heightfield mesh": {
+     "each_ms": 116.0,
+     "n": 2,
+     "s": 0.232
+    },
+    "terrain: ground material (splat + colour map)": {
+     "each_ms": 558.5,
+     "n": 2,
+     "s": 1.117
+    },
+    "water: build the surface": {
+     "each_ms": 11.0,
+     "n": 2,
+     "s": 0.022
+    }
+   },
+   "positions": 950,
+   "probe_draws": 14709,
+   "props_built": -1,
+   "props_per_s": 287.8,
+   "radius": 1000000000.0,
+   "reused_open_scene": true,
+   "scene": "res://Levels/MP_Aftermath.tscn",
+   "scene_nodes": 45436,
+   "scene_nodes_at_open": 19304,
+   "screenshot": "user://bf6_autorun_MP_Aftermath.png",
+   "shadow_draws_mean": 293,
+   "shadow_draws_peak": 1333,
+   "started_unix": 1786644789.425,
+   "sweep": {
+    "_all_on": {
+     "draws_mean": 10259,
+     "frames": 387,
+     "median_ms": 34.15,
+     "median_pos_ms": 64.37
+    },
+    "_engine_floor_scene_hidden": {
+     "draws_mean": 14,
+     "engine": {
+      "buffer_mb": 2058.4,
+      "mem_static_mb": 11226.0,
+      "nodes": 67784,
+      "objects": 253088,
+      "orphans": 294,
+      "prims": 16100,
+      "resources": 899,
+      "texture_mb": 4077.9,
+      "vram_mb": 6700.4
+     },
+     "frames": 895,
+     "median_ms": 16.29,
+     "median_pos_ms": 16.74,
+     "objects_in_frame": 3130,
+     "physics_ms": 0.02,
+     "prims_in_frame": 16100,
+     "process_ms": 29.8
+    },
+    "_floor_no_backdrop_no_objects": {
+     "draws_mean": 2715,
+     "frames": 625,
+     "median_ms": 21.32,
+     "median_pos_ms": 22.52
+    },
+    "_floor_overlay_FREED_scene_hidden": {
+     "draws_mean": 14,
+     "engine": {
+      "buffer_mb": 2058.4,
+      "mem_static_mb": 11282.0,
+      "nodes": 67784,
+      "objects": 253110,
+      "orphans": 294,
+      "prims": 16002,
+      "resources": 899,
+      "texture_mb": 4077.9,
+      "vram_mb": 6700.4
+     },
+     "frames": 868,
+     "median_ms": 16.38,
+     "median_pos_ms": 16.7,
+     "nodes_before": 67784
+    },
+    "mapctx_backdrop": {
+     "draws_mean": 10518,
+     "frames": 364,
+     "median_ms": 36.91,
+     "median_pos_ms": 64.59
+    },
+    "mapctx_gi": {
+     "draws_mean": 10578,
+     "frames": 379,
+     "median_ms": 36.7,
+     "median_pos_ms": 61.35
+    },
+    "mapctx_light": {
+     "draws_mean": 9922,
+     "frames": 411,
+     "median_ms": 27.98,
+     "median_pos_ms": 60.31
+    },
+    "mapctx_maplights": {
+     "draws_mean": 10446,
+     "frames": 389,
+     "median_ms": 35.9,
+     "median_pos_ms": 61.04
+    },
+    "mapctx_objects": {
+     "draws_mean": 2721,
+     "frames": 616,
+     "median_ms": 20.79,
+     "median_pos_ms": 22.13
+    },
+    "mapctx_shadows": {
+     "draws_mean": 10277,
+     "frames": 389,
+     "median_ms": 33.49,
+     "median_pos_ms": 63.37
+    },
+    "mapctx_water": {
+     "draws_mean": 10517,
+     "frames": 368,
+     "median_ms": 40.05,
+     "median_pos_ms": 66.15
+    }
+   },
+   "total_ms": 418613,
+   "vram_mode": 1,
+   "worst_ms": 483.79,
+   "wall_s": 422.4,
+   "vram_mb": 6700.4,
+   "texture_mb": 4077.9,
+   "mem_static_mb": 11251.9,
+   "force_killed": false,
+   "when": "2026-08-13 13:19:54",
+   "note": ""
+  },
+  {
+   "apply_status": "driven through the dock",
+   "backdrop_done": 76,
+   "backdrop_ms": 1975,
+   "backdrop_surfaces": 152,
+   "backdrop_total": 76,
+   "boot_ms": 17400,
+   "build_done": 9005,
+   "build_ms": 122330,
+   "build_sampled": false,
+   "build_stalled": true,
+   "build_timed_out": false,
+   "build_total": 9022,
+   "cell": 0,
+   "census": {
+    "_MAP_CONTEXT": {
+     "instances": 0,
+     "nodes": 0,
+     "surfaces": 0,
+     "visible": true,
+     "visible_in_tree": true
+    }
+   },
+   "census_surfaces": 18500,
+   "dialogs_dismissed": 0,
+   "dialogs_seen": {},
+   "dock_controls": {
+    "mapctx_backdrop": true,
+    "mapctx_gi": true,
+    "mapctx_light": true,
+    "mapctx_maplights": true,
+    "mapctx_objects": true,
+    "mapctx_on": true,
+    "mapctx_shadows": true,
+    "mapctx_water": true,
+    "mode": 2,
+    "range": 3500.0
+   },
+   "dock_sync_ms": 742,
+   "draws_mean": 10516,
+   "draws_peak": 25081,
+   "editor_cam_stuck": 950,
+   "editor_cam_tried": 950,
+   "engine": {
+    "buffer_mb": 277.1,
+    "mem_static_mb": 6441.9,
+    "nodes": 56150,
+    "objects": 225112,
+    "orphans": 294,
+    "prims": 16020,
+    "resources": 643,
+    "texture_mb": 3783.9,
+    "vram_mb": 4672.7
+   },
+   "flight_samples": 950,
+   "foliage_shot": "user://bf6_autorun_MP_Aftermath_foliage.png",
+   "frames": 1478,
+   "godot": "4.6.3-stable (official)",
+   "headless": false,
+   "hitches33": 804,
+   "hitches50": 605,
+   "import_scan_ms": 4720,
+   "last_crumb": "",
+   "lighting": "MP_Aftermath game lighting: sun az 238\u00c2\u00b0 el 13\u00c2\u00b0, 24000 lux",
+   "low1_ms": 224.62,
+   "map": "MP_Aftermath",
+   "map_lights": "Map lights: 3874 loaded (nearest 300 m lit)",
+   "mean_ms": 47.14,
+   "mean_pos_ms": 58.8,
+   "median_ms": 38.67,
+   "median_pos_ms": 62.18,
+   "open_ms": 7316,
+   "p95_ms": 93.24,
+   "p95_pos_ms": 98.94,
+   "p99_ms": 140.35,
+   "phases": {
+    "apply: clear the old overlay": {
+     "each_ms": 9.0,
+     "n": 2,
+     "s": 0.018
+    },
+    "apply: map data": {
+     "each_ms": 35.5,
+     "n": 2,
+     "s": 0.071
+    },
+    "decals: maptile and SDK decal": {
+     "each_ms": 0.0,
+     "n": 2,
+     "s": 0.0
+    },
+    "game source: depot scope index": {
+     "each_ms": 64.0,
+     "n": 1,
+     "s": 0.064
+    },
+    "game source: geometry cache open": {
+     "each_ms": 3.0,
+     "n": 1,
+     "s": 0.003
+    },
+    "game source: mount": {
+     "each_ms": 825.0,
+     "n": 1,
+     "s": 0.825
+    },
+    "game source: partition index": {
+     "each_ms": 581.0,
+     "n": 1,
+     "s": 0.581
+    },
+    "game source: typeinfo": {
+     "each_ms": 30.0,
+     "n": 1,
+     "s": 0.03
+    },
+    "map lights: attach holder": {
+     "each_ms": 44.0,
+     "n": 2,
+     "s": 0.088
+    },
+    "panel tick: map-light culling": {
+     "each_ms": 0.05,
+     "n": 149,
+     "s": 0.007
+    },
+    "panel tick: prop cell culling": {
+     "each_ms": 0.22,
+     "n": 149,
+     "s": 0.033
+    },
+    "panel tick: total": {
+     "each_ms": 2.52,
+     "n": 149,
+     "s": 0.376
+    },
+    "props: apply_radius on every yield": {
+     "each_ms": 0.19,
+     "n": 57,
+     "s": 0.011
+    },
+    "props: create multimesh cells": {
+     "each_ms": 0.09,
+     "n": 9028,
+     "s": 0.839
+    },
+    "props: final apply_radius": {
+     "each_ms": 1.0,
+     "n": 1,
+     "s": 0.001
+    },
+    "props: load mesh (GLB parse + cache)": {
+     "each_ms": 2.89,
+     "n": 9028,
+     "s": 26.114
+    },
+    "props: mesh, from the geometry cache (of which)": {
+     "each_ms": 2.28,
+     "n": 6778,
+     "s": 15.421
+    },
+    "props: mesh, read from the install (of which)": {
+     "each_ms": 44.54,
+     "n": 228,
+     "s": 10.155
+    },
+    "props: mesh, shared in memory (of which)": {
+     "each_ms": 0.27,
+     "n": 2022,
+     "s": 0.538
+    },
+    "props: reveal the finished layer": {
+     "each_ms": 3.0,
+     "n": 1,
+     "s": 0.003
+    },
+    "props: sort the queue nearest first": {
+     "each_ms": 34.5,
+     "n": 2,
+     "s": 0.069
+    },
+    "props: waiting for the yielded frame": {
+     "each_ms": 411.33,
+     "n": 57,
+     "s": 23.446
+    },
+    "roads: place the street mesh": {
+     "each_ms": 0.0,
+     "n": 2,
+     "s": 0.0
+    },
+    "scatter: set up the vegetation kits": {
+     "each_ms": 589.0,
+     "n": 2,
+     "s": 1.178
+    },
+    "skyline: apply_radius on every yield": {
+     "each_ms": 0.5,
+     "n": 2,
+     "s": 0.001
+    },
+    "skyline: flush the fast-load sidecars": {
+     "each_ms": 0.0,
+     "n": 1,
+     "s": 0.0
+    },
+    "skyline: load mesh (game source)": {
+     "each_ms": 1.1,
+     "n": 77,
+     "s": 0.085
+    },
+    "skyline: place multimesh": {
+     "each_ms": 0.05,
+     "n": 77,
+     "s": 0.004
+    },
+    "skyline: reveal the finished layer": {
+     "each_ms": 0.0,
+     "n": 1,
+     "s": 0.0
+    },
+    "skyline: sort the queue nearest first": {
+     "each_ms": 0.0,
+     "n": 2,
+     "s": 0.0
+    },
+    "skyline: waiting for the yielded frame": {
+     "each_ms": 9178.5,
+     "n": 2,
+     "s": 18.357
+    },
+    "terrain: build the heightfield mesh": {
+     "each_ms": 117.5,
+     "n": 2,
+     "s": 0.235
+    },
+    "terrain: ground material (splat + colour map)": {
+     "each_ms": 559.5,
+     "n": 2,
+     "s": 1.119
+    },
+    "water: build the surface": {
+     "each_ms": 11.0,
+     "n": 2,
+     "s": 0.022
+    }
+   },
+   "positions": 950,
+   "probe_draws": 14710,
+   "props_built": -1,
+   "props_per_s": 290.5,
+   "radius": 1000000000.0,
+   "reused_open_scene": true,
+   "scene": "res://Levels/MP_Aftermath.tscn",
+   "scene_nodes": 33802,
+   "scene_nodes_at_open": 19304,
+   "screenshot": "user://bf6_autorun_MP_Aftermath.png",
+   "shadow_draws_mean": 293,
+   "shadow_draws_peak": 1329,
+   "started_unix": 1786645397.828,
+   "sweep": {
+    "_all_on": {
+     "draws_mean": 10362,
+     "frames": 380,
+     "median_ms": 36.09,
+     "median_pos_ms": 61.59
+    },
+    "_engine_floor_scene_hidden": {
+     "draws_mean": 14,
+     "engine": {
+      "buffer_mb": 2069.8,
+      "mem_static_mb": 11249.8,
+      "nodes": 67880,
+      "objects": 253529,
+      "orphans": 294,
+      "prims": 16118,
+      "resources": 899,
+      "texture_mb": 4077.9,
+      "vram_mb": 6759.5
+     },
+     "frames": 833,
+     "median_ms": 16.62,
+     "median_pos_ms": 16.99,
+     "objects_in_frame": 3132,
+     "physics_ms": 0.02,
+     "prims_in_frame": 16118,
+     "process_ms": 22.53
+    },
+    "_floor_no_backdrop_no_objects": {
+     "draws_mean": 2612,
+     "frames": 623,
+     "median_ms": 20.68,
+     "median_pos_ms": 22.66
+    },
+    "_floor_overlay_FREED_scene_hidden": {
+     "draws_mean": 14,
+     "engine": {
+      "buffer_mb": 277.1,
+      "mem_static_mb": 6400.7,
+      "nodes": 56150,
+      "objects": 217394,
+      "orphans": 294,
+      "prims": 16020,
+      "resources": 643,
+      "texture_mb": 3783.9,
+      "vram_mb": 4672.7
+     },
+     "frames": 1151,
+     "median_ms": 11.65,
+     "median_pos_ms": 12.04,
+     "nodes_before": 67880
+    },
+    "mapctx_backdrop": {
+     "draws_mean": 10316,
+     "frames": 371,
+     "median_ms": 35.5,
+     "median_pos_ms": 67.72
+    },
+    "mapctx_gi": {
+     "draws_mean": 10511,
+     "frames": 372,
+     "median_ms": 34.65,
+     "median_pos_ms": 62.04
+    },
+    "mapctx_light": {
+     "draws_mean": 10297,
+     "frames": 389,
+     "median_ms": 31.86,
+     "median_pos_ms": 62.32
+    },
+    "mapctx_maplights": {
+     "draws_mean": 10257,
+     "frames": 386,
+     "median_ms": 31.11,
+     "median_pos_ms": 60.06
+    },
+    "mapctx_objects": {
+     "draws_mean": 2699,
+     "frames": 622,
+     "median_ms": 21.29,
+     "median_pos_ms": 22.64
+    },
+    "mapctx_shadows": {
+     "draws_mean": 10504,
+     "frames": 380,
+     "median_ms": 40.04,
+     "median_pos_ms": 63.25
+    },
+    "mapctx_water": {
+     "draws_mean": 10527,
+     "frames": 376,
+     "median_ms": 39.91,
+     "median_pos_ms": 60.77
+    }
+   },
+   "total_ms": 418810,
+   "vram_mode": 1,
+   "worst_ms": 497.68,
+   "wall_s": 422.3,
+   "vram_mb": 4672.7,
+   "texture_mb": 3783.9,
+   "mem_static_mb": 6441.9,
+   "force_killed": false,
+   "when": "2026-08-13 13:30:02",
+   "note": ""
+  },
+  {
+   "apply_status": "driven through the dock",
+   "backdrop_done": 76,
+   "backdrop_ms": 1698,
+   "backdrop_surfaces": 152,
+   "backdrop_total": 76,
+   "boot_ms": 17811,
+   "build_done": 8996,
+   "build_ms": 121569,
+   "build_sampled": false,
+   "build_stalled": true,
+   "build_timed_out": false,
+   "build_total": 9022,
+   "cell": 0,
+   "census": {
+    "_MAP_CONTEXT": {
+     "instances": 0,
+     "nodes": 0,
+     "surfaces": 0,
+     "visible": true,
+     "visible_in_tree": true
+    }
+   },
+   "census_surfaces": 18500,
+   "dialogs_dismissed": 0,
+   "dialogs_seen": {},
+   "dock_controls": {
+    "mapctx_backdrop": true,
+    "mapctx_gi": true,
+    "mapctx_light": true,
+    "mapctx_maplights": true,
+    "mapctx_objects": true,
+    "mapctx_on": true,
+    "mapctx_shadows": true,
+    "mapctx_water": true,
+    "mode": 2,
+    "range": 3500.0
+   },
+   "dock_sync_ms": 649,
+   "draws_mean": 10384,
+   "draws_peak": 25074,
+   "editor_cam_stuck": 950,
+   "editor_cam_tried": 950,
+   "engine": {
+    "buffer_mb": 277.1,
+    "mem_static_mb": 6435.6,
+    "nodes": 56150,
+    "objects": 225092,
+    "orphans": 294,
+    "prims": 16086,
+    "resources": 643,
+    "texture_mb": 3783.9,
+    "vram_mb": 4672.7
+   },
+   "flight_samples": 950,
+   "foliage_shot": "user://bf6_autorun_MP_Aftermath_foliage.png",
+   "frames": 1497,
+   "godot": "4.6.3-stable (official)",
+   "headless": false,
+   "hitches33": 768,
+   "hitches50": 615,
+   "import_scan_ms": 5095,
+   "last_crumb": "",
+   "lighting": "MP_Aftermath game lighting: sun az 238\u00c2\u00b0 el 13\u00c2\u00b0, 24000 lux",
+   "low1_ms": 223.09,
+   "map": "MP_Aftermath",
+   "map_lights": "Map lights: 3874 loaded (nearest 300 m lit)",
+   "mean_ms": 46.26,
+   "mean_pos_ms": 58.5,
+   "median_ms": 36.42,
+   "median_pos_ms": 61.87,
+   "open_ms": 7222,
+   "p95_ms": 91.99,
+   "p95_pos_ms": 99.23,
+   "p99_ms": 137.23,
+   "phases": {
+    "apply: clear the old overlay": {
+     "each_ms": 9.5,
+     "n": 2,
+     "s": 0.019
+    },
+    "apply: map data": {
+     "each_ms": 36.0,
+     "n": 2,
+     "s": 0.072
+    },
+    "decals: maptile and SDK decal": {
+     "each_ms": 0.0,
+     "n": 2,
+     "s": 0.0
+    },
+    "game source: depot scope index": {
+     "each_ms": 64.0,
+     "n": 1,
+     "s": 0.064
+    },
+    "game source: geometry cache open": {
+     "each_ms": 3.0,
+     "n": 1,
+     "s": 0.003
+    },
+    "game source: mount": {
+     "each_ms": 818.0,
+     "n": 1,
+     "s": 0.818
+    },
+    "game source: partition index": {
+     "each_ms": 581.0,
+     "n": 1,
+     "s": 0.581
+    },
+    "game source: typeinfo": {
+     "each_ms": 32.0,
+     "n": 1,
+     "s": 0.032
+    },
+    "map lights: attach holder": {
+     "each_ms": 45.0,
+     "n": 2,
+     "s": 0.09
+    },
+    "panel tick: map-light culling": {
+     "each_ms": 0.04,
+     "n": 147,
+     "s": 0.006
+    },
+    "panel tick: prop cell culling": {
+     "each_ms": 0.23,
+     "n": 147,
+     "s": 0.034
+    },
+    "panel tick: total": {
+     "each_ms": 2.59,
+     "n": 147,
+     "s": 0.38
+    },
+    "props: apply_radius on every yield": {
+     "each_ms": 0.14,
+     "n": 56,
+     "s": 0.008
+    },
+    "props: create multimesh cells": {
+     "each_ms": 0.09,
+     "n": 9028,
+     "s": 0.845
+    },
+    "props: final apply_radius": {
+     "each_ms": 1.0,
+     "n": 1,
+     "s": 0.001
+    },
+    "props: load mesh (GLB parse + cache)": {
+     "each_ms": 2.92,
+     "n": 9028,
+     "s": 26.39
+    },
+    "props: mesh, from the geometry cache (of which)": {
+     "each_ms": 2.33,
+     "n": 6778,
+     "s": 15.775
+    },
+    "props: mesh, read from the install (of which)": {
+     "each_ms": 44.18,
+     "n": 228,
+     "s": 10.072
+    },
+    "props: mesh, shared in memory (of which)": {
+     "each_ms": 0.27,
+     "n": 2022,
+     "s": 0.543
+    },
+    "props: reveal the finished layer": {
+     "each_ms": 3.0,
+     "n": 1,
+     "s": 0.003
+    },
+    "props: sort the queue nearest first": {
+     "each_ms": 32.5,
+     "n": 2,
+     "s": 0.065
+    },
+    "props: waiting for the yielded frame": {
+     "each_ms": 414.25,
+     "n": 56,
+     "s": 23.198
+    },
+    "roads: place the street mesh": {
+     "each_ms": 0.0,
+     "n": 2,
+     "s": 0.0
+    },
+    "scatter: set up the vegetation kits": {
+     "each_ms": 598.0,
+     "n": 2,
+     "s": 1.196
+    },
+    "skyline: apply_radius on every yield": {
+     "each_ms": 1.0,
+     "n": 2,
+     "s": 0.002
+    },
+    "skyline: flush the fast-load sidecars": {
+     "each_ms": 0.0,
+     "n": 1,
+     "s": 0.0
+    },
+    "skyline: load mesh (game source)": {
+     "each_ms": 1.12,
+     "n": 77,
+     "s": 0.086
+    },
+    "skyline: place multimesh": {
+     "each_ms": 0.05,
+     "n": 77,
+     "s": 0.004
+    },
+    "skyline: reveal the finished layer": {
+     "each_ms": 0.0,
+     "n": 1,
+     "s": 0.0
+    },
+    "skyline: sort the queue nearest first": {
+     "each_ms": 0.0,
+     "n": 2,
+     "s": 0.0
+    },
+    "skyline: waiting for the yielded frame": {
+     "each_ms": 9125.0,
+     "n": 2,
+     "s": 18.25
+    },
+    "terrain: build the heightfield mesh": {
+     "each_ms": 116.0,
+     "n": 2,
+     "s": 0.232
+    },
+    "terrain: ground material (splat + colour map)": {
+     "each_ms": 552.5,
+     "n": 2,
+     "s": 1.105
+    },
+    "water: build the surface": {
+     "each_ms": 11.0,
+     "n": 2,
+     "s": 0.022
+    }
+   },
+   "positions": 950,
+   "probe_draws": 14708,
+   "props_built": -1,
+   "props_per_s": 301.3,
+   "radius": 1000000000.0,
+   "reused_open_scene": true,
+   "scene": "res://Levels/MP_Aftermath.tscn",
+   "scene_nodes": 33802,
+   "scene_nodes_at_open": 19304,
+   "screenshot": "user://bf6_autorun_MP_Aftermath.png",
+   "shadow_draws_mean": 294,
+   "shadow_draws_peak": 1335,
+   "started_unix": 1786647224.073,
+   "sweep": {
+    "_all_on": {
+     "draws_mean": 10486,
+     "frames": 378,
+     "median_ms": 38.45,
+     "median_pos_ms": 63.59
+    },
+    "_all_on_CAMERA_STILL": {
+     "draws_mean": 24978,
+     "frames": 238,
+     "median_ms": 73.73,
+     "median_pos_ms": 73.73
+    },
+    "_engine_floor_scene_hidden": {
+     "draws_mean": 15,
+     "engine": {
+      "buffer_mb": 2069.8,
+      "mem_static_mb": 11280.3,
+      "nodes": 67880,
+      "objects": 253502,
+      "orphans": 294,
+      "prims": 16118,
+      "resources": 899,
+      "texture_mb": 4077.9,
+      "vram_mb": 6759.5
+     },
+     "frames": 897,
+     "median_ms": 16.24,
+     "median_pos_ms": 16.57,
+     "objects_in_frame": 3132,
+     "physics_ms": 0.02,
+     "prims_in_frame": 16118,
+     "process_ms": 31.74
+    },
+    "_floor_FREED_hidden_CAMERA_STILL": {
+     "draws_mean": 16,
+     "frames": 1218,
+     "median_ms": 10.23,
+     "median_pos_ms": 10.29
+    },
+    "_floor_no_backdrop_no_objects": {
+     "draws_mean": 2565,
+     "frames": 659,
+     "median_ms": 20.08,
+     "median_pos_ms": 21.42
+    },
+    "_floor_overlay_FREED_scene_hidden": {
+     "draws_mean": 15,
+     "engine": {
+      "buffer_mb": 360.8,
+      "mem_static_mb": 6395.4,
+      "nodes": 56150,
+      "objects": 217373,
+      "orphans": 294,
+      "prims": 16058,
+      "resources": 643,
+      "texture_mb": 3783.9,
+      "vram_mb": 4756.4
+     },
+     "frames": 1161,
+     "median_ms": 11.26,
+     "median_pos_ms": 11.64,
+     "nodes_before": 67883
+    },
+    "mapctx_backdrop": {
+     "draws_mean": 10336,
+     "frames": 368,
+     "median_ms": 34.18,
+     "median_pos_ms": 65.4
+    },
+    "mapctx_gi": {
+     "draws_mean": 10229,
+     "frames": 382,
+     "median_ms": 36.72,
+     "median_pos_ms": 62.21
+    },
+    "mapctx_light": {
+     "draws_mean": 10104,
+     "frames": 393,
+     "median_ms": 27.02,
+     "median_pos_ms": 60.22
+    },
+    "mapctx_maplights": {
+     "draws_mean": 10303,
+     "frames": 399,
+     "median_ms": 35.6,
+     "median_pos_ms": 60.6
+    },
+    "mapctx_objects": {
+     "draws_mean": 2743,
+     "frames": 635,
+     "median_ms": 20.86,
+     "median_pos_ms": 22.27
+    },
+    "mapctx_shadows": {
+     "draws_mean": 10630,
+     "frames": 384,
+     "median_ms": 40.47,
+     "median_pos_ms": 59.81
+    },
+    "mapctx_water": {
+     "draws_mean": 10287,
+     "frames": 377,
+     "median_ms": 37.0,
+     "median_pos_ms": 66.27
+    }
+   },
+   "total_ms": 449234,
+   "vram_mode": 1,
+   "worst_ms": 475.09,
+   "wall_s": 452.9,
+   "vram_mb": 4672.7,
+   "texture_mb": 3783.9,
+   "mem_static_mb": 6435.6,
+   "force_killed": false,
+   "when": "2026-08-13 14:00:59",
+   "note": ""
+  },
+  {
+   "apply_status": "driven through the dock",
+   "backdrop_done": 76,
+   "backdrop_ms": 1820,
+   "backdrop_surfaces": 152,
+   "backdrop_total": 76,
+   "boot_ms": 17137,
+   "build_done": 9022,
+   "build_ms": 115653,
+   "build_sampled": false,
+   "build_stalled": false,
+   "build_timed_out": false,
+   "build_total": 9022,
+   "cell": 0,
+   "census": {
+    "_MAP_CONTEXT": {
+     "instances": 0,
+     "nodes": 0,
+     "surfaces": 0,
+     "visible": true,
+     "visible_in_tree": true
+    }
+   },
+   "census_surfaces": 18500,
+   "dialogs_dismissed": 0,
+   "dialogs_seen": {},
+   "dock_controls": {
+    "mapctx_backdrop": true,
+    "mapctx_gi": true,
+    "mapctx_light": true,
+    "mapctx_maplights": true,
+    "mapctx_objects": true,
+    "mapctx_on": true,
+    "mapctx_shadows": true,
+    "mapctx_water": true,
+    "mode": 2,
+    "range": 3500.0
+   },
+   "dock_sync_ms": 791,
+   "draws_mean": 14674,
+   "draws_peak": 25078,
+   "editor_cam_stuck": 950,
+   "editor_cam_tried": 950,
+   "engine": {
+    "buffer_mb": 277.1,
+    "mem_static_mb": 6517.6,
+    "nodes": 56153,
+    "objects": 225145,
+    "orphans": 294,
+    "prims": 16464,
+    "resources": 643,
+    "texture_mb": 3784.2,
+    "vram_mb": 4673.2
+   },
+   "engine_ms": 100.0,
+   "flight_samples": 950,
+   "foliage_shot": "user://bf6_autorun_MP_Aftermath_foliage.png",
+   "frames": 951,
+   "godot": "4.6.3-stable (official)",
+   "headless": false,
+   "hitches33": 951,
+   "hitches50": 950,
+   "import_scan_ms": 4687,
+   "last_crumb": "",
+   "lighting": "MP_Aftermath game lighting: sun az 238\u00c2\u00b0 el 13\u00c2\u00b0, 24000 lux",
+   "low1_ms": 149.64,
+   "map": "MP_Aftermath",
+   "map_lights": "Map lights: 3874 loaded (nearest 300 m lit)",
+   "mean_ms": 100.02,
+   "mean_pos_ms": 100.02,
+   "median_ms": 99.97,
+   "median_pos_ms": 99.97,
+   "open_ms": 7321,
+   "p95_ms": 101.2,
+   "p95_pos_ms": 101.2,
+   "p99_ms": 104.02,
+   "phases": {
+    "apply: clear the old overlay": {
+     "each_ms": 9.0,
+     "n": 2,
+     "s": 0.018
+    },
+    "apply: map data": {
+     "each_ms": 35.5,
+     "n": 2,
+     "s": 0.071
+    },
+    "decals: maptile and SDK decal": {
+     "each_ms": 0.0,
+     "n": 2,
+     "s": 0.0
+    },
+    "game source: depot scope index": {
+     "each_ms": 63.0,
+     "n": 1,
+     "s": 0.063
+    },
+    "game source: geometry cache open": {
+     "each_ms": 3.0,
+     "n": 1,
+     "s": 0.003
+    },
+    "game source: mount": {
+     "each_ms": 820.0,
+     "n": 1,
+     "s": 0.82
+    },
+    "game source: partition index": {
+     "each_ms": 594.0,
+     "n": 1,
+     "s": 0.594
+    },
+    "game source: typeinfo": {
+     "each_ms": 32.0,
+     "n": 1,
+     "s": 0.032
+    },
+    "map lights: attach holder": {
+     "each_ms": 43.0,
+     "n": 2,
+     "s": 0.086
+    },
+    "panel tick: map-light culling": {
+     "each_ms": 0.05,
+     "n": 133,
+     "s": 0.006
+    },
+    "panel tick: prop cell culling": {
+     "each_ms": 0.25,
+     "n": 133,
+     "s": 0.033
+    },
+    "panel tick: total": {
+     "each_ms": 2.59,
+     "n": 133,
+     "s": 0.345
+    },
+    "props: apply_radius on every yield": {
+     "each_ms": 0.24,
+     "n": 59,
+     "s": 0.014
+    },
+    "props: create multimesh cells": {
+     "each_ms": 0.1,
+     "n": 9028,
+     "s": 0.892
+    },
+    "props: final apply_radius": {
+     "each_ms": 0.0,
+     "n": 1,
+     "s": 0.0
+    },
+    "props: flush the fast-load sidecars": {
+     "each_ms": 0.0,
+     "n": 1,
+     "s": 0.0
+    },
+    "props: game source, depot parse (of which)": {
+     "each_ms": 247.0,
+     "n": 1,
+     "s": 0.247
+    },
+    "props: game source, load cached geometry": {
+     "each_ms": 2690.0,
+     "n": 1,
+     "s": 2.69
+    },
+    "props: game source, materials (depot + textures)": {
+     "each_ms": 12318.0,
+     "n": 1,
+     "s": 12.318
+    },
+    "props: game source, parse + build the ArrayMesh": {
+     "each_ms": 9525.0,
+     "n": 1,
+     "s": 9.525
+    },
+    "props: game source, read the resource (CAS)": {
+     "each_ms": 252.0,
+     "n": 1,
+     "s": 0.252
+    },
+    "props: game source, save geometry to the cache": {
+     "each_ms": 0.0,
+     "n": 1,
+     "s": 0.0
+    },
+    "props: game source, texture decode (of which)": {
+     "each_ms": 8538.0,
+     "n": 1,
+     "s": 8.538
+    },
+    "props: hand back unused cache entries": {
+     "each_ms": 78.0,
+     "n": 1,
+     "s": 0.078
+    },
+    "props: load mesh (GLB parse + cache)": {
+     "each_ms": 3.01,
+     "n": 9028,
+     "s": 27.167
+    },
+    "props: mesh, from the geometry cache (of which)": {
+     "each_ms": 2.43,
+     "n": 6778,
+     "s": 16.49
+    },
+    "props: mesh, read from the install (of which)": {
+     "each_ms": 44.44,
+     "n": 228,
+     "s": 10.133
+    },
+    "props: mesh, shared in memory (of which)": {
+     "each_ms": 0.27,
+     "n": 2022,
+     "s": 0.544
+    },
+    "props: reveal the finished layer": {
+     "each_ms": 4.0,
+     "n": 1,
+     "s": 0.004
+    },
+    "props: sort the queue nearest first": {
+     "each_ms": 33.5,
+     "n": 2,
+     "s": 0.067
+    },
+    "props: waiting for the yielded frame": {
+     "each_ms": 399.73,
+     "n": 59,
+     "s": 23.584
+    },
+    "roads: place the street mesh": {
+     "each_ms": 0.0,
+     "n": 2,
+     "s": 0.0
+    },
+    "roads: project the decals onto the props": {
+     "each_ms": 51897.0,
+     "n": 1,
+     "s": 51.897
+    },
+    "scatter: set up the vegetation kits": {
+     "each_ms": 587.0,
+     "n": 2,
+     "s": 1.174
+    },
+    "skyline: apply_radius on every yield": {
+     "each_ms": 0.0,
+     "n": 2,
+     "s": 0.0
+    },
+    "skyline: flush the fast-load sidecars": {
+     "each_ms": 0.0,
+     "n": 1,
+     "s": 0.0
+    },
+    "skyline: load mesh (game source)": {
+     "each_ms": 1.16,
+     "n": 77,
+     "s": 0.089
+    },
+    "skyline: place multimesh": {
+     "each_ms": 0.01,
+     "n": 77,
+     "s": 0.001
+    },
+    "skyline: reveal the finished layer": {
+     "each_ms": 0.0,
+     "n": 1,
+     "s": 0.0
+    },
+    "skyline: sort the queue nearest first": {
+     "each_ms": 0.5,
+     "n": 2,
+     "s": 0.001
+    },
+    "skyline: waiting for the yielded frame": {
+     "each_ms": 9180.5,
+     "n": 2,
+     "s": 18.361
+    },
+    "terrain: build the heightfield mesh": {
+     "each_ms": 116.5,
+     "n": 2,
+     "s": 0.233
+    },
+    "terrain: ground material (splat + colour map)": {
+     "each_ms": 553.5,
+     "n": 2,
+     "s": 1.107
+    },
+    "water: build the surface": {
+     "each_ms": 10.5,
+     "n": 2,
+     "s": 0.021
+    }
+   },
+   "positions": 950,
+   "probe_draws": 14711,
+   "props_built": 9022,
+   "props_per_s": 75.7,
+   "radius": 1000000000.0,
+   "reused_open_scene": true,
+   "scene": "res://Levels/MP_Aftermath.tscn",
+   "scene_nodes": 33802,
+   "scene_nodes_at_open": 19304,
+   "screenshot": "user://bf6_autorun_MP_Aftermath.png",
+   "shadow_draws_mean": 294,
+   "shadow_draws_peak": 1335,
+   "started_unix": 1786647800.178,
+   "sweep": {
+    "_all_on": {
+     "draws_mean": 14684,
+     "frames": 238,
+     "median_ms": 99.95,
+     "median_pos_ms": 99.95
+    },
+    "_all_on_CAMERA_STILL": {
+     "draws_mean": 24981,
+     "frames": 238,
+     "median_ms": 99.95,
+     "median_pos_ms": 99.95
+    },
+    "_engine_floor_scene_hidden": {
+     "draws_mean": 14,
+     "engine": {
+      "buffer_mb": 2069.8,
+      "mem_static_mb": 11233.3,
+      "nodes": 67880,
+      "objects": 253537,
+      "orphans": 294,
+      "prims": 16132,
+      "resources": 899,
+      "texture_mb": 4109.9,
+      "vram_mb": 6791.8
+     },
+     "frames": 239,
+     "median_ms": 99.94,
+     "median_pos_ms": 99.94,
+     "objects_in_frame": 3139,
+     "physics_ms": 0.03,
+     "prims_in_frame": 16132,
+     "process_ms": 27.42
+    },
+    "_floor_FREED_hidden_CAMERA_STILL": {
+     "draws_mean": 16,
+     "frames": 238,
+     "median_ms": 99.97,
+     "median_pos_ms": 99.97
+    },
+    "_floor_no_backdrop_no_objects": {
+     "draws_mean": 3251,
+     "frames": 238,
+     "median_ms": 99.96,
+     "median_pos_ms": 99.96
+    },
+    "_floor_overlay_FREED_scene_hidden": {
+     "draws_mean": 14,
+     "engine": {
+      "buffer_mb": 277.1,
+      "mem_static_mb": 6476.3,
+      "nodes": 56150,
+      "objects": 217416,
+      "orphans": 294,
+      "prims": 16106,
+      "resources": 643,
+      "texture_mb": 3783.9,
+      "vram_mb": 4672.9
+     },
+     "frames": 238,
+     "median_ms": 99.97,
+     "median_pos_ms": 99.97,
+     "nodes_before": 67880
+    },
+    "mapctx_backdrop": {
+     "draws_mean": 14591,
+     "engine_ms": 100.0,
+     "frames": 238,
+     "median_ms": 99.93,
+     "median_pos_ms": 99.93
+    },
+    "mapctx_gi": {
+     "draws_mean": 14684,
+     "engine_ms": 100.0,
+     "frames": 238,
+     "median_ms": 99.97,
+     "median_pos_ms": 99.97
+    },
+    "mapctx_light": {
+     "draws_mean": 14684,
+     "engine_ms": 100.0,
+     "frames": 238,
+     "median_ms": 99.93,
+     "median_pos_ms": 99.93
+    },
+    "mapctx_maplights": {
+     "draws_mean": 14684,
+     "engine_ms": 100.0,
+     "frames": 238,
+     "median_ms": 99.96,
+     "median_pos_ms": 99.96
+    },
+    "mapctx_objects": {
+     "draws_mean": 3344,
+     "engine_ms": 100.0,
+     "frames": 238,
+     "median_ms": 99.94,
+     "median_pos_ms": 99.94
+    },
+    "mapctx_shadows": {
+     "draws_mean": 14684,
+     "engine_ms": 100.0,
+     "frames": 238,
+     "median_ms": 99.95,
+     "median_pos_ms": 99.95
+    },
+    "mapctx_water": {
+     "draws_mean": 14684,
+     "engine_ms": 100.0,
+     "frames": 238,
+     "median_ms": 99.91,
+     "median_pos_ms": 99.91
+    }
+   },
+   "total_ms": 620427,
+   "vram_mode": 1,
+   "worst_ms": 220.33,
+   "wall_s": 624.0,
+   "vram_mb": 4673.2,
+   "texture_mb": 3784.2,
+   "mem_static_mb": 6517.6,
+   "force_killed": false,
+   "when": "2026-08-13 14:13:27",
+   "note": ""
+  },
+  {
+   "apply_status": "driven through the dock",
+   "backdrop_done": 76,
+   "backdrop_ms": 1801,
+   "backdrop_surfaces": 152,
+   "backdrop_total": 76,
+   "boot_ms": 17435,
+   "build_done": 9004,
+   "build_ms": 123248,
+   "build_sampled": false,
+   "build_stalled": true,
+   "build_timed_out": false,
+   "build_total": 9022,
+   "cell": 0,
+   "census": {
+    "_MAP_CONTEXT": {
+     "instances": 0,
+     "nodes": 0,
+     "surfaces": 0,
+     "visible": true,
+     "visible_in_tree": true
+    }
+   },
+   "census_surfaces": 18500,
+   "dialogs_dismissed": 0,
+   "dialogs_seen": {},
+   "dock_controls": {
+    "mapctx_backdrop": true,
+    "mapctx_gi": true,
+    "mapctx_light": true,
+    "mapctx_maplights": true,
+    "mapctx_objects": true,
+    "mapctx_on": true,
+    "mapctx_shadows": true,
+    "mapctx_water": true,
+    "mode": 2,
+    "range": 3500.0
+   },
+   "dock_sync_ms": 662,
+   "draws_mean": 10509,
+   "draws_peak": 25080,
+   "editor_cam_stuck": 950,
+   "editor_cam_tried": 950,
+   "engine": {
+    "buffer_mb": 277.1,
+    "mem_static_mb": 6430.8,
+    "nodes": 56150,
+    "objects": 225100,
+    "orphans": 294,
+    "prims": 16144,
+    "resources": 643,
+    "texture_mb": 3783.9,
+    "vram_mb": 4672.7
+   },
+   "engine_ms": 41.67,
+   "flight_samples": 950,
+   "foliage_shot": "user://bf6_autorun_MP_Aftermath_foliage.png",
+   "frames": 1485,
+   "godot": "4.6.3-stable (official)",
+   "headless": false,
+   "hitches33": 788,
+   "hitches50": 611,
+   "import_scan_ms": 4766,
+   "last_crumb": "",
+   "lighting": "MP_Aftermath game lighting: sun az 238\u00c2\u00b0 el 13\u00c2\u00b0, 24000 lux",
+   "low1_ms": 222.64,
+   "map": "MP_Aftermath",
+   "map_lights": "Map lights: 3874 loaded (nearest 300 m lit)",
+   "mean_ms": 47.08,
+   "mean_pos_ms": 58.91,
+   "median_ms": 38.17,
+   "median_pos_ms": 62.44,
+   "open_ms": 7291,
+   "p95_ms": 92.52,
+   "p95_pos_ms": 98.6,
+   "p99_ms": 137.83,
+   "phases": {
+    "apply: clear the old overlay": {
+     "each_ms": 9.5,
+     "n": 2,
+     "s": 0.019
+    },
+    "apply: map data": {
+     "each_ms": 36.5,
+     "n": 2,
+     "s": 0.073
+    },
+    "decals: maptile and SDK decal": {
+     "each_ms": 0.0,
+     "n": 2,
+     "s": 0.0
+    },
+    "game source: depot scope index": {
+     "each_ms": 64.0,
+     "n": 1,
+     "s": 0.064
+    },
+    "game source: geometry cache open": {
+     "each_ms": 3.0,
+     "n": 1,
+     "s": 0.003
+    },
+    "game source: mount": {
+     "each_ms": 833.0,
+     "n": 1,
+     "s": 0.833
+    },
+    "game source: partition index": {
+     "each_ms": 604.0,
+     "n": 1,
+     "s": 0.604
+    },
+    "game source: typeinfo": {
+     "each_ms": 30.0,
+     "n": 1,
+     "s": 0.03
+    },
+    "map lights: attach holder": {
+     "each_ms": 43.0,
+     "n": 2,
+     "s": 0.086
+    },
+    "panel tick: map-light culling": {
+     "each_ms": 0.05,
+     "n": 149,
+     "s": 0.008
+    },
+    "panel tick: prop cell culling": {
+     "each_ms": 0.21,
+     "n": 149,
+     "s": 0.031
+    },
+    "panel tick: total": {
+     "each_ms": 2.56,
+     "n": 149,
+     "s": 0.381
+    },
+    "props: apply_radius on every yield": {
+     "each_ms": 0.21,
+     "n": 58,
+     "s": 0.012
+    },
+    "props: create multimesh cells": {
+     "each_ms": 0.08,
+     "n": 9027,
+     "s": 0.76
+    },
+    "props: final apply_radius": {
+     "each_ms": 0.0,
+     "n": 1,
+     "s": 0.0
+    },
+    "props: load mesh (GLB parse + cache)": {
+     "each_ms": 3.02,
+     "n": 9027,
+     "s": 27.299
+    },
+    "props: mesh, from the geometry cache (of which)": {
+     "each_ms": 2.44,
+     "n": 6778,
+     "s": 16.524
+    },
+    "props: mesh, read from the install (of which)": {
+     "each_ms": 44.87,
+     "n": 228,
+     "s": 10.23
+    },
+    "props: mesh, shared in memory (of which)": {
+     "each_ms": 0.27,
+     "n": 2021,
+     "s": 0.545
+    },
+    "props: reveal the finished layer": {
+     "each_ms": 4.0,
+     "n": 1,
+     "s": 0.004
+    },
+    "props: sort the queue nearest first": {
+     "each_ms": 33.0,
+     "n": 2,
+     "s": 0.066
+    },
+    "props: waiting for the yielded frame": {
+     "each_ms": 406.12,
+     "n": 58,
+     "s": 23.555
+    },
+    "roads: place the street mesh": {
+     "each_ms": 0.0,
+     "n": 2,
+     "s": 0.0
+    },
+    "scatter: set up the vegetation kits": {
+     "each_ms": 596.0,
+     "n": 2,
+     "s": 1.192
+    },
+    "skyline: apply_radius on every yield": {
+     "each_ms": 0.0,
+     "n": 2,
+     "s": 0.0
+    },
+    "skyline: flush the fast-load sidecars": {
+     "each_ms": 0.0,
+     "n": 1,
+     "s": 0.0
+    },
+    "skyline: load mesh (game source)": {
+     "each_ms": 1.09,
+     "n": 77,
+     "s": 0.084
+    },
+    "skyline: place multimesh": {
+     "each_ms": 0.01,
+     "n": 77,
+     "s": 0.001
+    },
+    "skyline: reveal the finished layer": {
+     "each_ms": 0.0,
+     "n": 1,
+     "s": 0.0
+    },
+    "skyline: sort the queue nearest first": {
+     "each_ms": 0.0,
+     "n": 2,
+     "s": 0.0
+    },
+    "skyline: waiting for the yielded frame": {
+     "each_ms": 9192.5,
+     "n": 2,
+     "s": 18.385
+    },
+    "terrain: build the heightfield mesh": {
+     "each_ms": 116.5,
+     "n": 2,
+     "s": 0.233
+    },
+    "terrain: ground material (splat + colour map)": {
+     "each_ms": 568.5,
+     "n": 2,
+     "s": 1.137
+    },
+    "water: build the surface": {
+     "each_ms": 11.0,
+     "n": 2,
+     "s": 0.022
+    }
+   },
+   "positions": 950,
+   "probe_draws": 14710,
+   "props_built": -1,
+   "props_per_s": 288.9,
+   "radius": 1000000000.0,
+   "reused_open_scene": true,
+   "scene": "res://Levels/MP_Aftermath.tscn",
+   "scene_nodes": 33802,
+   "scene_nodes_at_open": 19304,
+   "screenshot": "user://bf6_autorun_MP_Aftermath.png",
+   "shadow_draws_mean": 293,
+   "shadow_draws_peak": 1325,
+   "started_unix": 1786648633.098,
+   "sweep": {
+    "_all_on": {
+     "draws_mean": 10391,
+     "frames": 375,
+     "median_ms": 34.42,
+     "median_pos_ms": 63.77
+    },
+    "_all_on_CAMERA_STILL": {
+     "draws_mean": 24981,
+     "frames": 238,
+     "median_ms": 74.26,
+     "median_pos_ms": 74.26
+    },
+    "_engine_floor_scene_hidden": {
+     "draws_mean": 14,
+     "engine": {
+      "buffer_mb": 2069.8,
+      "mem_static_mb": 11202.5,
+      "nodes": 67880,
+      "objects": 253512,
+      "orphans": 294,
+      "prims": 16114,
+      "resources": 899,
+      "texture_mb": 4077.9,
+      "vram_mb": 6759.5
+     },
+     "frames": 892,
+     "median_ms": 16.27,
+     "median_pos_ms": 16.63,
+     "objects_in_frame": 3130,
+     "physics_ms": 0.02,
+     "prims_in_frame": 16114,
+     "process_ms": 31.47
+    },
+    "_floor_FREED_hidden_CAMERA_STILL": {
+     "draws_mean": 15,
+     "frames": 1237,
+     "median_ms": 10.16,
+     "median_pos_ms": 10.22
+    },
+    "_floor_no_backdrop_no_objects": {
+     "draws_mean": 2497,
+     "frames": 688,
+     "median_ms": 19.2,
+     "median_pos_ms": 21.69
+    },
+    "_floor_overlay_FREED_scene_hidden": {
+     "draws_mean": 14,
+     "engine": {
+      "buffer_mb": 360.8,
+      "mem_static_mb": 6390.5,
+      "nodes": 56150,
+      "objects": 217380,
+      "orphans": 294,
+      "prims": 16084,
+      "resources": 643,
+      "texture_mb": 3783.9,
+      "vram_mb": 4756.3
+     },
+     "frames": 1161,
+     "median_ms": 11.27,
+     "median_pos_ms": 11.65,
+     "nodes_before": 67880
+    },
+    "mapctx_backdrop": {
+     "draws_mean": 10249,
+     "engine_ms": 35.71,
+     "frames": 378,
+     "median_ms": 33.94,
+     "median_pos_ms": 65.24
+    },
+    "mapctx_gi": {
+     "draws_mean": 10564,
+     "engine_ms": 47.62,
+     "frames": 370,
+     "median_ms": 34.85,
+     "median_pos_ms": 62.15
+    },
+    "mapctx_light": {
+     "draws_mean": 9979,
+     "engine_ms": 32.26,
+     "frames": 410,
+     "median_ms": 28.27,
+     "median_pos_ms": 61.95
+    },
+    "mapctx_maplights": {
+     "draws_mean": 9654,
+     "engine_ms": 34.48,
+     "frames": 407,
+     "median_ms": 26.95,
+     "median_pos_ms": 64.06
+    },
+    "mapctx_objects": {
+     "draws_mean": 2764,
+     "engine_ms": 21.74,
+     "frames": 623,
+     "median_ms": 20.39,
+     "median_pos_ms": 21.72
+    },
+    "mapctx_shadows": {
+     "draws_mean": 10722,
+     "engine_ms": 45.45,
+     "frames": 372,
+     "median_ms": 40.88,
+     "median_pos_ms": 62.62
+    },
+    "mapctx_water": {
+     "draws_mean": 10253,
+     "engine_ms": 47.62,
+     "frames": 384,
+     "median_ms": 39.02,
+     "median_pos_ms": 64.77
+    }
+   },
+   "total_ms": 451680,
+   "vram_mode": 1,
+   "worst_ms": 476.59,
+   "wall_s": 455.2,
+   "vram_mb": 4672.7,
+   "texture_mb": 3783.9,
+   "mem_static_mb": 6430.8,
+   "force_killed": false,
+   "when": "2026-08-13 14:24:30",
+   "note": ""
+  },
+  {
+   "apply_status": "driven through the dock",
+   "backdrop_done": 76,
+   "backdrop_ms": 1725,
+   "backdrop_surfaces": 152,
+   "backdrop_total": 76,
+   "boot_ms": 17218,
+   "build_done": 9022,
+   "build_ms": 117136,
+   "build_sampled": false,
+   "build_stalled": false,
+   "build_timed_out": false,
+   "build_total": 9022,
+   "cell": 0,
+   "census": {
+    "_MAP_CONTEXT": {
+     "instances": 0,
+     "nodes": 0,
+     "surfaces": 0,
+     "visible": true,
+     "visible_in_tree": true
+    }
+   },
+   "census_surfaces": 18500,
+   "dialogs_dismissed": 0,
+   "dialogs_seen": {},
+   "dock_controls": {
+    "mapctx_backdrop": true,
+    "mapctx_gi": true,
+    "mapctx_light": true,
+    "mapctx_maplights": true,
+    "mapctx_objects": true,
+    "mapctx_on": true,
+    "mapctx_shadows": true,
+    "mapctx_water": true,
+    "mode": 2,
+    "range": 3500.0
+   },
+   "dock_sync_ms": 0,
+   "draws_mean": 10488,
+   "draws_peak": 25082,
+   "editor_cam_stuck": 950,
+   "editor_cam_tried": 950,
+   "engine": {
+    "buffer_mb": 277.1,
+    "mem_static_mb": 6442.4,
+    "nodes": 56150,
+    "objects": 225098,
+    "orphans": 294,
+    "prims": 16148,
+    "resources": 643,
+    "texture_mb": 3783.9,
+    "vram_mb": 4672.7
+   },
+   "engine_ms": 40.0,
+   "flight_samples": 950,
+   "foliage_shot": "user://bf6_autorun_MP_Aftermath_foliage.png",
+   "frames": 1484,
+   "godot": "4.6.3-stable (official)",
+   "headless": false,
+   "hitches33": 780,
+   "hitches50": 606,
+   "import_scan_ms": 4650,
+   "last_crumb": "",
+   "lighting": "MP_Aftermath game lighting: sun az 238\u00c2\u00b0 el 13\u00c2\u00b0, 24000 lux",
+   "low1_ms": 119.81,
+   "map": "MP_Aftermath",
+   "map_lights": "Map lights: 3874 loaded (nearest 300 m lit)",
+   "mean_ms": 43.77,
+   "mean_pos_ms": 53.9,
+   "median_ms": 37.47,
+   "median_pos_ms": 62.46,
+   "open_ms": 7377,
+   "p95_ms": 75.91,
+   "p95_pos_ms": 77.5,
+   "p99_ms": 87.5,
+   "phases": {
+    "apply: clear the old overlay": {
+     "each_ms": 9.5,
+     "n": 2,
+     "s": 0.019
+    },
+    "apply: map data": {
+     "each_ms": 36.5,
+     "n": 2,
+     "s": 0.073
+    },
+    "decals: maptile and SDK decal": {
+     "each_ms": 0.0,
+     "n": 2,
+     "s": 0.0
+    },
+    "game source: depot scope index": {
+     "each_ms": 64.0,
+     "n": 1,
+     "s": 0.064
+    },
+    "game source: geometry cache open": {
+     "each_ms": 3.0,
+     "n": 1,
+     "s": 0.003
+    },
+    "game source: mount": {
+     "each_ms": 837.0,
+     "n": 1,
+     "s": 0.837
+    },
+    "game source: partition index": {
+     "each_ms": 595.0,
+     "n": 1,
+     "s": 0.595
+    },
+    "game source: typeinfo": {
+     "each_ms": 31.0,
+     "n": 1,
+     "s": 0.031
+    },
+    "map lights: attach holder": {
+     "each_ms": 45.0,
+     "n": 2,
+     "s": 0.09
+    },
+    "panel tick: map-light culling": {
+     "each_ms": 0.04,
+     "n": 138,
+     "s": 0.006
+    },
+    "panel tick: prop cell culling": {
+     "each_ms": 0.22,
+     "n": 138,
+     "s": 0.03
+    },
+    "panel tick: total": {
+     "each_ms": 2.59,
+     "n": 138,
+     "s": 0.357
+    },
+    "props: apply_radius on every yield": {
+     "each_ms": 0.28,
+     "n": 57,
+     "s": 0.016
+    },
+    "props: create multimesh cells": {
+     "each_ms": 0.1,
+     "n": 9026,
+     "s": 0.895
+    },
+    "props: final apply_radius": {
+     "each_ms": 1.0,
+     "n": 1,
+     "s": 0.001
+    },
+    "props: flush the fast-load sidecars": {
+     "each_ms": 0.0,
+     "n": 1,
+     "s": 0.0
+    },
+    "props: game source, depot parse (of which)": {
+     "each_ms": 252.0,
+     "n": 1,
+     "s": 0.252
+    },
+    "props: game source, load cached geometry": {
+     "each_ms": 2666.0,
+     "n": 1,
+     "s": 2.666
+    },
+    "props: game source, materials (depot + textures)": {
+     "each_ms": 11145.0,
+     "n": 1,
+     "s": 11.145
+    },
+    "props: game source, parse + build the ArrayMesh": {
+     "each_ms": 9574.0,
+     "n": 1,
+     "s": 9.574
+    },
+    "props: game source, read the resource (CAS)": {
+     "each_ms": 192.0,
+     "n": 1,
+     "s": 0.192
+    },
+    "props: game source, save geometry to the cache": {
+     "each_ms": 0.0,
+     "n": 1,
+     "s": 0.0
+    },
+    "props: game source, texture decode (of which)": {
+     "each_ms": 8602.0,
+     "n": 1,
+     "s": 8.602
+    },
+    "props: hand back unused cache entries": {
+     "each_ms": 78.0,
+     "n": 1,
+     "s": 0.078
+    },
+    "props: load mesh (GLB parse + cache)": {
+     "each_ms": 2.88,
+     "n": 9026,
+     "s": 25.952
+    },
+    "props: mesh, from the geometry cache (of which)": {
+     "each_ms": 2.26,
+     "n": 6778,
+     "s": 15.35
+    },
+    "props: mesh, read from the install (of which)": {
+     "each_ms": 44.25,
+     "n": 228,
+     "s": 10.088
+    },
+    "props: mesh, shared in memory (of which)": {
+     "each_ms": 0.25,
+     "n": 2020,
+     "s": 0.514
+    },
+    "props: reveal the finished layer": {
+     "each_ms": 3.0,
+     "n": 1,
+     "s": 0.003
+    },
+    "props: sort the queue nearest first": {
+     "each_ms": 35.5,
+     "n": 2,
+     "s": 0.071
+    },
+    "props: waiting for the yielded frame": {
+     "each_ms": 413.37,
+     "n": 57,
+     "s": 23.562
+    },
+    "roads: place the street mesh": {
+     "each_ms": 0.0,
+     "n": 2,
+     "s": 0.0
+    },
+    "roads: project the decals onto the props": {
+     "each_ms": 55169.0,
+     "n": 1,
+     "s": 55.169
+    },
+    "scatter: set up the vegetation kits": {
+     "each_ms": 591.5,
+     "n": 2,
+     "s": 1.183
+    },
+    "skyline: apply_radius on every yield": {
+     "each_ms": 1.0,
+     "n": 2,
+     "s": 0.002
+    },
+    "skyline: flush the fast-load sidecars": {
+     "each_ms": 0.0,
+     "n": 1,
+     "s": 0.0
+    },
+    "skyline: load mesh (game source)": {
+     "each_ms": 1.12,
+     "n": 77,
+     "s": 0.086
+    },
+    "skyline: place multimesh": {
+     "each_ms": 0.04,
+     "n": 77,
+     "s": 0.003
+    },
+    "skyline: reveal the finished layer": {
+     "each_ms": 0.0,
+     "n": 1,
+     "s": 0.0
+    },
+    "skyline: sort the queue nearest first": {
+     "each_ms": 0.5,
+     "n": 2,
+     "s": 0.001
+    },
+    "skyline: waiting for the yielded frame": {
+     "each_ms": 9219.0,
+     "n": 2,
+     "s": 18.438
+    },
+    "terrain: build the heightfield mesh": {
+     "each_ms": 130.0,
+     "n": 2,
+     "s": 0.26
+    },
+    "terrain: ground material (splat + colour map)": {
+     "each_ms": 564.0,
+     "n": 2,
+     "s": 1.128
+    },
+    "water: build the surface": {
+     "each_ms": 10.5,
+     "n": 2,
+     "s": 0.021
+    }
+   },
+   "positions": 950,
+   "probe_draws": 14710,
+   "props_built": 9022,
+   "props_per_s": 70.3,
+   "radius": 1000000000.0,
+   "reused_open_scene": true,
+   "scene": "res://Levels/MP_Aftermath.tscn",
+   "scene_nodes": 33802,
+   "scene_nodes_at_open": 19304,
+   "screenshot": "user://bf6_autorun_MP_Aftermath.png",
+   "shadow_draws_mean": 296,
+   "shadow_draws_peak": 1335,
+   "started_unix": 1786649162.153,
+   "sweep": {
+    "_all_on": {
+     "draws_mean": 10395,
+     "frames": 397,
+     "median_ms": 39.7,
+     "median_pos_ms": 62.25
+    },
+    "_all_on_CAMERA_STILL": {
+     "draws_mean": 24980,
+     "frames": 238,
+     "median_ms": 74.01,
+     "median_pos_ms": 74.01
+    },
+    "_engine_floor_scene_hidden": {
+     "draws_mean": 15,
+     "engine": {
+      "buffer_mb": 2069.8,
+      "mem_static_mb": 11285.8,
+      "nodes": 67880,
+      "objects": 253507,
+      "orphans": 294,
+      "prims": 16118,
+      "resources": 899,
+      "texture_mb": 4077.9,
+      "vram_mb": 6759.5
+     },
+     "frames": 746,
+     "median_ms": 17.31,
+     "median_pos_ms": 17.2,
+     "objects_in_frame": 3132,
+     "physics_ms": 0.02,
+     "prims_in_frame": 16118,
+     "process_ms": 22.98
+    },
+    "_floor_FREED_hidden_CAMERA_STILL": {
+     "draws_mean": 16,
+     "frames": 1232,
+     "median_ms": 10.25,
+     "median_pos_ms": 10.3
+    },
+    "_floor_no_backdrop_no_objects": {
+     "draws_mean": 2619,
+     "frames": 644,
+     "median_ms": 21.03,
+     "median_pos_ms": 21.98
+    },
+    "_floor_overlay_FREED_scene_hidden": {
+     "draws_mean": 15,
+     "engine": {
+      "buffer_mb": 360.8,
+      "mem_static_mb": 6402.1,
+      "nodes": 56150,
+      "objects": 217378,
+      "orphans": 294,
+      "prims": 16088,
+      "resources": 643,
+      "texture_mb": 3783.9,
+      "vram_mb": 4756.3
+     },
+     "frames": 1173,
+     "median_ms": 11.24,
+     "median_pos_ms": 11.62,
+     "nodes_before": 67880
+    },
+    "mapctx_backdrop": {
+     "draws_mean": 10295,
+     "engine_ms": 45.45,
+     "frames": 373,
+     "median_ms": 37.4,
+     "median_pos_ms": 66.15
+    },
+    "mapctx_gi": {
+     "draws_mean": 10345,
+     "engine_ms": 41.67,
+     "frames": 373,
+     "median_ms": 33.02,
+     "median_pos_ms": 64.77
+    },
+    "mapctx_light": {
+     "draws_mean": 10160,
+     "engine_ms": 43.48,
+     "frames": 385,
+     "median_ms": 31.18,
+     "median_pos_ms": 62.51
+    },
+    "mapctx_maplights": {
+     "draws_mean": 10254,
+     "engine_ms": 41.67,
+     "frames": 388,
+     "median_ms": 32.81,
+     "median_pos_ms": 65.91
+    },
+    "mapctx_objects": {
+     "draws_mean": 2710,
+     "engine_ms": 21.28,
+     "frames": 640,
+     "median_ms": 21.24,
+     "median_pos_ms": 22.62
+    },
+    "mapctx_shadows": {
+     "draws_mean": 10161,
+     "engine_ms": 40.0,
+     "frames": 388,
+     "median_ms": 34.84,
+     "median_pos_ms": 63.31
+    },
+    "mapctx_water": {
+     "draws_mean": 10457,
+     "engine_ms": 45.45,
+     "frames": 375,
+     "median_ms": 38.56,
+     "median_pos_ms": 62.71
+    }
+   },
+   "total_ms": 440758,
+   "vram_mode": 1,
+   "worst_ms": 217.37,
+   "wall_s": 444.3,
+   "vram_mb": 4672.7,
+   "texture_mb": 3783.9,
+   "mem_static_mb": 6442.4,
+   "force_killed": false,
+   "when": "2026-08-13 14:33:09",
+   "note": ""
+  },
+  {
+   "apply_status": "driven through the dock",
+   "backdrop_done": 76,
+   "backdrop_ms": 1818,
+   "backdrop_surfaces": 152,
+   "backdrop_total": 76,
+   "boot_ms": 7488,
+   "build_done": 9022,
+   "build_ms": 100875,
+   "build_sampled": false,
+   "build_stalled": false,
+   "build_timed_out": false,
+   "build_total": 9022,
+   "cell": 0,
+   "census": {
+    "_MAP_CONTEXT": {
+     "instances": 0,
+     "nodes": 0,
+     "surfaces": 0,
+     "visible": true,
+     "visible_in_tree": true
+    }
+   },
+   "census_surfaces": 18500,
+   "dialogs_dismissed": 0,
+   "dialogs_seen": {},
+   "dock_controls": {
+    "mapctx_backdrop": true,
+    "mapctx_gi": true,
+    "mapctx_light": true,
+    "mapctx_maplights": true,
+    "mapctx_objects": true,
+    "mapctx_on": true,
+    "mapctx_shadows": true,
+    "mapctx_water": true,
+    "mode": 2,
+    "range": 3500.0
+   },
+   "dock_sync_ms": 930,
+   "draws_mean": 10461,
+   "draws_peak": 25079,
+   "editor_cam_stuck": 950,
+   "editor_cam_tried": 950,
+   "engine": {
+    "buffer_mb": 277.1,
+    "mem_static_mb": 6312.1,
+    "nodes": 55745,
+    "objects": 211537,
+    "orphans": 294,
+    "prims": 16044,
+    "resources": 611,
+    "texture_mb": 1742.4,
+    "vram_mb": 2581.1
+   },
+   "engine_ms": 40.0,
+   "flight_samples": 950,
+   "foliage_shot": "user://bf6_autorun_MP_Aftermath_foliage.png",
+   "frames": 1483,
+   "godot": "4.6.3-stable (official)",
+   "headless": false,
+   "hitches33": 768,
+   "hitches50": 606,
+   "import_scan_ms": 4942,
+   "last_crumb": "",
+   "lighting": "MP_Aftermath game lighting: sun az 238\u00c2\u00b0 el 13\u00c2\u00b0, 24000 lux",
+   "low1_ms": 124.16,
+   "map": "MP_Aftermath",
+   "map_lights": "Map lights: 3874 loaded (nearest 300 m lit)",
+   "mean_ms": 43.45,
+   "mean_pos_ms": 53.6,
+   "median_ms": 36.81,
+   "median_pos_ms": 61.82,
+   "open_ms": 7603,
+   "p95_ms": 75.06,
+   "p95_pos_ms": 77.25,
+   "p99_ms": 82.7,
+   "phases": {
+    "apply: clear the old overlay": {
+     "each_ms": 9.5,
+     "n": 2,
+     "s": 0.019
+    },
+    "apply: map data": {
+     "each_ms": 34.5,
+     "n": 2,
+     "s": 0.069
+    },
+    "decals: maptile and SDK decal": {
+     "each_ms": 0.0,
+     "n": 2,
+     "s": 0.0
+    },
+    "game source: depot scope index": {
+     "each_ms": 67.0,
+     "n": 1,
+     "s": 0.067
+    },
+    "game source: geometry cache open": {
+     "each_ms": 2.0,
+     "n": 1,
+     "s": 0.002
+    },
+    "game source: mount": {
+     "each_ms": 825.0,
+     "n": 1,
+     "s": 0.825
+    },
+    "game source: partition index": {
+     "each_ms": 564.0,
+     "n": 1,
+     "s": 0.564
+    },
+    "game source: typeinfo": {
+     "each_ms": 32.0,
+     "n": 1,
+     "s": 0.032
+    },
+    "map lights: attach holder": {
+     "each_ms": 43.0,
+     "n": 2,
+     "s": 0.086
+    },
+    "panel tick: map-light culling": {
+     "each_ms": 0.07,
+     "n": 101,
+     "s": 0.007
+    },
+    "panel tick: prop cell culling": {
+     "each_ms": 0.22,
+     "n": 101,
+     "s": 0.022
+    },
+    "panel tick: total": {
+     "each_ms": 2.67,
+     "n": 101,
+     "s": 0.27
+    },
+    "props: apply_radius on every yield": {
+     "each_ms": 0.14,
+     "n": 58,
+     "s": 0.008
+    },
+    "props: create multimesh cells": {
+     "each_ms": 0.11,
+     "n": 9027,
+     "s": 1.009
+    },
+    "props: final apply_radius": {
+     "each_ms": 1.0,
+     "n": 1,
+     "s": 0.001
+    },
+    "props: flush the fast-load sidecars": {
+     "each_ms": 0.0,
+     "n": 1,
+     "s": 0.0
+    },
+    "props: game source, depot parse (of which)": {
+     "each_ms": 256.0,
+     "n": 1,
+     "s": 0.256
+    },
+    "props: game source, load cached geometry": {
+     "each_ms": 2675.0,
+     "n": 1,
+     "s": 2.675
+    },
+    "props: game source, materials (depot + textures)": {
+     "each_ms": 12227.0,
+     "n": 1,
+     "s": 12.227
+    },
+    "props: game source, parse + build the ArrayMesh": {
+     "each_ms": 9584.0,
+     "n": 1,
+     "s": 9.584
+    },
+    "props: game source, read the resource (CAS)": {
+     "each_ms": 196.0,
+     "n": 1,
+     "s": 0.196
+    },
+    "props: game source, save geometry to the cache": {
+     "each_ms": 0.0,
+     "n": 1,
+     "s": 0.0
+    },
+    "props: game source, texture decode (of which)": {
+     "each_ms": 8606.0,
+     "n": 1,
+     "s": 8.606
+    },
+    "props: hand back unused cache entries": {
+     "each_ms": 80.0,
+     "n": 1,
+     "s": 0.08
+    },
+    "props: load mesh (GLB parse + cache)": {
+     "each_ms": 2.99,
+     "n": 9027,
+     "s": 26.996
+    },
+    "props: mesh, from the geometry cache (of which)": {
+     "each_ms": 2.41,
+     "n": 6778,
+     "s": 16.312
+    },
+    "props: mesh, read from the install (of which)": {
+     "each_ms": 44.59,
+     "n": 228,
+     "s": 10.167
+    },
+    "props: mesh, shared in memory (of which)": {
+     "each_ms": 0.26,
+     "n": 2021,
+     "s": 0.517
+    },
+    "props: reveal the finished layer": {
+     "each_ms": 3.0,
+     "n": 1,
+     "s": 0.003
+    },
+    "props: sort the queue nearest first": {
+     "each_ms": 34.5,
+     "n": 2,
+     "s": 0.069
+    },
+    "props: waiting for the yielded frame": {
+     "each_ms": 417.36,
+     "n": 58,
+     "s": 24.207
+    },
+    "roads: place the street mesh": {
+     "each_ms": 0.0,
+     "n": 2,
+     "s": 0.0
+    },
+    "roads: project the decals onto the props": {
+     "each_ms": 36248.0,
+     "n": 1,
+     "s": 36.248
+    },
+    "scatter: set up the vegetation kits": {
+     "each_ms": 595.0,
+     "n": 2,
+     "s": 1.19
+    },
+    "skyline: apply_radius on every yield": {
+     "each_ms": 0.5,
+     "n": 2,
+     "s": 0.001
+    },
+    "skyline: flush the fast-load sidecars": {
+     "each_ms": 0.0,
+     "n": 1,
+     "s": 0.0
+    },
+    "skyline: load mesh (game source)": {
+     "each_ms": 1.16,
+     "n": 77,
+     "s": 0.089
+    },
+    "skyline: place multimesh": {
+     "each_ms": 0.04,
+     "n": 77,
+     "s": 0.003
+    },
+    "skyline: reveal the finished layer": {
+     "each_ms": 0.0,
+     "n": 1,
+     "s": 0.0
+    },
+    "skyline: sort the queue nearest first": {
+     "each_ms": 1.0,
+     "n": 2,
+     "s": 0.002
+    },
+    "skyline: waiting for the yielded frame": {
+     "each_ms": 9505.0,
+     "n": 2,
+     "s": 19.01
+    },
+    "terrain: build the heightfield mesh": {
+     "each_ms": 117.5,
+     "n": 2,
+     "s": 0.235
+    },
+    "terrain: ground material (splat + colour map)": {
+     "each_ms": 578.0,
+     "n": 2,
+     "s": 1.156
+    },
+    "water: build the surface": {
+     "each_ms": 10.5,
+     "n": 2,
+     "s": 0.021
+    }
+   },
+   "positions": 950,
+   "probe_draws": 14710,
+   "props_built": 9022,
+   "props_per_s": 94.0,
+   "radius": 1000000000.0,
+   "reused_open_scene": true,
+   "scene": "res://Levels/MP_Aftermath.tscn",
+   "scene_nodes": 33802,
+   "scene_nodes_at_open": 19304,
+   "screenshot": "user://bf6_autorun_MP_Aftermath.png",
+   "shadow_draws_mean": 295,
+   "shadow_draws_peak": 1335,
+   "started_unix": 1786649686.682,
+   "sweep": {
+    "_all_on": {
+     "draws_mean": 10327,
+     "frames": 387,
+     "median_ms": 33.1,
+     "median_pos_ms": 62.21
+    },
+    "_all_on_CAMERA_STILL": {
+     "draws_mean": 24978,
+     "frames": 238,
+     "median_ms": 74.01,
+     "median_pos_ms": 74.01
+    },
+    "_engine_floor_scene_hidden": {
+     "draws_mean": 15,
+     "engine": {
+      "buffer_mb": 2069.8,
+      "mem_static_mb": 11121.6,
+      "nodes": 67475,
+      "objects": 239949,
+      "orphans": 294,
+      "prims": 16014,
+      "resources": 867,
+      "texture_mb": 2036.4,
+      "vram_mb": 4668.0
+     },
+     "frames": 818,
+     "median_ms": 16.7,
+     "median_pos_ms": 16.91,
+     "objects_in_frame": 3108,
+     "physics_ms": 0.02,
+     "prims_in_frame": 16014,
+     "process_ms": 25.31
+    },
+    "_floor_FREED_hidden_CAMERA_STILL": {
+     "draws_mean": 16,
+     "frames": 1230,
+     "median_ms": 10.35,
+     "median_pos_ms": 10.41
+    },
+    "_floor_no_backdrop_no_objects": {
+     "draws_mean": 2641,
+     "frames": 619,
+     "median_ms": 20.74,
+     "median_pos_ms": 22.15
+    },
+    "_floor_overlay_FREED_scene_hidden": {
+     "draws_mean": 15,
+     "engine": {
+      "buffer_mb": 360.8,
+      "mem_static_mb": 6271.9,
+      "nodes": 55745,
+      "objects": 203821,
+      "orphans": 294,
+      "prims": 15984,
+      "resources": 611,
+      "texture_mb": 1742.4,
+      "vram_mb": 2664.8
+     },
+     "frames": 1161,
+     "median_ms": 11.39,
+     "median_pos_ms": 11.72,
+     "nodes_before": 67475
+    },
+    "mapctx_backdrop": {
+     "draws_mean": 10206,
+     "engine_ms": 47.62,
+     "frames": 380,
+     "median_ms": 33.51,
+     "median_pos_ms": 64.45
+    },
+    "mapctx_gi": {
+     "draws_mean": 10486,
+     "engine_ms": 41.67,
+     "frames": 372,
+     "median_ms": 31.46,
+     "median_pos_ms": 61.26
+    },
+    "mapctx_light": {
+     "draws_mean": 10168,
+     "engine_ms": 41.67,
+     "frames": 403,
+     "median_ms": 33.62,
+     "median_pos_ms": 60.2
+    },
+    "mapctx_maplights": {
+     "draws_mean": 10244,
+     "engine_ms": 35.71,
+     "frames": 406,
+     "median_ms": 35.34,
+     "median_pos_ms": 58.2
+    },
+    "mapctx_objects": {
+     "draws_mean": 2698,
+     "engine_ms": 20.83,
+     "frames": 648,
+     "median_ms": 20.8,
+     "median_pos_ms": 21.91
+    },
+    "mapctx_shadows": {
+     "draws_mean": 10088,
+     "engine_ms": 31.25,
+     "frames": 397,
+     "median_ms": 33.94,
+     "median_pos_ms": 64.92
+    },
+    "mapctx_water": {
+     "draws_mean": 10379,
+     "engine_ms": 37.04,
+     "frames": 385,
+     "median_ms": 34.44,
+     "median_pos_ms": 61.53
+    }
+   },
+   "total_ms": 414994,
+   "vram_mode": 1,
+   "worst_ms": 226.34,
+   "wall_s": 418.4,
+   "vram_mb": 2581.1,
+   "texture_mb": 1742.4,
+   "mem_static_mb": 6312.1,
+   "force_killed": false,
+   "when": "2026-08-13 14:41:37",
+   "note": ""
   }
  ]
 }
