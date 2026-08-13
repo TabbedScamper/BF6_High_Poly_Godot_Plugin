@@ -318,12 +318,26 @@ func read_lod(d: PackedByteArray, lod := 0, chunk := PackedByteArray(),
 			var o := i * pos_comps
 			verts[i] = Vector3(pos[o], pos[o + 1], pos[o + 2])
 
+		# WHICH CHANNEL IS THE PRIMARY. Ported from the pipeline's fleet-proven
+		# member_mesh.bake_uv_channel: the first channel BEYOND UV0 whose
+		# coordinates fit 0..1 (0.05 tolerance) and are not degenerate is the
+		# per-object bake unwrap the detail art is authored against; UV0 is
+		# the tiling/weathering channel. Always taking channel 0 put the
+		# delivery van's exterior and interior sheets on the tiling channel -
+		# both channels fit 0..1 there but they are DIFFERENT unwraps
+		# (measured max divergence 1.01), which read as "right textures,
+		# wrong UVs" on a user marker. Car BODIES are untouched: their second
+		# channel tiles, so the rule falls back to 0 exactly as before. The
+		# whole prop fleet rendered through this rule and passed eyeball
+		# review on the GLB pipeline, which is the measurement this port
+		# stands on.
 		var uvs := PackedVector2Array()
 		if uv_sets.is_empty():
 			uvs.resize(vcount)
 		else:
-			var src: PackedFloat32Array = uv_sets[0][0]
-			var c: int = uv_sets[0][1]
+			var upick := _bake_uv_channel(uv_sets, vcount)
+			var src: PackedFloat32Array = uv_sets[upick][0]
+			var c: int = uv_sets[upick][1]
 			uvs.resize(vcount)
 			for i in range(vcount):
 				uvs[i] = Vector2(src[i * c], src[i * c + 1])
@@ -594,6 +608,34 @@ func _read_indices(buf: PackedByteArray, vsize: int, isize: int, idx32: bool,
 # VertexOffset, so a stream's base is the sum of every earlier stream's stride
 # times the vertex count — NOT the section stride, which is the sum of all of
 # them. Getting this wrong reads plausible-looking garbage rather than failing.
+# The per-object bake channel, the pipeline's member_mesh.bake_uv_channel
+# ported byte for byte in behaviour: first channel beyond UV0 fitting
+# -0.05..1.05 on both axes with a span over 0.05 wins; anything else keeps
+# UV0. The tolerance and the degenerate-span guard are the pipeline's own
+# numbers - the whole prop fleet rendered through them.
+static func _bake_uv_channel(uv_sets: Array, vcount: int) -> int:
+	for k in range(1, uv_sets.size()):
+		var src: PackedFloat32Array = (uv_sets[k] as Array)[0]
+		var c: int = (uv_sets[k] as Array)[1]
+		if src.size() < vcount * c:
+			continue
+		var lo_u := 1e20
+		var hi_u := -1e20
+		var lo_v := 1e20
+		var hi_v := -1e20
+		for i in range(vcount):
+			var u := src[i * c]
+			var v := src[i * c + 1]
+			lo_u = minf(lo_u, u)
+			hi_u = maxf(hi_u, u)
+			lo_v = minf(lo_v, v)
+			hi_v = maxf(hi_v, v)
+		if lo_u >= -0.05 and hi_u <= 1.05 and lo_v >= -0.05 and hi_v <= 1.05 \
+				and maxf(hi_u - lo_u, hi_v - lo_v) > 0.05:
+			return k
+	return 0
+
+
 func _read_attr(buf: PackedByteArray, base: int, count: int, el: Array,
 		streams: Array) -> Array:
 	var fmt := int(el[1])
