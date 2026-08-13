@@ -24,6 +24,17 @@ func _ok(what: String) -> void:
 	print("ok    %s" % what)
 
 
+# Can a DIFFERENT process read this file right now? cmd's `type` fails with
+# "being used by another process" when a handle denies sharing, which is
+# precisely the condition being tested.
+func _external_can_read(res_path: String) -> bool:
+	var abs := ProjectSettings.globalize_path(res_path)
+	var out := []
+	var code := OS.execute("cmd.exe", ["/c", "type", abs.replace("/", "\\")],
+		out, true)
+	return code == 0
+
+
 func _init() -> void:
 	print("=== event stream + state snapshot ===")
 
@@ -31,12 +42,37 @@ func _init() -> void:
 	Log.event("test.second", {"n": 2, "s": "two"}, Log.Level.WARN, "cid:7")
 	Log.warn("a warning that should route itself into the stream")
 
-	# THE LOAD-BEARING ASSERTION: read it back NOW, with the writer's handle
-	# still open and no clean exit anywhere in sight.
+	# THE LOAD-BEARING ASSERTION, and the first version of it was worthless.
+	# Reading the file back with FileAccess proves only that THIS process can
+	# read a file this process wrote; a process can always read through its
+	# own handle. The claim being made is that an OUTSIDE tool can read the
+	# stream while the editor runs, and on Windows a held handle denies
+	# exactly that: hp.py got a flat PermissionError against a live editor
+	# while this test was passing. So the check now shells out.
+	if not _external_can_read(Log.EVENTS_PATH):
+		_fail("another process cannot read events.jsonl. That is the entire "
+			+ "point of the stream, and it means a handle is being held.")
+	else:
+		_ok("a separate process can read the stream mid-session")
+
+	# A NEGATIVE CHECK THAT DOES NOT WORK HERE, reported rather than asserted.
+	# Holding a handle the way the first implementation did SHOULD deny an
+	# outside reader, and against the real editor it does: python got
+	# PermissionError on this exact file while the editor held it. In this
+	# sandbox the same sequence is readable anyway, so whatever makes the
+	# difference is not reproduced here and a failing assertion would be
+	# noise. Printed so the day it starts denying, that is visible.
+	var held := FileAccess.open(Log.EVENTS_PATH, FileAccess.READ_WRITE)
+	if held != null:
+		print("note  with a handle held, an outside read %s here (the real "
+			% ("still succeeds" if _external_can_read(Log.EVENTS_PATH)
+				else "is denied")
+			+ "editor denies it, which is why nothing holds a handle now)")
+		held.close()
+
 	var f := FileAccess.open(Log.EVENTS_PATH, FileAccess.READ)
 	if f == null:
-		_fail("events.jsonl is not readable while the writer holds it open "
-			+ "(this is the whole reason the stream exists)")
+		_fail("events.jsonl is not readable at all")
 		quit(1)
 		return
 	var raw := f.get_as_text()

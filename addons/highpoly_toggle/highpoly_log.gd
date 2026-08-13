@@ -205,9 +205,17 @@ static func _staleness() -> String:
 # (law C11). Everything this plugin knows was therefore unreadable until the
 # editor was quit, and every diagnosis cost a quit-and-paste round trip.
 #
-# The dodge is the open mode: READ_WRITE opens the real path in place (no
-# `.tmp`), so a line flushed here is on disk and readable by an outside tool
-# immediately. `tools/hp.py log` tails it.
+# The dodge is TWO things, and the second was learned the hard way. READ_WRITE
+# opens the real path in place, with no `.tmp` rename - but a handle HELD OPEN
+# by the editor cannot be read by another process at all on Windows: hp.py got
+# a flat PermissionError against a live editor. The first version of this
+# passed its test only because the test read the file from inside the same
+# process, which proves nothing about cross-process access.
+#
+# So every line is opened, appended and CLOSED. No handle is ever held. That
+# costs one file open per event, which is why this stream stays coarse:
+# phases, jobs, picks, swaps, failures. Per-section decisions would make the
+# cost real and go to the build's own sidecar instead.
 #
 # It lives in this class rather than a new one deliberately: it holds mutable
 # statics, and law C4 says those must sit behind an existing `class_name` - a
@@ -222,7 +230,7 @@ const EVENTS_PATH := "user://highpoly/events.jsonl"
 const EVENTS_PREV := "user://highpoly/events-prev.jsonl"
 const STATE_PATH := "user://highpoly/state.json"
 
-static var _ev_fh: FileAccess = null
+static var _ev_ready := false
 static var _ev_seq := 0
 static var _ev_sess := ""
 static var _ev_t0 := 0
@@ -244,7 +252,7 @@ static func session_id() -> String:
 
 
 static func _ev_open() -> void:
-	if _ev_fh != null or _ev_failed:
+	if _ev_ready or _ev_failed:
 		return
 	_ev_t0 = Time.get_ticks_msec()
 	DirAccess.make_dir_recursive_absolute(EVENTS_DIR)
@@ -254,18 +262,15 @@ static func _ev_open() -> void:
 		if FileAccess.file_exists(EVENTS_PREV):
 			DirAccess.remove_absolute(EVENTS_PREV)
 		DirAccess.rename_absolute(EVENTS_PATH, EVENTS_PREV)
-	# Create it in WRITE (which is where the .tmp dance happens) and close, so
-	# that READ_WRITE below has a real file to open in place.
+	# Create it once in WRITE (which is where the .tmp dance happens) and
+	# close immediately, so every later append has a real file to open in
+	# place and nothing ever holds it.
 	var mk := FileAccess.open(EVENTS_PATH, FileAccess.WRITE)
 	if mk == null:
 		_ev_failed = true
 		return
 	mk.close()
-	_ev_fh = FileAccess.open(EVENTS_PATH, FileAccess.READ_WRITE)
-	if _ev_fh == null:
-		_ev_failed = true
-		return
-	_ev_fh.seek_end()
+	_ev_ready = true
 	event("session.start", {
 		"plugin": plugin_version(),
 		"godot": Engine.get_version_info().get("string", ""),
@@ -279,9 +284,9 @@ static func _ev_open() -> void:
 #   d   the payload, whatever this event is actually reporting
 static func event(ev: String, d: Dictionary = {}, lvl := Level.INFO,
 		cid := "") -> void:
-	if _ev_fh == null:
+	if not _ev_ready:
 		_ev_open()
-		if _ev_fh == null:
+		if not _ev_ready:
 			return
 	_ev_seq += 1
 	var row := {
@@ -294,11 +299,16 @@ static func event(ev: String, d: Dictionary = {}, lvl := Level.INFO,
 		"cid": cid,
 		"d": d,
 	}
-	# Flushed per line on purpose: a stream that is only readable after a clean
-	# exit is the exact thing this replaces. The rate is bounded by keeping
-	# per-item events out of here.
-	_ev_fh.store_line(JSON.stringify(row))
-	_ev_fh.flush()
+	# Opened, appended and closed per line on purpose. Flushing a held handle
+	# is not enough on Windows: while the editor holds the file, another
+	# process reading it gets a PermissionError and the stream is exactly as
+	# useless as the session log it replaces.
+	var f := FileAccess.open(EVENTS_PATH, FileAccess.READ_WRITE)
+	if f == null:
+		return
+	f.seek_end()
+	f.store_line(JSON.stringify(row))
+	f.close()
 
 
 # The "where am I" snapshot, rewritten in place whenever the dock has news.
@@ -332,10 +342,8 @@ static func write_state(d: Dictionary) -> void:
 
 
 static func events_close() -> void:
-	if _ev_fh != null:
+	if _ev_ready:
 		event("session.end", {"errors": _errors, "warns": _warnings})
-		_ev_fh.flush()
-		_ev_fh = null
 
 
 static func lines() -> Array: return _lines
