@@ -866,7 +866,7 @@ static var n_blend_named := 0
 
 # 8: surfaces now carry ARRAY_TEX_UV2 where the mesh has a genuine second
 # unwrap, so a cached epoch-7 mesh would serve geometry without it forever.
-const GEOM_EPOCH := 9
+const GEOM_EPOCH := 10
 
 # A FUNCTION, not read as a constant from outside, and that is load-bearing.
 # GDScript folds a constant into the caller at parse time, so a caller that read

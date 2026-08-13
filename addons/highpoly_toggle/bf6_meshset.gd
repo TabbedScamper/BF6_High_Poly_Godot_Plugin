@@ -336,11 +336,41 @@ func read_lod(d: PackedByteArray, lod := 0, chunk := PackedByteArray(),
 		# whole prop fleet rendered through this rule and passed eyeball
 		# review on the GLB pipeline, which is the measurement this port
 		# stands on.
+		# ...AND THE CHOICE IS PER MATERIAL FAMILY, the way the GLB pipeline
+		# actually made it, not one blanket rule. A user's debug-recipe on the
+		# ambulance proved the blanket wrong in both directions at once:
+		#
+		#   Unique sections keep UV0. The prop's own unique atlas is authored
+		#   there (pipeline: "the atlas stays ONLY where its own name tokens
+		#   appear in the material"); the bake rule moved the ambulance's
+		#   unique art to channel 1 and scrambled it. On meshes where the two
+		#   channels are identical (the delivery van) either answer draws the
+		#   same, which is why this stayed invisible for a day.
+		#
+		#   CarPaint sections take the WRAP channel: the first whose V fits
+		#   0..1 with u left free - vehicle shells mirror left/right so u
+		#   legitimately spans ~2-3 and texture repeat handles it, which is
+		#   exactly why the bake rule (both axes 0..1) can never find it.
+		#   Measured: the police SUV's wrap unwrap is channel 0 (v 0.01..1.00,
+		#   the old body-maps-through-UV0 result) while the ambulance's is
+		#   channel 1 (ch0 v dips to -0.18; ch1 v 0.01..1.00 and wins the
+		#   art-alignment score 46.9% to 32.5%) - per MESH, so it must be
+		#   derived, never assumed.
+		#
+		# Everything else keeps the bake rule that fixed the delivery van's
+		# exterior and interior detail.
 		var uvs := PackedVector2Array()
 		if uv_sets.is_empty():
 			uvs.resize(vcount)
 		else:
-			var upick := _bake_uv_channel(uv_sets, vcount)
+			var mlow := str(s["material"]).to_lower()
+			var upick := 0
+			if mlow.contains("unique"):
+				upick = 0
+			elif mlow.contains("carpaint"):
+				upick = _wrap_uv_channel(uv_sets, vcount)
+			else:
+				upick = _bake_uv_channel(uv_sets, vcount)
 			var src: PackedFloat32Array = uv_sets[upick][0]
 			var c: int = uv_sets[upick][1]
 			uvs.resize(vcount)
@@ -628,6 +658,29 @@ func _read_indices(buf: PackedByteArray, vsize: int, isize: int, idx32: bool,
 # -0.05..1.05 on both axes with a span over 0.05 wins; anything else keeps
 # UV0. The tolerance and the degenerate-span guard are the pipeline's own
 # numbers - the whole prop fleet rendered through them.
+# The livery/wrap channel for a CarPaint section: the first channel whose V
+# fits 0..1, u left free - the shell mirrors left/right so u wraps, and the
+# both-axes bake test can never find this unwrap. Validated on the police
+# SUV (channel 0), the ambulance (channel 1, user-confirmed via the object
+# debugger) and the delivery van's placeholder wrap (no channel fits, falls
+# back to 0, harmless because a placeholder samples as one colour anyway).
+static func _wrap_uv_channel(uv_sets: Array, vcount: int) -> int:
+	for k in range(uv_sets.size()):
+		var src: PackedFloat32Array = (uv_sets[k] as Array)[0]
+		var c: int = (uv_sets[k] as Array)[1]
+		if src.size() < vcount * c:
+			continue
+		var lo := 1e20
+		var hi := -1e20
+		for i in range(vcount):
+			var v := src[i * c + 1]
+			lo = minf(lo, v)
+			hi = maxf(hi, v)
+		if lo >= -0.05 and hi <= 1.05 and hi - lo > 0.05:
+			return k
+	return 0
+
+
 static func _bake_uv_channel(uv_sets: Array, vcount: int) -> int:
 	for k in range(1, uv_sets.size()):
 		var src: PackedFloat32Array = (uv_sets[k] as Array)[0]
