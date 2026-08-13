@@ -5910,6 +5910,22 @@ func debug_sections(res_name: String) -> Array:
 	return secs if secs is Array else []
 
 
+# The debugger's view of the twin-pair rule: which part indices this prop
+# hides at spawn. Same table, same rule, same cache as the build's own
+# filter - the debugger only needs it separately because it draws raw
+# sections the build never emits.
+func debug_hidden_parts(res_name: String) -> Dictionary:
+	if src == null:
+		return {}
+	var d := src.get_res(res_name)
+	if d.is_empty():
+		return {}
+	var info := _ms.parse(d)
+	if info.is_empty():
+		return {}
+	return _hidden_parts(res_name, info)
+
+
 func describe(am: Mesh) -> Dictionary:
 	var out := {"found": false, "mesh": "", "scope": "", "variation": 0,
 		"surfaces": []}

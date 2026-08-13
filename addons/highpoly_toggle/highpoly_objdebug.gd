@@ -38,6 +38,16 @@ var secs: Array = []               # debug_sections rows (one per part)
 var ov: Array = []                 # per-section knob state
 var cur := 0                       # section shown in the panel
 var solo := false
+# THE DESTRUCTION OVERLAYS. A destructible prop carries its damaged look
+# INSIDE the intact mesh - the deflated tyre twin, the foam that only shows
+# once a panel breaks - tagged per vertex and hidden at spawn by the
+# twin-pair rule. The BUILD filters those out; this debugger draws raw
+# sections, so without the same filter every prop arrives wearing its own
+# wreck (a user found the van's destroyed wheel twins and its foam this
+# way). Off by default to match the game; the toggle exists because seeing
+# the destruction state IS one of the things this window is for.
+var show_destroyed := false
+var hidden_parts: Dictionary = {}  # part index -> true (hidden at spawn)
 
 var _hidden: Array = []            # [[node, was_visible]] for the isolation
 var _inst_mmi: MultiMeshInstance3D = null
@@ -93,6 +103,9 @@ func open(p_gs, p_root: Node, focus: Dictionary) -> String:
 	HighpolyLog.info("Object Debug: %d part(s) re-read with all UV channels"
 		% secs.size())
 	HighpolyLog.flush()
+	show_destroyed = false
+	hidden_parts = gs.debug_hidden_parts(res_name) \
+		if gs.has_method("debug_hidden_parts") else {}
 	ov = []
 	for i in range(secs.size()):
 		ov.append(_fresh_ov(i))
@@ -170,11 +183,18 @@ func _spawn_preview(xf: Transform3D) -> void:
 	_rebuild_mesh()
 
 
+# section index -> surface index in the preview mesh. The two drift apart as
+# soon as anything is skipped (solo, or a part that is ALL destruction and
+# filters to nothing), and the material fast path must write to the surface,
+# not the section.
+var _surf_of: Dictionary = {}
+
 func _rebuild_mesh() -> void:
 	if preview == null:
 		return
 	var am := ArrayMesh.new()
 	var mats: Array = []
+	_surf_of = {}
 	for i in range(secs.size()):
 		if solo and i != cur:
 			continue
@@ -194,7 +214,27 @@ func _rebuild_mesh() -> void:
 			arr[Mesh.ARRAY_TEX_UV] = all[pick]
 		else:
 			arr[Mesh.ARRAY_TEX_UV] = s.get("uvs", PackedVector2Array())
-		arr[Mesh.ARRAY_INDEX] = s["indices"]
+		# The same spawn filter the build applies: a triangle whose first
+		# vertex sits on a hidden-at-spawn part is a destruction overlay and
+		# stays out unless the toggle asks for the destroyed look. A part
+		# that filters down to nothing (the foam) drops out entirely.
+		var idx: PackedInt32Array = s["indices"]
+		var pv: PackedInt32Array = s.get("parts", PackedInt32Array())
+		if not show_destroyed and not hidden_parts.is_empty() \
+				and not pv.is_empty():
+			var keep := PackedInt32Array()
+			for k in range(0, idx.size() - 2, 3):
+				var v0 := int(idx[k])
+				if v0 < pv.size() and hidden_parts.has(int(pv[v0])):
+					continue
+				keep.push_back(idx[k])
+				keep.push_back(idx[k + 1])
+				keep.push_back(idx[k + 2])
+			idx = keep
+		if idx.is_empty():
+			continue
+		arr[Mesh.ARRAY_INDEX] = idx
+		_surf_of[i] = am.get_surface_count()
 		am.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr)
 		mats.append(_material_for_section(i))
 	preview.mesh = am
@@ -362,6 +402,15 @@ func _build_window() -> void:
 		_rebuild_mesh())
 	v.add_child(_solo_chk)
 
+	if not hidden_parts.is_empty():
+		var dchk := CheckBox.new()
+		dchk.text = "Show destruction parts"
+		dchk.tooltip_text = "This prop carries its damaged look inside the intact mesh - deflated wheel twins, foam, cracked panes - hidden at spawn by the game's own part table. Off shows the prop as it stands in the world; on shows the destroyed-state geometry too."
+		dchk.toggled.connect(func(onn: bool):
+			show_destroyed = onn
+			_rebuild_mesh())
+		v.add_child(dchk)
+
 	_info = RichTextLabel.new()
 	_info.fit_content = true
 	_info.selection_enabled = true
@@ -453,12 +502,13 @@ func _knob(key: String, val) -> void:
 	if key == "uv":
 		_rebuild_mesh()
 	else:
-		# material-only change: re-dress the one surface in place
-		var si := cur
-		if solo:
-			si = 0
+		# material-only change: re-dress the one SURFACE in place. Sections
+		# and surfaces drift apart when anything is skipped, so the mapping
+		# recorded at build time answers, and a section that filtered to
+		# nothing has nothing to dress.
+		var si := int(_surf_of.get(cur, -1))
 		var am := preview.mesh as ArrayMesh
-		if am != null and si < am.get_surface_count():
+		if si >= 0 and am != null and si < am.get_surface_count():
 			am.surface_set_material(si, _material_for_section(cur))
 
 
@@ -475,6 +525,19 @@ func _sync_controls() -> void:
 		(s["verts"] as PackedVector3Array).size(),
 		(s.get("uv_all", []) as Array).size(),
 		"  + tc4 unwrap" if str(s.get("uv2_src", "")) == "tc4" else ""])
+	# how much of this part the game hides until it breaks
+	var pvv: PackedInt32Array = s.get("parts", PackedInt32Array())
+	if not hidden_parts.is_empty() and not pvv.is_empty():
+		var hidn := 0
+		for p in pvv:
+			if hidden_parts.has(int(p)):
+				hidn += 1
+		if hidn == pvv.size():
+			lines.append("destruction: this WHOLE part is a destroyed-state "
+				+ "overlay, shown only when the prop breaks")
+		elif hidn > 0:
+			lines.append("destruction: %d of %d verts are destroyed-state "
+				% [hidn, pvv.size()] + "twins, hidden at spawn")
 	var ks: Array = tex.keys()
 	ks.sort()
 	for k in ks:
