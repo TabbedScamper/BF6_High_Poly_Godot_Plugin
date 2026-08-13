@@ -5910,6 +5910,25 @@ func debug_sections(res_name: String) -> Array:
 	return secs if secs is Array else []
 
 
+# THE LIVERY SHELF: every wrap sheet shipped in this prop's own folder. A
+# vehicle's liveries are separate wrap textures chosen per placement through
+# an ObjectVariation - the police SUV's folder carries the police wrap, the
+# sedan's the taxi wrap - so the record the picked instance resolves through
+# only ever names ONE of them. The debugger lists the folder's whole shelf
+# so a user can try the others on.
+func debug_livery_options(res_name: String) -> PackedStringArray:
+	var out := PackedStringArray()
+	if src == null:
+		return out
+	var dir := res_name.get_base_dir().to_lower() + "/"
+	for n in src.snap_res().keys():
+		var s := str(n)
+		if s.to_lower().begins_with(dir) and s.get_file().to_lower().contains("wrap"):
+			out.append(s)
+	out.sort()
+	return out
+
+
 # The debugger's view of the twin-pair rule: which part indices this prop
 # hides at spawn. Same table, same rule, same cache as the build's own
 # filter - the debugger only needs it separately because it draws raw

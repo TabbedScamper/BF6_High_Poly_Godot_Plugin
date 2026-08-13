@@ -48,6 +48,8 @@ var solo := false
 # the destruction state IS one of the things this window is for.
 var show_destroyed := false
 var hidden_parts: Dictionary = {}  # part index -> true (hidden at spawn)
+var livery_opts := PackedStringArray()  # wrap sheets in the prop's folder
+var _livery_pick: OptionButton = null
 
 var _hidden: Array = []            # [[node, was_visible]] for the isolation
 var _inst_mmi: MultiMeshInstance3D = null
@@ -106,6 +108,8 @@ func open(p_gs, p_root: Node, focus: Dictionary) -> String:
 	show_destroyed = false
 	hidden_parts = gs.debug_hidden_parts(res_name) \
 		if gs.has_method("debug_hidden_parts") else {}
+	livery_opts = gs.debug_livery_options(res_name) \
+		if gs.has_method("debug_livery_options") else PackedStringArray()
 	ov = []
 	for i in range(secs.size()):
 		ov.append(_fresh_ov(i))
@@ -137,6 +141,9 @@ func close() -> void:
 	if win != null and is_instance_valid(win):
 		win.queue_free()
 	win = null
+	# freed with the window; a stale pointer here would be touched by the
+	# next open's control sync when THAT prop ships no liveries
+	_livery_pick = null
 	secs = []
 	ov = []
 
@@ -148,6 +155,7 @@ func close() -> void:
 func _fresh_ov(i: int) -> Dictionary:
 	var s: Dictionary = secs[i]
 	return {"uv": _build_channel(s), "albedo": "",       # "" = the record's own
+		"albedo_name": "",   # a livery res name; "-" = paint only, no sheet
 		"cutout": -1,                                    # -1 = as the build decides
 		"cut": 0.5, "tint": Color.WHITE, "rough": -1.0, "emis": -1.0,
 		"touched": false}
@@ -257,14 +265,24 @@ func _material_for_section(i: int) -> Material:
 	# every slider maps one to one onto something visible.
 	var tex := _record_textures(i)
 	var m2 := StandardMaterial3D.new()
-	var alb: String = str(o["albedo"])
-	if alb == "":
-		for k in ["basecolor", "basecolor_veg"]:
-			if tex.has(k):
-				alb = k
-				break
-	if alb != "" and tex.has(alb):
-		m2.albedo_texture = gs._texture_for(tex[alb], false)
+	# A LIVERY BY NAME beats the record's slots: the livery shelf lists wrap
+	# sheets from the prop's folder that this instance's record never binds
+	# (the sedan's taxi wrap on a plain sedan), so they are fetched by res
+	# name rather than through a slot guid. "-" means paint only - no sheet.
+	var lname := str(o.get("albedo_name", ""))
+	if lname == "-":
+		pass
+	elif lname != "":
+		m2.albedo_texture = gs._texture_for_asset(lname)
+	else:
+		var alb: String = str(o["albedo"])
+		if alb == "":
+			for k in ["basecolor", "basecolor_veg"]:
+				if tex.has(k):
+					alb = k
+					break
+		if alb != "" and tex.has(alb):
+			m2.albedo_texture = gs._texture_for(tex[alb], false)
 	if tex.has("normal"):
 		var nt = gs._texture_for(tex["normal"], true)
 		if nt != null:
@@ -423,6 +441,36 @@ func _build_window() -> void:
 		_knob("uv", _uv_pick.get_item_id(ix)))
 	v.add_child(_uv_pick)
 
+	# THE LIVERY SHELF, vehicle-wide: every wrap sheet in the prop's own
+	# folder, whether or not this instance's variation binds it - trying the
+	# taxi wrap on a plain sedan is exactly the kind of question this window
+	# exists to answer. Applies to every CarPaint part at once, because a
+	# livery covers the shell, not one panel.
+	if not livery_opts.is_empty():
+		v.add_child(_row_label(v, "Livery (all paint parts)"))
+		_livery_pick = OptionButton.new()
+		_livery_pick.add_item("(as built)")
+		_livery_pick.add_item("(paint only, no sheet)")
+		for w in livery_opts:
+			_livery_pick.add_item(w.get_file())
+		_livery_pick.item_selected.connect(func(ix: int):
+			if _syncing:
+				return
+			var nm := ""
+			if ix == 1:
+				nm = "-"
+			elif ix >= 2:
+				nm = livery_opts[ix - 2]
+			for i in range(secs.size()):
+				if str((secs[i] as Dictionary).get("material", "")) \
+						.to_lower().contains("carpaint"):
+					var oo: Dictionary = ov[i]
+					oo["albedo_name"] = nm
+					oo["touched"] = true
+					ov[i] = oo
+			_rebuild_mesh())
+		v.add_child(_livery_pick)
+
 	v.add_child(_row_label(v, "Albedo from slot"))
 	_alb_pick = OptionButton.new()
 	_alb_pick.item_selected.connect(func(ix: int):
@@ -566,6 +614,16 @@ func _sync_controls() -> void:
 			sel = n
 		n += 1
 	_alb_pick.select(sel)
+	if _livery_pick != null:
+		var ln := str(o.get("albedo_name", ""))
+		var li := 0
+		if ln == "-":
+			li = 1
+		else:
+			for w in range(livery_opts.size()):
+				if livery_opts[w] == ln:
+					li = w + 2
+		_livery_pick.select(li)
 	_cut_chk.set_pressed_no_signal(int(o["cutout"]) == 1)
 	_cut_sl.set_value_no_signal(float(o["cut"]))
 	_tint_btn.color = o["tint"]
@@ -590,7 +648,8 @@ func _report() -> String:
 		out.append("part %d  %s  state %016x" % [i,
 			str(s.get("material", "")).get_file(), int(s.get("state_key", 0))])
 		var base := _fresh_ov(i)
-		for k in ["uv", "albedo", "cutout", "cut", "tint", "rough", "emis"]:
+		for k in ["uv", "albedo", "albedo_name", "cutout", "cut", "tint",
+				"rough", "emis"]:
 			if str(o[k]) != str(base[k]):
 				out.append("   %s: %s -> %s" % [k, str(base[k]), str(o[k])])
 	if not any:
