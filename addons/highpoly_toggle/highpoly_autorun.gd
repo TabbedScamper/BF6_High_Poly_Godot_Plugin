@@ -749,14 +749,28 @@ static func run(host: Node, dock: Node, mapctx: Node) -> void:
 			# last and the reference row below is taken before it.
 			var mo = host.get("mapctx_on")
 			if mo != null and mo is Button and (mo as Button).button_pressed \
-					and root is Node3D:
+					and root is Node3D and mapctx != null:
 				var vis2: bool = (root as Node3D).visible
 				var before_nodes := int(_engine().get("nodes", 0))
-				(mo as Button).button_pressed = false        # full teardown
-				# Teardown frees thousands of nodes. Give it real time rather
-				# than a frame count that happens to have been enough once.
-				for i in range(180):
+				# NOT the chip. Its handler calls set_context_shown(), which
+				# the code itself calls a "fast show/hide of the built
+				# terrain/backdrop/water layers" - it hides and frees nothing.
+				# Toggling it measured 67,784 nodes before AND after, so the
+				# first version of this row compared the hidden state against
+				# itself and read a 0.1 ms difference as a result.
+				#
+				# apply(root, false, ...) is the real teardown: it bumps the
+				# build generation, stops the in-flight builder and frees
+				# _MAP_CONTEXT.
+				mapctx.apply(root, false, false, true, false, false)
+				# Freeing tens of thousands of nodes is not instant, and the
+				# node counter is the only honest signal that it happened. Wait
+				# for the count to actually fall rather than for a frame budget
+				# that was enough once; the row reports what it saw either way.
+				for i in range(600):
 					await _tree.process_frame
+					if int(_engine().get("nodes", 0)) < before_nodes - 1000:
+						break
 				(root as Node3D).visible = false
 				for i in range(30):
 					await _tree.process_frame
