@@ -7244,23 +7244,63 @@ func material_for(state_key: int, scope: String, var_hash := 0,
 	# "does this record USE it". Absent flag = old behaviour, so maps or
 	# shader families that never write it are untouched.
 	var mask = null
+	var mask_src := ""
 	var gate := _alpha_gate(consts)
 	if gate:
 		mask = _mask_for(slots.get("alpha"))
+		if mask != null:
+			mask_src = "alpha slot"
+		else:
+			# THE GATE IS THE GAME TELLING US THIS SECTION IS ALPHA TESTED. If the
+			# slot it binds is filler, the answer is that the mask is somewhere
+			# else, not that the section is solid. It is in the normal's alpha.
+			var nrm_guid = slots.get("normal_vt", slots.get("normal"))
+			mask = _mask_from_normal_alpha(nrm_guid)
+			if mask != null:
+				mask_src = "normal alpha"
+				tex_stats["masks_from_normal"] = int(
+					tex_stats.get("masks_from_normal", 0)) + 1
 	# Material-side decisions ride the trace at surface -1: this resolves per
 	# material STATE, not per surface, and the gate is the single most
 	# expensive thing to re-derive by hand (it needs the depot record AND a
 	# content test on the bound sheet).
 	if slots.has("alpha"):
+		var gin := {"const": "0x%08x" % C_ALPHA_TEST, "v": (1 if gate else 0),
+			"bound": str(slots.get("alpha", ""))}
+		var gwhy := ""
+		if not gate:
+			gwhy = "gate off, so the bound alpha sheet is foreign filler"
+		elif mask_src == "alpha slot":
+			gwhy = "gate on, the bound sheet reads as a real mask"
+		elif mask_src == "normal alpha":
+			gwhy = ("gate on and the bound sheet is filler, so the cutout came "
+				+ "from the normal map's alpha")
+		else:
+			gwhy = ("gate on, but neither the bound sheet nor the normal's "
+				+ "alpha reads as a mask")
+		# The measured shape rides along whenever the normal's alpha was
+		# consulted, so a prop that should have been cut out and was not can be
+		# answered from the trace instead of another rebuild.
+		if gate and mask_src != "alpha slot":
+			var nrm_guid = slots.get("normal_vt", slots.get("normal"))
+			var na = walk.gi.get(str(nrm_guid)) if nrm_guid != null else null
+			if na != null:
+				var nn := str(na).to_lower()
+				if nn.ends_with(".ebx"):
+					nn = nn.substr(0, nn.length() - 4)
+				gin["normal"] = nn
+				var sh = _nmask_shape.get(nn)
+				if sh is Dictionary:
+					gin["normal_alpha"] = {
+						"clear": snappedf(float(sh["clear"]), 0.001),
+						"opaque": snappedf(float(sh["opaque"]), 0.001),
+						"below_half": snappedf(float(sh["below_half"]), 0.001),
+					}
 		decide(_dress_name, state_key, var_hash, -1, str(look), [{
 			"r": "alpha.gate",
-			"in": {"const": "0x%08x" % C_ALPHA_TEST, "v": (1 if gate else 0),
-				"bound": str(slots.get("alpha", ""))},
-			"out": ("mask" if mask != null else "opaque"),
-			"why": ("gate on, " + ("the bound sheet reads as a real mask"
-					if mask != null else "the bound sheet is not a mask")
-				if gate else
-				"gate off, so the bound alpha sheet is foreign filler"),
+			"in": gin,
+			"out": ("mask:" + mask_src if mask != null else "opaque"),
+			"why": gwhy,
 		}])
 	if mask != null:
 		var fm = _foliage_material(slots, mask, _cut_for(slots.get("alpha")), tint)
@@ -7955,6 +7995,9 @@ func _look_key(slots: Dictionary, tint = null) -> String:
 # decompressions rather than one per section.
 var _mask_cache := {}                  # texture asset name -> bool
 var _mask_cut := {}                    # texture asset name -> scissor threshold
+# The SECOND place a cutout can live: the alpha channel of the normal map.
+# name -> ImageTexture (the lifted mask) or false (checked, not a mask).
+var _nmask_cache := {}
 var _foliage_shader: Shader = null
 var _prop_tint_shader: Shader = null
 
@@ -8124,6 +8167,101 @@ static func mask_shape(img: Image) -> Dictionary:
 		return {}
 	return {"clear": float(clear) / float(n), "opaque": float(opaque) / float(n),
 		"below_half": float(below) / float(n), "max": hi, "samples": n}
+
+
+# THE OTHER PLACE A CUTOUT LIVES: the alpha channel of the normal map.
+#
+# The alpha SLOT is filler on most of this map - 897 of the 936 sections whose
+# alpha-test gate is on bind `t_debug_r`, a 64x64 constant 255 - so the content
+# test rejects the slot and the section draws solid. That is why a user's chain
+# link fence and basketball net came out as sheets of metal.
+#
+# Where the mask actually is, read off the game (dossier, mp_aftermath):
+#
+#   t_com_tenniscourtfence_01_chainlink_nma   alpha  86.2% clear / 13.3% opaque
+#   t_euu_basketballnet_01_net_nma            alpha  93.0% clear /  5.8% opaque
+#   t_com_tenniscourtfence_01_frame_nmt       alpha   0.0% clear / 98.7% opaque
+#   t_euu_basketballnet_01_stand_nm           alpha   0.0% clear /  100% opaque
+#   ..._chainlink_cs / ..._frame_cs (basecolor) alpha 100% MIDTONES
+#
+# The two sections that need a cutout carry it in the normal's alpha; the solid
+# ones carry a solid alpha there; and the BASECOLOR alpha is a gloss ramp on all
+# of them, which is why the obvious guess - "the mask is in the albedo" - is
+# wrong and would have punched holes through the whole prop.
+#
+# NOT A NAME TEST. `_nma` against `_nmt` is exactly the tell, and exactly the
+# kind of rule that holds on one map and quietly fails on the next. The test is
+# the content, the same 0.5 separation `_mask_for` uses, plus a BIMODALITY guard
+# this path needs and that one does not: a normal map's alpha is often a smooth
+# height or gloss ramp, and a smooth ramp separates at 0.5 perfectly happily
+# while being nothing like a cutout. A real cutout lives at the extremes. The
+# basecolor alphas above are 100% midtones and fail it outright.
+#
+# SCOPE, SAID PLAINLY: validated on two props the user marked, plus their solid
+# siblings as negatives. That is not a fleet. The rule is recorded per section
+# in the decision trace with its measured shape, so the first rebuild of any map
+# reports what it did rather than leaving it to be noticed. See what happened to
+# the bake rule in bf6_meshset.gd for why this paragraph exists.
+func _mask_from_normal_alpha(file_guid):
+	if file_guid == null or str(file_guid) == "":
+		return null
+	var asset = walk.gi.get(str(file_guid))
+	if asset == null:
+		return null
+	var an := str(asset).to_lower()
+	if an.ends_with(".ebx"):
+		an = an.substr(0, an.length() - 4)
+	var known = _nmask_cache.get(an)
+	if known != null:
+		return null if not known else known
+	# is_normal FALSE on purpose: this wants the stored channels as they are,
+	# not a normal map reconstructed for lighting.
+	var tex = _texture_for(file_guid, false, MASK_MAX_DIM)
+	if tex == null:
+		_nmask_cache[an] = false
+		return null
+	var img: Image = (tex as ImageTexture).get_image()
+	if img == null:
+		_nmask_cache[an] = false
+		return null
+	var src := img.duplicate() as Image
+	if src.is_compressed() and src.decompress() != OK:
+		_nmask_cache[an] = false
+		return null
+	if not src.detect_alpha():
+		_nmask_cache[an] = false
+		return null
+	# Lift alpha into red, because foliage_wind samples `mask_tex ... .r`. One
+	# image per distinct texture, cached, so this is paid once however many
+	# sections share it.
+	var w := src.get_width()
+	var h := src.get_height()
+	var lifted := Image.create_empty(w, h, false, Image.FORMAT_R8)
+	for y in range(h):
+		for x in range(w):
+			var a := src.get_pixel(x, y).a
+			lifted.set_pixel(x, y, Color(a, a, a, 1.0))
+	var shape := mask_shape(lifted)
+	if shape.is_empty():
+		_nmask_cache[an] = false
+		return null
+	var below := float(shape["below_half"])
+	var extremes := float(shape["clear"]) + float(shape["opaque"])
+	# Both sides have to be populated (a solid alpha is 0.0 below, a fully clear
+	# one 1.0) and the mass has to sit at the ends rather than in the middle.
+	if below < 0.02 or below > 0.98 or extremes < 0.75:
+		_nmask_cache[an] = false
+		_nmask_shape[an] = shape
+		return null
+	var out := ImageTexture.create_from_image(lifted)
+	_nmask_cache[an] = out
+	_nmask_shape[an] = shape
+	return out
+
+
+# The measured shape of the last normal-alpha we looked at, per texture, so the
+# decision trace can say WHY a section was or was not cut out.
+var _nmask_shape := {}
 
 
 # A masked material: albedo plus the mask, through the same foliage_wind shader

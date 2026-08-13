@@ -1772,33 +1772,34 @@ All of it is read from your own Battlefield 6 installation."
 	var log_row := HBoxContainer.new()
 	log_row.alignment = BoxContainer.ALIGNMENT_CENTER
 	host.add_child(log_row)
+	# ONE BUTTON, BOTH ARTEFACTS. There used to be two, "Save log file" and
+	# "Save diagnostics", and the difference between them was invisible from the
+	# outside: the bundle already contained the log, so the choice was really
+	# "readable but partial" against "complete but zipped" and nobody could be
+	# expected to know which one a bug report wanted. Now it writes both, side by
+	# side in the same folder: the .txt to open and read or paste, the .zip to
+	# attach. The status line names the zip, because that is the one to send.
 	var save_log := Button.new()
 	save_log.text = "Save log file"
-	save_log.tooltip_text = "Writes everything below to a text file and opens the folder, so you can attach it to a bug report. It includes your plugin version, Godot version and graphics card, which is usually what the answer depends on."
+	save_log.tooltip_text = "Writes two files and opens the folder: a text log you can read or paste, and a zip to attach to a bug report. The zip also carries the event stream, the state snapshot, the crash trail and this map's build decisions, so it says which plugin build was running, whether it was out of date, which map, and which rule the build applied to each object."
 	save_log.pressed.connect(func():
-		var p: String = Log.save()
-		if p == "":
-			lbl.text = "Could not write the log file. See Godot's Output panel."
-			return
-		lbl.text = "Saved %s" % p
-		OS.shell_show_in_file_manager(p))
-	log_row.add_child(save_log)
-	# The log file answers "what happened". This answers "what was it, and
-	# what did the build decide about it", which is the half that used to
-	# take three replies to collect by hand.
-	var save_bundle := Button.new()
-	save_bundle.text = "Save diagnostics"
-	save_bundle.tooltip_text = "Packs the log, the live event stream, the state snapshot, the crash trail and this map's build decisions into one zip, and opens the folder. This is the file to attach to a bug report: it says which plugin build was running, whether it was out of date, which map, and which rule the build applied to each object."
-	save_bundle.pressed.connect(func():
+		var txt: String = Log.save()
 		var m: String = mapctx.map_of(EditorInterface.get_edited_scene_root()) \
 			if mapctx != null else ""
-		var p: String = Log.save_bundle(m)
-		if p == "":
-			lbl.text = "Could not write the diagnostics bundle. See Godot's Output panel."
-			return
-		lbl.text = "Saved %s" % p
-		OS.shell_show_in_file_manager(p))
-	log_row.add_child(save_bundle)
+		var zip: String = Log.save_bundle(m)
+		# THE TEXT FILE IS THE FALLBACK, NOT THE HEADLINE. If the zip fails the
+		# user still has something to send, and saying so beats a bare success
+		# message that quietly delivered half of what it promised.
+		if zip != "":
+			lbl.text = "Saved %s (and the readable log beside it)" % zip
+			OS.shell_show_in_file_manager(zip)
+		elif txt != "":
+			lbl.text = ("Saved %s. The diagnostics zip could not be written, "
+				+ "so this text log is all there is. See Godot's Output panel.") % txt
+			OS.shell_show_in_file_manager(txt)
+		else:
+			lbl.text = "Could not write the log. See Godot's Output panel.")
+	log_row.add_child(save_log)
 	var clear_log := Button.new()
 	clear_log.text = "Clear"
 	clear_log.tooltip_text = "Empties the list below. Does not undo anything."
