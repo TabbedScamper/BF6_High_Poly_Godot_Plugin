@@ -329,29 +329,41 @@ func read_lod(d: PackedByteArray, lod := 0, chunk := PackedByteArray(),
 			var o := i * pos_comps
 			verts[i] = Vector3(pos[o], pos[o + 1], pos[o + 2])
 
-		# WHICH CHANNEL IS THE PRIMARY. Ported from the pipeline's fleet-proven
-		# member_mesh.bake_uv_channel: the first channel BEYOND UV0 whose
-		# coordinates fit 0..1 (0.05 tolerance) and are not degenerate is the
-		# per-object bake unwrap the detail art is authored against; UV0 is
-		# the tiling/weathering channel. Always taking channel 0 put the
-		# delivery van's exterior and interior sheets on the tiling channel -
-		# both channels fit 0..1 there but they are DIFFERENT unwraps
-		# (measured max divergence 1.01), which read as "right textures,
-		# wrong UVs" on a user marker. Car BODIES are untouched: their second
-		# channel tiles, so the rule falls back to 0 exactly as before. The
-		# whole prop fleet rendered through this rule and passed eyeball
-		# review on the GLB pipeline, which is the measurement this port
-		# stands on.
-		# ...AND THE CHOICE IS PER MATERIAL FAMILY, the way the GLB pipeline
-		# actually made it, not one blanket rule. A user's debug-recipe on the
-		# ambulance proved the blanket wrong in both directions at once:
+		# WHICH CHANNEL IS THE PRIMARY. TexCoord0, for everything that is not
+		# car paint.
 		#
-		#   Unique sections keep UV0. The prop's own unique atlas is authored
-		#   there (pipeline: "the atlas stays ONLY where its own name tokens
-		#   appear in the material"); the bake rule moved the ambulance's
-		#   unique art to channel 1 and scrambled it. On meshes where the two
-		#   channels are identical (the delivery van) either answer draws the
-		#   same, which is why this stayed invisible for a day.
+		# RETRACTED 2026-08-13: the bake rule. It said the first channel beyond
+		# UV0 fitting 0..1 (0.05 tolerance) and not degenerate was the per-object
+		# bake unwrap the detail art is authored against, and it was ported from
+		# the GLB pipeline's member_mesh.bake_uv_channel with its tolerances
+		# intact. It was wrong, and the way it was wrong is worth keeping:
+		#
+		#   The test "fits inside 0..1" is how you RECOGNISE AN UNWRAP, and an
+		#   unwrap is the wrong thing to sample a tiling albedo through. On
+		#   architecture that is the lightmap/AO channel, so 163 of 184 building
+		#   sections on mp_aftermath sampled their brick sheet through a 0..1
+		#   unwrap and drew one brick the size of a facade. The user found it by
+		#   eye; the decision trace named the rule in one query.
+		#
+		#   The van that the rule was built for looks correct on TC0 as well
+		#   (confirmed by the user in the editor, flipping the channel live).
+		#   So the original "right textures, wrong UVs" marker was not evidence
+		#   for channel 1 - the van's unique sections were already on TC0 by the
+		#   unique rule, and its body is car paint on the depot wrap channel, so
+		#   what the bake rule actually moved was detail that reads correctly
+		#   either way.
+		#
+		#   The fleet measurement it stood on was the PROP fleet. Architecture
+		#   was never in it, and the rule was applied to everything. The rule's
+		#   own comment warned that widening a proven rule silently is how
+		#   regressions ship, about which texcoords it considered. The same
+		#   sentence applied to which ASSETS it ran on, and nobody read it that
+		#   way.
+		#
+		# Unique sections were always TC0 and stay TC0, for their own reason: the
+		# prop's unique atlas is authored there (pipeline: "the atlas stays ONLY
+		# where its own name tokens appear in the material"), and the bake rule
+		# moved the ambulance's unique art to channel 1 and scrambled it.
 		#
 		#   CarPaint sections take the WRAP channel, and WHICH texcoord that
 		#   is comes from the DEPOT, not from geometry: the record's bool
@@ -367,8 +379,8 @@ func read_lod(d: PackedByteArray, lod := 0, chunk := PackedByteArray(),
 		#   the section's uvs from uv_all once it has resolved the record
 		#   (highpoly_gamesource._wrap_channel_fix).
 		#
-		# Everything else keeps the bake rule that fixed the delivery van's
-		# exterior and interior detail.
+		# Everything else takes TC0, which is where the tiling base albedo is
+		# sampled from.
 		var mlow := str(s["material"]).to_lower()
 		var is_carpaint := mlow.contains("carpaint")
 		var uvs := PackedVector2Array()
@@ -387,8 +399,7 @@ func read_lod(d: PackedByteArray, lod := 0, chunk := PackedByteArray(),
 			elif is_carpaint:
 				uv_rule = "carpaint.tc0"      # the depot overrides this, above
 			else:
-				upick = _bake_uv_channel(uv_sets, vcount)
-				uv_rule = "bake.tc1" if upick != 0 else "bake.fallback.tc0"
+				uv_rule = "default.tc0"
 			uv_pick_usage = int((uv_sets[upick] as Array)[0])
 			var src: PackedFloat32Array = (uv_sets[upick] as Array)[1]
 			var c: int = (uv_sets[upick] as Array)[2]
@@ -678,16 +689,8 @@ func _read_indices(buf: PackedByteArray, vsize: int, isize: int, idx32: bool,
 # VertexOffset, so a stream's base is the sum of every earlier stream's stride
 # times the vertex count — NOT the section stride, which is the sum of all of
 # them. Getting this wrong reads plausible-looking garbage rather than failing.
-# The per-object bake channel, the pipeline's member_mesh.bake_uv_channel
-# ported byte for byte in behaviour: first channel beyond UV0 fitting
-# -0.05..1.05 on both axes with a span over 0.05 wins; anything else keeps
-# UV0. The tolerance and the degenerate-span guard are the pipeline's own
-# numbers - the whole prop fleet rendered through them.
-# DELIBERATELY only TexCoord1 is considered a bake candidate: TC2/TC3 are
-# read too now (the wrap machinery needs them) but were never part of this
-# rule's fleet measurement, and widening a proven rule silently is how
-# regressions ship. Entries are [usage, data, comps].
-# Which texcoords this section actually declared, as usage numbers. Carried
+# Which texcoords this section actually declared, as usage numbers. Entries
+# are [usage, data, comps]. Carried
 # into the decision trace so "we used tc3" can be read beside "tc0..tc3 were
 # available" without re-reading the mesh.
 static func _usages_of(uv_sets: Array) -> PackedInt32Array:
@@ -696,30 +699,6 @@ static func _usages_of(uv_sets: Array) -> PackedInt32Array:
 		out.append(int((u as Array)[0]))
 	return out
 
-
-static func _bake_uv_channel(uv_sets: Array, vcount: int) -> int:
-	for k in range(uv_sets.size()):
-		if int((uv_sets[k] as Array)[0]) != U_UV1:
-			continue
-		var src: PackedFloat32Array = (uv_sets[k] as Array)[1]
-		var c: int = (uv_sets[k] as Array)[2]
-		if src.size() < vcount * c:
-			continue
-		var lo_u := 1e20
-		var hi_u := -1e20
-		var lo_v := 1e20
-		var hi_v := -1e20
-		for i in range(vcount):
-			var u := src[i * c]
-			var v := src[i * c + 1]
-			lo_u = minf(lo_u, u)
-			hi_u = maxf(hi_u, u)
-			lo_v = minf(lo_v, v)
-			hi_v = maxf(hi_v, v)
-		if lo_u >= -0.05 and hi_u <= 1.05 and lo_v >= -0.05 and hi_v <= 1.05 \
-				and maxf(hi_u - lo_u, hi_v - lo_v) > 0.05:
-			return k
-	return 0
 
 
 func _read_attr(buf: PackedByteArray, base: int, count: int, el: Array,
