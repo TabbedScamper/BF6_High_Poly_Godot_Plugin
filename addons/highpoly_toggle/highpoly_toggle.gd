@@ -1634,9 +1634,12 @@ All of it is read from your own Battlefield 6 installation."
 			return
 		if objdebug == null:
 			objdebug = ObjDebugScript.new()
+		Log.info("Debug pressed: focus %s" % str(HighpolyDiagnose.focus_info().get("mesh")))
 		var err: String = objdebug.open(
 			mapctx.game_source if mapctx != null else null, r,
 			HighpolyDiagnose.focus_info())
+		if err != "":
+			Log.warn("Object Debug did not open: %s" % err)
 		lbl.text = ("Object Debug open. The map is hidden around it; "
 			+ "Close in the window brings everything back.") if err == "" else err)
 	diag_row.add_child(debug_btn)

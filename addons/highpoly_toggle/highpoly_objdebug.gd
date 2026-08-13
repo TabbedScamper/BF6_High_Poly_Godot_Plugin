@@ -63,6 +63,11 @@ func is_open() -> bool:
 
 
 # -> "" on success, else the user-facing reason it could not open.
+#
+# CHECKPOINTED, flushed each step. GDScript cannot catch a runtime error, so
+# a fault inside this sequence kills the call silently and the button reads
+# as doing nothing - the last checkpoint in the log is then the answer to
+# "where did it die", which is worth far more than clean silence.
 func open(p_gs, p_root: Node, focus: Dictionary) -> String:
 	close()
 	gs = p_gs
@@ -80,19 +85,31 @@ func open(p_gs, p_root: Node, focus: Dictionary) -> String:
 	vh = int(d.get("variation", 0))
 	provenance = "mesh=%s scope=%s%s" % [res_name, scope,
 		(" var=%d" % vh) if vh != 0 else ""]
+	HighpolyLog.info("Object Debug: opening on %s" % provenance)
+	HighpolyLog.flush()
 	secs = gs.debug_sections(res_name)
 	if secs.is_empty():
 		return "The install would not re-read %s." % res_name.get_file()
+	HighpolyLog.info("Object Debug: %d part(s) re-read with all UV channels"
+		% secs.size())
+	HighpolyLog.flush()
 	ov = []
 	for i in range(secs.size()):
 		ov.append(_fresh_ov(i))
 	cur = 0
 	solo = false
 	_spawn_preview(focus.get("xform", Transform3D()))
+	HighpolyLog.info("Object Debug: preview built (%d surfaces)"
+		% (preview.mesh.get_surface_count() if preview.mesh != null else -1))
+	HighpolyLog.flush()
 	_hide_original(focus)
 	_isolate(true)
+	HighpolyLog.info("Object Debug: isolated, building the window")
+	HighpolyLog.flush()
 	_build_window()
 	_sync_controls()
+	HighpolyLog.info("Object Debug: window up")
+	HighpolyLog.flush()
 	return ""
 
 
