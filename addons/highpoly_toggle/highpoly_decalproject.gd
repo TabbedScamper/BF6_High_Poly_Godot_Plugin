@@ -129,6 +129,18 @@ var _boxes := {}
 
 var _walked := 0
 
+# WHERE THE MINUTE GOES, split three ways. This pass costs the same cold and
+# warm, so it is neither reading the game nor missing a cache, and the two
+# remaining candidates - starved by its own yield budget, or spending the time
+# per vertex in GDScript - want completely different fixes. Measured rather
+# than argued: guessing between two plausible causes has convicted innocent
+# code on this project before.
+var _await_us := 0            # inside `await tree.process_frame`
+var _yields := 0
+var _index_us := 0            # the whole index phase, awaits included
+var _solve_us := 0            # the whole vertex phase, awaits included
+var _await_index_us := 0      # of _await_us, the half spent in the index
+
 var _xmin := 0.0
 var _xmax := 0.0
 var _zmin := 0.0
@@ -171,12 +183,16 @@ func run(tree: SceneTree, roads_mi: MeshInstance3D,
 
 	if not _coverage(surfaces):
 		return stats
+	var t_ix := Time.get_ticks_usec()
 	await _index_props(tree, props_root)
+	_index_us = Time.get_ticks_usec() - t_ix
+	_await_index_us = _await_us
 	if _tri.is_empty():
 		stats["ms"] = Time.get_ticks_msec() - t0
 		return stats
 
 	var out := ArrayMesh.new()
+	var t_sv := Time.get_ticks_usec()
 	var frame := Time.get_ticks_msec()
 	for i in range(surfaces.size()):
 		var arr: Array = surfaces[i]
@@ -263,7 +279,10 @@ func run(tree: SceneTree, roads_mi: MeshInstance3D,
 				if progress_fn.is_valid():
 					progress_fn.call("laying the decals onto them",
 						vi, verts.size())
+				var ya := Time.get_ticks_usec()
 				await tree.process_frame
+				_await_us += Time.get_ticks_usec() - ya
+				_yields += 1
 				if not is_instance_valid(roads_mi):
 					return stats
 				frame = Time.get_ticks_msec()
@@ -273,9 +292,21 @@ func run(tree: SceneTree, roads_mi: MeshInstance3D,
 		out.surface_set_material(out.get_surface_count() - 1,
 			src.surface_get_material(i))
 	stats["surfaces"] = out.get_surface_count()
+	_solve_us = Time.get_ticks_usec() - t_sv
 	if is_instance_valid(roads_mi):
 		roads_mi.mesh = out
 	stats["ms"] = Time.get_ticks_msec() - t0
+	# THE SPLIT. index vs solve are wall time including their own awaits;
+	# await_ms is how much of the total was spent parked in
+	# `await tree.process_frame` waiting for the editor to draw the map. What
+	# is left is this script's own work, and the two want opposite fixes.
+	stats["index_ms"] = _index_us / 1000
+	stats["solve_ms"] = _solve_us / 1000
+	stats["await_ms"] = _await_us / 1000
+	stats["await_index_ms"] = _await_index_us / 1000
+	stats["await_solve_ms"] = (_await_us - _await_index_us) / 1000
+	stats["yields"] = _yields
+	stats["work_ms"] = (_index_us + _solve_us - _await_us) / 1000
 	return stats
 
 
@@ -351,14 +382,20 @@ func _index_props(tree: SceneTree, props_root: Node3D) -> void:
 					_add_instance(mm.mesh,
 						base * mm.get_instance_transform(ii))
 					if Time.get_ticks_msec() - frame > MS_PER_FRAME:
+						var ya := Time.get_ticks_usec()
 						await tree.process_frame
+						_await_us += Time.get_ticks_usec() - ya
+						_yields += 1
 						frame = Time.get_ticks_msec()
 		elif n is MeshInstance3D:
 			var mi := n as MeshInstance3D
 			if mi.mesh != null:
 				_add_instance(mi.mesh, mi.global_transform)
 		if Time.get_ticks_msec() - frame > MS_PER_FRAME:
+			var ya := Time.get_ticks_usec()
 			await tree.process_frame
+			_await_us += Time.get_ticks_usec() - ya
+			_yields += 1
 			frame = Time.get_ticks_msec()
 
 

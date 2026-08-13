@@ -6965,6 +6965,22 @@ func _reproject_roads(props_root: Node3D) -> void:
 		% [int(st.get("lifted", 0)), int(st.get("vertices", 0))]
 		+ "instead of the ground under it (%.1f s)"
 		% ((Time.get_ticks_msec() - t) / 1000.0))
+	# WHERE THE MINUTE WENT. This pass costs the same on a cold map and a warm
+	# one, so it is neither reading the game nor missing a cache. That leaves
+	# two very different causes - parked waiting for the editor to draw, or
+	# spending it per vertex in GDScript - and they want opposite fixes, so the
+	# split is recorded rather than reasoned about.
+	BJournal.event("audit", "road decal projection, where the time went",
+		("index %.1f s (%.1f s of it parked), solve %.1f s (%.1f s parked); "
+		+ "%.1f s was this script's own work and %.1f s was %d yields waiting "
+		+ "for the editor to draw a frame.")
+		% [int(st.get("index_ms", 0)) / 1000.0,
+			int(st.get("await_index_ms", 0)) / 1000.0,
+			int(st.get("solve_ms", 0)) / 1000.0,
+			int(st.get("await_solve_ms", 0)) / 1000.0,
+			int(st.get("work_ms", 0)) / 1000.0,
+			int(st.get("await_ms", 0)) / 1000.0,
+			int(st.get("yields", 0))])
 	# THE CAP, SAID OUT LOUD. Partial coverage and full coverage look identical
 	# on screen, and the difference decides whether the next report is about
 	# this budget or about the projection maths.
