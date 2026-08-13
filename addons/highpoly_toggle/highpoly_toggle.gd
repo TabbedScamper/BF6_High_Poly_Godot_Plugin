@@ -117,6 +117,16 @@ var mapctx_range_val: Label    # live "%dm" readout next to the slider
 # draw calls at 51 fps; pulling back to 600 m gave 65-70. The slider is now
 # 10..1000 with a 500 m default, and no-culling is an explicit choice.
 var mapctx_nocull: Button
+
+# ---- keep drawing when unfocused ----
+# The value we park the user's original in, so switching the chip off - or a
+# crash, or the plugin being disabled - always puts it back. Every other thing
+# in this project that changed an editor setting and did not restore it cost a
+# day: the bench's idle sleeps, and the bench's range slider.
+const UNFOCUS_PARK := "user://highpoly/unfocused_parked.json"
+const UNFOCUS_DRAW_USEC := 16000        # ~60 fps unfocused, not flat out
+const UNFOCUS_DEFAULT := 100000         # Godot's own, ~10 fps
+var unfocus_btn: Button
 var mapctx_fx: Button        # live GPU particles at the map's mined FX spawns
 var mapctx_light: Button     # game lighting (sun/sky/fog from the real map VE)
 var mapctx_gi: Button        # sub-toggle: SDFGI + SSAO (visible while lighting is on)
@@ -1710,6 +1720,30 @@ All of it is read from your own Battlefield 6 installation."
 	# counts, which is guesswork: a scene can be triangle-light and draw-call
 	# heavy. This measures the real counters while you fly and says which
 	# subsystem owned what was on screen when the frame rate dropped.
+	# ---- keep drawing when the editor is in the background ----
+	#
+	# Godot sleeps `unfocused_low_processor_mode_sleep_usec` between frames when
+	# the editor has no focus, and it defaults to 100000 - a hard 10 fps. The
+	# View > Frame Time overlay reports that stall as GPU TIME, so a background
+	# editor reads as "GPU 30-35 ms, 28-32 fps" and looks like a rendering
+	# problem that mysteriously climbs as it settles. The same editor focused
+	# and flying measured 51 fps. That one default sent this project chasing
+	# resolution scaling, VRAM, volumetric fog and shadow atlases.
+	#
+	# NOT ZERO, and not on by default. Zero means the editor renders flat out
+	# behind whatever you switched to, which on this machine means competing
+	# with Battlefield 6 for one GPU - the exact failure a killed bench run
+	# caused earlier. 16 ms is about 60 fps unfocused: responsive to glance at,
+	# cheap to leave running.
+	var unfocus_row := HBoxContainer.new()
+	unfocus_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	host.add_child(unfocus_row)
+	unfocus_btn = Theme_.chip("Draw when unfocused")
+	unfocus_btn.tooltip_text = "Godot throttles the editor to 10 fps whenever it is not the active window, and the Frame Time overlay reports that pause as GPU time - so a background editor looks far slower than it is. This keeps it at about 60 fps instead. It costs GPU while you are working in another window, so leave it off unless you are comparing the editor against something else on screen."
+	unfocus_btn.button_pressed = false
+	unfocus_row.add_child(unfocus_btn)
+	unfocus_btn.toggled.connect(_set_unfocused_drawing)
+
 	var perf_row := HBoxContainer.new()
 	perf_row.alignment = BoxContainer.ALIGNMENT_CENTER
 	host.add_child(perf_row)
@@ -1846,6 +1880,10 @@ All of it is read from your own Battlefield 6 installation."
 	# which the editor renders at full rate forever, including while it sits
 	# behind a running game competing for the same GPU. Nothing said so.
 	HighpolyFlightRun.restore_pending()
+	# Same contract for the "draw when unfocused" chip: if a session died with
+	# it on, put the throttle back rather than leaving the editor rendering
+	# flat out in the background forever.
+	_restore_unfocused_pending()
 	# EMITTED EAGERLY, not on the first thing that happens to log. The stream
 	# was created lazily, so a clean session that never warned produced no
 	# file at all - and "when did the plugin come alive" is the marker that
@@ -2334,6 +2372,62 @@ func _write_state_snapshot() -> void:
 	HighpolyLog.write_state(d)
 
 
+# Switch the editor's background throttle down, and be able to undo it.
+#
+# The value is PARKED ON DISK before it changes, so a crash or a force-quit
+# cannot leave someone with an editor that renders flat out behind their game
+# and nothing to say why. `_restore_unfocused_pending()` at boot puts it back.
+func _set_unfocused_drawing(on: bool) -> void:
+	var es := EditorInterface.get_editor_settings()
+	if es == null:
+		return
+	var k := HighpolyFlightRun.K_SLEEP_UNFOCUSED
+	if on:
+		var was: int = int(es.get_setting(k)) if es.has_setting(k) \
+			else UNFOCUS_DEFAULT
+		# Never park OUR value: toggling twice would then restore 16 ms as
+		# though the user had chosen it.
+		if was != UNFOCUS_DRAW_USEC:
+			DirAccess.make_dir_recursive_absolute("user://highpoly")
+			var f := FileAccess.open(UNFOCUS_PARK, FileAccess.WRITE)
+			if f != null:
+				f.store_string(JSON.stringify({"unfocused": was}))
+				f.close()
+		es.set_setting(k, UNFOCUS_DRAW_USEC)
+		Log.info("the editor will keep drawing at about 60 fps when it is not "
+			+ "the active window (it normally drops to 10). This costs GPU "
+			+ "while you work in another window; switch it off when you are "
+			+ "done comparing.")
+	else:
+		_restore_unfocused_pending(true)
+	HighpolyLog.event("editor.unfocused_drawing", {"on": on})
+
+
+# -> true if something was put back. `announce` is false at boot, where this
+# is a silent repair rather than a user action.
+func _restore_unfocused_pending(announce := false) -> bool:
+	if not FileAccess.file_exists(UNFOCUS_PARK):
+		return false
+	var f := FileAccess.open(UNFOCUS_PARK, FileAccess.READ)
+	if f == null:
+		return false
+	var v = JSON.parse_string(f.get_as_text())
+	f.close()
+	DirAccess.remove_absolute(UNFOCUS_PARK)
+	var es := EditorInterface.get_editor_settings()
+	if es == null or not (v is Dictionary):
+		return false
+	var back: int = int((v as Dictionary).get("unfocused", UNFOCUS_DEFAULT))
+	es.set_setting(HighpolyFlightRun.K_SLEEP_UNFOCUSED, back)
+	if announce:
+		Log.info("background drawing off: the editor throttles to %d us "
+			% back + "between frames again when it is not focused.")
+	else:
+		Log.info("put the editor's unfocused frame sleep back to %d us; a "
+			% back + "previous session left it lowered.")
+	return true
+
+
 func _settings_snapshot() -> PackedStringArray:
 	var out := PackedStringArray()
 	var yn := func(b: Button) -> String:
@@ -2413,6 +2507,11 @@ func _exit_tree() -> void:
 	# died rather than closed, so this has to run on the ordinary path — and it
 	# runs first, before any of the teardown below can throw and skip it.
 	HighpolyProfiler.crumbs_end()
+	# The editor's background throttle is the USER'S setting, not ours to
+	# leave changed once the plugin is gone. Disabling the plugin with the
+	# chip on would otherwise strand an editor that renders flat out behind
+	# whatever they switch to, with the thing that changed it uninstalled.
+	_restore_unfocused_pending()
 	# The object debugger holds a Window parented to the editor itself and an
 	# isolation over the scene; both outlive this dock unless closed here.
 	if objdebug != null:
