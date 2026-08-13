@@ -321,6 +321,14 @@ func _build_window() -> void:
 	win = Window.new()
 	win.title = "Object Debug: %s" % res_name.get_file()
 	win.size = Vector2i(420, 640)
+	# The tool window's proven recipe, copied flag for flag: transient must be
+	# OFF (a transient window cannot be always-on-top, and transient alone only
+	# raises with its parent, which is what let a viewport click bury it), on
+	# top ON so flying around the scene cannot shove it behind the editor, and
+	# exclusive OFF so it never blocks the viewport it exists to sit beside.
+	win.transient = false
+	win.always_on_top = true
+	win.exclusive = false
 	win.close_requested.connect(close)
 	EditorInterface.get_base_control().add_child(win)
 	var sc := ScrollContainer.new()
