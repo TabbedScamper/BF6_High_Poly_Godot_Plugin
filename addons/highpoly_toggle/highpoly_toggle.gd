@@ -2039,6 +2039,21 @@ All of it is read from your own Battlefield 6 installation."
 	if HighpolyReload.swap_report != "":
 		Log.info(HighpolyReload.swap_report)
 		HighpolyReload.swap_report = ""
+	# AND WHAT IT MOVED, which decides whether the scenery is stale. The
+	# overlay survives a cold swap on purpose (tearing it down cost a rebuild
+	# per update), but its materials and meshes were built by the code that
+	# was just replaced. A user proved the gap: a material fix applied through
+	# Check for updates, the standing wheels kept the old shredded look, and
+	# the button read as doing nothing. Classify the swapped names; anything
+	# past "code" marks the overlay stale, and the state restore below
+	# rebuilds it fresh instead of re-syncing chips to stale scenery.
+	var _swn: Array = HighpolyReload.take_swap_names()
+	if not _swn.is_empty():
+		_swap_impact = HighpolyReload.impact(_swn)
+		if _swap_impact != "code" and _swap_impact != "none":
+			Log.info(("The update changed %s code, so the scenery on screen was "
+				+ "built by the OLD code - the map state restore will rebuild "
+				+ "it so the change actually shows.") % _swap_impact)
 	get_tree().node_added.connect(_on_node_added)
 	# live isolation follows the editor selection
 	EditorInterface.get_selection().selection_changed.connect(_on_selection_changed)
@@ -2541,6 +2556,10 @@ static var _soft_restore := false
 # describes the scene correctly.
 var _soft_applied := false
 var _needs_reopen := false
+# The cold swap's impact class ("materials"/"mixed"/"geometry"), carried from
+# the swap marker to the map state restore, which rebuilds stale scenery once
+# and clears it. Empty = no swap, or a swap that cannot reach anything built.
+var _swap_impact := ""
 
 func _reopen_panel() -> void:
 	Log.info("Reopening the panel to apply a layout change. The scenery and the "
@@ -4473,7 +4492,24 @@ func _restore_mapctx_state() -> void:
 	# overlay, so everything stays off and nothing is applied until asked.
 	# The saved entry is left alone rather than cleared: nothing else reads it,
 	# and the next deliberate toggle rewrites it anyway.
-	if r.get_node_or_null(HighpolyMapContext.NODE) == null:
+	#
+	# EXCEPT AFTER A SWAP THAT CHANGED WHAT BUILDS THE SCENERY. The standing
+	# overlay's materials and meshes came out of the code the swap just
+	# replaced, so re-syncing chips to it shows the OLD look and reads as the
+	# update doing nothing (the truckpickup wheels stayed shredded through the
+	# very update that fixed them). Tear the stale overlay down first; the
+	# restore below then rebuilds it through the normal path, with the new
+	# code and fresh material caches. One rebuild per code-that-builds update,
+	# only when scenery is actually standing.
+	var _stale_swap := _swap_impact != "" and _swap_impact != "code" \
+		and _swap_impact != "none"
+	_swap_impact = ""
+	if _stale_swap and r.get_node_or_null(HighpolyMapContext.NODE) != null \
+			and mapctx != null:
+		Log.info("Rebuilding the map context: the update replaced the code "
+			+ "that built what is on screen.")
+		mapctx.apply(r, false, false, false)
+	elif r.get_node_or_null(HighpolyMapContext.NODE) == null:
 		return
 	var st: Variant = EditorInterface.get_editor_settings().get_project_metadata(
 			"highpoly_mapctx", map, {})

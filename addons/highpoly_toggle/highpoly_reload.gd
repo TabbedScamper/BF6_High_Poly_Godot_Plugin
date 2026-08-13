@@ -302,11 +302,43 @@ static func reload_code(force := false) -> Dictionary:
 # stack is the crash).
 static var swap_report := ""
 
+# WHAT the swap replaced, for the boot on the other side. The report above is
+# a sentence; the next session needs the NAMES, because which files moved is
+# what decides whether the scenery still standing in the scene is stale
+# (materials and geometry are BUILT by this code, and the overlay survives
+# the swap on purpose). A file rather than a static: the swap may replace
+# this very script, and a static would not survive that.
+const SWAP_NAMES_PATH := "user://highpoly/swap_pending.txt"
+
+static func take_swap_names() -> Array:
+	if not FileAccess.file_exists(SWAP_NAMES_PATH):
+		return []
+	var f := FileAccess.open(SWAP_NAMES_PATH, FileAccess.READ)
+	if f == null:
+		return []
+	var txt := f.get_as_text()
+	f.close()
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(SWAP_NAMES_PATH))
+	var out: Array = []
+	for line in txt.split("\n"):
+		if line.strip_edges() != "":
+			out.append(line.strip_edges())
+	return out
+
 
 static func cold_swap() -> void:
 	var now := _hashes()
 	var p := pending()
 	var todo: Array = (p["changed"] as Array) + (p["added"] as Array)
+	# Written BEFORE anything is replaced, so even a swap that fails to parse
+	# a file still tells the next boot what it touched.
+	DirAccess.make_dir_recursive_absolute(
+		ProjectSettings.globalize_path("user://highpoly"))
+	var nf := FileAccess.open(SWAP_NAMES_PATH, FileAccess.WRITE)
+	if nf != null:
+		for t in todo:
+			nf.store_line(str(t))
+		nf.close()
 	var folder := plugin_dir().get_file()
 	var tree := Engine.get_main_loop() as SceneTree
 	EditorInterface.set_plugin_enabled(folder, false)
