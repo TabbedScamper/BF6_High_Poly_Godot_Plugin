@@ -999,6 +999,12 @@ static func _fly(_tree: SceneTree, samples: Array) -> Dictionary:
 	var k_focused := "interface/editor/low_processor_mode_sleep_usec"
 	var was_unfocused = es.get_setting(k_unfocused) if es.has_setting(k_unfocused) else null
 	var was_focused = es.get_setting(k_focused) if es.has_setting(k_focused) else null
+	# ...and "put back afterwards" only happens if there IS an afterwards.
+	# This harness is force-killed on hang, crash or timeout, and then the
+	# zeroes are permanent. Park them on disk so the next boot undoes it.
+	# Shared with the flight harness rather than duplicated: this file is
+	# already ~60% a copy of that one and the divergence is the hazard.
+	HighpolyFlightRun._park_sleeps(was_unfocused, was_focused)
 	if was_unfocused != null:
 		es.set_setting(k_unfocused, 0)
 	if was_focused != null:
@@ -1057,6 +1063,7 @@ static func _fly(_tree: SceneTree, samples: Array) -> Dictionary:
 		es.set_setting(k_unfocused, was_unfocused)
 	if was_focused != null:
 		es.set_setting(k_focused, was_focused)
+	HighpolyFlightRun._unpark_sleeps()
 	# NOTHING TO FREE. `sub` is the editor's OWN viewport now, not a private one
 	# — an earlier version created its own and freed it here, and leaving that
 	# free() behind after the switch would have destroyed the editor's 3D view.

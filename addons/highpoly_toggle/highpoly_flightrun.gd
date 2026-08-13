@@ -749,6 +749,80 @@ static func run(host: Node, dock: Node, mapctx: Node) -> bool:
 # flight is invisible, so a run that silently measured nothing cannot be told
 # from a good one, and it draws the whole scene a SECOND time every frame, so
 # every number includes two renders of the map.
+# ---------------------------------------------------------------------------
+# THE EDITOR SLEEP SETTINGS, PARKED SO A KILLED RUN CANNOT KEEP THEM
+#
+# The flight needs both sleeps at 0 or it measures a cap instead of a cost
+# (the default 100000 usec produced a mean of exactly 100.0 ms with almost no
+# variance, which is the signature of a throttle). Restoring them at the end
+# of the flight is correct and insufficient: perfrun.py force-kills this
+# editor on hang, crash or timeout, and then the user keeps an editor that
+# never sleeps and never idles, including while it sits behind a running
+# game competing for the same GPU.
+#
+# So the previous values are written to disk BEFORE they are changed, and
+# `restore_pending()` puts them back at the next plugin boot. Same shape as
+# the crash breadcrumbs: the file existing IS the signal that something did
+# not finish.
+const K_SLEEP_UNFOCUSED := "interface/editor/unfocused_low_processor_mode_sleep_usec"
+const K_SLEEP_FOCUSED := "interface/editor/low_processor_mode_sleep_usec"
+const SLEEP_PARK := "user://highpoly/editor_sleep_parked.json"
+
+
+static func _park_sleeps(was_un: Variant, was_fo: Variant) -> void:
+	if was_un == null and was_fo == null:
+		return
+	DirAccess.make_dir_recursive_absolute("user://highpoly")
+	var f := FileAccess.open(SLEEP_PARK, FileAccess.WRITE)
+	if f == null:
+		return
+	f.store_string(JSON.stringify({
+		"unfocused": was_un, "focused": was_fo,
+		"at": int(Time.get_unix_time_from_system()),
+	}))
+	f.close()
+
+
+static func _unpark_sleeps() -> void:
+	if FileAccess.file_exists(SLEEP_PARK):
+		DirAccess.remove_absolute(SLEEP_PARK)
+
+
+# Called from the plugin's boot. Returns "" when there was nothing to undo.
+static func restore_pending() -> String:
+	if not FileAccess.file_exists(SLEEP_PARK):
+		return ""
+	var f := FileAccess.open(SLEEP_PARK, FileAccess.READ)
+	if f == null:
+		return ""
+	var v = JSON.parse_string(f.get_as_text())
+	f.close()
+	DirAccess.remove_absolute(SLEEP_PARK)
+	if not (v is Dictionary):
+		return ""
+	var d: Dictionary = v
+	var es := EditorInterface.get_editor_settings()
+	if es == null:
+		return ""
+	var put := []
+	if d.get("unfocused") != null and es.has_setting(K_SLEEP_UNFOCUSED):
+		es.set_setting(K_SLEEP_UNFOCUSED, d["unfocused"])
+		put.append("unfocused=%s" % str(d["unfocused"]))
+	if d.get("focused") != null and es.has_setting(K_SLEEP_FOCUSED):
+		es.set_setting(K_SLEEP_FOCUSED, d["focused"])
+		put.append("focused=%s" % str(d["focused"]))
+	if put.is_empty():
+		return ""
+	var msg := ("a bench run did not finish and left the editor's idle sleep "
+		+ "at 0, which makes it render at full rate even when it is behind "
+		+ "another window. Put back: %s" % ", ".join(put))
+	HighpolyLog.warn(msg)
+	HighpolyLog.event("editor.sleep_restored",
+		{"unfocused": d.get("unfocused"), "focused": d.get("focused"),
+		 "parked_at": d.get("at", 0)})
+	return msg
+
+
 static func _fly(tree: SceneTree, vp: SubViewport, samples: Array) -> Dictionary:
 	var cam: Camera3D = vp.get_camera_3d()
 	if cam == null:
@@ -759,10 +833,18 @@ static func _fly(tree: SceneTree, vp: SubViewport, samples: Array) -> Dictionary
 	# mean of 100.0 ms and almost no variance, which is the signature of a cap
 	# and not of a cost. Both sleeps go to zero and are put back afterwards.
 	var es := EditorInterface.get_editor_settings()
-	var k_un := "interface/editor/unfocused_low_processor_mode_sleep_usec"
-	var k_fo := "interface/editor/low_processor_mode_sleep_usec"
+	var k_un := K_SLEEP_UNFOCUSED
+	var k_fo := K_SLEEP_FOCUSED
 	var was_un: Variant = es.get_setting(k_un) if es != null and es.has_setting(k_un) else null
 	var was_fo: Variant = es.get_setting(k_fo) if es != null and es.has_setting(k_fo) else null
+	# PARK THE OLD VALUES ON DISK FIRST. The restore below runs on the happy
+	# path only, and this harness is force-killed by perfrun.py on a hang,
+	# crash or timeout - at which point the editor is left spinning at full
+	# tilt forever, in the user's own settings, with nothing to say why. That
+	# is not hypothetical: it is how a machine ended up rendering the whole
+	# map behind Battlefield 6 while both were fighting over one GPU. The
+	# plugin picks this file up at boot and puts the values back.
+	_park_sleeps(was_un, was_fo)
 	if was_un != null:
 		es.set_setting(k_un, 0)
 	if was_fo != null:
@@ -818,6 +900,7 @@ static func _fly(tree: SceneTree, vp: SubViewport, samples: Array) -> Dictionary
 		es.set_setting(k_un, was_un)
 	if was_fo != null:
 		es.set_setting(k_fo, was_fo)
+	_unpark_sleeps()
 	if ms.is_empty():
 		return {"error": "no frames were recorded during the flight"}
 

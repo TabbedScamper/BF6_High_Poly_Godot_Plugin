@@ -1795,6 +1795,12 @@ All of it is read from your own Battlefield 6 installation."
 	# that signal also fires on close, and every route to opening the panel goes
 	# through the toolbar button's toggle anyway
 	HighpolyUpdater.sweep_removed()   # clear out what an older version left behind
+	# Undo what a KILLED bench run left in the user's editor settings. The
+	# flight zeroes both idle sleeps so it measures a cost rather than a cap,
+	# and perfrun force-kills the editor on hang, crash or timeout - after
+	# which the editor renders at full rate forever, including while it sits
+	# behind a running game competing for the same GPU. Nothing said so.
+	HighpolyFlightRun.restore_pending()
 	_apply_shape_outlines.call_deferred()
 	_restore_section_state.call_deferred()
 	Log.hook(_log_line)
