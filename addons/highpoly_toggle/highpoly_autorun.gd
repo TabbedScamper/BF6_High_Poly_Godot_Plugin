@@ -634,12 +634,15 @@ static func run(host: Node, dock: Node, mapctx: Node) -> void:
 					await _tree.process_frame
 				sweep[layer] = {
 					"median_ms": off.get("median_ms", 0.0),
+					"median_pos_ms": off.get("median_pos_ms", 0.0),
 					"draws_mean": off.get("draws_mean", 0),
 					"frames": off.get("frames", 0),
 				}
-				_say("autorun: without %-18s median %6.1f ms, %6d draws"
+				_say("autorun: without %-18s median %6.1f ms (per-pos %6.1f), %6d draws"
 						% [layer.replace("mapctx_", ""),
-						   off.get("median_ms", 0.0), off.get("draws_mean", 0)])
+						   off.get("median_ms", 0.0),
+						   off.get("median_pos_ms", 0.0),
+						   off.get("draws_mean", 0)])
 			# BOTH HEAVY LAYERS OFF AT ONCE: the floor. Single-toggle rows each
 			# leave the other layer on, so they say what a layer costs but not
 			# what is left when neither is there — and that is the ceiling on
@@ -656,6 +659,7 @@ static func run(host: Node, dock: Node, mapctx: Node) -> void:
 				var floor_r := await _fly(_tree, short)
 				sweep["_floor_no_backdrop_no_objects"] = {
 					"median_ms": floor_r.get("median_ms", 0.0),
+						"median_pos_ms": floor_r.get("median_pos_ms", 0.0),
 					"draws_mean": floor_r.get("draws_mean", 0),
 					"frames": floor_r.get("frames", 0)}
 				_say("autorun: neither backdrop nor objects  median %6.1f ms, %6d draws"
@@ -685,6 +689,7 @@ static func run(host: Node, dock: Node, mapctx: Node) -> void:
 				var bare := await _fly(_tree, short)
 				sweep["_engine_floor_scene_hidden"] = {
 					"median_ms": bare.get("median_ms", 0.0),
+						"median_pos_ms": bare.get("median_pos_ms", 0.0),
 					"draws_mean": bare.get("draws_mean", 0),
 					"frames": bare.get("frames", 0),
 					"process_ms": snappedf(Performance.get_monitor(
@@ -709,11 +714,68 @@ static func run(host: Node, dock: Node, mapctx: Node) -> void:
 			# The same short path with EVERYTHING on, so the comparisons are
 			# against a like-for-like reference rather than the full-length run.
 			var ref := await _fly(_tree, short)
+			# GUARD THE WHOLE SWEEP. If the reference flight looks like a cap
+			# rather than a cost, every row beside it is the same cap and the
+			# table is worthless. Said loudly and recorded, because a capped
+			# sweep has twice been reasoned about as though it were data.
+			var capped := HighpolyFlightRun.looks_capped(
+					float(ref.get("median_ms", 0.0)),
+					float(ref.get("p95_ms", 0.0)))
+			if capped != "":
+				sweep["_INVALID"] = capped
+				_say("autorun: SWEEP INVALID - %s" % capped)
 			sweep["_all_on"] = {"median_ms": ref.get("median_ms", 0.0),
+								"median_pos_ms": ref.get("median_pos_ms", 0.0),
 								"draws_mean": ref.get("draws_mean", 0),
 								"frames": ref.get("frames", 0)}
-			_say("autorun: with    everything        median %6.1f ms, %6d draws"
-					% [ref.get("median_ms", 0.0), ref.get("draws_mean", 0)])
+			_say("autorun: with    everything        median %6.1f ms (per-pos %6.1f), %6d draws"
+					% [ref.get("median_ms", 0.0), ref.get("median_pos_ms", 0.0),
+					   ref.get("draws_mean", 0)])
+
+			# HIDDEN VERSUS FREED. The scene is hidden in BOTH this row and the
+			# one above, so the only difference between them is whether OUR
+			# overlay is still in the tree.
+			#
+			# Why it is worth a row of its own: hidden-with-overlay costs about
+			# 17 ms with FIFTEEN draw calls, while the same scene with no
+			# overlay at all measures 2.3 ms and an empty editor 0.04 ms. If the
+			# cost tracks what is PRESENT rather than what is drawn, then every
+			# hide-based mechanism here rests on a false premise - the HLOD bake
+			# hides the originals instead of freeing them, the placed cull works
+			# on-hidden, and the layer chips hide. One measurement decides that,
+			# and it is cheaper than another nine bench runs on merging.
+			#
+			# Destructive on purpose: this tears the overlay down, so it runs
+			# last and the reference row below is taken before it.
+			var mo = host.get("mapctx_on")
+			if mo != null and mo is Button and (mo as Button).button_pressed \
+					and root is Node3D:
+				var vis2: bool = (root as Node3D).visible
+				var before_nodes := int(_engine().get("nodes", 0))
+				(mo as Button).button_pressed = false        # full teardown
+				# Teardown frees thousands of nodes. Give it real time rather
+				# than a frame count that happens to have been enough once.
+				for i in range(180):
+					await _tree.process_frame
+				(root as Node3D).visible = false
+				for i in range(30):
+					await _tree.process_frame
+				var freed_eng := _engine()
+				var freed := await _fly(_tree, short)
+				sweep["_floor_overlay_FREED_scene_hidden"] = {
+					"median_ms": freed.get("median_ms", 0.0),
+					"median_pos_ms": freed.get("median_pos_ms", 0.0),
+					"draws_mean": freed.get("draws_mean", 0),
+					"frames": freed.get("frames", 0),
+					"nodes_before": before_nodes,
+					"engine": freed_eng,
+				}
+				_say("autorun: OVERLAY FREED + scene hidden  median %6.1f ms, "
+						% freed.get("median_ms", 0.0)
+						+ "%6d draws, nodes %d (was %d)"
+						% [freed.get("draws_mean", 0),
+						   int(freed_eng.get("nodes", 0)), before_nodes])
+				(root as Node3D).visible = vis2
 			rep["sweep"] = sweep
 	rep["scene_nodes"] = _count_nodes(root)
 	rep["engine"] = _engine()
@@ -994,21 +1056,12 @@ static func _fly(_tree: SceneTree, samples: Array) -> Dictionary:
 	#
 	# Both sleeps go to zero for the flight and are put back afterwards; leaving
 	# a user's editor spinning at full tilt would be a real cost to them.
-	var es := EditorInterface.get_editor_settings()
-	var k_unfocused := "interface/editor/unfocused_low_processor_mode_sleep_usec"
-	var k_focused := "interface/editor/low_processor_mode_sleep_usec"
-	var was_unfocused = es.get_setting(k_unfocused) if es.has_setting(k_unfocused) else null
-	var was_focused = es.get_setting(k_focused) if es.has_setting(k_focused) else null
-	# ...and "put back afterwards" only happens if there IS an afterwards.
-	# This harness is force-killed on hang, crash or timeout, and then the
-	# zeroes are permanent. Park them on disk so the next boot undoes it.
-	# Shared with the flight harness rather than duplicated: this file is
-	# already ~60% a copy of that one and the divergence is the hazard.
-	HighpolyFlightRun._park_sleeps(was_unfocused, was_focused)
-	if was_unfocused != null:
-		es.set_setting(k_unfocused, 0)
-	if was_focused != null:
-		es.set_setting(k_focused, 0)
+	# UNCONDITIONALLY, via the shared helper. Reading the current value first
+	# and only zeroing when one existed meant a machine whose settings had
+	# never been written (every fresh install) skipped the zeroing silently
+	# and measured the 100 ms unfocused cap. The helper also parks the old
+	# values on disk so a killed run cannot leave them at zero.
+	var saved_sleeps := HighpolyFlightRun.zero_sleeps()
 
 	# The camera being written IS the editor's, so the stick check is now a
 	# self-check rather than an experiment: it confirms the write held for the
@@ -1031,14 +1084,37 @@ static func _fly(_tree: SceneTree, samples: Array) -> Dictionary:
 	# clock and every frame drawn in that window is timed. A slow config gets one
 	# frame per sample exactly as before; a fast one gets several, which is more
 	# data rather than a different route.
+	# ...AND THE SECOND-ORDER VERSION OF THE SAME TRAP, which holding the
+	# route at a fixed speed does NOT fix.
+	#
+	# `times` is per FRAME, not per POSITION. A slow config draws one frame at
+	# each viewpoint; a fast one draws five or six. The FIRST frame after the
+	# camera moves is the expensive one - it pays for whatever the move
+	# triggered in culling, streaming and newly visible geometry - and the
+	# repeats behind it are cheap. So a fast configuration contributes far
+	# more cheap repeat frames and its median comes out flattered, which
+	# biases exactly the comparison the sweep exists to make: a heavy layer
+	# looks heavier than it is.
+	#
+	# So the first frame of each sample is kept separately too. One frame per
+	# viewpoint, every configuration weighted identically. Both are reported:
+	# if they agree the bias is negligible and that is worth knowing, and if
+	# they diverge the per-position figure is the honest one for comparing
+	# configurations.
+	var first_times: Array[float] = []
 	var hold_us := 50000
 	for s in samples:
 		cam.global_transform = s
 		var until := Time.get_ticks_usec() + hold_us
+		var first := true
 		while true:
 			var t0 := Time.get_ticks_usec()
 			await _tree.process_frame
-			times.append((Time.get_ticks_usec() - t0) / 1000.0)
+			var dt := (Time.get_ticks_usec() - t0) / 1000.0
+			times.append(dt)
+			if first:
+				first_times.append(dt)
+				first = false
 			# BOTH PASSES. RENDER_INFO_TYPE_VISIBLE counts only the camera pass;
 			# shadow rendering is counted separately under _TYPE_SHADOW. Reading
 			# just the first made the draw-call total identical to the digit
@@ -1059,11 +1135,7 @@ static func _fly(_tree: SceneTree, samples: Array) -> Dictionary:
 			stuck += 1
 	var tried := samples.size()
 
-	if was_unfocused != null:
-		es.set_setting(k_unfocused, was_unfocused)
-	if was_focused != null:
-		es.set_setting(k_focused, was_focused)
-	HighpolyFlightRun._unpark_sleeps()
+	HighpolyFlightRun.restore_sleeps(saved_sleeps)
 	# NOTHING TO FREE. `sub` is the editor's OWN viewport now, not a private one
 	# — an earlier version created its own and freed it here, and leaving that
 	# free() behind after the switch would have destroyed the editor's 3D view.
@@ -1116,12 +1188,32 @@ static func _fly(_tree: SceneTree, samples: Array) -> Dictionary:
 		ssum += s
 		smax = maxi(smax, s)
 
+	# ONE FRAME PER VIEWPOINT. See the note at the sample loop: the per-frame
+	# median under-weights expensive viewpoints, and does so more in a fast
+	# configuration, which is precisely the comparison the sweep makes.
+	var pos_sorted := first_times.duplicate()
+	pos_sorted.sort()
+	var pn := pos_sorted.size()
+	var pos_median := 0.0
+	var pos_mean := 0.0
+	if pn > 0:
+		pos_median = pos_sorted[pn / 2]
+		for t in pos_sorted:
+			pos_mean += t
+		pos_mean /= float(pn)
+
 	return {
 		"frames": n,
+		"positions": pn,
 		"editor_cam_stuck": stuck,
 		"editor_cam_tried": tried,
 		"mean_ms": snappedf(mean, 0.01),
 		"median_ms": snappedf(sorted[n / 2], 0.01),
+		# The per-POSITION figures, weighted identically across configs.
+		"median_pos_ms": snappedf(pos_median, 0.01),
+		"mean_pos_ms": snappedf(pos_mean, 0.01),
+		"p95_pos_ms": snappedf(pos_sorted[mini(pn - 1, int(pn * 0.95))], 0.01) \
+			if pn > 0 else 0.0,
 		"p95_ms": snappedf(sorted[mini(n - 1, int(n * 0.95))], 0.01),
 		"p99_ms": snappedf(sorted[mini(n - 1, int(n * 0.99))], 0.01),
 		"low1_ms": snappedf(low1, 0.01),

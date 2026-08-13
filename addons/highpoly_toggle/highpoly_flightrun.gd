@@ -768,6 +768,67 @@ const K_SLEEP_UNFOCUSED := "interface/editor/unfocused_low_processor_mode_sleep_
 const K_SLEEP_FOCUSED := "interface/editor/low_processor_mode_sleep_usec"
 const SLEEP_PARK := "user://highpoly/editor_sleep_parked.json"
 
+# Godot's own defaults, needed because an unwritten setting reads as ABSENT.
+const SLEEP_DEFAULT_FOCUSED := 6900
+const SLEEP_DEFAULT_UNFOCUSED := 100000
+
+
+# Zero both sleeps for a flight, returning what to put back.
+#
+# THE BUG THIS REPLACES, which cost a whole bench run: both harnesses did
+#     var was = es.get_setting(k) if es.has_setting(k) else null
+#     if was != null: es.set_setting(k, 0)
+# so when the settings had never been WRITTEN - which is every fresh install,
+# and any machine where they were reset to their defaults, because Godot
+# strips settings equal to the default when it saves - `was` came back null
+# and the zeroing was silently skipped. The flight then measured the 100 ms
+# unfocused cap instead of the scene: every sweep row landed within 0.15 ms
+# of 100.0, with the heaviest and the emptiest configuration indistinguishable.
+#
+# Now it zeroes unconditionally and remembers the DEFAULT when there was no
+# explicit value, so the restore is still correct.
+static func zero_sleeps() -> Dictionary:
+	var es := EditorInterface.get_editor_settings()
+	if es == null:
+		return {}
+	var un: int = int(es.get_setting(K_SLEEP_UNFOCUSED)) \
+		if es.has_setting(K_SLEEP_UNFOCUSED) else SLEEP_DEFAULT_UNFOCUSED
+	var fo: int = int(es.get_setting(K_SLEEP_FOCUSED)) \
+		if es.has_setting(K_SLEEP_FOCUSED) else SLEEP_DEFAULT_FOCUSED
+	_park_sleeps(un, fo)
+	es.set_setting(K_SLEEP_UNFOCUSED, 0)
+	es.set_setting(K_SLEEP_FOCUSED, 0)
+	return {"unfocused": un, "focused": fo}
+
+
+static func restore_sleeps(saved: Dictionary) -> void:
+	var es := EditorInterface.get_editor_settings()
+	if es == null or saved.is_empty():
+		return
+	es.set_setting(K_SLEEP_UNFOCUSED,
+		int(saved.get("unfocused", SLEEP_DEFAULT_UNFOCUSED)))
+	es.set_setting(K_SLEEP_FOCUSED,
+		int(saved.get("focused", SLEEP_DEFAULT_FOCUSED)))
+	_unpark_sleeps()
+
+
+# Does this result look like a CAP rather than a cost?
+#
+# The signature is a median pinned near a known sleep value with almost no
+# spread. It has now happened twice in this project's history through two
+# different routes, and both times the numbers looked plausible enough to
+# reason about for a while, so it is checked rather than remembered.
+static func looks_capped(median_ms: float, p95_ms: float) -> String:
+	if median_ms <= 0.0:
+		return ""
+	for cap in [100.0, 6.9]:
+		if absf(median_ms - cap) < 1.5 and absf(p95_ms - median_ms) < 2.0:
+			return ("median %.1f ms with almost no spread is the signature of "
+				+ "a %.1f ms editor idle sleep, not a frame cost. The sleeps "
+				+ "were not zeroed for this flight and its timings mean "
+				+ "nothing.") % [median_ms, cap]
+	return ""
+
 
 static func _park_sleeps(was_un: Variant, was_fo: Variant) -> void:
 	if was_un == null and was_fo == null:
@@ -832,23 +893,10 @@ static func _fly(tree: SceneTree, vp: SubViewport, samples: Array) -> Dictionary
 	# never has focus. The default 100000 usec sleep produced a flight with a
 	# mean of 100.0 ms and almost no variance, which is the signature of a cap
 	# and not of a cost. Both sleeps go to zero and are put back afterwards.
-	var es := EditorInterface.get_editor_settings()
-	var k_un := K_SLEEP_UNFOCUSED
-	var k_fo := K_SLEEP_FOCUSED
-	var was_un: Variant = es.get_setting(k_un) if es != null and es.has_setting(k_un) else null
-	var was_fo: Variant = es.get_setting(k_fo) if es != null and es.has_setting(k_fo) else null
-	# PARK THE OLD VALUES ON DISK FIRST. The restore below runs on the happy
-	# path only, and this harness is force-killed by perfrun.py on a hang,
-	# crash or timeout - at which point the editor is left spinning at full
-	# tilt forever, in the user's own settings, with nothing to say why. That
-	# is not hypothetical: it is how a machine ended up rendering the whole
-	# map behind Battlefield 6 while both were fighting over one GPU. The
-	# plugin picks this file up at boot and puts the values back.
-	_park_sleeps(was_un, was_fo)
-	if was_un != null:
-		es.set_setting(k_un, 0)
-	if was_fo != null:
-		es.set_setting(k_fo, 0)
+	# Unconditional, and parked on disk against a killed run. See zero_sleeps:
+	# reading the value first and only zeroing when one existed meant a fresh
+	# install measured the 100 ms cap instead of the scene.
+	var saved_sleeps := zero_sleeps()
 
 	var hold_us: int = int(_cfg["hold_ms"]) * 1000
 	var ms: Array = []            # per drawn frame
@@ -896,11 +944,7 @@ static func _fly(tree: SceneTree, vp: SubViewport, samples: Array) -> Dictionary
 		if cam.global_transform.origin.distance_to(tf.origin) < 0.5:
 			stuck += 1
 
-	if was_un != null:
-		es.set_setting(k_un, was_un)
-	if was_fo != null:
-		es.set_setting(k_fo, was_fo)
-	_unpark_sleeps()
+	restore_sleeps(saved_sleeps)
 	if ms.is_empty():
 		return {"error": "no frames were recorded during the flight"}
 
