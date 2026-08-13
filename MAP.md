@@ -318,6 +318,56 @@ underneath. An earlier reading of "30 s before the plugin exists" was an
 artifact of the event stream being created lazily on the first thing that
 logged; `plugin.ready` is now emitted deliberately.
 
+### THE FRAME RATE, measured 2026-08-13 in the REAL editor
+**MEASURE FOCUSED OR DO NOT MEASURE.** An unfocused editor sleeps 100 ms per
+frame (`unfocused_low_processor_mode_sleep_usec`) and View > Frame Time reports
+that stall as GPU TIME. Same editor, same scene, same overlay:
+
+| | cpu | gpu | fps |
+|---|---|---|---|
+| unfocused | 25-28 ms | 30-35 ms | 28-32 |
+| **focused, flying** | **25-28 ms** | **19 ms** | **51** |
+| focused, range 600 m | 13-14 ms | 14 ms | 65-70 |
+
+So the frame is **CPU bound** at No Cull: ~9 ms of draw submission (15,719
+draws at 5120x1440) stands between the user and 60 fps. The "GPU climbing 8 ->
+30 ms over time" that this session chased for hours was the editor settling
+into background idle. Nothing was climbing.
+
+**The bench runs UNATTENDED and therefore UNFOCUSED**, and its window is
+1600x900 where the real one is 5120x1440 (it drew 10,391 against 15,719). Both
+gaps make every unattended figure describe a state the user never works in.
+`session.py` should force focus before flying; not yet done.
+
+Dock changes that came out of it: the range slider is now **10..1000 m
+defaulting to 500** with **No Cull as its own button** (it used to be the top
+notch of a 0..3500 slider, which is where a drag lands and is the most
+expensive setting there is), and a **"Draw when unfocused"** chip sets the
+background sleep to 16 ms so the editor stays readable at ~60 fps.
+
+### FOUR THINGS CHANGED THE USER'S SETTINGS AND DID NOT RESTORE THEM
+All found in one session; treat any new `set_setting` or slider write as
+guilty until it parks and restores:
+1. the bench's `low_processor_mode_sleep_usec`
+2. the bench's `unfocused_low_processor_mode_sleep_usec`
+3. **the bench's RANGE SLIDER** - driven to No Culling, recorded, never put
+   back, into a value the dock PERSISTS per map in project metadata. One run
+   pinned a user's editor in its slowest configuration for every future
+   session; ~130 runs exist on that machine.
+4. the new unfocused chip (restored three ways by construction)
+
+### godot-mcp limits, VERIFIED not assumed (2026-08-13)
+- `execute_editor_script` is EXPRESSION ONLY: no assignment, and
+  `EditorInterface` is not reachable. "Invalid named index 'EditorInterface'".
+- `get_editor_camera` returns `{}` - the editor camera cannot be driven from
+  MCP, matching the note in `highpoly_autorun._fly` that
+  `get_editor_viewport_3d()` hands back a plain SubViewport.
+- `get_editor_performance` DOES work and is trustworthy for draw calls,
+  object counts and memory. Its fps is only meaningful when the editor is
+  focused AND something is changing (the editor redraws on demand).
+- Focus can be forced from PowerShell (`WScript.Shell.AppActivate` on the
+  editor pid), which is how to make a remote reading meaningful.
+
 ### Three boot-time laws, each paid for
 - **Settling is not a CPU threshold.** `cpu_pct` is normalised across cores
   and boot is single-threaded: one saturated thread is ~3.1% of 32 cores. Use
