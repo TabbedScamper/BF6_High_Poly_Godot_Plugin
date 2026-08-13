@@ -250,8 +250,13 @@ static func chunk_forms(chunk_id: PackedByteArray) -> Array:
 # `chunk` is the LOD's [vertex buffer][index buffer], which the caller fetches
 # (the source knows how; this reader does not). Pass an empty array for an
 # inline MeshSet and it will be recovered from the file itself.
+# keep_all_uvs additionally emits "uv_all" per section - EVERY declared UV
+# channel as its own PackedVector2Array, in declared order - for the object
+# debugger, which lets a user flip a surface between channels live. Off by
+# default because the build never needs more than the chosen channel and the
+# copies are pure cost there.
 func read_lod(d: PackedByteArray, lod := 0, chunk := PackedByteArray(),
-		keep_shadow := false) -> Array:
+		keep_shadow := false, keep_all_uvs := false) -> Array:
 	error = ""
 	var info := parse(d)
 	if info.is_empty() or lod >= (info["lods"] as Array).size():
@@ -415,8 +420,18 @@ func read_lod(d: PackedByteArray, lod := 0, chunk := PackedByteArray(),
 		# state_key and material_id ride along: a caller that has decoded a
 		# section still needs to know which depot record dresses it, and
 		# re-parsing the file to find out would be absurd.
+		var uv_all: Array = []
+		if keep_all_uvs:
+			for us in uv_sets:
+				var sa: PackedFloat32Array = (us as Array)[0]
+				var ca: int = (us as Array)[1]
+				var pa := PackedVector2Array()
+				pa.resize(vcount)
+				for i in range(vcount):
+					pa[i] = Vector2(sa[i * ca], sa[i * ca + 1])
+				uv_all.append(pa)
 		out.append({"material": s["material"], "verts": verts, "uvs": uvs,
-					"uv2": uv2, "uv2_src": uv2_src,
+					"uv2": uv2, "uv2_src": uv2_src, "uv_all": uv_all,
 					"normals": normals, "indices": idx,
 					"uv_sets": uv_sets.size(),
 					"state_key": s.get("state_key", 0),

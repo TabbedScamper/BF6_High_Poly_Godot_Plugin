@@ -653,6 +653,16 @@ static func focus_node() -> Node:
 	return _focus.get("node") if has_focus() else null
 
 
+# Everything the object debugger needs to adopt the current focus: the
+# overlay node, the shared mesh, the instance index and the focused thing's
+# world transform. A copy, so the debugger cannot mutate the ladder.
+static func focus_info() -> Dictionary:
+	if not has_focus():
+		return {}
+	return {"node": _focus["node"], "mesh": _focus["mesh"],
+		"inst": int(_focus["inst"]), "xform": _focus_xform()}
+
+
 # Where the pick actually LANDED, in world space - the clicked point when the
 # ray recorded one, else the focused instance's own origin. This is what lets
 # a dropped marker sit on the ONE clicked instance instead of the middle of a

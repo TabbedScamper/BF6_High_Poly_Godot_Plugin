@@ -5881,6 +5881,35 @@ func cache_stats() -> Dictionary:
 	}
 
 
+# THE OBJECT DEBUGGER'S RAW FEED: one mesh re-read from the install with
+# EVERY UV channel kept, one entry per renderable section (not merged - the
+# debugger wants parts, the build wants draw calls). Nothing is cached: this
+# runs once per Debug press on one prop, and holding a second copy of a mesh
+# the build already holds would be pure weight.
+func debug_sections(res_name: String) -> Array:
+	if src == null:
+		return []
+	var d := src.get_res(res_name)
+	if d.is_empty():
+		return []
+	var info := _ms.parse(d)
+	if info.is_empty():
+		return []
+	var lods: Array = info.get("lods", [])
+	if lods.is_empty():
+		return []
+	var L: Dictionary = lods[0]
+	var chunk := PackedByteArray()
+	var cid: PackedByteArray = L.get("chunk_id", PackedByteArray())
+	if not cid.is_empty():
+		for form in BF6MeshSet.chunk_forms(cid):
+			chunk = src.get_chunk(str(form))
+			if not chunk.is_empty():
+				break
+	var secs = _ms.read_lod(d, 0, chunk, false, true)
+	return secs if secs is Array else []
+
+
 func describe(am: Mesh) -> Dictionary:
 	var out := {"found": false, "mesh": "", "scope": "", "variation": 0,
 		"surfaces": []}

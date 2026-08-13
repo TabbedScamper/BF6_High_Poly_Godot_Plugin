@@ -220,6 +220,10 @@ var _storage_gen := 0          # supersedes an in-flight usage scan
 # is silent (a rung that quietly downloads gigabytes, or repaints a map the wrong
 # colour). Splitting them out is what makes them checkable.
 const Modes = preload("highpoly_modes.gd")
+const ObjDebugScript = preload("highpoly_objdebug.gd")
+# The object debug window (Pick mode's Debug button). Lazily built, and held
+# here so teardown can close it - an orphaned Window outlives the plugin.
+var objdebug = null
 const MODE_SDK := Modes.SDK
 const MODE_LIGHT := Modes.LIGHT
 const MODE_GREY := Modes.GREY
@@ -1610,6 +1614,32 @@ All of it is read from your own Battlefield 6 installation."
 			return
 		lbl.text = HighpolyDiagnose.hide_focus(r))
 	diag_row.add_child(hide_btn)
+	# ---- object debug: isolate the picked thing and turn its knobs ----
+	# The step past diagnosing: the report SAYS what the record binds, this
+	# SHOWS it - the object alone, every part listed with its textures and
+	# state key, and live controls (UV channel, albedo slot, cutout, tint,
+	# roughness, emission) to dial in what looks right. "Copy report" exports
+	# only the changed knobs against the object's identity, which is exactly
+	# the shape a code fix starts from.
+	var debug_btn := Button.new()
+	debug_btn.text = "Debug"
+	debug_btn.tooltip_text = "Opens the object debugger on the picked object: hides the rest of the map, rebuilds this one alone with every UV channel available, and lists everything the game binds to each part. Change the knobs until it looks right, then Copy report puts the recipe in the log and clipboard. Close puts the map back."
+	debug_btn.pressed.connect(func():
+		var r := EditorInterface.get_edited_scene_root()
+		if r == null:
+			lbl.text = "Open a level scene first."
+			return
+		if not HighpolyDiagnose.has_focus():
+			lbl.text = "Pick an object first: turn Pick mode on, hover it and click."
+			return
+		if objdebug == null:
+			objdebug = ObjDebugScript.new()
+		var err: String = objdebug.open(
+			mapctx.game_source if mapctx != null else null, r,
+			HighpolyDiagnose.focus_info())
+		lbl.text = ("Object Debug open. The map is hidden around it; "
+			+ "Close in the window brings everything back.") if err == "" else err)
+	diag_row.add_child(debug_btn)
 	# ---- unhide: bring back what pick mode hid ----
 	# Right click / H on a highlighted object gets it out of the way of the
 	# thing behind it; this is the way back. It restores everything at once
@@ -2166,6 +2196,11 @@ func _exit_tree() -> void:
 	# died rather than closed, so this has to run on the ordinary path — and it
 	# runs first, before any of the teardown below can throw and skip it.
 	HighpolyProfiler.crumbs_end()
+	# The object debugger holds a Window parented to the editor itself and an
+	# isolation over the scene; both outlive this dock unless closed here.
+	if objdebug != null:
+		objdebug.close()
+		objdebug = null
 	# A recording left running across a plugin reload would leave open buckets on
 	# a stack that outlives the panel, and the next session would charge its first
 	# frames to whatever was open when this one ended.
