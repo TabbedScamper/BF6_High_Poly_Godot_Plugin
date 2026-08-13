@@ -1720,6 +1720,22 @@ All of it is read from your own Battlefield 6 installation."
 		lbl.text = "Saved %s" % p
 		OS.shell_show_in_file_manager(p))
 	log_row.add_child(save_log)
+	# The log file answers "what happened". This answers "what was it, and
+	# what did the build decide about it", which is the half that used to
+	# take three replies to collect by hand.
+	var save_bundle := Button.new()
+	save_bundle.text = "Save diagnostics"
+	save_bundle.tooltip_text = "Packs the log, the live event stream, the state snapshot, the crash trail and this map's build decisions into one zip, and opens the folder. This is the file to attach to a bug report: it says which plugin build was running, whether it was out of date, which map, and which rule the build applied to each object."
+	save_bundle.pressed.connect(func():
+		var m: String = mapctx.map_of(EditorInterface.get_edited_scene_root()) \
+			if mapctx != null else ""
+		var p: String = Log.save_bundle(m)
+		if p == "":
+			lbl.text = "Could not write the diagnostics bundle. See Godot's Output panel."
+			return
+		lbl.text = "Saved %s" % p
+		OS.shell_show_in_file_manager(p))
+	log_row.add_child(save_bundle)
 	var clear_log := Button.new()
 	clear_log.text = "Clear"
 	clear_log.tooltip_text = "Empties the list below. Does not undo anything."
@@ -1801,6 +1817,16 @@ All of it is read from your own Battlefield 6 installation."
 	# which the editor renders at full rate forever, including while it sits
 	# behind a running game competing for the same GPU. Nothing said so.
 	HighpolyFlightRun.restore_pending()
+	# EMITTED EAGERLY, not on the first thing that happens to log. The stream
+	# was created lazily, so a clean session that never warned produced no
+	# file at all - and "when did the plugin come alive" is the marker that
+	# splits engine boot from everything after it. A boot measurement without
+	# it can only report a total. Costs one line per session.
+	HighpolyLog.event("plugin.ready", {
+		"map": mapctx.map_of(EditorInterface.get_edited_scene_root())
+			if mapctx != null else "",
+		"boot_ms": Time.get_ticks_msec(),
+	})
 	_apply_shape_outlines.call_deferred()
 	_restore_section_state.call_deferred()
 	Log.hook(_log_line)
@@ -2059,6 +2085,10 @@ All of it is read from your own Battlefield 6 installation."
 		# the session log is not (law C11). Throttled: the heartbeat fires
 		# twice a second and none of this changes that fast.
 		_write_state_snapshot()
+		# Once, when the restored scene finally exists. It cannot be done in
+		# _enter_tree: the plugin is alive ~8 s in and the scene tab is still
+		# being restored well after that.
+		_boot_advice()
 		HighpolyProfile.end("panel heartbeat"))
 	# Every "it hangs when I do X" report needs to know what was switched on,
 	# and not one of them has ever carried it. Registered rather than snapshotted
@@ -2150,6 +2180,69 @@ All of it is read from your own Battlefield 6 installation."
 var _state_next := 0
 var _state_cache_next := 0
 var _state_cache := {}
+
+# ---------------------------------------------------------------------------
+# THE BOOT ADVISOR
+#
+# MEASURED 2026-08-13 on one machine (32 cores, RTX 4080, warm caches): the
+# editor settles about 38 s after launch, and roughly 8-9 s of that is
+# instancing a full map scene the editor reopens from its last session, at a
+# cost of 1.36 GB. Booting the same project with that tab closed settled in
+# 30.0 s against 37.6-39.2 s with it.
+#
+# Nothing else on that machine was worth acting on: the object library costs
+# ~6 s, the 10,881 object SCENES cost ~0.4 s, a Defender exclusion ~1 s, and
+# this whole plugin ~1 s, all against a ~2.5 s noise floor. So this advises on
+# exactly ONE thing, because it is the only lever that survived measurement.
+#
+# It TELLS, it does not act: which tabs are open is the user's business, and
+# a plugin that closes someone's scene to save itself nine seconds has
+# overstepped. The seconds quoted are labelled as a reference measurement,
+# because they are one machine's numbers and not necessarily anybody else's.
+var _boot_advised := false
+
+func _boot_advice() -> void:
+	if _boot_advised:
+		return
+	var root := EditorInterface.get_edited_scene_root()
+	if root == null:
+		return                       # nothing restored (or not yet)
+	_boot_advised = true
+	var map: String = mapctx.map_of(root) if mapctx != null else ""
+	if map == "":
+		return                       # not a map scene, so no advice to give
+	var nodes := _count_nodes(root)
+	# A map scene the editor reopens is only worth mentioning when it is
+	# actually heavy. A small one costs nothing and the advice would be noise.
+	if nodes < 20000:
+		return
+	var ready_s := snappedf(HighpolyLog.boot_seconds(), 0.1)
+	HighpolyLog.info(("boot: this editor reopened %s (%s nodes) from your last "
+		+ "session, and the plugin was ready %.1f s in. Instancing a full map "
+		+ "on boot cost 8-9 s and 1.36 GB on the machine this was measured "
+		+ "on. Closing the map tab before you quit skips it; the map itself "
+		+ "is unaffected.") % [map, _thousands(nodes), ready_s])
+	HighpolyLog.event("boot.advice", {"map": map, "nodes": nodes,
+		"plugin_ready_s": ready_s})
+
+
+static func _count_nodes(n: Node) -> int:
+	var total := 1
+	for c in n.get_children():
+		total += _count_nodes(c)
+	return total
+
+
+static func _thousands(n: int) -> String:
+	var s := str(n)
+	var out := ""
+	var c := 0
+	for i in range(s.length() - 1, -1, -1):
+		out = s[i] + out
+		c += 1
+		if c % 3 == 0 and i > 0:
+			out = "," + out
+	return out
 
 func _write_state_snapshot() -> void:
 	var now := Time.get_ticks_msec()

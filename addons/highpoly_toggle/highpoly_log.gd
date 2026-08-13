@@ -237,6 +237,15 @@ static var _ev_t0 := 0
 static var _ev_failed := false     # one complaint, not one per line
 
 
+# Seconds since the event stream opened, which is the plugin coming alive.
+# NOT the same as the editor being ready: the filesystem scan, the scene
+# restore and the GPU upload all continue underneath for a good while after.
+static func boot_seconds() -> float:
+	if _ev_t0 == 0:
+		return 0.0
+	return (Time.get_ticks_msec() - _ev_t0) / 1000.0
+
+
 static func plugin_version() -> String:
 	var cf := ConfigFile.new()
 	if cf.load("res://addons/highpoly_toggle/plugin.cfg") == OK:
@@ -339,6 +348,97 @@ static func write_state(d: Dictionary) -> void:
 	if FileAccess.file_exists(STATE_PATH):
 		DirAccess.remove_absolute(STATE_PATH)
 	DirAccess.rename_absolute(tmp, STATE_PATH)
+
+
+# ---------------------------------------------------------------------------
+# THE DIAGNOSTICS BUNDLE
+#
+# Everything needed to answer "why does it look like that" already exists on
+# disk, in five different files, in a directory most people cannot find. So a
+# report arrives as a sentence and a screenshot, and the first three replies
+# are always asking for the same files.
+#
+# One button, one zip. Deliberately includes the PREVIOUS session's stream and
+# breadcrumbs as well: the session worth diagnosing is very often the one that
+# just crashed, not the one writing the report.
+#
+# Returns the absolute path, or "" with the reason logged.
+static func save_bundle(map_name := "") -> String:
+	var stamp := Time.get_datetime_string_from_system(true).replace(":", "-")
+	var path := "user://highpoly-diagnostics-%s.zip" % stamp
+	var zip := ZIPPacker.new()
+	if zip.open(path) != OK:
+		error("could not create the diagnostics bundle at %s" % path)
+		return ""
+
+	# name in the zip -> where it lives now
+	var want := {
+		"events.jsonl": EVENTS_PATH,
+		"events-prev.jsonl": EVENTS_PREV,
+		"state.json": STATE_PATH,
+		"build_journal.txt": "user://highpoly/build_journal.txt",
+		"breadcrumbs.txt": "user://highpoly/breadcrumbs.txt",
+		"breadcrumbs-prev.txt": "user://highpoly/breadcrumbs-prev.txt",
+		# The session log on disk is the PREVIOUS session while the editor
+		# runs (law C11). It goes in NAMED as such, so nobody reads it as the
+		# current one and spends an hour confused.
+		"previous-session.log": SESSION_LOG,
+	}
+	if map_name != "":
+		want["decisions.jsonl"] = "user://mapcontext/%s/decisions.jsonl" % map_name
+	var included := []
+	var missing := []
+	for name in want:
+		var src: String = want[name]
+		if not FileAccess.file_exists(src):
+			missing.append(name)
+			continue
+		var f := FileAccess.open(src, FileAccess.READ)
+		if f == null:
+			missing.append(name + " (unreadable)")
+			continue
+		var bytes := f.get_buffer(f.get_length())
+		f.close()
+		zip.start_file(name)
+		zip.write_file(bytes)
+		zip.close_file()
+		included.append("%s (%s)" % [name, human_bytes(bytes.size())])
+
+	# The live log is the one thing NOT on disk yet, so it is written from the
+	# in-memory ring rather than left out of the bundle that exists to carry it.
+	zip.start_file("this-session.log")
+	zip.write_file((header() + "\n" + _ring_text()).to_utf8_buffer())
+	zip.close_file()
+
+	zip.start_file("MANIFEST.txt")
+	zip.write_file(("BF6 High-Poly Preview diagnostics\n"
+		+ "written    %s\n" % Time.get_datetime_string_from_system(true)
+		+ "map        %s\n" % (map_name if map_name != "" else "(none open)")
+		+ "\nincluded:\n  " + "\n  ".join(included)
+		+ ("\n\nnot present (this is normal unless you expected it):\n  "
+			+ "\n  ".join(missing) if not missing.is_empty() else "")
+		+ "\n\nWhat these are:\n"
+		+ "  events.jsonl     one JSON object per event, live during the session\n"
+		+ "  state.json       plugin version and staleness, map, build, caches\n"
+		+ "  decisions.jsonl  which rule fired per material state during the build\n"
+		+ "  breadcrumbs.txt  survives a hard kill; ends where the editor died\n"
+		).to_utf8_buffer())
+	zip.close_file()
+	zip.close()
+
+	var abs := ProjectSettings.globalize_path(path)
+	info("diagnostics bundle: %s (%d file(s))" % [abs, included.size() + 2])
+	event("bundle.saved", {"path": abs, "included": included,
+		"missing": missing})
+	return abs
+
+
+static func _ring_text() -> String:
+	var out := PackedStringArray()
+	for r in _lines:
+		out.append("%s  %s  %s" % [str(r["t"]), _tag(int(r["lvl"])),
+			str(r["m"])])
+	return "\n".join(out)
 
 
 static func events_close() -> void:
