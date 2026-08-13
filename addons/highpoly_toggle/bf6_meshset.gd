@@ -310,10 +310,16 @@ func read_lod(d: PackedByteArray, lod := 0, chunk := PackedByteArray(),
 				if not r2.is_empty():
 					nrm = r2[0]
 					nrm_comps = r2[1]
-			elif usage == U_UV0 or usage == U_UV1:
+			elif usage >= U_UV0 and usage <= 36:
+				# TexCoord0..3. TC2/TC3 (35/36) were invisible to this reader
+				# until the police SUV's livery proved its wrap unwrap lives on
+				# TC3 - "both channels don't map the police livery right" was a
+				# user reading the truth off the debugger. Entries carry their
+				# USAGE, because sections do not all declare the same sets and
+				# a consumer must ask for a texcoord by number, not by index.
 				var r3 := _read_attr(buf, voff, vcount, el, streams)
 				if not r3.is_empty() and int(r3[1]) >= 2:
-					uv_sets.append([r3[0], int(r3[1])])
+					uv_sets.append([usage, r3[0], int(r3[1])])
 		if pos.is_empty() or pos_comps < 3:
 			continue
 
@@ -347,32 +353,33 @@ func read_lod(d: PackedByteArray, lod := 0, chunk := PackedByteArray(),
 		#   channels are identical (the delivery van) either answer draws the
 		#   same, which is why this stayed invisible for a day.
 		#
-		#   CarPaint sections take the WRAP channel: the first whose V fits
-		#   0..1 with u left free - vehicle shells mirror left/right so u
-		#   legitimately spans ~2-3 and texture repeat handles it, which is
-		#   exactly why the bake rule (both axes 0..1) can never find it.
-		#   Measured: the police SUV's wrap unwrap is channel 0 (v 0.01..1.00,
-		#   the old body-maps-through-UV0 result) while the ambulance's is
-		#   channel 1 (ch0 v dips to -0.18; ch1 v 0.01..1.00 and wins the
-		#   art-alignment score 46.9% to 32.5%) - per MESH, so it must be
-		#   derived, never assumed.
+		#   CarPaint sections take the WRAP channel, and WHICH texcoord that
+		#   is comes from the DEPOT, not from geometry: the record's bool
+		#   constant 0x4f5f0664 selects TexCoord1 when set and TexCoord3
+		#   otherwise. Measured across every real wrap on mp_aftermath: the
+		#   ambulance is the lone 1 (its livery aligns on TC1), the police
+		#   SUV, the sedan's police and taxi wraps and the firetruck are all
+		#   0-or-absent and align on TC3 (verified by rasterising each wrap
+		#   through every channel). Geometry tests kept failing here - the
+		#   SUV's TC3 spans v -2.12..0.99 because unliveried pieces are parked
+		#   OUTSIDE the sheet, so no fits-0..1 rule can find it. This reader
+		#   has no depot, so carpaint keeps TC0 here and the CALLER overrides
+		#   the section's uvs from uv_all once it has resolved the record
+		#   (highpoly_gamesource._wrap_channel_fix).
 		#
 		# Everything else keeps the bake rule that fixed the delivery van's
 		# exterior and interior detail.
+		var mlow := str(s["material"]).to_lower()
+		var is_carpaint := mlow.contains("carpaint")
 		var uvs := PackedVector2Array()
 		if uv_sets.is_empty():
 			uvs.resize(vcount)
 		else:
-			var mlow := str(s["material"]).to_lower()
 			var upick := 0
-			if mlow.contains("unique"):
-				upick = 0
-			elif mlow.contains("carpaint"):
-				upick = _wrap_uv_channel(uv_sets, vcount)
-			else:
+			if not (mlow.contains("unique") or is_carpaint):
 				upick = _bake_uv_channel(uv_sets, vcount)
-			var src: PackedFloat32Array = uv_sets[upick][0]
-			var c: int = uv_sets[upick][1]
+			var src: PackedFloat32Array = (uv_sets[upick] as Array)[1]
+			var c: int = (uv_sets[upick] as Array)[2]
 			uvs.resize(vcount)
 			for i in range(vcount):
 				uvs[i] = Vector2(src[i * c], src[i * c + 1])
@@ -412,8 +419,8 @@ func read_lod(d: PackedByteArray, lod := 0, chunk := PackedByteArray(),
 						uv2[i] = Vector2(src4[i * c4], src4[i * c4 + 1])
 					uv2_src = "tc4"
 		if uv2_src == "" and uv_sets.size() > 1:
-			var src2: PackedFloat32Array = uv_sets[1][0]
-			var c2: int = uv_sets[1][1]
+			var src2: PackedFloat32Array = (uv_sets[1] as Array)[1]
+			var c2: int = (uv_sets[1] as Array)[2]
 			uv2.resize(vcount)
 			for i in range(vcount):
 				uv2[i] = Vector2(src2[i * c2], src2[i * c2 + 1])
@@ -450,16 +457,20 @@ func read_lod(d: PackedByteArray, lod := 0, chunk := PackedByteArray(),
 		# state_key and material_id ride along: a caller that has decoded a
 		# section still needs to know which depot record dresses it, and
 		# re-parsing the file to find out would be absurd.
+		# uv_all entries are [usage, PackedVector2Array] pairs. Emitted for
+		# the debugger on request, and ALWAYS for carpaint sections so the
+		# caller can apply the depot's wrap-channel choice after the fact.
 		var uv_all: Array = []
-		if keep_all_uvs:
+		if keep_all_uvs or is_carpaint:
 			for us in uv_sets:
-				var sa: PackedFloat32Array = (us as Array)[0]
-				var ca: int = (us as Array)[1]
+				var ua: int = (us as Array)[0]
+				var sa: PackedFloat32Array = (us as Array)[1]
+				var ca: int = (us as Array)[2]
 				var pa := PackedVector2Array()
 				pa.resize(vcount)
 				for i in range(vcount):
 					pa[i] = Vector2(sa[i * ca], sa[i * ca + 1])
-				uv_all.append(pa)
+				uv_all.append([ua, pa])
 		out.append({"material": s["material"], "verts": verts, "uvs": uvs,
 					"uv2": uv2, "uv2_src": uv2_src, "uv_all": uv_all,
 					"normals": normals, "indices": idx,
@@ -658,33 +669,16 @@ func _read_indices(buf: PackedByteArray, vsize: int, isize: int, idx32: bool,
 # -0.05..1.05 on both axes with a span over 0.05 wins; anything else keeps
 # UV0. The tolerance and the degenerate-span guard are the pipeline's own
 # numbers - the whole prop fleet rendered through them.
-# The livery/wrap channel for a CarPaint section: the first channel whose V
-# fits 0..1, u left free - the shell mirrors left/right so u wraps, and the
-# both-axes bake test can never find this unwrap. Validated on the police
-# SUV (channel 0), the ambulance (channel 1, user-confirmed via the object
-# debugger) and the delivery van's placeholder wrap (no channel fits, falls
-# back to 0, harmless because a placeholder samples as one colour anyway).
-static func _wrap_uv_channel(uv_sets: Array, vcount: int) -> int:
-	for k in range(uv_sets.size()):
-		var src: PackedFloat32Array = (uv_sets[k] as Array)[0]
-		var c: int = (uv_sets[k] as Array)[1]
-		if src.size() < vcount * c:
-			continue
-		var lo := 1e20
-		var hi := -1e20
-		for i in range(vcount):
-			var v := src[i * c + 1]
-			lo = minf(lo, v)
-			hi = maxf(hi, v)
-		if lo >= -0.05 and hi <= 1.05 and hi - lo > 0.05:
-			return k
-	return 0
-
-
+# DELIBERATELY only TexCoord1 is considered a bake candidate: TC2/TC3 are
+# read too now (the wrap machinery needs them) but were never part of this
+# rule's fleet measurement, and widening a proven rule silently is how
+# regressions ship. Entries are [usage, data, comps].
 static func _bake_uv_channel(uv_sets: Array, vcount: int) -> int:
-	for k in range(1, uv_sets.size()):
-		var src: PackedFloat32Array = (uv_sets[k] as Array)[0]
-		var c: int = (uv_sets[k] as Array)[1]
+	for k in range(uv_sets.size()):
+		if int((uv_sets[k] as Array)[0]) != U_UV1:
+			continue
+		var src: PackedFloat32Array = (uv_sets[k] as Array)[1]
+		var c: int = (uv_sets[k] as Array)[2]
 		if src.size() < vcount * c:
 			continue
 		var lo_u := 1e20

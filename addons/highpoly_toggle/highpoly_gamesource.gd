@@ -866,7 +866,7 @@ static var n_blend_named := 0
 
 # 8: surfaces now carry ARRAY_TEX_UV2 where the mesh has a genuine second
 # unwrap, so a cached epoch-7 mesh would serve geometry without it forever.
-const GEOM_EPOCH := 10
+const GEOM_EPOCH := 11
 
 # A FUNCTION, not read as a constant from outside, and that is load-bearing.
 # GDScript folds a constant into the caller at parse time, so a caller that read
@@ -6239,6 +6239,7 @@ func _mesh_for_body(group_key: String, lod := 0) -> Mesh:
 	var secs = _ms.read_lod(d, li, chunk, false)
 	if not (secs is Array) or (secs as Array).is_empty():
 		return null
+	_wrap_channel_fix(secs, scope, var_hash)
 
 	# ONE SURFACE PER MATERIAL, not one per section.
 	#
@@ -8478,6 +8479,59 @@ const C_SMOKE_GAIN := 0x3B6C99D6
 # developers gave it is unknown - a 5,000-candidate FNV1 brute force found
 # nothing - so it lives here as the hash the depot actually stores.
 const C_ALPHA_TEST := 0x77D10576
+
+# THE WRAP TEXCOORD SELECTOR: bool constant 0x4f5f0664 on a carpaint record
+# picks which texcoord the livery samples - TexCoord1 when set, TexCoord3
+# otherwise. Measured across every real wrap on mp_aftermath: the ambulance
+# is the lone 1 and its livery aligns on TC1; the police SUV, the sedan's
+# police and taxi wraps and the firetruck are all 0-or-absent and align on
+# TC3 (each verified by rasterising the wrap through every channel). Found
+# because a user reported "both channels don't map the police livery right"
+# from the object debugger - both channels the reader USED to read, that is.
+const C_WRAP_TEXCOORD := 0x4F5F0664
+
+# Applied after the parse, because the reader has no depot: for each carpaint
+# section, resolve its record (variation-derived key first, exactly like
+# material_for) and swap the section's uvs to the texcoord the record names.
+# uv_all rides along on carpaint sections precisely for this. A section whose
+# record or texcoord is missing keeps TC0, which is what it shipped before.
+func _wrap_channel_fix(secs: Array, scope: String, var_hash: int) -> void:
+	var pair = null
+	var pair_tried := false
+	for si in range(secs.size()):
+		var sec: Dictionary = secs[si]
+		if not str(sec.get("material", "")).to_lower().contains("carpaint"):
+			continue
+		var all: Array = sec.get("uv_all", [])
+		if all.is_empty():
+			continue
+		if not pair_tried:
+			pair_tried = true
+			pair = _depot_for(scope)
+		if pair == null:
+			return
+		var dep: BF6Depot = pair[0]
+		var key := int(sec.get("state_key", 0))
+		if var_hash != 0 and dep.key_to_record.has(key + var_hash):
+			key += var_hash
+		if not dep.key_to_record.has(key):
+			continue
+		var t: Dictionary = dep.textures_for(key, pair[1])
+		var consts: Dictionary = t.get("constants", {})
+		var raw = consts.get(C_WRAP_TEXCOORD)
+		var tc1 := raw is PackedByteArray \
+			and (raw as PackedByteArray).size() >= 1 \
+			and (raw as PackedByteArray)[0] != 0
+		var want := 34 if tc1 else 36
+		for e in all:
+			if int((e as Array)[0]) == want:
+				var uv: PackedVector2Array = (e as Array)[1]
+				var nv: PackedVector3Array = sec.get("verts", PackedVector3Array())
+				if uv.size() == nv.size():
+					sec["uvs"] = uv
+					secs[si] = sec
+				break
+
 
 func _alpha_gate(consts: Dictionary) -> bool:
 	var raw = consts.get(C_ALPHA_TEST)

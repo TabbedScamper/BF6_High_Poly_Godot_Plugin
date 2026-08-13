@@ -42,7 +42,8 @@
 - `static func available(game_dir)` (L781).
 - `const ST_MOUNT…ST_LAYERS` (L791-800), `const OPEN_STAGES` (L802), `const STAGE_WEIGHT` (L818).
 - `static var n_blend_slot` (L864), `static var n_blend_named` (L865) — read by `highpoly_mapcontext.gd:5613`.
-- `const GEOM_EPOCH := 8` (L869), `static func geom_epoch()` (L877) — the call exists precisely so live reload is not fooled by constant folding.
+- `const GEOM_EPOCH := 11` (L869), `static func geom_epoch()` (L877) — the call exists precisely so live reload is not fooled by constant folding.
+- `const C_WRAP_TEXCOORD := 0x4F5F0664`, `func _wrap_channel_fix(secs, scope, var_hash)` (near `_alpha_gate`) — post-parse carpaint UV override: resolves each carpaint section's depot record (variation-derived key first, like `material_for`) and swaps `sec.uvs` to the texcoord the flag names (1 ⇒ TC1, 0/absent ⇒ TC3). Called from `_mesh_for_body` right after `read_lod`. See readers.md bf6_meshset for the measurement.
 
 **L880-L1224 — `open_map` / `open_async`: the cold read.** Owns mount → type database → partition index → depot scope index → placement walk → geometry cache open → optional ground. Everything downstream depends on the state this leaves behind.
 - `static func _fail(stage, why)` (L904) — names the failing stage and reports free RAM.
@@ -208,7 +209,7 @@ This file is the **read side of the plugin**: given a map name and the player's 
 
 | Line | Name | Value | Gates | Hazard |
 |---|---|---|---|---|
-| L869 | `GEOM_EPOCH` | `8` | Geometry cache directory suffix `_g8`; bump orphans every cached mesh | **Read as a literal by `tools/perfrun.py:349`** (regex `const GEOM_EPOCH`). `highpoly_toggle.gd:2506/2508` and `tools/test_reloadimpact.gd:52` correctly go through `geom_epoch()` (L877). The whole comment at L871-878 exists because a folded const read would report a stale epoch after live reload. |
+| L869 | `GEOM_EPOCH` | `11` | Geometry cache directory suffix `_g11`; bump orphans every cached mesh | **Read as a literal by `tools/perfrun.py:349`** (regex `const GEOM_EPOCH`). `highpoly_toggle.gd:2506/2508` and `tools/test_reloadimpact.gd:52` correctly go through `geom_epoch()` (L877). The whole comment at L871-878 exists because a folded const read would report a stale epoch after live reload. |
 | L6057 | `PROP_LOD` | `0` | LOD rung for props; also the `_l%d` geometry cache suffix | **`highpoly_mapcontext.gd:2310` reads `HighpolyGameSource.PROP_LOD` directly — this folds at parse time.** Same class of bug `geom_epoch()` was invented to avoid; there is no `prop_lod()` accessor. |
 | L802 | `OPEN_STAGES` | 10 stage strings | UI's stage list | Read by `highpoly_toggle.gd:2842, 2855, 2857, 2876, 2940, 2976` — an array const, folded into the dock at parse time. |
 | L818 | `STAGE_WEIGHT` | dict, mount 16.0 … splat 135.0 | Bar travel per stage | Read by `highpoly_toggle.gd:2987`. Same folding hazard. |

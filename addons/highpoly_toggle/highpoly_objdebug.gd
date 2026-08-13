@@ -153,29 +153,14 @@ func close() -> void:
 # ---------------------------------------------------------------------------
 
 func _fresh_ov(i: int) -> Dictionary:
-	var s: Dictionary = secs[i]
-	return {"uv": _build_channel(s), "albedo": "",       # "" = the record's own
+	# uv -1 = as built: the section's uvs already carry the build's choice
+	# (per material family, and for carpaint the depot's own wrap-texcoord
+	# flag). Positive values are TEXCOORD USAGES (33..36), 99 = tc4.
+	return {"uv": -1, "albedo": "",                      # "" = the record's own
 		"albedo_name": "",   # a livery res name; "-" = paint only, no sheet
 		"cutout": -1,                                    # -1 = as the build decides
 		"cut": 0.5, "tint": Color.WHITE, "rough": -1.0, "emis": -1.0,
 		"touched": false}
-
-
-# Which declared channel the BUILD would ship as the primary - the same rule
-# bf6_meshset._bake_uv_channel applies, recovered here by comparing ranges.
-func _build_channel(s: Dictionary) -> int:
-	var all: Array = s.get("uv_all", [])
-	for k in range(1, all.size()):
-		var uv: PackedVector2Array = all[k]
-		var lo := Vector2(1e20, 1e20)
-		var hi := Vector2(-1e20, -1e20)
-		for p in uv:
-			lo = lo.min(p)
-			hi = hi.max(p)
-		if lo.x >= -0.05 and hi.x <= 1.05 and lo.y >= -0.05 and hi.y <= 1.05 \
-				and maxf(hi.x - lo.x, hi.y - lo.y) > 0.05:
-			return k
-	return 0
 
 
 # ---------------------------------------------------------------------------
@@ -216,12 +201,14 @@ func _rebuild_mesh() -> void:
 		var all: Array = s.get("uv_all", [])
 		var pick := int((ov[i] as Dictionary)["uv"])
 		var uv2: PackedVector2Array = s.get("uv2", PackedVector2Array())
+		arr[Mesh.ARRAY_TEX_UV] = s.get("uvs", PackedVector2Array())
 		if pick == 99 and uv2.size() == (s["verts"] as PackedVector3Array).size():
 			arr[Mesh.ARRAY_TEX_UV] = uv2
-		elif pick >= 0 and pick < all.size():
-			arr[Mesh.ARRAY_TEX_UV] = all[pick]
-		else:
-			arr[Mesh.ARRAY_TEX_UV] = s.get("uvs", PackedVector2Array())
+		elif pick >= 33:
+			for e in all:
+				if int((e as Array)[0]) == pick:
+					arr[Mesh.ARRAY_TEX_UV] = (e as Array)[1]
+					break
 		# The same spawn filter the build applies: a triangle whose first
 		# vertex sits on a hidden-at-spawn part is a destruction overlay and
 		# stays out unless the toggle asks for the destroyed look. A part
@@ -591,13 +578,15 @@ func _sync_controls() -> void:
 	for k in ks:
 		lines.append("%s = %s" % [k, _tex_label(tex[k])])
 	_info.text = "\n".join(PackedStringArray(lines))
-	# uv options
+	# uv options: the build's own answer first, then every declared texcoord
+	# by NUMBER - the police SUV's wrap lives on tc3, which index-based
+	# labels hid entirely
 	_uv_pick.clear()
-	var build_ch := _build_channel(s)
+	_uv_pick.add_item("(as built)", -1)
 	var all: Array = s.get("uv_all", [])
-	for k in range(all.size()):
-		_uv_pick.add_item("channel %d%s" % [k,
-			"  (build's choice)" if k == build_ch else ""], k)
+	for e in all:
+		var ua := int((e as Array)[0])
+		_uv_pick.add_item("tc%d" % (ua - 33), ua)
 	if str(s.get("uv2_src", "")) == "tc4":
 		_uv_pick.add_item("tc4 unwrap", 99)
 	for ix in range(_uv_pick.item_count):
