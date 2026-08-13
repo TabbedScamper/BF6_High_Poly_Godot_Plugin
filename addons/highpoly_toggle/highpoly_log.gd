@@ -95,6 +95,12 @@ static func _add(lvl: int, msg: String) -> void:
 		if lvl >= Level.WARN or _since_flush >= 20:
 			_fh.flush()
 			_since_flush = 0
+	# Route what already exists rather than adding a second instrument (law C8):
+	# every warning and error is also an event, so an outside reader gets the
+	# failures without scraping prose. Info lines stay out of the stream - they
+	# are narration, and the events that matter are emitted deliberately.
+	if lvl >= Level.WARN:
+		event("log." + _tag(lvl).strip_edges().to_lower(), {"m": msg}, lvl)
 	if _on_line.is_valid():
 		_on_line.call(lvl, msg)
 
@@ -188,6 +194,148 @@ static func _staleness() -> String:
 		+ "           Godot loads plugin scripts once, at editor start, so\n"
 		+ "           everything below describes the OLDER code. Restart the\n"
 		+ "           editor before reading this as evidence of anything.")
+
+
+# ---------------------------------------------------------------------------
+# THE MACHINE-READABLE HALF OF THE LOG
+#
+# WHY IT EXISTS BESIDE THE TEXT LOG. Godot's FileAccess in WRITE mode writes
+# through a sibling `.tmp` and renames on close, so while the editor is
+# RUNNING the file at `user://highpoly-session.log` is the PREVIOUS session
+# (law C11). Everything this plugin knows was therefore unreadable until the
+# editor was quit, and every diagnosis cost a quit-and-paste round trip.
+#
+# The dodge is the open mode: READ_WRITE opens the real path in place (no
+# `.tmp`), so a line flushed here is on disk and readable by an outside tool
+# immediately. `tools/hp.py log` tails it.
+#
+# It lives in this class rather than a new one deliberately: it holds mutable
+# statics, and law C4 says those must sit behind an existing `class_name` - a
+# brand new global class does not register until the editor is restarted,
+# which is exactly the moment this stream is meant to save us.
+#
+# The stream is COARSE on purpose: phases, jobs, picks, swaps, failures. Per
+# section decisions are far too many to flush per line and go to the build's
+# own `decisions.jsonl` sidecar instead.
+const EVENTS_DIR := "user://highpoly"
+const EVENTS_PATH := "user://highpoly/events.jsonl"
+const EVENTS_PREV := "user://highpoly/events-prev.jsonl"
+const STATE_PATH := "user://highpoly/state.json"
+
+static var _ev_fh: FileAccess = null
+static var _ev_seq := 0
+static var _ev_sess := ""
+static var _ev_t0 := 0
+static var _ev_failed := false     # one complaint, not one per line
+
+
+static func plugin_version() -> String:
+	var cf := ConfigFile.new()
+	if cf.load("res://addons/highpoly_toggle/plugin.cfg") == OK:
+		return str(cf.get_value("plugin", "version", "?"))
+	return "?"
+
+
+static func session_id() -> String:
+	if _ev_sess == "":
+		# Enough to tell two sessions apart in a file, not a security token.
+		_ev_sess = "%08x" % (int(Time.get_unix_time_from_system()) ^ (randi() << 8))
+	return _ev_sess
+
+
+static func _ev_open() -> void:
+	if _ev_fh != null or _ev_failed:
+		return
+	_ev_t0 = Time.get_ticks_msec()
+	DirAccess.make_dir_recursive_absolute(EVENTS_DIR)
+	# Last session rolls aside whole. A crash leaves its stream intact, which
+	# is the case worth keeping: it ends exactly where the editor died.
+	if FileAccess.file_exists(EVENTS_PATH):
+		if FileAccess.file_exists(EVENTS_PREV):
+			DirAccess.remove_absolute(EVENTS_PREV)
+		DirAccess.rename_absolute(EVENTS_PATH, EVENTS_PREV)
+	# Create it in WRITE (which is where the .tmp dance happens) and close, so
+	# that READ_WRITE below has a real file to open in place.
+	var mk := FileAccess.open(EVENTS_PATH, FileAccess.WRITE)
+	if mk == null:
+		_ev_failed = true
+		return
+	mk.close()
+	_ev_fh = FileAccess.open(EVENTS_PATH, FileAccess.READ_WRITE)
+	if _ev_fh == null:
+		_ev_failed = true
+		return
+	_ev_fh.seek_end()
+	event("session.start", {
+		"plugin": plugin_version(),
+		"godot": Engine.get_version_info().get("string", ""),
+		"stale": _staleness() != "",
+	})
+
+
+# One JSON object per line: {t, unix, sess, seq, lvl, ev, cid, d}.
+#   ev  a dotted name, queried by PREFIX ("build." matches every build event)
+#   cid a correlation id tying a burst together ("build:7"), "" when none
+#   d   the payload, whatever this event is actually reporting
+static func event(ev: String, d: Dictionary = {}, lvl := Level.INFO,
+		cid := "") -> void:
+	if _ev_fh == null:
+		_ev_open()
+		if _ev_fh == null:
+			return
+	_ev_seq += 1
+	var row := {
+		"t": snappedf((Time.get_ticks_msec() - _ev_t0) / 1000.0, 0.01),
+		"unix": int(Time.get_unix_time_from_system()),
+		"sess": session_id(),
+		"seq": _ev_seq,
+		"lvl": _tag(lvl).strip_edges(),
+		"ev": ev,
+		"cid": cid,
+		"d": d,
+	}
+	# Flushed per line on purpose: a stream that is only readable after a clean
+	# exit is the exact thing this replaces. The rate is bounded by keeping
+	# per-item events out of here.
+	_ev_fh.store_line(JSON.stringify(row))
+	_ev_fh.flush()
+
+
+# The "where am I" snapshot, rewritten in place whenever the dock has news.
+# One read answers: which plugin build is running, is it stale, which map,
+# which layers, what is the build doing, which caches exist and under what
+# key, how many errors, and what was last picked. The caller assembles it
+# (only the dock can see all of that); this just lands it atomically enough
+# to be read by a tool at any moment.
+static func write_state(d: Dictionary) -> void:
+	DirAccess.make_dir_recursive_absolute(EVENTS_DIR)
+	var full := {
+		"schema": 1,
+		"written": int(Time.get_unix_time_from_system()),
+		"t": snappedf((Time.get_ticks_msec() - _ev_t0) / 1000.0, 0.01),
+		"sess": session_id(),
+		"counts": {"errors": _errors, "warns": _warnings},
+	}
+	full.merge(d, true)
+	# Written whole through a temp and renamed, so a reader never catches a
+	# half-written object. This one WANTS the rename dance the event stream
+	# had to dodge.
+	var tmp := STATE_PATH + ".new"
+	var f := FileAccess.open(tmp, FileAccess.WRITE)
+	if f == null:
+		return
+	f.store_string(JSON.stringify(full, "  "))
+	f.close()
+	if FileAccess.file_exists(STATE_PATH):
+		DirAccess.remove_absolute(STATE_PATH)
+	DirAccess.rename_absolute(tmp, STATE_PATH)
+
+
+static func events_close() -> void:
+	if _ev_fh != null:
+		event("session.end", {"errors": _errors, "warns": _warnings})
+		_ev_fh.flush()
+		_ev_fh = null
 
 
 static func lines() -> Array: return _lines

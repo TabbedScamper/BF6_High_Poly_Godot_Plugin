@@ -2046,6 +2046,13 @@ All of it is read from your own Battlefield 6 installation."
 			HighpolyProfile.begin("collision overlay follow")
 			HighpolyCollision.refresh_transforms()
 			HighpolyProfile.end("collision overlay follow")
+		# THE "WHERE AM I" SNAPSHOT. One file that answers which build is
+		# running, whether it is stale, which map and layers are up, what the
+		# build is doing, which caches exist under which key, and what was
+		# last picked - readable from outside WHILE the editor runs, which
+		# the session log is not (law C11). Throttled: the heartbeat fires
+		# twice a second and none of this changes that fast.
+		_write_state_snapshot()
 		HighpolyProfile.end("panel heartbeat"))
 	# Every "it hangs when I do X" report needs to know what was switched on,
 	# and not one of them has ever carried it. Registered rather than snapshotted
@@ -2120,6 +2127,85 @@ All of it is read from your own Battlefield 6 installation."
 # distance was pushed. We have been reconstructing that by asking. Every control
 # is null-guarded: the log must save from any state, including a half-built dock
 # after a failed reload.
+# ---------------------------------------------------------------------------
+# THE STATE SNAPSHOT: user://highpoly/state.json, rewritten from the heartbeat.
+#
+# WHY: everything the plugin knows was locked inside a running editor. The
+# session log is the PREVIOUS session until a clean exit (law C11), so the
+# only way to answer "what is it doing right now" was a screenshot or a quit.
+# One JSON file, read at any moment by `tools/hp.py state`, answers the
+# questions every diagnosis opens with: which build is running, is it stale,
+# which map, what is switched on, what is the build doing, which caches exist
+# and under which key, how many errors, and what was last picked.
+#
+# It reuses the probes that already exist rather than adding new ones (law
+# C8): the settings block IS `_settings_snapshot()`, the pick line IS the
+# diagnose provenance, the counts ARE the log's own tallies.
+var _state_next := 0
+var _state_cache_next := 0
+var _state_cache := {}
+
+func _write_state_snapshot() -> void:
+	var now := Time.get_ticks_msec()
+	if now < _state_next:
+		return
+	_state_next = now + 2000        # the heartbeat is 0.5 s; none of this moves that fast
+	var gs = mapctx.game_source if mapctx != null else null
+	var root := EditorInterface.get_edited_scene_root()
+	var map: String = mapctx.map_of(root) if mapctx != null else ""
+	# The cache directories are a DIRECTORY LISTING, which is the one part of
+	# this that is not free. Recounted every 30 s; the key itself is the part
+	# that matters and it is a string.
+	if now >= _state_cache_next:
+		_state_cache_next = now + 30000
+		var gd: String = str(gs._geom_dir) if gs != null else ""
+		var files := 0
+		var bytes := 0
+		if gd != "" and DirAccess.dir_exists_absolute(gd):
+			for f in DirAccess.get_files_at(gd):
+				files += 1
+				bytes += int(FileAccess.get_size("%s/%s" % [gd, f]))
+		_state_cache = {
+			"geom_dir": gd, "geom_files": files,
+			"geom_mb": snappedf(bytes / 1048576.0, 0.1),
+			"mapctx_dir": "user://mapcontext/%s" % map if map != "" else "",
+		}
+	var d := {
+		"plugin": {
+			"version": HighpolyLog.plugin_version(),
+			# The single most expensive misunderstanding this project has:
+			# a fix deployed into a running editor changes nothing until a
+			# restart, and every log written afterwards describes the OLD code.
+			"disk_newer": HighpolyLog._staleness() != "",
+		},
+		"godot": Engine.get_version_info().get("string", ""),
+		"epochs": {"geom": HighpolyGameSource.geom_epoch()},
+		"map": {
+			"name": map,
+			"scene_root": String(root.name) if root != null else "",
+			"open": gs != null,
+		},
+		"caches": _state_cache,
+		"settings": Array(_settings_snapshot()),
+	}
+	if mapctx != null:
+		d["build"] = {
+			"state": "building" if bool(mapctx._building) else "idle",
+			"done": int(mapctx._build_done), "total": int(mapctx._build_total),
+			"props": int(mapctx._build_props),
+		}
+	if gs != null:
+		d["counts"] = {"decisions": gs.decision_count()}
+	if HighpolyDiagnose.has_focus():
+		var fi: Dictionary = HighpolyDiagnose.focus_info()
+		d["pick"] = {
+			"confirmed": HighpolyDiagnose.is_confirmed(),
+			"provenance": HighpolyDiagnose.provenance(gs),
+			"node": str(fi.get("path", "")),
+		}
+	HighpolyLog.write_state(d)
+
+
 func _settings_snapshot() -> PackedStringArray:
 	var out := PackedStringArray()
 	var yn := func(b: Button) -> String:
@@ -5674,6 +5760,13 @@ func _report_focus(root: Node, gs) -> void:
 		return
 	var note: String = mark_note.text.strip_edges() if mark_note != null else ""
 	HighpolyDiagnose.run(root, gs, mapctx, note)
+	# The provenance line is the selector every outside tool takes (`hp.py
+	# explain`, `dossier.py`), so a pick is worth an event: it means the
+	# question "which object are we talking about" survives outside the editor
+	# without anyone transcribing a label out of a screenshot.
+	HighpolyLog.event("pick.confirm",
+		{"provenance": HighpolyDiagnose.provenance(gs),
+		 "label": HighpolyDiagnose.focus_label(gs), "note": note})
 
 
 # Overlay group name -> the panel chip that shows or hides it, so the Unhide

@@ -372,12 +372,24 @@ func read_lod(d: PackedByteArray, lod := 0, chunk := PackedByteArray(),
 		var mlow := str(s["material"]).to_lower()
 		var is_carpaint := mlow.contains("carpaint")
 		var uvs := PackedVector2Array()
+		# WHICH RULE FIRED, reported rather than left implicit. The caller
+		# writes this into the build's decision trace, so a wrong-looking
+		# livery is answered by "this rule picked this channel, on this
+		# input" instead of a session spent re-deriving it from game bytes.
+		var uv_rule := "none"
+		var uv_pick_usage := -1
 		if uv_sets.is_empty():
 			uvs.resize(vcount)
 		else:
 			var upick := 0
-			if not (mlow.contains("unique") or is_carpaint):
+			if mlow.contains("unique"):
+				uv_rule = "unique.tc0"
+			elif is_carpaint:
+				uv_rule = "carpaint.tc0"      # the depot overrides this, above
+			else:
 				upick = _bake_uv_channel(uv_sets, vcount)
+				uv_rule = "bake.tc1" if upick != 0 else "bake.fallback.tc0"
+			uv_pick_usage = int((uv_sets[upick] as Array)[0])
 			var src: PackedFloat32Array = (uv_sets[upick] as Array)[1]
 			var c: int = (uv_sets[upick] as Array)[2]
 			uvs.resize(vcount)
@@ -475,6 +487,8 @@ func read_lod(d: PackedByteArray, lod := 0, chunk := PackedByteArray(),
 					"uv2": uv2, "uv2_src": uv2_src, "uv_all": uv_all,
 					"normals": normals, "indices": idx,
 					"uv_sets": uv_sets.size(),
+					"uv_rule": uv_rule, "uv_usage": uv_pick_usage,
+					"uv_declared": _usages_of(uv_sets),
 					"state_key": s.get("state_key", 0),
 					"material_id": s.get("material_id", 0),
 					"parts": parts,
@@ -673,6 +687,16 @@ func _read_indices(buf: PackedByteArray, vsize: int, isize: int, idx32: bool,
 # read too now (the wrap machinery needs them) but were never part of this
 # rule's fleet measurement, and widening a proven rule silently is how
 # regressions ship. Entries are [usage, data, comps].
+# Which texcoords this section actually declared, as usage numbers. Carried
+# into the decision trace so "we used tc3" can be read beside "tc0..tc3 were
+# available" without re-reading the mesh.
+static func _usages_of(uv_sets: Array) -> PackedInt32Array:
+	var out := PackedInt32Array()
+	for u in uv_sets:
+		out.append(int((u as Array)[0]))
+	return out
+
+
 static func _bake_uv_channel(uv_sets: Array, vcount: int) -> int:
 	for k in range(uv_sets.size()):
 		if int((uv_sets[k] as Array)[0]) != U_UV1:

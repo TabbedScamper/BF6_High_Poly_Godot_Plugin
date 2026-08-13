@@ -6239,7 +6239,7 @@ func _mesh_for_body(group_key: String, lod := 0) -> Mesh:
 	var secs = _ms.read_lod(d, li, chunk, false)
 	if not (secs is Array) or (secs as Array).is_empty():
 		return null
-	_wrap_channel_fix(secs, scope, var_hash)
+	_wrap_channel_fix(secs, scope, var_hash, res_name)
 
 	# ONE SURFACE PER MATERIAL, not one per section.
 	#
@@ -7241,8 +7241,24 @@ func material_for(state_key: int, scope: String, var_hash := 0,
 	# "does this record USE it". Absent flag = old behaviour, so maps or
 	# shader families that never write it are untouched.
 	var mask = null
-	if _alpha_gate(consts):
+	var gate := _alpha_gate(consts)
+	if gate:
 		mask = _mask_for(slots.get("alpha"))
+	# Material-side decisions ride the trace at surface -1: this resolves per
+	# material STATE, not per surface, and the gate is the single most
+	# expensive thing to re-derive by hand (it needs the depot record AND a
+	# content test on the bound sheet).
+	if slots.has("alpha"):
+		decide(_dress_name, state_key, var_hash, -1, str(look), [{
+			"r": "alpha.gate",
+			"in": {"const": "0x%08x" % C_ALPHA_TEST, "v": (1 if gate else 0),
+				"bound": str(slots.get("alpha", ""))},
+			"out": ("mask" if mask != null else "opaque"),
+			"why": ("gate on, " + ("the bound sheet reads as a real mask"
+					if mask != null else "the bound sheet is not a mask")
+				if gate else
+				"gate off, so the bound alpha sheet is foreign filler"),
+		}])
 	if mask != null:
 		var fm = _foliage_material(slots, mask, _cut_for(slots.get("alpha")), tint)
 		if fm != null:
@@ -8490,20 +8506,99 @@ const C_ALPHA_TEST := 0x77D10576
 # from the object debugger - both channels the reader USED to read, that is.
 const C_WRAP_TEXCOORD := 0x4F5F0664
 
+# ---------------------------------------------------------------------------
+# THE DECISION TRACE
+#
+# Resolving one section makes a dozen silent choices: which depot record,
+# which texcoord, whether the alpha-test gate is on, which textures bound,
+# whether a destruction twin hides it. None were recorded, so every "this
+# looks wrong" restarted from raw game bytes. The police SUV cost a whole
+# session to answer something a trace states in one line: uv.primary chose
+# tc3 because wrap flag 0x4f5f0664 was 0.
+#
+# Rows dedupe on (mesh, state key, variation, surface), because a decision is
+# a property of the material STATE and not of the 400 instances sharing it -
+# a whole map collapses to a few thousand rows. Instance members rather than
+# statics so a live reload cannot leave two half-filled copies (law C4).
+var _dec_rows: Array = []
+var _dec_seen := {}
+var _dec_mx := Mutex.new()      # meshes resolve on the walk's worker threads
+
+
+func decide(mesh: String, state_key: int, var_hash: int, surface: int,
+		material: String, rules: Array, extra := {}) -> void:
+	var key := "%s|0x%016x|%d|%d" % [mesh, state_key, var_hash, surface]
+	_dec_mx.lock()
+	if _dec_seen.has(key):
+		_dec_mx.unlock()
+		return
+	_dec_seen[key] = true
+	var row := {
+		"key": key, "mesh": mesh, "state": "0x%016x" % state_key,
+		"var": var_hash, "surface": surface, "material": material,
+		"rules": rules,
+	}
+	row.merge(extra, true)
+	_dec_rows.append(row)
+	_dec_mx.unlock()
+
+
+# Written once per build beside the map's other sidecars. NDJSON so it can be
+# streamed and grepped rather than parsed whole (`hp.py decisions <MAP>`).
+func flush_decisions(map_name: String) -> String:
+	_dec_mx.lock()
+	var rows: Array = _dec_rows.duplicate()
+	_dec_mx.unlock()
+	if rows.is_empty() or map_name == "":
+		return ""
+	var dir := "user://mapcontext/%s" % map_name
+	DirAccess.make_dir_recursive_absolute(dir)
+	var path := "%s/decisions.jsonl" % dir
+	var f := FileAccess.open(path, FileAccess.WRITE)
+	if f == null:
+		return ""
+	for r in rows:
+		f.store_line(JSON.stringify(r))
+	f.close()
+	HighpolyLog.event("build.decisions",
+		{"map": map_name, "rows": rows.size(), "path": path})
+	return path
+
+
+func decision_count() -> int:
+	return _dec_rows.size()
+
+
 # Applied after the parse, because the reader has no depot: for each carpaint
 # section, resolve its record (variation-derived key first, exactly like
 # material_for) and swap the section's uvs to the texcoord the record names.
 # uv_all rides along on carpaint sections precisely for this. A section whose
 # record or texcoord is missing keeps TC0, which is what it shipped before.
-func _wrap_channel_fix(secs: Array, scope: String, var_hash: int) -> void:
+func _wrap_channel_fix(secs: Array, scope: String, var_hash: int,
+		mesh_name := "") -> void:
 	var pair = null
 	var pair_tried := false
 	for si in range(secs.size()):
 		var sec: Dictionary = secs[si]
-		if not str(sec.get("material", "")).to_lower().contains("carpaint"):
+		var mat := str(sec.get("material", ""))
+		# Every section reports the rule the READER applied, whether or not
+		# the depot has anything to say about it: a trace that only covers
+		# the interesting cases cannot answer "why is this one normal".
+		var rules: Array = [{
+			"r": "uv.primary",
+			"in": {"family": _uv_family(mat),
+				"declared": Array(sec.get("uv_declared", PackedInt32Array()))},
+			"out": _tc_name(int(sec.get("uv_usage", -1))),
+			"why": "reader rule %s" % str(sec.get("uv_rule", "none")),
+		}]
+		if not mat.to_lower().contains("carpaint"):
+			decide(mesh_name, int(sec.get("state_key", 0)), var_hash, si, mat,
+				rules)
 			continue
 		var all: Array = sec.get("uv_all", [])
 		if all.is_empty():
+			decide(mesh_name, int(sec.get("state_key", 0)), var_hash, si, mat,
+				rules)
 			continue
 		if not pair_tried:
 			pair_tried = true
@@ -8511,18 +8606,26 @@ func _wrap_channel_fix(secs: Array, scope: String, var_hash: int) -> void:
 		if pair == null:
 			return
 		var dep: BF6Depot = pair[0]
-		var key := int(sec.get("state_key", 0))
+		var base := int(sec.get("state_key", 0))
+		var key := base
+		var derived := false
 		if var_hash != 0 and dep.key_to_record.has(key + var_hash):
 			key += var_hash
+			derived = true
 		if not dep.key_to_record.has(key):
+			rules.append({"r": "uv.wrap", "in": {"state": "0x%016x" % base},
+				"out": "kept " + _tc_name(int(sec.get("uv_usage", -1))),
+				"why": "no depot record for this state key"})
+			decide(mesh_name, base, var_hash, si, mat, rules)
 			continue
 		var t: Dictionary = dep.textures_for(key, pair[1])
 		var consts: Dictionary = t.get("constants", {})
 		var raw = consts.get(C_WRAP_TEXCOORD)
-		var tc1 := raw is PackedByteArray \
-			and (raw as PackedByteArray).size() >= 1 \
-			and (raw as PackedByteArray)[0] != 0
+		var present := raw is PackedByteArray \
+			and (raw as PackedByteArray).size() >= 1
+		var tc1 := present and (raw as PackedByteArray)[0] != 0
 		var want := 34 if tc1 else 36
+		var applied := false
 		for e in all:
 			if int((e as Array)[0]) == want:
 				var uv: PackedVector2Array = (e as Array)[1]
@@ -8530,7 +8633,35 @@ func _wrap_channel_fix(secs: Array, scope: String, var_hash: int) -> void:
 				if uv.size() == nv.size():
 					sec["uvs"] = uv
 					secs[si] = sec
+					applied = true
 				break
+		rules.append({
+			"r": "uv.wrap",
+			"in": {"const": "0x%08x" % C_WRAP_TEXCOORD,
+				"v": (1 if tc1 else 0), "present": present,
+				"key": "derived" if derived else "base"},
+			"out": _tc_name(want) if applied else \
+				"kept " + _tc_name(int(sec.get("uv_usage", -1))),
+			"why": ("wrap flag %s so %s" % ["1" if tc1 else ("0" if present
+				else "absent"), _tc_name(want)])
+				+ ("" if applied else "; that channel is not on this section"),
+		})
+		decide(mesh_name, base, var_hash, si, mat, rules)
+
+
+static func _uv_family(material: String) -> String:
+	var m := material.to_lower()
+	if m.contains("unique"):
+		return "unique"
+	if m.contains("carpaint"):
+		return "carpaint"
+	return "default"
+
+
+static func _tc_name(usage: int) -> String:
+	if usage < 33 or usage > 37:
+		return "none"
+	return "tc%d" % (usage - 33)
 
 
 func _alpha_gate(consts: Dictionary) -> bool:

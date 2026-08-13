@@ -5048,6 +5048,15 @@ func _build_props_async(props_root: Node3D, entries: Array, dir: String,
 		% [_inst_made, _mmi_made, _cells.size()])
 	_log_build_phases("%s props, %d of %d built"
 		% [_map, _build_props, _build_total], "props")
+	# WHAT THE BUILD DECIDED, written once the props are up. Deduped per
+	# material state, so this is a few thousand rows for a whole map and costs
+	# nothing to write here rather than during the slices.
+	if game_source != null:
+		game_source.flush_decisions(_map)
+	HighpolyLog.event("build.done", {
+		"map": _map, "props": _build_props, "of": _build_total,
+		"instances": _inst_made, "mmi": _mmi_made, "cells": _cells.size(),
+	})
 	build_finished.emit(_build_props)
 
 # Progress: emit the signal (the toggle dock drives a ProgressBar off it) and
