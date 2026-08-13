@@ -7056,6 +7056,24 @@ func material_for(state_key: int, scope: String, var_hash := 0,
 				member_painted = true
 				tex_stats["carpaint_member_paint"] = \
 					int(tex_stats.get("carpaint_member_paint", 0)) + 1
+			elif not _dress_uv2:
+				# A PICTORIAL livery on a member with no tc4 unwrap: the
+				# ambulance door and hood. The old reasoning - a member's UV
+				# does not share the body's wrap layout - stopped holding the
+				# moment the mesh reader started picking the WRAP CHANNEL for
+				# carpaint sections by v-fit: where such a channel exists the
+				# member's carpaint UV IS the wrap layout, and a user's
+				# object-debug recipe confirmed the door and hood both map
+				# the wrap correctly through it. Members that carry a real
+				# tc4 unwrap (the firetruck doors) keep the detail-overlay
+				# path below instead; flat-paint wraps keep the paint above.
+				var mtex = _texture_for(slots.get("wrap"), false)
+				if mtex != null:
+					cm.albedo_texture = mtex
+					cm.albedo_color = Color(1, 1, 1)
+					member_painted = true
+					tex_stats["carpaint_member_wrap"] = \
+						int(tex_stats.get("carpaint_member_wrap", 0)) + 1
 			# AND WHERE THE MEMBER HAS A REAL SECOND UNWRAP, the wrap goes on
 			# over that paint through it. Solid paint is the fallback for a door
 			# whose UV0 does not share the body's layout; it is not the answer
