@@ -93,7 +93,19 @@ const PREFILTER_NORMAL_Y := 0.3
 # flat plaza still gets its cells.
 const MAX_CELLS_PER_TRI := 4096
 
-const MS_PER_FRAME := 12       # yield budget: the editor must stay alive
+# YIELD BUDGET: work this long, then give the editor a frame.
+#
+# It was 12 ms, chosen to keep the editor alive, and it made the editor the
+# bottleneck. Measured 2026-08-13 on MP_Aftermath: 945 yields at 39.2 ms each,
+# so the pass ran at a 24% duty cycle and spent 37.0 s of a 57.9 s run parked
+# in `await` against 20.9 s of its own work. Twelve milliseconds of work per
+# thirty-nine of waiting is not responsiveness, it is idling.
+#
+# 40 ms with the props hidden for the pass (see _reproject_roads): a yield now
+# draws the ground and the markings rather than fifteen thousand prop draws,
+# so the editor stays about as responsive as it was at 12 ms against a full
+# scene while the pass gets most of its wall time back.
+const MS_PER_FRAME := 40
 
 # HOW LONG THE INDEX MAY SPEND, because get_faces() copies a mesh's entire
 # triangle list and a map has thousands of props. The bounding-box and cell
