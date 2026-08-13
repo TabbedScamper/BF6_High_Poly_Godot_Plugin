@@ -635,6 +635,7 @@ static func run(host: Node, dock: Node, mapctx: Node) -> void:
 				sweep[layer] = {
 					"median_ms": off.get("median_ms", 0.0),
 					"median_pos_ms": off.get("median_pos_ms", 0.0),
+					"engine_ms": off.get("engine_ms", 0.0),
 					"draws_mean": off.get("draws_mean", 0),
 					"frames": off.get("frames", 0),
 				}
@@ -728,9 +729,34 @@ static func run(host: Node, dock: Node, mapctx: Node) -> void:
 								"median_pos_ms": ref.get("median_pos_ms", 0.0),
 								"draws_mean": ref.get("draws_mean", 0),
 								"frames": ref.get("frames", 0)}
-			_say("autorun: with    everything        median %6.1f ms (per-pos %6.1f), %6d draws"
-					% [ref.get("median_ms", 0.0), ref.get("median_pos_ms", 0.0),
-					   ref.get("draws_mean", 0)])
+			_say("autorun: with    everything        median %6.1f ms "
+					% ref.get("median_ms", 0.0)
+					+ "(per-pos %6.1f, engine says %.1f), %6d draws"
+					% [ref.get("median_pos_ms", 0.0),
+					   ref.get("engine_ms", 0.0), ref.get("draws_mean", 0)])
+
+			# THE SAME FULL CONFIGURATION, CAMERA STANDING STILL. Same
+			# viewpoint repeated, so route, duration and sample count are
+			# identical to the reference and movement is the only difference.
+			# The gap between the two is the answer to "is this a per-frame
+			# cost or a per-move cost", and those have opposite fixes: fewer
+			# draws for the first, fewer instances to re-cull for the second.
+			var still_all: Array = []
+			for i in range(short.size()):
+				still_all.append(short[0])
+			var ref_still := await _fly(_tree, still_all)
+			sweep["_all_on_CAMERA_STILL"] = {
+				"median_ms": ref_still.get("median_ms", 0.0),
+				"median_pos_ms": ref_still.get("median_pos_ms", 0.0),
+				"draws_mean": ref_still.get("draws_mean", 0),
+				"frames": ref_still.get("frames", 0),
+			}
+			_say("autorun: everything, CAMERA STILL  median %6.1f ms, %6d draws"
+					% [ref_still.get("median_ms", 0.0),
+					   ref_still.get("draws_mean", 0)]
+					+ "  (movement costs %.1f ms)"
+					% (float(ref.get("median_ms", 0.0))
+					   - float(ref_still.get("median_ms", 0.0))))
 
 			# HIDDEN VERSUS FREED. The scene is hidden in BOTH this row and the
 			# one above, so the only difference between them is whether OUR
@@ -784,12 +810,56 @@ static func run(host: Node, dock: Node, mapctx: Node) -> void:
 					"nodes_before": before_nodes,
 					"engine": freed_eng,
 				}
-				_say("autorun: OVERLAY FREED + scene hidden  median %6.1f ms, "
+				_say("autorun: OVERLAY FREED + scene hidden  median %6.1f ms "
 						% freed.get("median_ms", 0.0)
+						+ "(engine says %.1f), " % freed.get("engine_ms", 0.0)
 						+ "%6d draws, nodes %d (was %d)"
 						% [freed.get("draws_mean", 0),
 						   int(freed_eng.get("nodes", 0)), before_nodes])
+
+				# ...AND THE SAME STATE WITH THE CAMERA STANDING STILL.
+				#
+				# 11.7 ms with the scene hidden, our props freed and FOURTEEN
+				# draw calls is not rendering, and the per-position medians say
+				# why to look here: the heavy configuration costs 61.6 ms per
+				# viewpoint against a 36.1 ms per-frame median, so the expense
+				# is concentrated in the frame AFTER the camera moves. This
+				# feeds _fly the same viewpoint over and over, so the route,
+				# the duration and the sample count are identical and the only
+				# thing removed is movement.
+				#
+				# If still is cheap, the floor is movement-driven work (culling
+				# churn, streaming, whatever the plugin does on camera change)
+				# and not a fixed per-frame tax, which are opposite problems
+				# with opposite fixes.
+				var still: Array = []
+				for i in range(short.size()):
+					still.append(short[0])
+				var freed_still := await _fly(_tree, still)
+				sweep["_floor_FREED_hidden_CAMERA_STILL"] = {
+					"median_ms": freed_still.get("median_ms", 0.0),
+					"median_pos_ms": freed_still.get("median_pos_ms", 0.0),
+					"draws_mean": freed_still.get("draws_mean", 0),
+					"frames": freed_still.get("frames", 0),
+				}
+				_say("autorun: ...same, CAMERA STILL         median %6.1f ms "
+						% freed_still.get("median_ms", 0.0)
+						+ "(engine says %.1f), " % freed_still.get("engine_ms", 0.0)
+						+ "%6d draws  (movement costs %.1f ms)"
+						% [freed_still.get("draws_mean", 0),
+						   float(freed.get("median_ms", 0.0))
+						   - float(freed_still.get("median_ms", 0.0))])
 				(root as Node3D).visible = vis2
+
+			# THE WHOLE-SWEEP CHECK, once every row exists. A capped run gives
+			# itself away by the CONFIGURATIONS NOT DIFFERING, which is only
+			# visible across rows: an empty scene and a full one cannot cost
+			# the same. Two capped sweeps have been read as data in this
+			# session alone, and the per-flight check missed both.
+			var sweep_bad := HighpolyFlightRun.sweep_looks_capped(sweep)
+			if sweep_bad != "":
+				sweep["_INVALID"] = sweep_bad
+				_say("autorun: SWEEP INVALID - %s" % sweep_bad)
 			rep["sweep"] = sweep
 	rep["scene_nodes"] = _count_nodes(root)
 	rep["engine"] = _engine()
@@ -799,7 +869,35 @@ static func run(host: Node, dock: Node, mapctx: Node) -> void:
 	# editor dies mid-run there is no report at all, and this is what the next
 	# session reads to find out where it died.
 	rep["last_crumb"] = HighpolyProfiler.last_session_end()
+
+	# PUT THE RANGE SLIDER BACK. The bench drives it to No Culling so nothing
+	# is measured already culled, and the dock PERSISTS it into project
+	# metadata per map - so without this, one unattended run leaves the user's
+	# editor in its slowest configuration for every future session. That is
+	# exactly what happened: a user reporting 30 fps was found at the top
+	# notch with 15,719 draw calls, and pulling it to 600 took them from 51 to
+	# 65-70 fps. Same failure as the editor sleeps earlier: a harness changing
+	# the user's settings and not changing them back.
+	var nc_was = drove.get("nocull_was")
+	if nc_was != null and host.get("mapctx_nocull") != null:
+		var ncb: Button = host.mapctx_nocull
+		if ncb.button_pressed != bool(nc_was):
+			ncb.button_pressed = bool(nc_was)     # emits, re-applies the radius
+			rep["nocull_restored_to"] = nc_was
+			_say("autorun: No Cull put back to %s" % ("on" if nc_was else "off"))
+	var restore_to = drove.get("range_was")
+	if restore_to != null and host.get("mapctx_range") != null:
+		var sl2: HSlider = host.mapctx_range
+		if not is_equal_approx(float(sl2.value), float(restore_to)):
+			sl2.value = float(restore_to)
+			sl2.value_changed.emit(sl2.value)
+			_say("autorun: range slider put back to %s" % _range_of(restore_to))
+			rep["range_restored_to"] = restore_to
 	_finish(_tree, cfg, rep)
+
+
+static func _range_of(v) -> String:
+	return "No Culling" if float(v) >= 3500.0 else "%d m" % int(v)
 
 
 # Props per second, from the second half of the samples.
@@ -888,8 +986,29 @@ static func _drive_dock(plug: Node, cfg: Dictionary) -> Dictionary:
 	# Its own "no culling" position is the top of its range.
 	if plug.get("mapctx_range") != null:
 		var sl: HSlider = plug.mapctx_range
-		sl.value = sl.max_value
-		sl.value_changed.emit(sl.value)
+		# WHAT IT WAS, so it can be PUT BACK. This slider does not just drive
+		# the run: the dock persists it into project metadata per map, so the
+		# value the bench leaves behind is restored in every future editor
+		# session for that map.
+		#
+		# That is not theoretical. A user reported the editor "struggling to
+		# be stable at 30 fps" and was found working at the top notch, which
+		# is No Culling, with 15,719 draw calls. Pulling it to 600 took the
+		# frame from 25-28 ms of CPU to 13-14 and 51 fps to 65-70. One bench
+		# run had silently pinned their editor in its worst configuration, and
+		# there have been about 130 runs on that machine.
+		out["range_was"] = sl.value
+		# NO CULLING IS THE BUTTON NOW, not the top of the slider. RULE 1 means
+		# a radius of 1e9; the slider's maximum is 1000 m, which would quietly
+		# turn the bench's headline condition into "a kilometre" and make every
+		# figure incomparable with the ones before it.
+		var nc = plug.get("mapctx_nocull")
+		if nc != null and nc is Button:
+			out["nocull_was"] = (nc as Button).button_pressed
+			(nc as Button).button_pressed = true      # emits, re-applies radius
+		else:
+			sl.value = sl.max_value
+			sl.value_changed.emit(sl.value)
 		out["range"] = sl.value
 
 	# Then the layers themselves. button_pressed fires `toggled`, which is the
@@ -1116,6 +1235,7 @@ static func _fly(_tree: SceneTree, samples: Array) -> Dictionary:
 	# they diverge the per-position figure is the honest one for comparing
 	# configurations.
 	var first_times: Array[float] = []
+	var fps_samples: Array[float] = []
 	var hold_us := 50000
 	for s in samples:
 		cam.global_transform = s
@@ -1126,6 +1246,17 @@ static func _fly(_tree: SceneTree, samples: Array) -> Dictionary:
 			await _tree.process_frame
 			var dt := (Time.get_ticks_usec() - t0) / 1000.0
 			times.append(dt)
+			# THE ENGINE'S OWN FRAME RATE, beside our stopwatch.
+			#
+			# `times` is wall clock around `await process_frame`, so it
+			# includes everything this loop itself does between frames - the
+			# counter reads, the transform write, the awaits. The engine's fps
+			# counter does not. When the two disagree, the gap IS the observer
+			# effect, and it matters: a floor of 11 ms with FIFTEEN draw calls
+			# is either something real in the editor or it is this harness
+			# measuring itself, and those need telling apart before anyone
+			# optimises anything.
+			fps_samples.append(Engine.get_frames_per_second())
 			if first:
 				first_times.append(dt)
 				first = false
@@ -1216,9 +1347,18 @@ static func _fly(_tree: SceneTree, samples: Array) -> Dictionary:
 			pos_mean += t
 		pos_mean /= float(pn)
 
+	# The engine's own frame time, for comparison with our stopwatch above.
+	var eng_ms := 0.0
+	if not fps_samples.is_empty():
+		var f := fps_samples.duplicate()
+		f.sort()
+		var mid: float = f[f.size() / 2]
+		eng_ms = (1000.0 / mid) if mid > 0.0 else 0.0
+
 	return {
 		"frames": n,
 		"positions": pn,
+		"engine_ms": snappedf(eng_ms, 0.01),
 		"editor_cam_stuck": stuck,
 		"editor_cam_tried": tried,
 		"mean_ms": snappedf(mean, 0.01),

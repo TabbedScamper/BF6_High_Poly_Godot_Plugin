@@ -107,8 +107,16 @@ var mapctx_water: Button     # show the level's rivers / harbour / sea
 var mapctx_roads: Button     # the street network baked onto the ground
 var mapctx_grass: Button     # ground clutter from the level's scatter catalogue
 var _detail_chips: Node      # Detail Mode's chip row (hosts "Original map objects")
-var mapctx_range: HSlider      # object render distance; 0 = objects off, 3500 = no culling
-var mapctx_range_val: Label    # live "%dm" / "No Culling" readout next to the slider
+var mapctx_range: HSlider      # object render distance, 10..1000 m
+var mapctx_range_val: Label    # live "%dm" readout next to the slider
+# NO CULLING IS A BUTTON NOW, not the top notch of the slider.
+#
+# It used to be 3500 on a 0..3500 slider, which made the useful travel a
+# fraction of the widget and put the most expensive setting in the place a
+# drag naturally lands. A user was found working at that notch with 15,719
+# draw calls at 51 fps; pulling back to 600 m gave 65-70. The slider is now
+# 10..1000 with a 500 m default, and no-culling is an explicit choice.
+var mapctx_nocull: Button
 var mapctx_fx: Button        # live GPU particles at the map's mined FX spawns
 var mapctx_light: Button     # game lighting (sun/sky/fog from the real map VE)
 var mapctx_gi: Button        # sub-toggle: SDFGI + SSAO (visible while lighting is on)
@@ -532,9 +540,18 @@ func _shed_map_context() -> int:
 		_save_mapctx_state()
 	return shed
 
+# What ships, and what a legacy saved state is migrated to. 500 m measured
+# 65-70 fps where No Culling on the same map measured 51.
+const RANGE_DEFAULT := 500.0
+const RANGE_MAX := 1000.0
+# Saved states from before the No Cull button carry the old top notch here.
+const RANGE_LEGACY_NOCULL := 3500.0
+
+
 func _range_label(v: float) -> String:
+	if mapctx_nocull != null and mapctx_nocull.button_pressed:
+		return "No Cull"
 	if int(v) <= 0: return "off"
-	if int(v) >= 3500: return "No Culling"
 	return "%dm" % int(v)
 
 func _enter_tree() -> void:
@@ -697,17 +714,29 @@ func _enter_tree() -> void:
 	var mcr_lbl := Label.new(); mcr_lbl.text = "Range"
 	mcr_row.add_child(mcr_lbl)
 	mapctx_range = HSlider.new()
-	mapctx_range.min_value = 0; mapctx_range.max_value = 3500
-	mapctx_range.step = 100; mapctx_range.value = 800
+	# 10..1000 with a 500 m default. The old 0..3500 spent most of its travel
+	# above the useful band and made No Culling the easiest thing to land on,
+	# which is the most expensive setting there is. 500 m measured 65-70 fps
+	# on a map that ran at 51 with no culling at all.
+	mapctx_range.min_value = 10; mapctx_range.max_value = 1000
+	mapctx_range.step = 10; mapctx_range.value = RANGE_DEFAULT
 	mapctx_range.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	mapctx_range.tooltip_text = "The one distance that governs everything: how far away the real level's scenery, its effects and its lights keep drawing, and how far your own placed pieces keep drawing. Pull it down if the view gets choppy. At zero the borrowed scenery switches off entirely, leaving just your map."
+	mapctx_range.tooltip_text = "The one distance that governs everything: how far away the real level's scenery, its effects and its lights keep drawing, and how far your own placed pieces keep drawing. Pull it down if the view gets choppy. Beside it, No Cull draws everything at any distance, which looks best and costs the most."
 	mcr_row.add_child(mapctx_range)
-	mapctx_range_val = Label.new(); mapctx_range_val.text = _range_label(800.0)
+	mapctx_range_val = Label.new(); mapctx_range_val.text = _range_label(RANGE_DEFAULT)
 	mcr_row.add_child(mapctx_range_val)
+
+	mapctx_nocull = Theme_.chip("No Cull")
+	mapctx_nocull.tooltip_text = "Draw everything, however far away, ignoring the distance slider. This is the best-looking and by far the most expensive setting: on one map it was the difference between 51 fps and 65-70. Leave it off while you work and switch it on to look."
+	mcr_row.add_child(mapctx_nocull)
+	mapctx_nocull.toggled.connect(func(_v: bool):
+		# Re-run the slider's own handler, which reads the button.
+		mapctx_range.value_changed.emit(mapctx_range.value))
 
 	mapctx_range.value_changed.connect(func(v: float):
 		mapctx_range_val.text = _range_label(v)
-		var _rad := 1.0e9 if int(v) >= 3500 else v
+		var _rad := 1.0e9 if (mapctx_nocull != null
+			and mapctx_nocull.button_pressed) else v
 		mapctx.set_radius(_rad)
 		# MERGING RIDES THIS SLIDER. It is not a separate distance: beyond half
 		# of whatever range was chosen, blocks of scenery draw as one merged
@@ -4659,7 +4688,8 @@ func _save_mapctx_state() -> void:
 		# layer you have not asked for.
 		"roads": mapctx_roads.button_pressed if mapctx_roads else false,
 		"grass": mapctx_grass.button_pressed if mapctx_grass else false,
-		"range": mapctx_range.value if mapctx_range else 800.0,
+		"range": mapctx_range.value if mapctx_range else RANGE_DEFAULT,
+		"no_cull": mapctx_nocull.button_pressed if mapctx_nocull else false,
 		"maptile": false,      # the SDK plugin owns the ground texture now
 		"light": mapctx_light.button_pressed if mapctx_light else false,
 		"gi": mapctx_gi.button_pressed if mapctx_gi else true,
@@ -4752,9 +4782,20 @@ func _restore_mapctx_state() -> void:
 	if not (bool(d.get("on", false)) or bool(d.get("objects", false))):
 		return                              # overlay was off — stay light
 	if mapctx_range != null:
-		mapctx_range.set_value_no_signal(clampf(float(d.get("range", 800.0)), 0.0, 3500.0))
+		# MIGRATION. Saved states written before the No Cull button carry the
+		# old top notch (3500) as a RANGE, and the slider now stops at 1000.
+		# Clamping alone would silently turn "draw everything" into "draw a
+		# kilometre", so the old sentinel is read as what it meant: the
+		# button, on. Anything above the new maximum is treated the same way.
+		var saved_r := float(d.get("range", RANGE_DEFAULT))
+		var no_cull := bool(d.get("no_cull", saved_r >= RANGE_MAX))
+		if mapctx_nocull != null:
+			mapctx_nocull.set_pressed_no_signal(no_cull)
+		if saved_r >= RANGE_MAX:
+			saved_r = RANGE_MAX
+		mapctx_range.set_value_no_signal(clampf(saved_r, 10.0, RANGE_MAX))
 		if mapctx_range_val: mapctx_range_val.text = _range_label(mapctx_range.value)
-		mapctx.set_radius(1.0e9 if int(mapctx_range.value) >= 3500 else float(mapctx_range.value))
+		mapctx.set_radius(1.0e9 if no_cull else float(mapctx_range.value))
 	mapctx_on.set_pressed_no_signal(bool(d.get("on", false)))
 	mapctx_objects.set_pressed_no_signal(bool(d.get("objects", false)))
 	# set_pressed_no_signal skips the toggled handler, so the SDK _Assets node

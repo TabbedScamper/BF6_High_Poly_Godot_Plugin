@@ -798,6 +798,16 @@ static func zero_sleeps() -> Dictionary:
 	_park_sleeps(un, fo)
 	es.set_setting(K_SLEEP_UNFOCUSED, 0)
 	es.set_setting(K_SLEEP_FOCUSED, 0)
+	# BELT AND BRACES, because writing the setting is evidently not enough.
+	# Two sweeps have now measured a flat 100 ms AFTER this ran, intermittently
+	# and with the same code deployed: the setting is written and the editor
+	# sleeps anyway. This is the call the editor's own settings handler
+	# eventually makes, so make it directly rather than hoping a notification
+	# lands before the flight starts.
+	OS.low_processor_usage_mode_sleep_usec = 0
+	HighpolyLog.event("bench.sleeps_zeroed", {
+		"was_unfocused": un, "was_focused": fo,
+		"os_sleep_usec": OS.low_processor_usage_mode_sleep_usec})
 	return {"unfocused": un, "focused": fo}
 
 
@@ -821,12 +831,40 @@ static func restore_sleeps(saved: Dictionary) -> void:
 static func looks_capped(median_ms: float, p95_ms: float) -> String:
 	if median_ms <= 0.0:
 		return ""
+	# The tolerances were too tight and a fully capped sweep walked straight
+	# through them: every row sat at 99.87 to 100.01 ms and this returned "".
+	# The p95 test was the weak one - a capped run can still show one slow
+	# frame, which pushed the spread past 2 ms and cleared the check. Widened
+	# on the cap match, and the spread test is now relative to the cap rather
+	# than to the p95 of a single run.
 	for cap in [100.0, 6.9]:
-		if absf(median_ms - cap) < 1.5 and absf(p95_ms - median_ms) < 2.0:
-			return ("median %.1f ms with almost no spread is the signature of "
-				+ "a %.1f ms editor idle sleep, not a frame cost. The sleeps "
-				+ "were not zeroed for this flight and its timings mean "
-				+ "nothing.") % [median_ms, cap]
+		if absf(median_ms - cap) < 4.0 and p95_ms < cap * 1.5:
+			return ("median %.1f ms sitting on a %.1f ms editor idle sleep is "
+				+ "a CAP, not a frame cost. The sleeps were not zeroed for "
+				+ "this flight, so every timing in it is meaningless. The "
+				+ "draw-call counts are still real.") % [median_ms, cap]
+	return ""
+
+
+# The same test applied to a whole sweep rather than one flight, because a
+# capped run's real signature is that CONFIGURATIONS STOP DIFFERING: the
+# heaviest and the emptiest come out within a millisecond of each other. That
+# is unmistakable even when the absolute value is not one of the known caps.
+static func sweep_looks_capped(rows: Dictionary) -> String:
+	var meds: Array[float] = []
+	for k in rows:
+		var r = rows[k]
+		if r is Dictionary and (r as Dictionary).has("median_ms"):
+			meds.append(float((r as Dictionary)["median_ms"]))
+	if meds.size() < 3:
+		return ""
+	meds.sort()
+	var spread: float = meds[meds.size() - 1] - meds[0]
+	if spread < 3.0:
+		return ("every configuration in this sweep landed within %.1f ms of "
+			+ "the others (%.1f to %.1f). An empty scene and a full one "
+			+ "cannot cost the same; this is a cap or a stall, not a "
+			+ "measurement.") % [spread, meds[0], meds[meds.size() - 1]]
 	return ""
 
 
@@ -1230,15 +1268,24 @@ static func _assert_config(plug: Node, mapctx: Node) -> Dictionary:
 	var probs: Array = st["problems"]
 
 	# RULE 1, CHECKED AND NEVER CORRECTED DOWNWARDS.
+	#
+	# CHECK THE BUTTON, NOT THE SLIDER. No Culling used to be the slider's top
+	# notch (3500); it is now its own toggle beside a 10..1000 m slider, so a
+	# slider reading its maximum means a kilometre, not "everything". Testing
+	# the old sentinel here would have passed a run with culling firmly ON and
+	# called it RULE 1 compliant.
 	var sl = plug.get("mapctx_range") if plug != null else null
 	var sv := -1.0
 	if sl != null and sl is HSlider:
 		sv = (sl as HSlider).value
 	st["range_value"] = sv
-	if sv < NO_CULL_SLIDER:
+	var nc = plug.get("mapctx_nocull") if plug != null else null
+	var nc_on := nc != null and nc is Button and (nc as Button).button_pressed
+	st["no_cull"] = nc_on
+	if not nc_on and sv < NO_CULL_SLIDER:
 		st["ok"] = false
-		probs.append("the range slider read back %.0f, not its maximum %.0f, so "
-				% [sv, NO_CULL_SLIDER]
+		probs.append("No Cull is off and the range slider reads %.0f m, so "
+				% sv
 				+ "distance culling is ON and the run would measure the cost of "
 				+ "not drawing things")
 	var rad := -1.0
