@@ -6930,10 +6930,8 @@ func _reproject_roads(props_root: Node3D) -> void:
 	# are already on screen, and with nothing reported the build looks finished
 	# and the map appears to change on its own a minute later.
 	HighpolyVitals.crumb("projecting the road decals onto the map objects")
-	Log.info("Projecting the road decals onto the map objects. The map objects "
-		+ "go dark for a few seconds while this runs, which is what makes it "
-		+ "fast, and they come back on their own. The markings are on the "
-		+ "ground until it finishes.")
+	Log.info("Projecting the road decals onto the map objects. The markings "
+		+ "are on the ground until this finishes.")
 	# Loaded by path, not by class_name: see the note at the top of that file.
 	var pjs: Script = load(
 		"res://addons/highpoly_toggle/highpoly_decalproject.gd") as Script
@@ -6948,26 +6946,16 @@ func _reproject_roads(props_root: Node3D) -> void:
 		# this pass against a build that had already finished, so the minute it
 		# takes was either invisible or blamed on the wrong thing.
 		decal_progress.emit(phase, done, total)
-	# THE PASS YIELDS A FRAME EVERY 12 ms AND THE FRAME IS THE EXPENSIVE PART.
-	# Measured 2026-08-13: 945 yields costing 39.2 ms each, 37.0 s of a 57.9 s
-	# pass spent waiting for the editor to draw, against 20.9 s of actual work.
-	# What it is drawing is the props that were just built - fifteen thousand
-	# draw calls of them - and nothing in this pass looks at them on screen. It
-	# reads their transforms and their triangles, which visibility does not
-	# touch. So they go dark for the duration and each yield gets cheap.
-	#
-	# The props ONLY, not the whole context: the ground and the markings stay up,
-	# so this reads as the markings settling rather than the map disappearing.
-	var hid := false
-	if props_root.visible:
-		props_root.visible = false
-		hid = true
+	# THE PROPS USED TO BE HIDDEN FOR THE DURATION OF THIS, and they no longer
+	# need to be. The pass was spending 37 s of 58 parked in await while the
+	# render thread drew fifteen thousand prop draw calls, because the index
+	# asked it for one instance transform at a time and every getter had to sync
+	# with it. Hiding the props made the render thread idle and took the pass to
+	# 11.9 s, at the cost of the map objects visibly going dark. The index now
+	# reads MultiMesh.buffer instead, so there is nothing to sync with and
+	# nothing to hide.
 	var st: Dictionary = await pj.run(get_tree(), rd as MeshInstance3D,
 		props_root)
-	# Not if something else turned them off in the meantime - a user toggling the
-	# objects layer mid-pass means their choice wins, not ours.
-	if hid and is_instance_valid(props_root) and not props_root.visible:
-		props_root.visible = true
 	HighpolyVitals.crumb("idle, nothing building")
 	decal_progress.emit("", 0, 0)      # an empty phase closes the lane
 	_ph("roads: project the decals onto the props",

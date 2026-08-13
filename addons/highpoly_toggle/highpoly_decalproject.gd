@@ -390,9 +390,39 @@ func _index_props(tree: SceneTree, props_root: Node3D) -> void:
 				mm = null
 			if mm != null and mm.mesh != null:
 				var base := mmi.global_transform
+				# THE WHOLE GROUP'S TRANSFORMS IN ONE READ, not one call each.
+				#
+				# get_instance_transform() is a RenderingServer getter, and the SDK
+				# runs a separate render thread, so every one of them has to sync
+				# with whatever that thread is doing. Across 36,159 instances with
+				# the props on screen that cost 14.1 s of what looked like this
+				# script's own CPU time and was actually stalling; hiding the props
+				# for the pass took the same work to 1.2 s. `buffer` is the same
+				# data on the CPU side, so it is one copy per group and no sync at
+				# all, and then the props do not have to be hidden.
+				#
+				# STRIDE IS NOT ALWAYS 12. Colours and custom data are appended per
+				# instance when the MultiMesh carries them, so it is read off the
+				# resource rather than assumed.
+				var buf := mm.buffer
+				var stride := 12
+				if mm.use_colors:
+					stride += 4
+				if mm.use_custom_data:
+					stride += 4
+				# The transform is stored as three rows of four, so a column of the
+				# basis is a stride apart in the buffer and the origin is the last
+				# entry of each row.
 				for ii in range(mm.instance_count):
-					_add_instance(mm.mesh,
-						base * mm.get_instance_transform(ii))
+					var o := ii * stride
+					if o + 11 >= buf.size():
+						break            # a buffer shorter than it claims
+					var xf := Transform3D(
+						Vector3(buf[o], buf[o + 4], buf[o + 8]),
+						Vector3(buf[o + 1], buf[o + 5], buf[o + 9]),
+						Vector3(buf[o + 2], buf[o + 6], buf[o + 10]),
+						Vector3(buf[o + 3], buf[o + 7], buf[o + 11]))
+					_add_instance(mm.mesh, base * xf)
 					if Time.get_ticks_msec() - frame > MS_PER_FRAME:
 						var ya := Time.get_ticks_usec()
 						await tree.process_frame
