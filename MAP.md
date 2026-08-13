@@ -179,6 +179,7 @@ Size at `16fed50`: 65 scripts, ~56k lines. The big three: `highpoly_gamesource.g
 - collision (249) · previews (602) · doors (107) + variants (183) (merge pair)
 - soldier (181) / vehicle (202) / weapon (117) (merge trio; soldier carries the un-fixed _dress bug)
 - modes (76) · sdkhide (83) · shapeviz (122) · theme (258) + section (204) + tips (145) + splash (124)
+- objdebug (~470, added 2026-08-13) — the Object Debug window: isolates the picked prop (hides ctx children, zero-scales the instance), rebuilds it alone with every UV channel (`gs.debug_sections` + meshset `keep_all_uvs`), live knobs per part, exports the changed-knob recipe. No class_name (staged-lane rule); preloaded by toggle.
 
 ### The off-switch registry (every one has its measurement in an adjacent comment)
 | switch | where | value |
