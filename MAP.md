@@ -300,3 +300,20 @@ Run it with the scratchpad's `run_test.py`, same sandbox trick as the gate.
   as `bf6`. Read-only by design: no deploy verb.
 - `sysprobe.py` / `doctor.py` — what the editor process is doing to the
   machine, and which settings and addons are signing up for per-frame work.
+- `bootbench.py` — what a REAL editor boot costs, engine JSON + event stream
+  + process sampling + wall clock in one timeline, A/B on one variable.
+  **Measured 2026-08-13: 53 s to settled** (18 s scan and class parse at 1-2
+  threads, 8 s instancing the map tab, a 767 MB/s resource burst, 20 s of GPU
+  upload); peak CPU 9.4% of 32 cores, so boot is NOT parallel-bound. Knows
+  about the windowless zombie (below).
+
+### Two boot-time laws, both measured
+- **Settling is not a CPU threshold.** `cpu_pct` is normalised across cores
+  and boot is single-threaded: one saturated thread is ~3.1% of 32 cores. Use
+  working set going flat (plus quiet disk) as the signal.
+- **A graceful close can leave a WINDOWLESS ZOMBIE**: no window, working set
+  collapsed to ~220 MB, threads spinning at exactly one core, 598 s of CPU
+  and still climbing ten minutes later, never exits. A stray one from the
+  last session eats a core through the next one, so check before measuring or
+  blaming the machine. `bootbench._looks_like_zombie` requires all three
+  conditions before terminating anything.
