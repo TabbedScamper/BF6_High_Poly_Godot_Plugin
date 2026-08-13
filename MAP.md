@@ -300,20 +300,46 @@ Run it with the scratchpad's `run_test.py`, same sandbox trick as the gate.
   as `bf6`. Read-only by design: no deploy verb.
 - `sysprobe.py` / `doctor.py` — what the editor process is doing to the
   machine, and which settings and addons are signing up for per-frame work.
-- `bootbench.py` — what a REAL editor boot costs, engine JSON + event stream
-  + process sampling + wall clock in one timeline, A/B on one variable.
-  **Measured 2026-08-13: 53 s to settled** (18 s scan and class parse at 1-2
-  threads, 8 s instancing the map tab, a 767 MB/s resource burst, 20 s of GPU
-  upload); peak CPU 9.4% of 32 cores, so boot is NOT parallel-bound. Knows
-  about the windowless zombie (below).
+- `bootbench.py` — what a REAL editor boot costs: the plugin's event stream +
+  process sampling + wall clock in one timeline, A/B on one variable.
 
-### Two boot-time laws, both measured
+### Boot, measured 2026-08-13 (n=5, stable to ~1.5 s)
+| mark | figure |
+|---|---|
+| plugin alive (editor usable) | **8.0 s** |
+| settled (all background work stopped) | **37.6 - 39.2 s** |
+| the map tab in `open_scenes` | **8 - 9 s** of that, and 1.36 GB |
+| Windows Defender exclusion | ~1 s, inside the noise |
+| peak CPU | 8 - 9% of 32 cores, so boot is NOT parallel-bound |
+
+**Time to USABLE is not time to quiet.** The editor is up and the plugin is
+running at 8 s; the rest is scan, scene restore and GPU upload continuing
+underneath. An earlier reading of "30 s before the plugin exists" was an
+artifact of the event stream being created lazily on the first thing that
+logged; `plugin.ready` is now emitted deliberately.
+
+### Three boot-time laws, each paid for
 - **Settling is not a CPU threshold.** `cpu_pct` is normalised across cores
   and boot is single-threaded: one saturated thread is ~3.1% of 32 cores. Use
-  working set going flat (plus quiet disk) as the signal.
-- **A graceful close can leave a WINDOWLESS ZOMBIE**: no window, working set
-  collapsed to ~220 MB, threads spinning at exactly one core, 598 s of CPU
-  and still climbing ten minutes later, never exits. A stray one from the
-  last session eats a core through the next one, so check before measuring or
-  blaming the machine. `bootbench._looks_like_zombie` requires all three
-  conditions before terminating anything.
+  working set going flat (plus quiet disk) as the signal. The CPU rule
+  reported "settled" at 5 s when the truth was 38 s.
+- **NEVER pass `--benchmark-file` to a run you intend to close.** Godot dumps
+  it from `Main::cleanup` and the process then spins at one core forever
+  (window gone, ws 980 -> 209 MB, threads 69 -> 14 -> 9, then stuck).
+  Measured against plain / `--log-file` / both: only the benchmark flag
+  hangs, everything else exits in ~1.2 s. **A normal editor closes cleanly**;
+  this was our own harness flag, and it burned a core through several
+  measurements before it was found. Opt-in behind `--engine-phases`.
+- **Watch the transition, not the end state.** The above took three rounds to
+  find because detection waited 120 s after close before sampling, so every
+  observation was of a process long past the event. Sampling once a second
+  from the moment of close found it in one run.
+
+### Cold is not warm
+A throwaway project booted COLD includes a one-time import and cannot be
+compared with the real project, which is always WARM. That mistake produced
+"the 10,883 class_name scripts cost 27 s" (cold 30.5 s); warm the same
+project is 11.7 s, and repeated runs put the remaining differences inside a
+~2.5 s noise floor. Below ~3 s, this harness cannot separate anything: an
+empty project measured 3.6 s cold and 6.1 s warm, and a trivial-body variant
+measured SLOWER than the full-content one.
