@@ -1976,7 +1976,21 @@ All of it is read from your own Battlefield 6 installation."
 			jobs.clear_activity("Laying the road decals")
 		else:
 			jobs.set_activity("Laying the road decals", done, total))
-	mapctx.build_finished.connect(func(_b: int): _storage_dirty())
+	# AND THE TERRAIN, WHICH WRITES THE BIGGEST FILES OF ALL.
+	#
+	# build_finished is the PROPS builder, so it was the only thing marking
+	# storage stale - and Extended Terrain does not build props. A user who
+	# turned the ground on watched the readout insist nothing had been written
+	# while the heightfield alone put half a gigabyte on disk (measured:
+	# height_game.r16 is 536,936,450 bytes, the colour map another 64 MB). It
+	# only corrected itself on a scene switch or a restart, because those
+	# re-run the startup measure.
+	#
+	# terrain_ready fires once per map when the ground reaches full detail, or
+	# when it is settled that it never will, so it is exactly the moment the
+	# terrain's bytes are all on disk. The 2 s debounce in _storage_dirty
+	# collapses this with whatever else finishes alongside it.
+	mapctx.terrain_ready.connect(func(_sharp: bool): _storage_dirty())
 	mapctx.build_finished.connect(func(_built: int):
 		jobs.clear_activity("Building the level's scenery")
 		# sidecar-cached meshes load with the shader params they were SAVED
@@ -3909,7 +3923,14 @@ func _refresh_storage() -> void:
 		if gen != _storage_gen: return
 		maps_bytes += int(u[1])
 		nmaps += 1
-	var total := int(props[1]) + maps_bytes
+	# THE GEOMETRY CACHE WAS NEVER COUNTED, and it is not a rounding error: one
+	# map's prepared meshes are 308.6 MB against roughly 600 MB for everything
+	# this readout did measure. So "Using X on your PC" was understating the
+	# real figure by about a third, on the one screen a user consults before
+	# deciding whether to delete something.
+	var geom: Array = await mapctx.dir_usage_async("user://bf6_geom")
+	if gen != _storage_gen: return
+	var total := int(props[1]) + maps_bytes + int(geom[1])
 	# One plain sentence, then a line per thing, in the words a map builder would
 	# use. The old single line packed all of this into one dense string that
 	# never actually said what any of it was.
@@ -3918,6 +3939,8 @@ func _refresh_storage() -> void:
 		% [_fmt_n(int(props[0])), _human_size(int(props[1]))])
 	lines.append("  Levels read from your game: %s  (%s)"
 		% [_fmt_n(nmaps), _human_size(maps_bytes)])
+	lines.append("  Meshes prepared for reuse: %s  (%s)"
+		% [_fmt_n(int(geom[0])), _human_size(int(geom[1]))])
 	storage_lbl.text = "\n".join(lines)
 
 func _reload_purge_options() -> void:

@@ -39,6 +39,10 @@ var log_fn := Callable()
 # to answer rather than something to guess at afterwards.
 var _exe_used := ""
 var _exe_others: Array = []
+# The empty-walk retry fires ONCE per open. Without the latch a level that
+# genuinely has no placements would re-read a 176 MB executable and re-walk the
+# whole map on every open, for ever, to reach the same answer.
+var _types_retried := false
 
 
 func _say(s: String) -> void:
@@ -351,7 +355,22 @@ func install_report() -> PackedStringArray:
 			# SP and MP carry different type databases and the first candidate
 			# wins. If the layouts do not fit this install, this is the first
 			# thing to try swapping.
-			out.append("  ALSO PRESENT       %s" % ", ".join(_exe_others))
+			#
+			# ITS SIZE AND DATE TOO, not just its path. Only the chosen one was
+			# measured, so a user whose maps read as completely empty could not
+			# be told whether the other executable was even a different build
+			# without another round trip. Three diagnostics bundles went by
+			# before that question could be answered.
+			for o in _exe_others:
+				var of := FileAccess.open(str(o), FileAccess.READ)
+				var osz := 0
+				if of != null:
+					osz = of.get_length()
+					of.close()
+				out.append("  ALSO PRESENT       %s" % str(o))
+				out.append("                     %d bytes, modified %s" % [osz,
+					Time.get_datetime_string_from_unix_time(
+						FileAccess.get_modified_time(str(o)))])
 			out.append("                     (SP and MP carry DIFFERENT type")
 			out.append("                      databases; the wrong one resolves")
 			out.append("                      to wrong layouts rather than failing)")
@@ -1112,6 +1131,69 @@ func open_map(map: String, game_dir := "", progress := Callable(),
 			error = _fail("walking the map's placements",
 				str(walk.stats.get("error", "it produced nothing")))
 			return false
+		# A REAL MAP IS NEVER EMPTY, so an empty walk is a wrong type database
+		# and not a map with nothing in it.
+		#
+		# The type layouts come out of bf6.exe, and the SP and MP builds carry
+		# DIFFERENT ones. Picking the wrong build does not fail: it resolves
+		# every type to the wrong offsets, so visit() matches none of the fields
+		# it reads and the walk returns zero rows while the mount, the partition
+		# index, the catalogue and the terrain all work perfectly. That is
+		# exactly what a user with an EA App install reported - 0 placements and
+		# 0 gamemode markers on three maps, against a mount that matched ours
+		# entry for entry, on an SP executable 232 KB different from ours.
+		#
+		# Zero is unambiguous, which is what makes this safe to automate: no
+		# healthy install has ever produced an empty walk, so retrying with the
+		# other executable cannot cost a working setup anything. It is tried
+		# ONCE, and the log says so, because a silent retry is how a wrong
+		# database becomes permanent folklore.
+		if walk.rows.is_empty() and not _types_retried:
+			_types_retried = true
+			var other := ""
+			for c in BF6Types.exe_candidates(src.game):
+				if c != exe and FileAccess.file_exists(c):
+					other = c
+					break
+			if other != "":
+				Log.warn(("The map read as completely empty, which means the "
+					+ "type layouts came from the wrong executable. Retrying "
+					+ "with %s instead of %s.") % [other.get_file(),
+						exe.get_file()])
+				var t2 := BF6Types.new()
+				if t2.open(other):
+					types = t2
+					_exe_used = other
+					_exe_others = [exe]
+					walk = BF6Walk.new(src, types)
+					for g in LIGHT_TYPES:
+						walk.want_types[str(g)] = "light"
+					for g in EDV_TYPES:
+						walk.want_types[str(g)] = "edv"
+					walk.want_fields = LIGHT_FIELDS + EDV_FIELDS
+					# THE SCOPE INDEX TOO. The first walk was handed it during
+					# the depot phase above, and a replacement built here would
+					# otherwise walk with an empty one: every row would come
+					# back with no scope, so nothing could resolve a material
+					# and the retry would look like a different failure.
+					for d in _depot_bundles:
+						walk.scope_index[str(d)] = str(d)
+					# The cached walk is keyed on the TOC signature, not on the
+					# executable, so the empty result is sitting in it and would
+					# be served straight back. Force the traversal.
+					walk.run(level)
+					if walk.rows.is_empty():
+						Log.warn("Still empty with " + other.get_file()
+							+ ". The install is not readable by either type "
+							+ "database, so please send a diagnostics zip.")
+					else:
+						Log.info(("That was it: %d placement(s) with %s. This "
+							+ "install's type layouts live in that executable, "
+							+ "not the one tried first.")
+							% [walk.rows.size(), other.get_file()])
+				else:
+					Log.warn("Could not read " + other.get_file() + ": "
+						+ t2.error)
 		placements_ready = true
 		var walk_cached: bool = bool(walk.stats.get("from_cache", false))
 		if not walk_cached:
