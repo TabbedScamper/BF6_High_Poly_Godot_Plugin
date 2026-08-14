@@ -1156,7 +1156,7 @@ func open_map(map: String, game_dir := "", progress := Callable(),
 					other = c
 					break
 			if other != "":
-				Log.warn(("The map read as completely empty, which means the "
+				HighpolyLog.warn(("The map read as completely empty, which means the "
 					+ "type layouts came from the wrong executable. Retrying "
 					+ "with %s instead of %s.") % [other.get_file(),
 						exe.get_file()])
@@ -1183,16 +1183,16 @@ func open_map(map: String, game_dir := "", progress := Callable(),
 					# be served straight back. Force the traversal.
 					walk.run(level)
 					if walk.rows.is_empty():
-						Log.warn("Still empty with " + other.get_file()
+						HighpolyLog.warn("Still empty with " + other.get_file()
 							+ ". The install is not readable by either type "
 							+ "database, so please send a diagnostics zip.")
 					else:
-						Log.info(("That was it: %d placement(s) with %s. This "
+						HighpolyLog.info(("That was it: %d placement(s) with %s. This "
 							+ "install's type layouts live in that executable, "
 							+ "not the one tried first.")
 							% [walk.rows.size(), other.get_file()])
 				else:
-					Log.warn("Could not read " + other.get_file() + ": "
+					HighpolyLog.warn("Could not read " + other.get_file() + ": "
 						+ t2.error)
 		placements_ready = true
 		var walk_cached: bool = bool(walk.stats.get("from_cache", false))
