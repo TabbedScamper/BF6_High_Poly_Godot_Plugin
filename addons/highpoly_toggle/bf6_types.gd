@@ -40,6 +40,14 @@ var _oo = null
 # it was a push_warning that never reached the session log.
 var ti_found := false
 var ti_size := 0
+var file_size := 0                # the executable's size on disk
+var data_short := false           # the read came back smaller than the file
+# TYPE LOOKUPS THAT FOUND NOTHING, anywhere in the executable. A lookup already
+# falls back from the typeinfo section to the whole file, so a miss means the
+# type's id is genuinely absent from these bytes - the database and the level
+# data disagree. This is the number that says so out loud instead of letting it
+# surface as a map with no objects in it.
+var n_miss := 0
 var _ti_off := 0                  # `typeinfo` section bounds, for the search
 var _ti_end := 0
 var _layout_cache := {}
@@ -66,9 +74,27 @@ func open(exe_path: String) -> bool:
 				+ "bf6_oodle.windows.x86_64.dll is loaded")
 		return false
 
+	# HOW BIG IS IT ON DISK, asked BEFORE the read rather than trusted after.
+	var fh := FileAccess.open(exe_path, FileAccess.READ)
+	if fh != null:
+		file_size = int(fh.get_length())
+		fh.close()
 	data = FileAccess.get_file_as_bytes(exe_path)
 	if data.size() < 0x40:
 		error = "%s is too small to be a PE" % exe_path
+		return false
+	# A SHORT READ IS AN ERROR, NOT A SMALLER DATABASE. Every type lookup is a
+	# byte scan of this buffer, so a partial read does not fail: it silently
+	# resolves nothing, every instance becomes "a type I cannot describe", and
+	# the map opens with terrain and textures perfect and no objects at all. On
+	# a 176 MB read that is exactly the shape of a machine short on memory, and
+	# nothing here checked it. Better a named failure than a plausible empty map.
+	if file_size > 0 and data.size() < file_size:
+		error = ("only %d of %d bytes of %s could be read, so the type database "
+			+ "is incomplete. This usually means the machine was short of "
+			+ "memory. Close some applications and try again.") % [
+				data.size(), file_size, exe_path.get_file()]
+		data_short = true
 		return false
 	var pe := int(data.decode_u32(0x3C))
 	if pe <= 0 or pe + 24 > data.size():
@@ -185,6 +211,7 @@ func _layout_uncached(guid: PackedByteArray) -> Dictionary:
 		_fallback_calls += 1
 		fo = _oo.find(data, guid, 0, -1)
 	if fo < 8 or fo + 56 > data.size():
+		n_miss += 1
 		return {}
 
 	var flags := int(data.decode_u16(fo - 4))

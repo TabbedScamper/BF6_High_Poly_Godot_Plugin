@@ -713,6 +713,15 @@ func _walk_evidence(tag: String) -> void:
 	if unres > 0:
 		HighpolyLog.warn("   %s: %d type(s) could not be described by this "
 			% [tag, unres] + "executable, which is why the objects went missing.")
+	# AND WHY THE LOOKUP FAILED. A lookup already falls back from the typeinfo
+	# section to the whole executable, so a miss means the type's id is not in
+	# these bytes at all. Reading the file completely is the other half: a short
+	# read resolves nothing and looks identical from the outside, so both numbers
+	# are printed rather than one being inferred from the other.
+	if types != null:
+		HighpolyLog.warn("   %s: read %d of %d byte(s), typeinfo %d byte(s), "
+			% [tag, types.data.size(), types.file_size, types.ti_size]
+			+ "%d lookup(s) found nothing" % types.n_miss)
 	if str(st.get("error", "")) != "":
 		HighpolyLog.warn("   %s: the walk stopped with: %s"
 			% [tag, str(st.get("error", ""))])
