@@ -479,6 +479,8 @@ func build_report() -> PackedStringArray:
 			"decoded", FROM_INSTALL],
 		["  tex: chunk read + decode", t_tex_dec, int(tex_stats.get("decoded", 0)),
 			"decoded", FROM_INSTALL],
+		["    of which the CAS chunk (locked)", t_tex_chunk,
+			int(tex_stats.get("decoded", 0)), "decoded", FROM_INSTALL],
 		["  tex: compress + mipmaps", t_tex_post, int(tex_stats.get("decoded", 0)),
 			"decoded", FROM_MIXED],
 		["  tex: upload to the GPU", t_tex_up, int(tex_stats.get("decoded", 0)),
@@ -5505,6 +5507,12 @@ var t_tex := 0                         # decode + compress + ImageTexture upload
 # Measure the sub-step, not the phase.
 var t_tex_res := 0                     # src.get_res: the header out of the install
 var t_tex_dec := 0                     # chunk read + Oodle + image build
+# OF THAT, THE PART THAT CANNOT BE THREADED. bf6_source._read_seg holds
+# _read_mx across the CAS seek, the read AND the decompression, so every worker
+# would queue on the same lock and parallelising would buy nothing. What is
+# left of the decode after the chunk comes back is ordinary image work and
+# would parallelise. This split is the whole case for or against lever 2.
+var t_tex_chunk := 0
 var t_tex_post := 0                    # compress + mipmaps
 var t_tex_up := 0                      # ImageTexture.create_from_image
 var t_depot := 0                       # reading and parsing a ShaderBlockDepot
@@ -5738,6 +5746,32 @@ func compact_caches(root: Node) -> Dictionary:
 			keep_mat[k] = v
 	_mat_cache = keep_mat
 
+	# _mat_by_look WAS MISSING, and it made the material half of this a lie in
+	# exactly the way _dressed made the mesh half one (see its note below).
+	#
+	# Every material built also lands here, keyed by its look, so that two
+	# sections wanting the same albedo/normal/emissive share one object. Dropping
+	# it from _mat_cache above therefore freed NOTHING: the material stayed
+	# referenced from here, and so did every texture it holds. This function
+	# reported "released 5,359 cached materials, the textures they were holding
+	# go with them" over a build where nothing was released at all - proved by
+	# instrumenting the other side, where the count of textures left referenced
+	# by nobody came back as zero when it should have been thousands.
+	#
+	# Nulls are kept on purpose: a null here is a negative result, "this look
+	# resolves to no material", and dropping those just makes the next build
+	# re-derive them.
+	var keep_look := {}
+	for k in _mat_by_look.keys():
+		var v = _mat_by_look[k]
+		if v == null:
+			keep_look[k] = null
+		elif v is Material and live_mat.has((v as Material).get_instance_id()):
+			keep_look[k] = v
+	out["looks_before"] = _mat_by_look.size()
+	_mat_by_look = keep_look
+	out["looks_after"] = _mat_by_look.size()
+
 	var keep_mesh := {}
 	for k in _mesh_by_sig.keys():
 		var v = _mesh_by_sig[k]
@@ -5759,6 +5793,38 @@ func compact_caches(root: Node) -> Dictionary:
 	out["materials_after"] = _mat_cache.size()
 	out["meshes_after"] = _mesh_by_sig.size()
 	out["dressed_after"] = _dressed.size()
+
+	# HOW MUCH OF THE TEXTURE DECODE WAS FOR NOTHING.
+	#
+	# 8.20 s of every build is the CAS chunk read and the Oodle decode, 2.03 ms
+	# a texture across ~4,036 of them, and this function routinely drops five
+	# thousand materials that nothing on screen was using. The tempting
+	# inference is that a matching share of those decodes was wasted - but only
+	# if the dropped materials held sheets NOTHING ELSE holds, and these
+	# materials share sheets heavily: 2,664 of the decodes were already reuses.
+	#
+	# So count it instead of inferring it. After the drop above, a texture whose
+	# only remaining reference is this cache's own entry was decoded for a
+	# material that no longer exists: refcount 1 means us and nobody else. That
+	# number is the whole prize for not dressing what will never be placed, and
+	# if it comes back small then this is not a lever and the answer is to
+	# parallelise the decode instead.
+	var orphan := 0
+	var orphan_mb := 0.0
+	for k in _tex_cache.keys():
+		var t = _tex_cache[k]
+		if not (t is ImageTexture):
+			continue
+		if (t as ImageTexture).get_reference_count() > 1:
+			continue
+		orphan += 1
+		var im: Image = (t as ImageTexture).get_image()
+		if im != null:
+			orphan_mb += HighpolyBcTex.img_bytes(im.get_width(),
+				im.get_height(), int(im.get_format())) / 1048576.0
+	out["textures_total"] = _tex_cache.size()
+	out["textures_orphan"] = orphan
+	out["textures_orphan_mb"] = snappedf(orphan_mb, 0.1)
 	return out
 
 
@@ -9141,7 +9207,11 @@ func _texture_for(file_guid, is_normal := false, cap := -1):
 		t_tex += Time.get_ticks_usec() - _tt
 		return null
 	_ts = Time.get_ticks_usec()
-	var got := _tex.decode(raw, func(form): return src.get_chunk(str(form)),
+	var got := _tex.decode(raw, func(form):
+			var _tc := Time.get_ticks_usec()
+			var chunk := src.get_chunk(str(form))
+			t_tex_chunk += Time.get_ticks_usec() - _tc
+			return chunk,
 		texture_max_dim if cap < 0 else cap)
 	t_tex_dec += Time.get_ticks_usec() - _ts
 	if got.is_empty() or not (got.get("image") is Image):

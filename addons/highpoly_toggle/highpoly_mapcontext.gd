@@ -6891,13 +6891,30 @@ func _compact_caches(props_root: Node3D) -> void:
 	var d_gone: int = int(r["dressed_before"]) - int(r["dressed_after"])
 	_ph("props: hand back unused cache entries", Time.get_ticks_msec() - t,
 		maxi(1, m_gone + k_gone), PH_MEMORY)
+	# THE DECODE THAT BOUGHT NOTHING, said out loud beside the release. A
+	# texture nothing references after the drop was read out of the install and
+	# Oodle-decoded for a material that is now gone, and at 2.03 ms each that is
+	# the measurable cost of dressing surfaces the build never places.
+	var orph := int(r.get("textures_orphan", 0))
+	Log.info(("Textures: %d of %d decoded sheets (%.1f MB) are referenced by "
+		+ "nothing after the drop; material objects went from %d looks to %d. "
+		+ "The orphan count is what says whether dressing surfaces the build "
+		+ "never places wastes any decode time.")
+		% [orph, int(r.get("textures_total", 0)),
+			float(r.get("textures_orphan_mb", 0.0)),
+			int(r.get("looks_before", 0)), int(r.get("looks_after", 0))])
 	if m_gone + k_gone + d_gone <= 0:
 		return
-	Log.info(("Memory: released %d cached material(s), %d mesh(es) and %d "
-		+ "dressing record(s) that nothing on screen was using. The textures "
-		+ "they were holding go with them. Anything still drawn is untouched, "
-		+ "so this cannot change the picture - a later rebuild just remakes "
-		+ "what it needs.")
+	# NOT "the textures go with them", which is what this used to claim and it
+	# was never true. These counts are CACHE ENTRIES, and the cache is keyed by
+	# material state while the material OBJECTS are shared by look, so dropping
+	# thousands of entries frees far fewer objects and, measurably, no textures
+	# at all. The orphan line below is the one that says what was actually
+	# handed back.
+	Log.info(("Memory: dropped %d material cache entr(ies), %d mesh(es) and %d "
+		+ "dressing record(s) that nothing on screen was using. Anything still "
+		+ "drawn is untouched, so this cannot change the picture - a later "
+		+ "rebuild just remakes what it needs.")
 		% [m_gone, k_gone, d_gone])
 
 
