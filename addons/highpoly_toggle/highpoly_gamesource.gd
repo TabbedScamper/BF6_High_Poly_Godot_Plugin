@@ -705,6 +705,14 @@ func _walk_evidence(tag: String) -> void:
 		% [tag, walk.rows.size(), int(st.get("instances", 0)),
 			int(st.get("instances_skipped", 0)),
 			(", root %s" % str(st.get("root", ""))) if st.has("root") else ""])
+	# THE NUMBER THAT NAMES THE FAULT. Zero unresolved with zero rows means the
+	# level really is empty. Anything else means this executable cannot describe
+	# this level's types, and every instance was being discarded as "provably
+	# uninteresting" when the truth was that nothing could be read at all.
+	var unres := int(st.get("types_unresolved", 0))
+	if unres > 0:
+		HighpolyLog.warn("   %s: %d type(s) could not be described by this "
+			% [tag, unres] + "executable, which is why the objects went missing.")
 	if str(st.get("error", "")) != "":
 		HighpolyLog.warn("   %s: the walk stopped with: %s"
 			% [tag, str(st.get("error", ""))])

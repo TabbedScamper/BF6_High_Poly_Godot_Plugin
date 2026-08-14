@@ -452,6 +452,11 @@ var n_instances := 0
 # a caller can show the walk moving. Left unset costs one is_valid() per 8,192.
 var progress := Callable()
 var n_skipped := 0
+# TYPES THE DATABASE COULD NOT DESCRIBE. Zero on a healthy install. Anything
+# else means the executable and the level data disagree, and it is the single
+# number that separates "this map genuinely has nothing" from "we could not read
+# this map" - which looked identical for four releases.
+var n_unresolved := 0
 
 # EVERY field visit() looks at. If a type declares none of these, visiting an
 # instance of it cannot do anything: the SMG branch needs Members, the transform
@@ -540,7 +545,23 @@ func _type_matters(dz, i: int) -> bool:
 	# are a few thousand types against 268,587 instances.
 	var lay: Dictionary = types.layout_full(tb)
 	var yes := false
-	if not lay.is_empty():
+	if lay.is_empty():
+		# AN UNKNOWN TYPE IS NOT A BORING ONE, and this is where a user's map
+		# became empty. The skip above is sound only as an equivalence: a type
+		# that DECLARES none of WALK_FIELDS provably cannot affect the walk. An
+		# empty layout is not that statement. It means the type database could
+		# not describe this type at all, and the code was reading "I do not know"
+		# as "no" - so on an install where layouts do not resolve, every instance
+		# is provably-skippable, the walk descends into nothing, and the map comes
+		# back with zero objects while the terrain and textures are perfect.
+		#
+		# It fails open now: an unknown type gets decoded. That costs time on a
+		# level full of unknown types and costs nothing when they resolve, which
+		# is the right way round, because the alternative silently produces an
+		# empty map and no error.
+		n_unresolved += 1
+		yes = true
+	else:
 		for fld in lay.get("fields", []):
 			if WALK_FIELDS.has(int((fld as Dictionary)["nameHash"])):
 				yes = true
@@ -963,6 +984,14 @@ func run(level_rel: String) -> bool:
 	rows.clear()
 	ents.clear()
 	stats.clear()
+	# ZEROED PER RUN. These were not, and the retry runs a SECOND walk on the same
+	# object, so a user's evidence line read "39 instances seen" and then "78
+	# instances seen" - which reads as the two databases behaving differently when
+	# it was one number added to itself. Every count these produce describes this
+	# walk now, not this walker's lifetime.
+	n_instances = 0
+	n_skipped = 0
+	n_unresolved = 0
 	# Forced, not lazy: a caller may set want_fields between two runs of the
 	# same walker, and a set built for the previous run would quietly decode
 	# the wrong fields for this one.
@@ -1011,4 +1040,5 @@ func run(level_rel: String) -> bool:
 	stats["ms_decode"] = int(t_decode / 1000)
 	stats["instances"] = n_instances
 	stats["instances_skipped"] = n_skipped
+	stats["types_unresolved"] = n_unresolved
 	return not rows.is_empty()

@@ -74,7 +74,10 @@ func _init() -> void:
 	var good: String = gs._exe_used
 	var good_types = gs.types
 	var baseline: int = gs.walk.rows.size()
-	_say("opened. exe=%s rows=%d" % [good.get_file(), baseline])
+	_say("opened. exe=%s rows=%d  instances=%d skipped=%d unresolved=%d"
+		% [good.get_file(), baseline, int(gs.walk.stats.get("instances", 0)),
+			int(gs.walk.stats.get("instances_skipped", 0)),
+			int(gs.walk.stats.get("types_unresolved", 0))])
 	if baseline == 0:
 		_say("this map is already empty on a known-good install, so it can "
 			+ "prove nothing. Pick another.")
