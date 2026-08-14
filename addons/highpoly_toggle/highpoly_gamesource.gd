@@ -722,6 +722,24 @@ func _walk_evidence(tag: String) -> void:
 		HighpolyLog.warn("   %s: read %d of %d byte(s), typeinfo %d byte(s), "
 			% [tag, types.data.size(), types.file_size, types.ti_size]
 			+ "%d lookup(s) found nothing" % types.n_miss)
+		# WITH THE WHOLE FILE READ AND LOOKUPS STILL MISSING, only one question
+		# is left, and the bytes answer it without needing anything from the
+		# person reporting it. Ours measures about 3.4 bits with two thirds zero
+		# bytes. Near 8.0 with no zeros means this region is encrypted or packed
+		# on disk, the game decrypts it at runtime, and no change to this reader
+		# will ever find a type id in it.
+		if types.n_miss > 0:
+			var e: Dictionary = types.ti_entropy()
+			if not e.is_empty():
+				HighpolyLog.warn("   %s: type table reads %.2f bits/byte, %.1f%% "
+					% [tag, float(e["bits"]), float(e["zeros"])]
+					+ "zero bytes. Ours reads about 3.4 and 65%.")
+				if float(e["bits"]) > 7.5:
+					HighpolyLog.warn("   %s: that is encrypted or compressed on "
+						% tag + "disk, so the object types cannot be read from "
+						+ "this copy of the game at all. This is not something "
+						+ "you have done wrong and not something a reinstall "
+						+ "will change.")
 	if str(st.get("error", "")) != "":
 		HighpolyLog.warn("   %s: the walk stopped with: %s"
 			% [tag, str(st.get("error", ""))])
@@ -779,11 +797,17 @@ func _retry_other_typedb() -> void:
 		# recovering objects could take out FX and gamemode markers that were
 		# working. A failed retry has to cost nothing, and that means restoring
 		# all four fields, not just the walk's.
+		# REPORTED BEFORE THE RESTORE, because _walk_evidence reads `types`, and
+		# restoring first made it describe the ORIGINAL database under the OTHER
+		# one's name. A user's log carried two lines, labelled SP/bf6.exe and
+		# bf6.exe, both quoting the SP file's size: the second executable was
+		# never described at all and the line claiming to describe it was a
+		# duplicate. A diagnostic that mislabels its subject is worse than none.
+		_walk_evidence(_exe_label(other))
 		types = t0
 		_exe_used = exe
 		_exe_others = others0
 		walk.types = t0
-		_walk_evidence(_exe_label(other))
 		# BOTH FAILING THE SAME WAY IS ITS OWN ANSWER. If neither walk ever
 		# reached a partition, the type database was never the question: the walk
 		# stopped before it read one, and swapping executables cannot help.
