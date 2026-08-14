@@ -1187,6 +1187,14 @@ func open_map(map: String, game_dir := "", progress := Callable(),
 							+ ". The install is not readable by either type "
 							+ "database, so please send a diagnostics zip.")
 					else:
+						# OVERWRITE THE EMPTY CACHE. run_cached saved the zero-row
+						# walk before we reached here, and the bare run() above
+						# does not save at all - so without this the next open
+						# loads the empty cache, retries, and pays a full uncached
+						# walk EVERY time. Measured: 40,217 rows against 0 in
+						# 0.0 s, so the wrong answer is the cheap one to keep by
+						# accident.
+						walk.save_cache(level)
 						HighpolyLog.info(("That was it: %d placement(s) with %s. This "
 							+ "install's type layouts live in that executable, "
 							+ "not the one tried first.")
