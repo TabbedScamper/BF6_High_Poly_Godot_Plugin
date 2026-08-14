@@ -32,6 +32,38 @@ const CANDIDATES := [
 	"C:/Program Files (x86)/EA Games/Battlefield 6",
 ]
 
+# Parents worth trying ON EVERY FIXED DRIVE, with "Battlefield 6" under them.
+#
+# Steam publishes its libraries in libraryfolders.vdf, so a Steam install on any
+# drive is already found. THE EA APP PUBLISHES NOTHING OF THE SORT and lets you
+# install anywhere, so an EA App user on a drive other than C: was invisible to
+# every check in this file: a real user's install at I:\Battlefield 6 gated the
+# panel off with "No folder chosen yet", repeatedly, while the reader underneath
+# was mounting it and working.
+#
+# One file probe per entry per drive. A machine with three fixed drives pays
+# about twenty stats, which is nothing beside the mount that follows.
+const DRIVE_PARENTS := [
+	"",                                   # X:/Battlefield 6
+	"Program Files/EA Games",
+	"Program Files (x86)/EA Games",
+	"EA Games",
+	"Games",
+	"SteamLibrary/steamapps/common",      # the usual hand-made Steam library
+	"steamapps/common",
+]
+
+# EA's own registry record of where it put a game. Origin wrote these and EA
+# Desktop kept them; the value name has varied, so several are tried and the
+# first that points at a real install wins. Nothing here is trusted without
+# verify() agreeing.
+const EA_REG_KEYS := [
+	"HKLM\\SOFTWARE\\WOW6432Node\\EA Games\\Battlefield 6",
+	"HKLM\\SOFTWARE\\EA Games\\Battlefield 6",
+	"HKLM\\SOFTWARE\\WOW6432Node\\Electronic Arts\\EA Desktop\\Battlefield 6",
+	"HKLM\\SOFTWARE\\Electronic Arts\\EA Desktop\\Battlefield 6",
+]
+
 
 # The saved path, or "" outside the editor.
 #
@@ -132,12 +164,52 @@ static func _steam_root() -> String:
 # The best guess available without asking: whatever was saved, then the usual
 # install locations, then Steam's registry-located root and every library
 # listed in its libraryfolders.vdf - which is what finds a game on D: or E:.
+# EVERY FIXED DRIVE ON THE MACHINE, as "C:", "D:" and so on.
+#
+# There is no drive enumeration in Godot, so this asks the filesystem: a letter
+# whose root directory opens is a drive that exists. Removable and network
+# letters answer too, which is fine - a probe on one costs a failed stat and the
+# game genuinely can live on an external disk.
+static func _drives() -> Array[String]:
+	var out: Array[String] = []
+	for c in "CDEFGHIJKLMNOPQRSTUVWXYZAB":
+		var root := "%s:/" % c
+		if DirAccess.dir_exists_absolute(root):
+			out.append("%s:" % c)
+	return out
+
+
+# What EA's own registry says, or "". Origin wrote these keys and EA Desktop
+# kept them, but the VALUE NAME has moved around between launcher versions, so
+# every plausible one is read and the first that resolves wins.
+static func _ea_registry() -> Array[String]:
+	var out: Array[String] = []
+	for key in EA_REG_KEYS:
+		var res := []
+		# No /v: dump the whole key and take any REG_SZ that looks like a path,
+		# which survives the value being called "Install Dir" on one launcher
+		# version and "InstallLocation" on the next.
+		if OS.execute("reg", ["query", key], res) != 0 or res.is_empty():
+			continue
+		for line in str(res[0]).split("\n"):
+			var at := line.findn("REG_SZ")
+			if at < 0:
+				continue
+			var p := line.substr(at + 6).strip_edges().replace("\\", "/")
+			if p.length() > 3 and DirAccess.dir_exists_absolute(p):
+				out.append(p)
+	return out
+
+
 static func autodetect() -> String:
 	var s := saved()
 	if s != "" and bool(verify(s)["ok"]):
 		return s
 	var seen: Array[String] = []
 	seen.assign(CANDIDATES)
+	# EA's registry first among the guesses: it is a statement rather than a
+	# hunch, and it costs one reg.exe call per key.
+	seen.append_array(_ea_registry())
 	var vdfs: Array[String] = [
 		"C:/Program Files (x86)/Steam/steamapps/libraryfolders.vdf"]
 	var sr := _steam_root()
@@ -152,6 +224,14 @@ static func autodetect() -> String:
 		for m in re.search_all(txt):
 			var base: String = m.get_string(1).replace("\\\\", "/").replace("\\", "/")
 			seen.append(base.path_join("steamapps/common/Battlefield 6"))
+	# THE DRIVE SWEEP LAST, because it is the guess of last resort and the only
+	# one that finds an EA App install nobody predicted. Everything above is
+	# either a statement (the saved path, EA's registry, Steam's library list)
+	# or a well known default; this is us looking.
+	for d in _drives():
+		for parent in DRIVE_PARENTS:
+			seen.append(d.path_join(parent).path_join("Battlefield 6")
+				if parent != "" else d.path_join("Battlefield 6"))
 	for p in seen:
 		if bool(verify(p)["ok"]):
 			return p

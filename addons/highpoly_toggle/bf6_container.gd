@@ -196,6 +196,15 @@ static func find_game(explicit := "") -> String:
 	# path un-pressed the layer chip while writing nothing to the log. From
 	# the outside: "it says detected, but the map cannot be found and the
 	# buttons do nothing".
+	# ONE SEARCH, NOT TWO. This function kept its own copy of the candidate list
+	# and its own vdf parse, and the copies were free to drift: the gate has now
+	# learned EA's registry and a sweep of every fixed drive, and the reader
+	# would not have. Asking the gate first means whatever the panel can find,
+	# the reader can open. The list below stays as the fallback so a failure
+	# here still reports what it looked at.
+	var found := HighpolyGameDir.autodetect()
+	if found != "":
+		return found
 	var seen: Array = []
 	var chosen := HighpolyGameDir.saved()
 	if chosen != "":
