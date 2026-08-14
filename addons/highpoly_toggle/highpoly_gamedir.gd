@@ -232,7 +232,57 @@ static func autodetect() -> String:
 		for parent in DRIVE_PARENTS:
 			seen.append(d.path_join(parent).path_join("Battlefield 6")
 				if parent != "" else d.path_join("Battlefield 6"))
+	# THE RICHEST INSTALL WINS, NOT THE FIRST THING THAT LOOKS LIKE ONE.
+	#
+	# verify() asks for Data/layout.toc and the Oodle dll and nothing else, so a
+	# leftover or half-downloaded folder passes it, and this used to return the
+	# first candidate that did. C:/Program Files/EA Games/Battlefield 6 sits near
+	# the top of the list while the drive sweep that finds a real install on
+	# another disk runs last, so a stub in the obvious place beat the genuine
+	# article every time.
+	#
+	# A user hit exactly that: the folder we chose carried four levels, which are
+	# the four that live in the base tree, while every other map ships inside an
+	# Update package. From here it read as a partial install, and the owner, who
+	# knows the game does not sell map packs, knew better.
+	#
+	# Levels are the right measure: they are what the reader needs and what a
+	# stub lacks. Bounded, because detection must not become a disk sweep.
+	var best := ""
+	var best_n := -1
 	for p in seen:
-		if bool(verify(p)["ok"]):
-			return p
-	return ""
+		if not bool(verify(p)["ok"]):
+			continue
+		var n := level_count(p)
+		if n > best_n:
+			best_n = n
+			best = p
+		if n > 4:
+			break            # richer than the base tree, stop looking
+	return best
+
+
+# How many distinct levels a candidate carries. Bounded on depth and on
+# directories visited: this runs during detection, and an install on a slow
+# external disk must not turn that into a scan.
+static func level_count(path: String, budget := 3000) -> int:
+	var found := {}
+	var stack: Array = [[path, 0]]
+	var visited := 0
+	while not stack.is_empty() and visited < budget:
+		var top: Array = stack.pop_back()
+		var dir: String = top[0]
+		var depth: int = int(top[1])
+		if depth > 10:
+			continue
+		var da := DirAccess.open(dir)
+		if da == null:
+			continue
+		visited += 1
+		if dir.to_lower().replace("\\", "/").ends_with("/levels"):
+			for sub in da.get_directories():
+				found[str(sub).to_lower()] = true
+			continue
+		for sub in da.get_directories():
+			stack.append([dir.path_join(sub), depth + 1])
+	return found.size()
