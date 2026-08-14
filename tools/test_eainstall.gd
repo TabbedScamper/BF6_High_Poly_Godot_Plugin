@@ -71,10 +71,18 @@ func _init() -> void:
 	# --- 3: does the map come back -----------------------------------------
 	print("")
 	print("READING %s FROM IT" % map)
-	var was := HighpolyGameDir.saved()
-	HighpolyGameDir.save(game)
+	# PASSED, NOT PINNED. The first version of this called
+	# HighpolyGameDir.save() and opened with an empty game_dir, expecting
+	# detection to honour the saved path. save() writes EDITOR project metadata,
+	# which does nothing in a headless script run, so the pin was silently a
+	# no-op, detection fell back to the Steam install, and the test printed
+	# "an EA App install READS, 13447 placements" about the wrong game. The
+	# entropy numbers above were unaffected - they read the files directly -
+	# which is the only reason that run was worth anything.
+	#
+	# open_map takes the install folder as its second argument. Use it.
 	var gs = GS.new()
-	var opened: bool = gs.open_map(map, "", Callable(), {"placements": true})
+	var opened: bool = gs.open_map(map, game, Callable(), {"placements": true})
 	print("  open_map returned %s" % str(opened))
 	if gs.walk != null:
 		print("  %d row(s) from %s%s"
@@ -86,8 +94,8 @@ func _init() -> void:
 				int(gs.walk.stats.get("types_unresolved", 0))])
 	if not opened:
 		print("  error: %s" % str(gs.error))
-	HighpolyGameDir.save(was)          # leave detection as we found it
-	print("  (restored the saved install path to '%s')" % was)
+
+
 
 	print("")
 	if gs.walk != null and gs.walk.rows.size() > 0:
