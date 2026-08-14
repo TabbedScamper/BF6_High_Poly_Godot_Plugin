@@ -346,7 +346,16 @@ static func env_info() -> Dictionary:
 		var j = JSON.parse_string(FileAccess.get_file_as_string(vf))
 		if j is Dictionary:
 			ver = str((j as Dictionary).get("version", ""))
+	# IS THE EDITOR RUNNING THE CODE THAT IS ON DISK? plugin_version() reads
+	# plugin.cfg off the disk, so a session running yesterday's scripts reports
+	# today's version number with total confidence. A user updated to a release
+	# built specifically for their fault, sent a bundle stamped with that
+	# version, and the fix had never been loaded - the evidence in it described
+	# the OLD code while naming the new one. The staleness check already knew;
+	# it was only ever written into state.json, which is not the file anyone
+	# opens first.
 	return {
+		"stale": _staleness(),
 		"sdk_version": ver if ver != "" else "unknown",
 		"sdk_root": sdk_root,
 		"project": res,
@@ -458,7 +467,13 @@ static func save_bundle(map_name := "") -> String:
 	zip.write_file(("BF6 High-Poly Preview diagnostics\n"
 		+ "written    %s\n" % Time.get_datetime_string_from_system(true)
 		+ "map        %s\n" % (map_name if map_name != "" else "(none open)")
-		+ "plugin     %s\n" % plugin_version()
+		+ "plugin     %s   (the version ON DISK)\n" % plugin_version()
+		+ (("\n*** THE EDITOR IS NOT RUNNING THIS VERSION ***\n"
+			+ "%s\n"
+			+ "Everything below describes the OLDER code that is still loaded.\n"
+			+ "Close Godot completely and start it again, then reproduce.\n\n")
+			% str(env.get("stale", ""))
+			if str(env.get("stale", "")) != "" else "")
 		+ "sdk        %s\n" % str(env.get("sdk_version", ""))
 		+ "sdk root   %s\n" % str(env.get("sdk_root", ""))
 		+ "project    %s\n" % str(env.get("project", ""))
@@ -550,7 +565,7 @@ static func header() -> String:
 	var lines := [
 		"BF6 High-Poly Preview log",
 		"saved      %s" % Time.get_datetime_string_from_system(true),
-		"plugin     v%s" % ver,
+		"plugin     v%s   (on disk)" % ver,
 		# WHICH SDK IS DOING THE READING. The header described the machine and the
 		# plugin and left the editor's own side blank, so a log read on its own
 		# could not say which SDK version produced it or whether it came from a
@@ -595,6 +610,16 @@ static func header() -> String:
 		lines.append("")
 		lines.append(stale)
 		lines.append("")
+	# LOUD, AND ABOVE THE EVIDENCE. A stale session's log looks exactly like a
+	# current one and stamps itself with the version it is NOT running, so every
+	# line under it reads as the new code failing when the new code never loaded.
+	# Inserted rather than placed in the literal above, so a healthy log does not
+	# carry a blank line where this would have been.
+	if str(env.get("stale", "")) != "":
+		lines.insert(3, ("*** NOT LOADED: the editor is still running OLDER "
+			+ "code (%s). Close Godot completely and start it again. "
+			+ "Everything below describes the old code.")
+			% str(env.get("stale", "")))
 	var last := HighpolyProfiler.last_session_end()
 	if last != "":
 		lines.append("PREVIOUS SESSION DID NOT EXIT CLEANLY. It stopped here:")
