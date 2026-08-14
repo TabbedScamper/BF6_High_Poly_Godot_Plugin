@@ -665,6 +665,14 @@ func print_build_report() -> void:
 # first user to receive it never saw it fire: they turned the ground on first
 # and the objects on afterwards, so their walk ran in ensure_placements, which
 # is the OTHER caller. One copy, two call sites.
+# "SP/bf6.exe" or "bf6.exe". BOTH EXECUTABLES ARE CALLED bf6.exe, so every
+# message about them written with get_file() said the same word for either one
+# and could not be acted on.
+func _exe_label(path: String) -> String:
+	var d := path.get_base_dir().get_file()
+	return ("%s/%s" % [d, path.get_file()]) if d == "SP" else path.get_file()
+
+
 func _retry_other_typedb() -> void:
 	if walk == null or not walk.rows.is_empty() or _types_retried:
 		return
@@ -679,31 +687,25 @@ func _retry_other_typedb() -> void:
 		return
 	HighpolyLog.warn(("The map read as completely empty, which means the type "
 		+ "layouts came from the wrong executable. Retrying with %s instead "
-		+ "of %s.") % [other.get_file(), exe.get_file()])
+		+ "of %s.") % [_exe_label(other), _exe_label(exe)])
 	var t2 := BF6Types.new()
 	if not t2.open(other):
-		HighpolyLog.warn("Could not read " + other.get_file() + ": " + t2.error)
+		HighpolyLog.warn("Could not read " + _exe_label(other) + ": " + t2.error)
 		return
 	types = t2
 	_exe_used = other
 	_exe_others = [exe]
-	walk = BF6Walk.new(src, types)
-	for g in LIGHT_TYPES:
-		walk.want_types[str(g)] = "light"
-	for g in EDV_TYPES:
-		walk.want_types[str(g)] = "edv"
-	walk.want_fields = LIGHT_FIELDS + EDV_FIELDS
-	# THE SCOPE INDEX TOO. The first walk was handed it during the depot phase,
-	# and a replacement built here would otherwise walk with an empty one: every
-	# row would come back with no scope, so nothing could resolve a material and
-	# the retry would look like a different failure.
-	for d in _depot_bundles:
-		walk.scope_index[str(d)] = str(d)
-	# The cached walk is keyed on the TOC signature, not on the executable, so
-	# the empty result is sitting in it and would be served straight back.
+	# SWAP THE DATABASE ON THE WALK WE ALREADY HAVE, rather than building a new
+	# one. A replacement has to be handed every piece of state open_map gave the
+	# original, and that list is not knowable from here: the first attempt missed
+	# scope_index, and the second missed `gi`, the partition guid index, without
+	# which resolve_name cannot even find the level root - "could not resolve the
+	# level root for mp_battery" on a map that had just been read successfully.
+	# Reassigning one field cannot miss anything.
+	walk.types = t2
 	walk.run(level)
 	if walk.rows.is_empty():
-		HighpolyLog.warn("Still empty with " + other.get_file() + ". The install "
+		HighpolyLog.warn("Still empty with " + _exe_label(other) + ". The install "
 			+ "is not readable by either type database, so please send a "
 			+ "diagnostics zip.")
 		return
@@ -713,7 +715,7 @@ func _retry_other_typedb() -> void:
 	walk.save_cache(level)
 	HighpolyLog.info(("That was it: %d placement(s) with %s. This install's type "
 		+ "layouts live in that executable, not the one tried first.")
-		% [walk.rows.size(), other.get_file()])
+		% [walk.rows.size(), _exe_label(other)])
 
 
 func ensure_placements(progress := Callable()) -> bool:
@@ -726,14 +728,17 @@ func ensure_placements(progress := Callable()) -> bool:
 		progress.call(ST_WALK, 0, 0)
 		walk.progress = func(found: int, _seen: int):
 			progress.call(ST_WALK, found, 0)
-	if not walk.run_cached(level):
+	# A WRONG TYPE DATABASE MAKES THIS RETURN FALSE, not merely empty, which is
+	# why the retry went unreached in two releases: it sat after an early
+	# return. Reproduced locally with the wrong executable forced - run_cached
+	# fails outright. So the retry is offered on BOTH outcomes and only then is
+	# the failure final.
+	var walked: bool = walk.run_cached(level)
+	if not walked or walk.rows.is_empty():
+		_retry_other_typedb()
+	if not walked and walk.rows.is_empty():
 		error = str(walk.stats.get("error", "the placement walk produced nothing"))
 		return false
-	# THE OTHER PLACE THE WALK RUNS, and the one a user actually hit: switching
-	# the map layer on after the ground is already up walks here, not in
-	# open_map. The retry has to be on both paths or it fires for nobody who
-	# turns the layers on in that order.
-	_retry_other_typedb()
 	placements_ready = true
 	var cached: bool = bool(walk.stats.get("from_cache", false))
 	note_phase("placement walk", Time.get_ticks_msec() - t, walk.rows.size(),
@@ -1206,11 +1211,16 @@ func open_map(map: String, game_dir := "", progress := Callable(),
 			progress.call(ST_WALK, 0, 0)
 			walk.progress = func(found: int, _seen: int):
 				progress.call(ST_WALK, found, 0)
-		if not walk.run_cached(level):
+		# Same as ensure_placements: a wrong type database FAILS here rather
+		# than returning an empty list, so the retry has to be offered before
+		# the early return, not after it.
+		var walked: bool = walk.run_cached(level)
+		if not walked or walk.rows.is_empty():
+			_retry_other_typedb()
+		if not walked and walk.rows.is_empty():
 			error = _fail("walking the map's placements",
 				str(walk.stats.get("error", "it produced nothing")))
 			return false
-		_retry_other_typedb()
 		placements_ready = true
 		var walk_cached: bool = bool(walk.stats.get("from_cache", false))
 		if not walk_cached:
