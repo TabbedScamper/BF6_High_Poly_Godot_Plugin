@@ -642,6 +642,80 @@ func print_build_report() -> void:
 #
 # Everything downstream of the walk is keyed off it, so map_data has to be
 # dropped: its group placements were computed from an empty row set.
+# A REAL MAP IS NEVER EMPTY, so an empty walk is a wrong type database and not
+# a map with nothing in it.
+#
+# The type layouts come out of bf6.exe, and the SP and MP builds carry DIFFERENT
+# ones. Picking the wrong build does not fail: it resolves every type to the
+# wrong offsets, so visit() matches none of the fields it reads and the walk
+# returns zero rows while the mount, the partition index, the catalogue and the
+# terrain all work perfectly.
+#
+# PROVEN on a known-good install (tools/test_typedb.gd, MP_Battery): the right
+# executable gives 40,217 rows, the wrong one gives 0 IN 0.0 SECONDS. Nothing
+# matches, so nothing is traversed - which is why a user's apply returns "0
+# object meshes" in about a second rather than labouring and giving up.
+#
+# Zero is unambiguous, which is what makes this safe to automate: no healthy
+# install has produced an empty walk, and a failed retry costs 0.0 s. Tried
+# ONCE per open, and the log says so, because a silent retry is how a wrong
+# database becomes permanent folklore.
+#
+# CALLED FROM BOTH PLACES THE WALK CAN RUN. It lived inside open_map, and the
+# first user to receive it never saw it fire: they turned the ground on first
+# and the objects on afterwards, so their walk ran in ensure_placements, which
+# is the OTHER caller. One copy, two call sites.
+func _retry_other_typedb() -> void:
+	if walk == null or not walk.rows.is_empty() or _types_retried:
+		return
+	_types_retried = true
+	var exe := _exe_used
+	var other := ""
+	for c in BF6Types.exe_candidates(src.game):
+		if c != exe and FileAccess.file_exists(c):
+			other = c
+			break
+	if other == "":
+		return
+	HighpolyLog.warn(("The map read as completely empty, which means the type "
+		+ "layouts came from the wrong executable. Retrying with %s instead "
+		+ "of %s.") % [other.get_file(), exe.get_file()])
+	var t2 := BF6Types.new()
+	if not t2.open(other):
+		HighpolyLog.warn("Could not read " + other.get_file() + ": " + t2.error)
+		return
+	types = t2
+	_exe_used = other
+	_exe_others = [exe]
+	walk = BF6Walk.new(src, types)
+	for g in LIGHT_TYPES:
+		walk.want_types[str(g)] = "light"
+	for g in EDV_TYPES:
+		walk.want_types[str(g)] = "edv"
+	walk.want_fields = LIGHT_FIELDS + EDV_FIELDS
+	# THE SCOPE INDEX TOO. The first walk was handed it during the depot phase,
+	# and a replacement built here would otherwise walk with an empty one: every
+	# row would come back with no scope, so nothing could resolve a material and
+	# the retry would look like a different failure.
+	for d in _depot_bundles:
+		walk.scope_index[str(d)] = str(d)
+	# The cached walk is keyed on the TOC signature, not on the executable, so
+	# the empty result is sitting in it and would be served straight back.
+	walk.run(level)
+	if walk.rows.is_empty():
+		HighpolyLog.warn("Still empty with " + other.get_file() + ". The install "
+			+ "is not readable by either type database, so please send a "
+			+ "diagnostics zip.")
+		return
+	# OVERWRITE THE EMPTY CACHE. run_cached saved the zero-row walk before we got
+	# here and the bare run() above does not save, so without this the next open
+	# loads the empty cache, retries, and pays a full uncached walk every time.
+	walk.save_cache(level)
+	HighpolyLog.info(("That was it: %d placement(s) with %s. This install's type "
+		+ "layouts live in that executable, not the one tried first.")
+		% [walk.rows.size(), other.get_file()])
+
+
 func ensure_placements(progress := Callable()) -> bool:
 	if placements_ready:
 		return true
@@ -655,6 +729,11 @@ func ensure_placements(progress := Callable()) -> bool:
 	if not walk.run_cached(level):
 		error = str(walk.stats.get("error", "the placement walk produced nothing"))
 		return false
+	# THE OTHER PLACE THE WALK RUNS, and the one a user actually hit: switching
+	# the map layer on after the ground is already up walks here, not in
+	# open_map. The retry has to be on both paths or it fires for nobody who
+	# turns the layers on in that order.
+	_retry_other_typedb()
 	placements_ready = true
 	var cached: bool = bool(walk.stats.get("from_cache", false))
 	note_phase("placement walk", Time.get_ticks_msec() - t, walk.rows.size(),
@@ -1131,77 +1210,7 @@ func open_map(map: String, game_dir := "", progress := Callable(),
 			error = _fail("walking the map's placements",
 				str(walk.stats.get("error", "it produced nothing")))
 			return false
-		# A REAL MAP IS NEVER EMPTY, so an empty walk is a wrong type database
-		# and not a map with nothing in it.
-		#
-		# The type layouts come out of bf6.exe, and the SP and MP builds carry
-		# DIFFERENT ones. Picking the wrong build does not fail: it resolves
-		# every type to the wrong offsets, so visit() matches none of the fields
-		# it reads and the walk returns zero rows while the mount, the partition
-		# index, the catalogue and the terrain all work perfectly. That is
-		# exactly what a user with an EA App install reported - 0 placements and
-		# 0 gamemode markers on three maps, against a mount that matched ours
-		# entry for entry, on an SP executable 232 KB different from ours.
-		#
-		# Zero is unambiguous, which is what makes this safe to automate: no
-		# healthy install has ever produced an empty walk, so retrying with the
-		# other executable cannot cost a working setup anything. It is tried
-		# ONCE, and the log says so, because a silent retry is how a wrong
-		# database becomes permanent folklore.
-		if walk.rows.is_empty() and not _types_retried:
-			_types_retried = true
-			var other := ""
-			for c in BF6Types.exe_candidates(src.game):
-				if c != exe and FileAccess.file_exists(c):
-					other = c
-					break
-			if other != "":
-				HighpolyLog.warn(("The map read as completely empty, which means the "
-					+ "type layouts came from the wrong executable. Retrying "
-					+ "with %s instead of %s.") % [other.get_file(),
-						exe.get_file()])
-				var t2 := BF6Types.new()
-				if t2.open(other):
-					types = t2
-					_exe_used = other
-					_exe_others = [exe]
-					walk = BF6Walk.new(src, types)
-					for g in LIGHT_TYPES:
-						walk.want_types[str(g)] = "light"
-					for g in EDV_TYPES:
-						walk.want_types[str(g)] = "edv"
-					walk.want_fields = LIGHT_FIELDS + EDV_FIELDS
-					# THE SCOPE INDEX TOO. The first walk was handed it during
-					# the depot phase above, and a replacement built here would
-					# otherwise walk with an empty one: every row would come
-					# back with no scope, so nothing could resolve a material
-					# and the retry would look like a different failure.
-					for d in _depot_bundles:
-						walk.scope_index[str(d)] = str(d)
-					# The cached walk is keyed on the TOC signature, not on the
-					# executable, so the empty result is sitting in it and would
-					# be served straight back. Force the traversal.
-					walk.run(level)
-					if walk.rows.is_empty():
-						HighpolyLog.warn("Still empty with " + other.get_file()
-							+ ". The install is not readable by either type "
-							+ "database, so please send a diagnostics zip.")
-					else:
-						# OVERWRITE THE EMPTY CACHE. run_cached saved the zero-row
-						# walk before we reached here, and the bare run() above
-						# does not save at all - so without this the next open
-						# loads the empty cache, retries, and pays a full uncached
-						# walk EVERY time. Measured: 40,217 rows against 0 in
-						# 0.0 s, so the wrong answer is the cheap one to keep by
-						# accident.
-						walk.save_cache(level)
-						HighpolyLog.info(("That was it: %d placement(s) with %s. This "
-							+ "install's type layouts live in that executable, "
-							+ "not the one tried first.")
-							% [walk.rows.size(), other.get_file()])
-				else:
-					HighpolyLog.warn("Could not read " + other.get_file() + ": "
-						+ t2.error)
+		_retry_other_typedb()
 		placements_ready = true
 		var walk_cached: bool = bool(walk.stats.get("from_cache", false))
 		if not walk_cached:
