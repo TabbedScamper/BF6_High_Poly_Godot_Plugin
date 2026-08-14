@@ -320,6 +320,44 @@ static func event(ev: String, d: Dictionary = {}, lvl := Level.INFO,
 	f.close()
 
 
+# WHICH SDK THIS EDITOR IS, AND WHERE IT LIVES.
+#
+# Added after a user's SDK folder turned out to be named PortalSDK7, and there
+# was no way to tell from a diagnostics bundle whether that meant a second copy,
+# a different SDK version, or nothing at all. Every answer had to be obtained by
+# asking them, one round trip at a time, while the bundle sat there describing
+# the game install in detail and the editor's own side not at all.
+#
+# `sdk_version` is read from sdk.version.json beside the project rather than
+# guessed from the folder name, because the folder name is exactly the thing
+# that turned out to be arbitrary.
+#
+# `user_dir` is globalized on purpose. It is derived from the project's
+# config/name, which contains a trademark character, and a project.godot rewritten
+# by a tool with the wrong encoding turns that character into mojibake and sends
+# every cache to a NEW directory. That failure presents as "all my caches vanished
+# and everything rebuilt", and the only way to see it is the resolved path.
+static func env_info() -> Dictionary:
+	var res := ProjectSettings.globalize_path("res://").replace("\\", "/").rstrip("/")
+	var sdk_root := res.get_base_dir()
+	var ver := ""
+	var vf := sdk_root.path_join("sdk.version.json")
+	if FileAccess.file_exists(vf):
+		var j = JSON.parse_string(FileAccess.get_file_as_string(vf))
+		if j is Dictionary:
+			ver = str((j as Dictionary).get("version", ""))
+	return {
+		"sdk_version": ver if ver != "" else "unknown",
+		"sdk_root": sdk_root,
+		"project": res,
+		"project_name": str(ProjectSettings.get_setting(
+			"application/config/name", "")),
+		"user_dir": ProjectSettings.globalize_path(
+			"user://").replace("\\", "/").rstrip("/"),
+		"godot": Engine.get_version_info().get("string", ""),
+	}
+
+
 # The "where am I" snapshot, rewritten in place whenever the dock has news.
 # One read answers: which plugin build is running, is it stale, which map,
 # which layers, what is the build doing, which caches exist and under what
@@ -334,6 +372,7 @@ static func write_state(d: Dictionary) -> void:
 		"t": snappedf((Time.get_ticks_msec() - _ev_t0) / 1000.0, 0.01),
 		"sess": session_id(),
 		"counts": {"errors": _errors, "warns": _warnings},
+		"env": env_info(),
 	}
 	full.merge(d, true)
 	# Written whole through a temp and renamed, so a reader never catches a
@@ -410,10 +449,21 @@ static func save_bundle(map_name := "") -> String:
 	zip.write_file((header() + "\n" + _ring_text()).to_utf8_buffer())
 	zip.close_file()
 
+	# THE EDITOR'S OWN SIDE, in the first thing anyone opens. The bundle used to
+	# describe the game install thoroughly and say nothing about which SDK was
+	# reading it, so "is their SDK folder or version involved" could only be
+	# answered by asking, a round trip at a time.
+	var env := env_info()
 	zip.start_file("MANIFEST.txt")
 	zip.write_file(("BF6 High-Poly Preview diagnostics\n"
 		+ "written    %s\n" % Time.get_datetime_string_from_system(true)
 		+ "map        %s\n" % (map_name if map_name != "" else "(none open)")
+		+ "plugin     %s\n" % plugin_version()
+		+ "sdk        %s\n" % str(env.get("sdk_version", ""))
+		+ "sdk root   %s\n" % str(env.get("sdk_root", ""))
+		+ "project    %s\n" % str(env.get("project", ""))
+		+ "user dir   %s\n" % str(env.get("user_dir", ""))
+		+ "godot      %s\n" % str(env.get("godot", ""))
 		+ "\nincluded:\n  " + "\n  ".join(included)
 		+ ("\n\nnot present (this is normal unless you expected it):\n  "
 			+ "\n  ".join(missing) if not missing.is_empty() else "")
@@ -496,10 +546,17 @@ static func header() -> String:
 	var ver := "?"
 	if cf.load("res://addons/highpoly_toggle/plugin.cfg") == OK:
 		ver = str(cf.get_value("plugin", "version", "?"))
+	var env := env_info()
 	var lines := [
 		"BF6 High-Poly Preview log",
 		"saved      %s" % Time.get_datetime_string_from_system(true),
 		"plugin     v%s" % ver,
+		# WHICH SDK IS DOING THE READING. The header described the machine and the
+		# plugin and left the editor's own side blank, so a log read on its own
+		# could not say which SDK version produced it or whether it came from a
+		# second copy of the SDK. Both turn out to be things users have.
+		"sdk        %s  (%s)" % [str(env.get("sdk_version", "")),
+			str(env.get("sdk_root", ""))],
 		"Godot      %s" % Engine.get_version_info().get("string", "?"),
 		"OS         %s %s" % [OS.get_name(), OS.get_version()],
 		"video      %s" % RenderingServer.get_video_adapter_name(),
