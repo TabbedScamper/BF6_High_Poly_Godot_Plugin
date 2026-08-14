@@ -786,7 +786,12 @@ func _retry_other_typedb() -> void:
 	# which resolve_name cannot even find the level root - "could not resolve the
 	# level root for mp_battery" on a map that had just been read successfully.
 	# Reassigning one field cannot miss anything.
-	walk.types = t2
+	# use_types, NOT `walk.types = t2`. The walk caches layouts and "does this
+	# type matter" verdicts keyed by type id, and hands the layout cache straight
+	# to the decoder. Assigning the field alone swaps where answers come from
+	# while keeping the answers the FAILED database gave, so the retry ran the
+	# good database against a cache of empty layouts and produced nothing.
+	walk.use_types(t2)
 	walk.run(level)
 	if walk.rows.is_empty():
 		# PUT IT BACK. `types` is not the walk's private property: FX, the
@@ -807,7 +812,7 @@ func _retry_other_typedb() -> void:
 		types = t0
 		_exe_used = exe
 		_exe_others = others0
-		walk.types = t0
+		walk.use_types(t0)
 		# BOTH FAILING THE SAME WAY IS ITS OWN ANSWER. If neither walk ever
 		# reached a partition, the type database was never the question: the walk
 		# stopped before it read one, and swapping executables cannot help.

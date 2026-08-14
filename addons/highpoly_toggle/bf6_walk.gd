@@ -517,6 +517,28 @@ var _type_matters_cache := {}          # type guid hex -> bool
 var _layouts := {}                     # type guid hex -> layout, shared by every partition
 
 
+# SWAP THE TYPE DATABASE, AND DROP EVERYTHING DERIVED FROM THE OLD ONE.
+#
+# `_layouts` and `_type_matters_cache` are keyed by type id and live on the WALK,
+# not on the database that produced them, and `_layouts` is handed straight to
+# the decoder. Assigning `types` alone therefore swaps the source of answers
+# while keeping the OLD answers, which is silent and total: the new database is
+# barely consulted because the cache already has an entry for every type.
+#
+# That is what the empty-map retry was doing. On an install whose first database
+# cannot be read, the first walk fills these with empty layouts and fail-open
+# "this type matters" verdicts, and the retry then runs the second database
+# against that. The result is a walk that skips nothing, misses no lookups, and
+# still produces no rows, because every field decode consults an empty layout
+# recorded by the database that failed. A user's log showed exactly that: their
+# readable MP executable reported 0 lookups found nothing and 0 rows.
+func use_types(t) -> void:
+	types = t
+	_type_matters_cache.clear()
+	_layouts.clear()
+	_want_hex.clear()
+
+
 func _type_matters(dz, i: int) -> bool:
 	if not skip_types:
 		return true
