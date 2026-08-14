@@ -473,6 +473,16 @@ func build_report() -> PackedStringArray:
 			"lookups", FROM_MIXED],
 		["materials: of which textures", t_tex, int(tex_stats.get("decoded", 0)),
 			"decoded", FROM_INSTALL],
+		# The four things that total sums, because they want different fixes and
+		# one of them is not CPU work. See the note on t_tex_res.
+		["  tex: resource header", t_tex_res, int(tex_stats.get("decoded", 0)),
+			"decoded", FROM_INSTALL],
+		["  tex: chunk read + decode", t_tex_dec, int(tex_stats.get("decoded", 0)),
+			"decoded", FROM_INSTALL],
+		["  tex: compress + mipmaps", t_tex_post, int(tex_stats.get("decoded", 0)),
+			"decoded", FROM_MIXED],
+		["  tex: upload to the GPU", t_tex_up, int(tex_stats.get("decoded", 0)),
+			"decoded", FROM_MIXED],
 		["materials: of which depots", t_depot, n_depot_parsed, "depots",
 			FROM_INSTALL],
 	]
@@ -5485,6 +5495,18 @@ var n_pal_rebuilt := 0
 # be measured instead of assumed: on a map whose textures all dedup, the decode
 # can be a rounding error and the cost is the depot parse nobody suspected.
 var t_tex := 0                         # decode + compress + ImageTexture upload
+# THE SAME TOTAL, SPLIT FOUR WAYS. 2.09 ms a texture across 4,009 of them is
+# 8.4 s of every build, and "decode" covers four unlike things: pulling the
+# resource header out of the install, reading and Oodle-decompressing the CAS
+# chunk, whatever image work follows, and handing the result to the
+# RenderingServer. They want completely different fixes, and one of them may
+# not be CPU work at all - the decal index looked like 14 s of GDScript and was
+# render-thread stall (task #131).
+# Measure the sub-step, not the phase.
+var t_tex_res := 0                     # src.get_res: the header out of the install
+var t_tex_dec := 0                     # chunk read + Oodle + image build
+var t_tex_post := 0                    # compress + mipmaps
+var t_tex_up := 0                      # ImageTexture.create_from_image
 var t_depot := 0                       # reading and parsing a ShaderBlockDepot
 var n_depot_parsed := 0
 var n_mat_built := 0                   # material_for reached the depot
@@ -7250,16 +7272,31 @@ func material_for(state_key: int, scope: String, var_hash := 0,
 		mask = _mask_for(slots.get("alpha"))
 		if mask != null:
 			mask_src = "alpha slot"
-		else:
-			# THE GATE IS THE GAME TELLING US THIS SECTION IS ALPHA TESTED. If the
-			# slot it binds is filler, the answer is that the mask is somewhere
-			# else, not that the section is solid. It is in the normal's alpha.
-			var nrm_guid = slots.get("normal_vt", slots.get("normal"))
-			mask = _mask_from_normal_alpha(nrm_guid)
-			if mask != null:
-				mask_src = "normal alpha"
-				tex_stats["masks_from_normal"] = int(
-					tex_stats.get("masks_from_normal", 0)) + 1
+		# WITHDRAWN 2026-08-13, the same day it was written: taking the cutout
+		# from the normal map's alpha when the bound slot is filler.
+		#
+		# The reasoning was sound and the evidence was real. The gate is on for
+		# 936 sections, 897 of them bind `t_debug_r`, and the chain link fence
+		# and basketball net a user marked DO carry their cutout in the normal's
+		# alpha: 86.2% and 93.0% clear against solid siblings at 98.7% and 100%
+		# opaque. What was missing was a fleet.
+		#
+		# One build supplied it. 179 sections across 168 meshes took the new
+		# path, and they included com_officechair_01 (28.8% clear),
+		# com_serverrack_01 (29.7%), com_backroomstorageshelf_01 (1.8%),
+		# mil_cratepallet_01 (2.4%) and com_crateweapon_01 (7.7%). Office
+		# chairs and weapon crates are not cutouts. The alpha channel of a
+		# normal map carries SOMETHING binary on a great many props - a detail
+		# or damage or blend mask - and being bimodal does not make it an
+		# opacity mask. A bimodality guard cannot separate them, and neither
+		# can any other content test, because the two look identical.
+		#
+		# So this is the wrap-texcoord situation again: the answer is not in
+		# the pixels, it is in the depot record saying which slot the shader
+		# samples for its alpha test. Until that constant is decoded, a section
+		# whose bound sheet is filler stays opaque - visibly wrong on a fence,
+		# which is a fault a user can report, rather than holes through a chair,
+		# which is worse and everywhere. See task #132.
 	# Material-side decisions ride the trace at surface -1: this resolves per
 	# material STATE, not per surface, and the gate is the single most
 	# expensive thing to re-derive by hand (it needs the depot record AND a
@@ -7272,30 +7309,12 @@ func material_for(state_key: int, scope: String, var_hash := 0,
 			gwhy = "gate off, so the bound alpha sheet is foreign filler"
 		elif mask_src == "alpha slot":
 			gwhy = "gate on, the bound sheet reads as a real mask"
-		elif mask_src == "normal alpha":
-			gwhy = ("gate on and the bound sheet is filler, so the cutout came "
-				+ "from the normal map's alpha")
 		else:
-			gwhy = ("gate on, but neither the bound sheet nor the normal's "
-				+ "alpha reads as a mask")
-		# The measured shape rides along whenever the normal's alpha was
-		# consulted, so a prop that should have been cut out and was not can be
-		# answered from the trace instead of another rebuild.
-		if gate and mask_src != "alpha slot":
-			var nrm_guid = slots.get("normal_vt", slots.get("normal"))
-			var na = walk.gi.get(str(nrm_guid)) if nrm_guid != null else null
-			if na != null:
-				var nn := str(na).to_lower()
-				if nn.ends_with(".ebx"):
-					nn = nn.substr(0, nn.length() - 4)
-				gin["normal"] = nn
-				var sh = _nmask_shape.get(nn)
-				if sh is Dictionary:
-					gin["normal_alpha"] = {
-						"clear": snappedf(float(sh["clear"]), 0.001),
-						"opaque": snappedf(float(sh["opaque"]), 0.001),
-						"below_half": snappedf(float(sh["below_half"]), 0.001),
-					}
+			# NAMED AS AN OPEN FAULT, not as a statement that the section is
+			# solid. 801 sections on mp_aftermath land here, the chain link
+			# fence and the basketball net among them. See task #132.
+			gwhy = ("gate on, but the bound sheet is filler and we do not yet "
+				+ "know which slot holds the real mask")
 		decide(_dress_name, state_key, var_hash, -1, str(look), [{
 			"r": "alpha.gate",
 			"in": gin,
@@ -7995,9 +8014,6 @@ func _look_key(slots: Dictionary, tint = null) -> String:
 # decompressions rather than one per section.
 var _mask_cache := {}                  # texture asset name -> bool
 var _mask_cut := {}                    # texture asset name -> scissor threshold
-# The SECOND place a cutout can live: the alpha channel of the normal map.
-# name -> ImageTexture (the lifted mask) or false (checked, not a mask).
-var _nmask_cache := {}
 var _foliage_shader: Shader = null
 var _prop_tint_shader: Shader = null
 
@@ -8167,101 +8183,6 @@ static func mask_shape(img: Image) -> Dictionary:
 		return {}
 	return {"clear": float(clear) / float(n), "opaque": float(opaque) / float(n),
 		"below_half": float(below) / float(n), "max": hi, "samples": n}
-
-
-# THE OTHER PLACE A CUTOUT LIVES: the alpha channel of the normal map.
-#
-# The alpha SLOT is filler on most of this map - 897 of the 936 sections whose
-# alpha-test gate is on bind `t_debug_r`, a 64x64 constant 255 - so the content
-# test rejects the slot and the section draws solid. That is why a user's chain
-# link fence and basketball net came out as sheets of metal.
-#
-# Where the mask actually is, read off the game (dossier, mp_aftermath):
-#
-#   t_com_tenniscourtfence_01_chainlink_nma   alpha  86.2% clear / 13.3% opaque
-#   t_euu_basketballnet_01_net_nma            alpha  93.0% clear /  5.8% opaque
-#   t_com_tenniscourtfence_01_frame_nmt       alpha   0.0% clear / 98.7% opaque
-#   t_euu_basketballnet_01_stand_nm           alpha   0.0% clear /  100% opaque
-#   ..._chainlink_cs / ..._frame_cs (basecolor) alpha 100% MIDTONES
-#
-# The two sections that need a cutout carry it in the normal's alpha; the solid
-# ones carry a solid alpha there; and the BASECOLOR alpha is a gloss ramp on all
-# of them, which is why the obvious guess - "the mask is in the albedo" - is
-# wrong and would have punched holes through the whole prop.
-#
-# NOT A NAME TEST. `_nma` against `_nmt` is exactly the tell, and exactly the
-# kind of rule that holds on one map and quietly fails on the next. The test is
-# the content, the same 0.5 separation `_mask_for` uses, plus a BIMODALITY guard
-# this path needs and that one does not: a normal map's alpha is often a smooth
-# height or gloss ramp, and a smooth ramp separates at 0.5 perfectly happily
-# while being nothing like a cutout. A real cutout lives at the extremes. The
-# basecolor alphas above are 100% midtones and fail it outright.
-#
-# SCOPE, SAID PLAINLY: validated on two props the user marked, plus their solid
-# siblings as negatives. That is not a fleet. The rule is recorded per section
-# in the decision trace with its measured shape, so the first rebuild of any map
-# reports what it did rather than leaving it to be noticed. See what happened to
-# the bake rule in bf6_meshset.gd for why this paragraph exists.
-func _mask_from_normal_alpha(file_guid):
-	if file_guid == null or str(file_guid) == "":
-		return null
-	var asset = walk.gi.get(str(file_guid))
-	if asset == null:
-		return null
-	var an := str(asset).to_lower()
-	if an.ends_with(".ebx"):
-		an = an.substr(0, an.length() - 4)
-	var known = _nmask_cache.get(an)
-	if known != null:
-		return null if not known else known
-	# is_normal FALSE on purpose: this wants the stored channels as they are,
-	# not a normal map reconstructed for lighting.
-	var tex = _texture_for(file_guid, false, MASK_MAX_DIM)
-	if tex == null:
-		_nmask_cache[an] = false
-		return null
-	var img: Image = (tex as ImageTexture).get_image()
-	if img == null:
-		_nmask_cache[an] = false
-		return null
-	var src := img.duplicate() as Image
-	if src.is_compressed() and src.decompress() != OK:
-		_nmask_cache[an] = false
-		return null
-	if not src.detect_alpha():
-		_nmask_cache[an] = false
-		return null
-	# Lift alpha into red, because foliage_wind samples `mask_tex ... .r`. One
-	# image per distinct texture, cached, so this is paid once however many
-	# sections share it.
-	var w := src.get_width()
-	var h := src.get_height()
-	var lifted := Image.create_empty(w, h, false, Image.FORMAT_R8)
-	for y in range(h):
-		for x in range(w):
-			var a := src.get_pixel(x, y).a
-			lifted.set_pixel(x, y, Color(a, a, a, 1.0))
-	var shape := mask_shape(lifted)
-	if shape.is_empty():
-		_nmask_cache[an] = false
-		return null
-	var below := float(shape["below_half"])
-	var extremes := float(shape["clear"]) + float(shape["opaque"])
-	# Both sides have to be populated (a solid alpha is 0.0 below, a fully clear
-	# one 1.0) and the mass has to sit at the ends rather than in the middle.
-	if below < 0.02 or below > 0.98 or extremes < 0.75:
-		_nmask_cache[an] = false
-		_nmask_shape[an] = shape
-		return null
-	var out := ImageTexture.create_from_image(lifted)
-	_nmask_cache[an] = out
-	_nmask_shape[an] = shape
-	return out
-
-
-# The measured shape of the last normal-alpha we looked at, per texture, so the
-# decision trace can say WHY a section was or was not cut out.
-var _nmask_shape := {}
 
 
 # A masked material: albedo plus the mask, through the same foliage_wind shader
@@ -9211,14 +9132,18 @@ func _texture_for(file_guid, is_normal := false, cap := -1):
 	# the clock in the middle. A hit above costs nothing and is counted, not
 	# timed, which is why the two are on opposite sides of this line.
 	var _tt := Time.get_ticks_usec()
+	var _ts := _tt
 	var raw := src.get_res(an.get_slice("@", 0) if cap >= 0 else an)
+	t_tex_res += Time.get_ticks_usec() - _ts
 	if raw.is_empty():
 		_tex_cache[an] = null
 		tex_stats["failed"] = int(tex_stats["failed"]) + 1
 		t_tex += Time.get_ticks_usec() - _tt
 		return null
+	_ts = Time.get_ticks_usec()
 	var got := _tex.decode(raw, func(form): return src.get_chunk(str(form)),
 		texture_max_dim if cap < 0 else cap)
+	t_tex_dec += Time.get_ticks_usec() - _ts
 	if got.is_empty() or not (got.get("image") is Image):
 		t_tex += Time.get_ticks_usec() - _tt
 		_tex_cache[an] = null
@@ -9274,6 +9199,7 @@ func _texture_for(file_guid, is_normal := false, cap := -1):
 	tex_stats["bytes"] = int(tex_stats.get("bytes", 0)) \
 		+ HighpolyBcTex.img_bytes(img.get_width(), img.get_height(),
 			int(img.get_format()))
+	var _tp := Time.get_ticks_usec()
 	if not img.is_compressed() and img.get_width() >= 4 and img.get_height() >= 4:
 		img.compress(Image.COMPRESS_S3TC,
 			Image.COMPRESS_SOURCE_NORMAL if is_normal
@@ -9298,7 +9224,13 @@ func _texture_for(file_guid, is_normal := false, cap := -1):
 	if not img.has_mipmaps() and not img.is_compressed() \
 			and img.get_width() >= 4 and img.get_height() >= 4:
 		img.generate_mipmaps()
+	t_tex_post += Time.get_ticks_usec() - _tp
+	# THE UPLOAD ON ITS OWN. This is the one that hands work to the render
+	# thread, so if the texture cost is really a sync rather than a computation
+	# it shows up here and nowhere else.
+	var _tu := Time.get_ticks_usec()
 	var t := ImageTexture.create_from_image(img)
+	t_tex_up += Time.get_ticks_usec() - _tu
 	_tex_cache[an] = t
 	tex_stats["decoded"] = int(tex_stats["decoded"]) + 1
 	t_tex += Time.get_ticks_usec() - _tt
