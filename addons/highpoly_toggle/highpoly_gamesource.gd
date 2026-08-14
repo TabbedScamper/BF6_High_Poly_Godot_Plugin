@@ -351,6 +351,17 @@ func install_report() -> PackedStringArray:
 		out.append("                     %d bytes, modified %s" % [sz,
 			Time.get_datetime_string_from_unix_time(
 				FileAccess.get_modified_time(_exe_used))])
+		# WHETHER THE TYPE LOOKUP HAS A SECTION TO SEARCH. Without one it scans
+		# the whole executable, and a guid-shaped run of bytes anywhere in 176 MB
+		# can match, so layouts come back WRONG rather than missing - which empties
+		# placements, skyline and gamemode markers together while meshes, textures
+		# and terrain stay perfect. That is a fingerprint worth having in writing,
+		# because it is indistinguishable from "the wrong executable" by symptom.
+		if types != null:
+			out.append("  typeinfo section   %s" % ("%d bytes" % types.ti_size
+				if types.ti_found
+				else "NOT FOUND, so the whole executable is being scanned. "
+					+ "If objects are empty, this is the first thing to look at."))
 		if not _exe_others.is_empty():
 			# SP and MP carry different type databases and the first candidate
 			# wins. If the layouts do not fit this install, this is the first
@@ -673,6 +684,38 @@ func _exe_label(path: String) -> String:
 	return ("%s/%s" % [d, path.get_file()]) if d == "SP" else path.get_file()
 
 
+# WHAT THE WALK ACTUALLY DID, said out loud next to the failure.
+#
+# Written after a user's log showed "Retrying" and "Still empty" on the SAME
+# SECOND. A walk that traverses a level's partitions cannot finish in zero time,
+# so both databases were failing BEFORE any type was used - and the walk already
+# knew why, in stats["error"], which nothing ever printed. The one fact that
+# distinguishes "the type layouts are wrong" from "the level root was never
+# found" was being computed and thrown away, which is why three rounds of logs
+# could not tell them apart.
+#
+# `partitions` is the tell. Zero means the walk never started: the level root
+# did not resolve, and no type database can fix that. Thousands with no rows
+# means it walked and decoded nothing, which IS the type database.
+func _walk_evidence(tag: String) -> void:
+	if walk == null:
+		return
+	var st: Dictionary = walk.stats
+	HighpolyLog.warn("   %s: %d row(s), %d instance(s) seen, %d skipped%s"
+		% [tag, walk.rows.size(), int(st.get("instances", 0)),
+			int(st.get("instances_skipped", 0)),
+			(", root %s" % str(st.get("root", ""))) if st.has("root") else ""])
+	if str(st.get("error", "")) != "":
+		HighpolyLog.warn("   %s: the walk stopped with: %s"
+			% [tag, str(st.get("error", ""))])
+	if st.has("resolved_via"):
+		HighpolyLog.warn("   %s: level resolved via %s"
+			% [tag, str(st.get("resolved_via", ""))])
+	if types != null and not types.ti_found:
+		HighpolyLog.warn("   %s: this executable has NO typeinfo section, so the "
+			% tag + "whole file is being scanned and layouts can match wrongly.")
+
+
 func _retry_other_typedb() -> void:
 	if walk == null or not walk.rows.is_empty() or _types_retried:
 		return
@@ -685,13 +728,19 @@ func _retry_other_typedb() -> void:
 			break
 	if other == "":
 		return
-	HighpolyLog.warn(("The map read as completely empty, which means the type "
-		+ "layouts came from the wrong executable. Retrying with %s instead "
-		+ "of %s.") % [_exe_label(other), _exe_label(exe)])
+	# NOT "which means", any more. That wording asserted the cause in the one
+	# message a user reads, and it was asserting the cause we could not yet tell
+	# apart from a level root that never resolved.
+	HighpolyLog.warn(("The map read as completely empty. Retrying with %s "
+		+ "instead of %s, in case the type layouts came from the wrong one.")
+		% [_exe_label(other), _exe_label(exe)])
+	_walk_evidence(_exe_label(exe))
 	var t2 := BF6Types.new()
 	if not t2.open(other):
 		HighpolyLog.warn("Could not read " + _exe_label(other) + ": " + t2.error)
 		return
+	var t0: BF6Types = types
+	var others0: Array = _exe_others.duplicate()
 	types = t2
 	_exe_used = other
 	_exe_others = [exe]
@@ -705,13 +754,34 @@ func _retry_other_typedb() -> void:
 	walk.types = t2
 	walk.run(level)
 	if walk.rows.is_empty():
-		HighpolyLog.warn("Still empty with " + _exe_label(other) + ". The install "
-			+ "is not readable by either type database, so please send a "
-			+ "diagnostics zip.")
+		# PUT IT BACK. `types` is not the walk's private property: FX, the
+		# gamemode miner, the object walk and every BF6Ebx built from here share
+		# this one reference. Leaving the other database in place after a retry
+		# that did NOT help means the rest of the session decodes everything with
+		# a database that just proved it reads nothing - so a retry aimed at
+		# recovering objects could take out FX and gamemode markers that were
+		# working. A failed retry has to cost nothing, and that means restoring
+		# all four fields, not just the walk's.
+		types = t0
+		_exe_used = exe
+		_exe_others = others0
+		walk.types = t0
+		_walk_evidence(_exe_label(other))
+		# BOTH FAILING THE SAME WAY IS ITS OWN ANSWER. If neither walk ever
+		# reached a partition, the type database was never the question: the walk
+		# stopped before it read one, and swapping executables cannot help.
+		var seen := int(walk.stats.get("instances", 0))
+		if seen == 0:
+			HighpolyLog.warn("Neither executable reached a single object, so the "
+				+ "type layouts are NOT the problem. The walk stopped before it "
+				+ "read anything, which points at the level itself rather than at "
+				+ "the install.")
+		else:
+			HighpolyLog.warn("Both executables walked the level and decoded "
+				+ "nothing from it.")
+		HighpolyLog.warn("Still empty with " + _exe_label(other) + ", so "
+			+ _exe_label(exe) + " is back in use. Please send a diagnostics zip.")
 		return
-	# OVERWRITE THE EMPTY CACHE. run_cached saved the zero-row walk before we got
-	# here and the bare run() above does not save, so without this the next open
-	# loads the empty cache, retries, and pays a full uncached walk every time.
 	walk.save_cache(level)
 	HighpolyLog.info(("That was it: %d placement(s) with %s. This install's type "
 		+ "layouts live in that executable, not the one tried first.")

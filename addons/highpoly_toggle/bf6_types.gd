@@ -31,6 +31,15 @@ var sections: Array = []          # [name, virtual_addr, virtual_size, raw_off, 
 var data := PackedByteArray()
 
 var _oo = null
+# WAS THE `typeinfo` SECTION FOUND, and how big. Reported rather than merely
+# warned about: without a section the lookup falls back to scanning the whole
+# executable, which is slower AND can match a guid-shaped run of bytes in
+# unrelated data, so layouts come back wrong instead of missing. That is one of
+# the few states that would empty every EBX-dependent feature at once while
+# leaving meshes, textures and terrain perfect, and until now the only notice of
+# it was a push_warning that never reached the session log.
+var ti_found := false
+var ti_size := 0
 var _ti_off := 0                  # `typeinfo` section bounds, for the search
 var _ti_end := 0
 var _layout_cache := {}
@@ -83,6 +92,8 @@ func open(exe_path: String) -> bool:
 				int(data.decode_u32(o + 20)), int(data.decode_u32(o + 16))])
 
 	var ti := section("typeinfo")
+	ti_found = not ti.is_empty()
+	ti_size = int(ti[4]) if ti_found else 0
 	if ti.is_empty():
 		# Not fatal: the search falls back to the whole file, which is slower
 		# but correct. Said out loud because a silent 30x slowdown reads as
