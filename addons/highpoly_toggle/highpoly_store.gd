@@ -25,7 +25,11 @@ const THUMBS_DIR := "user://highpoly/thumbs"
 # library copy, so they must invalidate independently: when the real model
 # lands the stand-in's picture is wrong, and when a props.zip is refreshed the
 # stand-in's picture is wrong the other way round.
-const THUMB_MODES := ["clay", "tex", "clay_ctx", "tex_ctx"]
+# RETIRED: thumb_paths enumerates the thumbs folder instead, because a hand
+# kept list of tags goes stale the moment a new one appears - which
+# ICON_EPOCH did. Left as a comment rather than a const so nothing starts
+# trusting it again.
+#   was: ["clay", "tex", "clay_ctx", "tex_ctx"]
 
 # ---------- the map context as a second source of geometry ----------
 # "Original map objects" downloads the level's own meshes into this cache, keyed
@@ -211,8 +215,21 @@ static func thumb_path(name: String, mode: String = "") -> String:
 # about is a stale thumbnail that never heals.
 static func thumb_paths(name: String) -> Array:
 	var out: Array = [thumb_path(name)]
-	for m in THUMB_MODES:
-		out.append(thumb_path(name, m))
+	# BY WHAT IS ON DISK, not by a list of tags maintained somewhere else.
+	#
+	# THUMB_MODES was that list, and it could only be right until the next tag
+	# appeared. ICON_EPOCH added one immediately: the modes became clay2 and
+	# tex2 while the list still said clay and tex, so a model that changed on
+	# disk would have kept its old picture with nothing to say why. A cached
+	# file is named after the thing it is a picture of, so the file names on
+	# disk are the authority on which files exist.
+	var dir := DirAccess.open(THUMBS_DIR)
+	if dir != null:
+		var pre := "%s__" % name
+		for f in dir.get_files():
+			var fn := str(f)
+			if fn.begins_with(pre) and fn.get_extension().to_lower() == "png":
+				out.append("%s/%s" % [THUMBS_DIR, fn])
 	return out
 
 static func count() -> int:

@@ -244,8 +244,22 @@ func _find_lists_body() -> Array:
 # Which render the current Detail Mode wants. Low-Poly draws our geometry in
 # clay, so its thumbnails are clay too: the icon in the Object Library now shows
 # what dropping the item will actually put in the scene, in either mode.
+# THE CAMERA IS PART OF THE PICTURE, so it has to be part of the file name.
+#
+# Thumbnails are cached to disk and survive restarts, and nothing about a render
+# rule was in the key: change the framing and every user keeps the old pictures
+# for ever, with the plugin reporting a successful build over a folder it never
+# rewrote. Exactly the trap GEOM_EPOCH exists for on the geometry side. Bump on
+# any change to how an icon is composed.
+#
+# 2: true isometric, orthographic, framed to the projected box. 1 (unmarked) was
+# a perspective three-quarter at 2.2 sphere radii, which cropped.
+const ICON_EPOCH := 2
+
+
 func _mode_tag() -> String:
-	return "clay" if (tier == HighpolyLib.Tier.LOW or not textured) else "tex"
+	var base := "clay" if (tier == HighpolyLib.Tier.LOW or not textured) else "tex"
+	return "%s%d" % [base, ICON_EPOCH]
 
 func _refresh() -> void:
 	# The whole 2 s tick, so the tree walk above can be compared against what
@@ -478,11 +492,7 @@ func _render_one(nm: String) -> void:
 		_vp.remove_child(inst); inst.free()
 		_pending.erase(nm)
 		return
-	var center := ab.get_center()
-	var radius: float = ab.size.length() * 0.5
-	var dir := Vector3(1.0, 0.7, 1.3).normalized()
-	_cam.position = center + dir * (radius * 2.2)
-	_cam.look_at(center)
+	_frame_isometric(ab)
 	_vp.render_target_update_mode = SubViewport.UPDATE_ONCE
 	await RenderingServer.frame_post_draw
 	await RenderingServer.frame_post_draw
@@ -495,6 +505,59 @@ func _render_one(nm: String) -> void:
 	HighpolyStore.ensure_dir(HighpolyStore.THUMBS_DIR)
 	img.save_png(ProjectSettings.globalize_path(tp))
 	_finish(nm, ImageTexture.create_from_image(img))
+
+# A TRUE ISOMETRIC, FRAMED TO THE OBJECT. Every icon in the library then shares
+# one camera angle and one scale rule, which is what makes a grid of them
+# readable: the same crate is the same size and the same shape in every picture.
+#
+# It used to be a PERSPECTIVE camera at 2.2 bounding-sphere radii down a
+# (1, 0.7, 1.3) diagonal, and it produced close-up crops that read as snapshots
+# taken somewhere in the map rather than pictures of a prop. Two things did that.
+# The distance came from the sphere radius while the FIT depends on the fov, so
+# anything the default 75 degrees could not hold got cut off; and perspective
+# means a long object is framed by whichever end is nearest.
+#
+# Orthographic removes the fov from the question entirely, and the extent is
+# measured by projecting the eight corners of the box into camera space rather
+# than by a sphere - so a fence is framed as a fence instead of as the ball that
+# would contain it.
+#
+# (1, 1, 1) is the isometric axis proper: equal foreshortening on all three axes,
+# which is the angle a parts catalogue uses and the reason it reads as a product
+# shot instead of a photograph.
+const ISO_DIR := Vector3(1.0, 1.0, 1.0)
+const ISO_MARGIN := 1.06          # a hairline of air, so nothing touches the edge
+
+
+func _frame_isometric(ab: AABB) -> void:
+	var center := ab.get_center()
+	var dir := ISO_DIR.normalized()
+	# Far enough back that the near plane cannot clip, which is the one thing an
+	# orthographic camera still gets wrong if it is placed inside the object.
+	var span: float = maxf(ab.size.length(), 0.001)
+	_cam.projection = Camera3D.PROJECTION_ORTHOGONAL
+	_cam.position = center + dir * span
+	_cam.look_at(center)
+	# The box's true extent as this camera sees it. basis columns are the
+	# camera's right/up in world space, so a dot with each gives the half extent
+	# along that screen axis.
+	var right := _cam.global_transform.basis.x
+	var up := _cam.global_transform.basis.y
+	var hx := 0.0
+	var hy := 0.0
+	for i in range(8):
+		var c := ab.position + Vector3(
+			ab.size.x if (i & 1) else 0.0,
+			ab.size.y if (i & 2) else 0.0,
+			ab.size.z if (i & 4) else 0.0) - center
+		hx = maxf(hx, absf(c.dot(right)))
+		hy = maxf(hy, absf(c.dot(up)))
+	# `size` is the VERTICAL extent on a square viewport, so the wider of the two
+	# axes has to drive it or a long object is cropped left and right.
+	_cam.size = maxf(maxf(hx, hy) * 2.0 * ISO_MARGIN, 0.01)
+	_cam.near = 0.001
+	_cam.far = span * 4.0 + 10.0
+
 
 func _finish(nm: String, tex: Texture2D) -> void:
 	_pending.erase(nm)
