@@ -375,6 +375,15 @@ func _set_game_dir(path: String, remember := true) -> void:
 	if _bf6_ok and remember:
 		GameDir.save(path)
 	if _bf6_ok:
+		# KEEP THE TEXT BOX IN SYNC WITH THE CHOSEN PATH. Locate calls this with
+		# the picked folder but the FileDialog never wrote it back into the box,
+		# so after locating the EA install the box still read the autodetected
+		# Steam path - and worse, the box's focus_exited then re-saved that stale
+		# Steam path over the EA choice. The map still read from EA (the reader
+		# used the saved path), but the panel and the diagnostics said Steam. One
+		# assignment keeps the box, the saved value and the reader agreeing.
+		if bf6_path != null and bf6_path.text != path:
+			bf6_path.text = path
 		bf6_status.text = "Battlefield 6 detected"
 		bf6_status.add_theme_color_override("font_color", Color(0.42, 0.86, 0.45))
 		bf6_path.tooltip_text = str(r["why"])
