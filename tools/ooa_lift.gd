@@ -112,11 +112,29 @@ func _init() -> void:
 		var nm := nm_b.get_string_from_ascii()
 		var rawsz := int(d.decode_u32(o + 16))
 		var rawoff := int(d.decode_u32(o + 20))
-		secs[nm] = {"rawoff": rawoff, "rawsz": rawsz}
+		secs[nm] = {"rawoff": rawoff, "rawsz": rawsz, "va": int(d.decode_u32(o + 12))}
 		if nm == ".ooa":
 			ooa_off = rawoff
 	if ooa_off < 0:
 		print("no .ooa section - is this actually an EA/OOA-wrapped exe?"); quit(1); return
+
+	# WHICH SECTIONS BF6 ENCRYPTS, read from the .ooa metadata (offsets per
+	# dfanz0r's BF6 port): count at .ooa+0x4EE, then one 0x30 block each, the
+	# section VA stored as (VA >> 8) at block+0. BF6 encrypts five: .text, ctr,
+	# .data, typeinfo, fieldinf. Decrypting only the schema pair leaves the
+	# layout parser reading ciphertext wherever it follows a pointer into the
+	# others, so decrypt every listed block.
+	var enc_names: Array[String] = []
+	var enc_count := int(d[ooa_off + 0x4EE])
+	if enc_count >= 1 and enc_count <= 10:
+		for i in range(enc_count):
+			var bva := int(d.decode_u32(ooa_off + 0x4F0 + i * 0x30)) * 0x100
+			for nm in secs:
+				if int(secs[nm]["va"]) == bva:
+					enc_names.append(str(nm))
+	if enc_names.is_empty():
+		enc_names = SECTIONS               # fall back to the schema pair
+	print("encrypted sections: %s" % str(enc_names))
 
 	# --- content_id: UTF-16 string at .ooa + 0x42 (matches the tool) ---
 	var cid_bytes := d.slice(ooa_off + 0x42, ooa_off + 0x42 + 0x200)
@@ -137,7 +155,7 @@ func _init() -> void:
 
 	# --- decrypt the schema sections ---
 	var ok := 0
-	for name in SECTIONS:
+	for name in enc_names:
 		if not secs.has(name):
 			print("  %-10s not present" % name); continue
 		var s = secs[name]
@@ -161,9 +179,11 @@ func _init() -> void:
 		for j in range(dec.size()):
 			d[ro + j] = dec[j]
 		var after := _entropy(d, ro, 65536)
-		var good := after < 6.0
+		# Code sections (.text, ctr) decrypt to ~6.5 bits, data to ~3.0. Judge by
+		# the DROP from ciphertext (~8.0), not an absolute threshold.
+		var good := (before - after) > 1.0
 		print("  %-10s entropy %.2f -> %.2f   %s"
-			% [name, before, after, "OK (plain)" if good else "STILL HIGH - scheme differs"])
+			% [name, before, after, "OK" if good else "STILL HIGH - scheme differs"])
 		if good:
 			ok += 1
 
@@ -179,6 +199,6 @@ func _init() -> void:
 		print("could not write %s" % out); quit(1); return
 	f.store_buffer(d); f.close()
 	print("")
-	print("WROTE %s  (%d/%d schema sections decrypted)" % [out, ok, SECTIONS.size()])
+	print("WROTE %s  (%d/%d schema sections decrypted)" % [out, ok, enc_names.size()])
 	print("Point BF6Types / gen_typedb --exe at it.")
 	quit(0)
