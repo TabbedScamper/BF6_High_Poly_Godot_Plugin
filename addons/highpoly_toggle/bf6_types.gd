@@ -72,6 +72,8 @@ var _db_resolved := {}                 # type_va (int) -> resolve() dict
 var _rec := false                      # record every answer, to build a database
 var _db_meta := {}                     # exe_size, ti_size, entropy of the source
 var from_db := false                   # diagnostics: this is a generated database
+var lifted := false                    # the exe's DRM was decrypted in memory
+var lift_note := ""                    # why a lift did or did not happen
 var _ti_off := 0                  # `typeinfo` section bounds, for the search
 var _ti_end := 0
 var _layout_cache := {}
@@ -154,6 +156,16 @@ func open(exe_path: String) -> bool:
 	else:
 		_ti_off = int(ti[3])
 		_ti_end = int(ti[3]) + int(ti[4])
+
+	# SEAMLESS DRM LIFT. EA App builds wrap the executable in Origin DRM, so the
+	# type sections read as ciphertext on disk and the whole map comes back empty.
+	# When the type table looks encrypted, decrypt it IN MEMORY using the user's
+	# own licence file, so everything below reads plain bytes exactly as on a
+	# Steam install - no database, no shipped file, no manual step. Reads only
+	# what the user already owns: their own executable, their own licence. Static
+	# file work, never the running game.
+	if ti_found and _looks_encrypted():
+		lifted = _lift_in_memory()
 	return true
 
 
@@ -201,6 +213,118 @@ func section(name: String) -> Array:
 		if str(s[0]) == name:
 			return s
 	return []
+
+
+# ---------------------------------------------------------------------------
+# in-memory OOA lift (EA / Origin DRM)
+# ---------------------------------------------------------------------------
+# Ported from rse-ooa-decrypt (GPL-3.0, BigApex) and dfanz0r's BF6 port, run in
+# Godot's own AES. Authorized Portal-editor work; each user decrypts only their
+# own owned copy with their own licence, and the running game is never touched.
+
+# Is the type table ciphertext? Plain schema is ~3.4 bits/byte; encrypted ~8.0.
+func _looks_encrypted() -> bool:
+	var e: Dictionary = ti_entropy(65536)
+	return float(e.get("bits", 0.0)) > 7.5
+
+
+func _aes_cbc(key: PackedByteArray, iv: PackedByteArray, buf: PackedByteArray) -> PackedByteArray:
+	var a := AESContext.new()
+	if a.start(AESContext.MODE_CBC_DECRYPT, key, iv) != OK:
+		return PackedByteArray()
+	var out := a.update(buf)          # length must be a multiple of 16
+	a.finish()
+	return out
+
+
+# The DLF licence gives the per-section AES key. It lives beside the game's other
+# EA Services data, is itself AES-CBC with a fixed key, and carries the real key
+# as base64 inside a <CipherKey> tag.
+func _section_key(content_id: String) -> PackedByteArray:
+	var dlf_key := PackedByteArray([65, 50, 114, 45, 208, 130, 239, 176,
+		220, 100, 87, 197, 118, 104, 202, 9])
+	var zero := PackedByteArray(); zero.resize(16)
+	var pd := OS.get_environment("ProgramData")
+	if pd == "":
+		pd = "C:/ProgramData"
+	var base := pd.replace("\\", "/") + "/Electronic Arts/EA Services/License/"
+	for cand in [base + content_id + ".dlf", base + content_id + "_cached.dlf"]:
+		if not FileAccess.file_exists(cand):
+			continue
+		var raw := FileAccess.get_file_as_bytes(cand)
+		for start in [0x41, 0]:
+			if start >= raw.size():
+				continue
+			var body := raw.slice(start, raw.size() - ((raw.size() - start) % 16))
+			var txt := _aes_cbc(dlf_key, zero, body).get_string_from_utf8()
+			var tag := "<CipherKey>"
+			var p := txt.find(tag)
+			if p < 0:
+				continue
+			var kb := Marshalls.base64_to_raw(txt.substr(p + tag.length(), 24))
+			if kb.size() >= 16:
+				return kb.slice(0, 16)
+	return PackedByteArray()
+
+
+# Decrypt, in `data`, every section the .ooa metadata lists as encrypted. The map
+# needs more than the schema pair: the type graph reaches into .data (and the
+# reflection code lives in .text/ctr), so decrypting only typeinfo/fieldinf leaves
+# the walk unable to descend. Decrypt them all.
+func _lift_in_memory() -> bool:
+	var ooa := section(".ooa")
+	if ooa.is_empty():
+		lift_note = "encrypted but no .ooa section - cannot lift"
+		return false
+	var ooa_off := int(ooa[3])
+	# content_id: UTF-16 at .ooa + 0x42
+	var cid := data.slice(ooa_off + 0x42, ooa_off + 0x42 + 0x200).get_string_from_utf16()
+	for stop in ["\u0000", "\r", "\n"]:
+		var ix := cid.find(stop)
+		if ix >= 0:
+			cid = cid.substr(0, ix)
+	cid = cid.strip_edges()
+	var key := _section_key(cid)
+	if key.is_empty():
+		lift_note = ("this is an EA (DRM) install and the licence file for '%s' "
+			% cid + "was not found under %ProgramData%/Electronic Arts/EA "
+			+ "Services/License/. Run the game once so EA writes it, then reopen.")
+		return false
+	# enc_blocks: count at .ooa+0x4EE, blocks from 0x4F0 stride 0x30, VA*0x100.
+	var cnt := int(data[ooa_off + 0x4EE])
+	if cnt < 1 or cnt > 10:
+		lift_note = "unexpected enc_blocks count %d" % cnt
+		return false
+	var done := 0
+	for i in range(cnt):
+		var bva := int(data.decode_u32(ooa_off + 0x4F0 + i * 0x30)) * 0x100
+		for s in sections:
+			if int(s[1]) != bva:
+				continue
+			var ro := int(s[3]); var rs := int(s[4])
+			if rs % 16 != 0 or ro < 16 or ro + rs > data.size():
+				break
+			var iv := data.slice(ro - 16, ro)
+			var dec := _aes_cbc(key, iv, data.slice(ro, ro + rs))
+			if dec.size() != rs:
+				break
+			# padding quirk: a trailing all-0x10 block decrypts to zeros
+			var all10 := true
+			for j in range(rs - 16, rs):
+				if dec[j] != 0x10:
+					all10 = false; break
+			if all10:
+				for j in range(rs - 16, rs):
+					dec[j] = 0
+			# Splice natively - a 145 MB byte-by-byte loop is far too slow.
+			data = data.slice(0, ro) + dec + data.slice(ro + rs)
+			done += 1
+			break
+	if not _looks_encrypted():
+		lift_note = "decrypted %d DRM section(s) in memory" % done
+		return true
+	lift_note = "attempted the DRM lift but the type table is still encrypted"
+	return false
 
 
 # Turn recording on before a walk, so every layout and resolve this reader hands
