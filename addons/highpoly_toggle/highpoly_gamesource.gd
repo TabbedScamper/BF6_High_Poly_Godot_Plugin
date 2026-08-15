@@ -751,7 +751,22 @@ func _walk_evidence(tag: String) -> void:
 			% tag + "whole file is being scanned and layouts can match wrongly.")
 
 
+# Where a generated type database might live. A shipped one beside the plugin
+# takes precedence over a locally generated one, so an install that ships with a
+# database Just Works and a developer's freshly generated one is found too.
+func _find_type_db() -> String:
+	for p in ["res://addons/highpoly_toggle/data/bf6_types.bin",
+			"user://bf6_types.bin"]:
+		if FileAccess.file_exists(p):
+			return p
+	return ""
+
+
 func _retry_other_typedb() -> void:
+	# A database IS the fallback, so there is no other executable to try - and the
+	# database's reader has no exe to swap to anyway.
+	if types != null and types.from_db:
+		return
 	if walk == null or not walk.rows.is_empty() or _types_retried:
 		return
 	_types_retried = true
@@ -1226,6 +1241,41 @@ func open_map(map: String, game_dir := "", progress := Callable(),
 	if not types.open(exe):
 		error = _fail("reading the type database", types.error)
 		return false
+	# EA INSTALLS: THE SCHEMA IN THE EXE IS DRM-ENCRYPTED, SO FALL BACK TO A
+	# DATABASE. EA App wraps bf6.exe in Origin DRM and the type schema reads as
+	# ciphertext (entropy ~8.0 against a plain ~3.4), so this executable cannot
+	# describe the map. A database generated once from a readable (or OOA-lifted)
+	# exe carries the same build's schema and serves every install of it. The exe
+	# is preferred WHEN READABLE, so Steam and lifted installs always use their
+	# own - the build can never be stale - and only an encrypted one reaches for
+	# the database.
+	var _from_db := false
+	var ti_bits := float(types.ti_entropy().get("bits", 0.0))
+	if ti_bits > 7.5:
+		var db_path := _find_type_db()
+		var dbt := BF6Types.new()
+		if db_path != "" and dbt.open_db(db_path):
+			# Swap the reader; open_map builds the walk from `types` just below,
+			# so nothing else needs to change - the DB serves layout_full/resolve
+			# in place of the encrypted executable.
+			types = dbt
+			_from_db = true
+			HighpolyLog.info("This install's executable is DRM-encrypted; reading "
+				+ "the map's object types from the generated database %s instead."
+				% db_path.get_file())
+		else:
+			# NO DATABASE: DO NOT FAIL THE WHOLE OPEN. Mounting and Detail Mode
+			# (skinning the user's own placed objects) need no type schema, so an
+			# EA user with no database still gets those - only the map's OWN
+			# objects need the walk, which will come back empty and say why. This
+			# also keeps gen_typedb bootstrappable: it opens the map here, then
+			# supplies its own lifted types, so open must not refuse an encrypted
+			# exe before that.
+			HighpolyLog.warn("This install's executable is DRM-encrypted (%.1f "
+				% ti_bits + "bits) and no type database was found, so the map's "
+				+ "own objects cannot be read. Terrain, textures and your placed "
+				+ "objects still work. Generate a database with ooa_lift then "
+				+ "gen_typedb, or install the shipped bf6_types.bin.")
 	# WHICH EXE WON, recorded because it is a real choice with consequences and
 	# the log never said. SP and MP carry DIFFERENT type databases, and picking
 	# the wrong one resolves types to the WRONG LAYOUTS rather than failing -

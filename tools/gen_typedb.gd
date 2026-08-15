@@ -79,7 +79,11 @@ func _init() -> void:
 		gs.types = types
 		gs.walk.use_types(types)
 		gs._types_retried = true
-		gs.ensure_placements()
+		# Direct run, not ensure_placements: the latter consults the walk cache
+		# and offers the empty-walk retry, both of which fight an injected reader.
+		# A bare run() with the lifted types is the path proven to read the map.
+		gs.walk.rows = []
+		gs.walk.run(gs.level)
 		var n: int = gs.walk.rows.size()
 		total += n
 		print("  %-16s %d placements, database now %d types"

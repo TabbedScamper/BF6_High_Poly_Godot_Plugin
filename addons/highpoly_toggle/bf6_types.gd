@@ -521,8 +521,15 @@ func _copy(lay: Dictionary) -> Dictionary:
 	if lay.is_empty():
 		return {}
 	var out := lay.duplicate()
-	var fs: Array = []
-	for f in lay["fields"]:
-		fs.append((f as Dictionary).duplicate())
-	out["fields"] = fs
+	# GUARD "fields": layout dicts carry a fields array to deep-copy, but a
+	# resolve() dict does not. Without this guard, _copy on a resolve result
+	# read lay["fields"] as null and produced an empty dict - which is exactly
+	# how a generated database ended up with 43 present-but-empty resolve
+	# entries, so every array/nested decode failed and the walk could not
+	# descend, on an install that had already decrypted perfectly.
+	if lay.has("fields"):
+		var fs: Array = []
+		for f in lay["fields"]:
+			fs.append((f as Dictionary).duplicate())
+		out["fields"] = fs
 	return out
