@@ -48,6 +48,30 @@ var data_short := false           # the read came back smaller than the file
 # data disagree. This is the number that says so out loud instead of letting it
 # surface as a map with no objects in it.
 var n_miss := 0
+
+# ---------------------------------------------------------------------------
+# type database: read the schema from a generated file, not the executable
+# ---------------------------------------------------------------------------
+# The type schema (which fields a type has, at what offsets) is a property of
+# the GAME BUILD, not the storefront: Steam and EA ship the same build, so the
+# same table at the same virtual addresses. Steam leaves it plain on disk; EA
+# wraps the executable in Origin DRM, so on an EA install this reader finds only
+# ciphertext and every map comes back empty while meshes and terrain read fine.
+#
+# The escape is to stop reading the schema from each user's executable at all.
+# Generated ONCE from a readable build, the schema serves every install. That is
+# how Frosty works - it never reads types from the user's exe, it ships a profile.
+#
+# Two maps make it self-contained, because the decoder navigates the type graph
+# two ways: by guid (layout_full) and by virtual address (resolve). Both are
+# build-constant, so both replay verbatim against an EA install. NO DECRYPTION is
+# involved: the file is generated from a plain Steam executable and read as data.
+var _db_active := false                # serving from a database, not `data`
+var _db_layouts := {}                  # guid_hex -> resolved layout_full dict
+var _db_resolved := {}                 # type_va (int) -> resolve() dict
+var _rec := false                      # record every answer, to build a database
+var _db_meta := {}                     # exe_size, ti_size, entropy of the source
+var from_db := false                   # diagnostics: this is a generated database
 var _ti_off := 0                  # `typeinfo` section bounds, for the search
 var _ti_end := 0
 var _layout_cache := {}
@@ -150,6 +174,11 @@ func open(exe_path: String) -> bool:
 # ON DEMAND, never at open. A healthy install must not pay for a diagnostic it
 # will never print, and a megabyte is enough to be decisive.
 func ti_entropy(sample := 1048576) -> Dictionary:
+	# In database mode there is no `data` to measure; report the source build's
+	# figure so diagnostics read as the plain schema they actually describe.
+	if _db_active:
+		return {"bits": float(_db_meta.get("entropy", 3.4)),
+			"zeros": float(_db_meta.get("zeros", 65.0)), "sampled": 0}
 	var start: int = _ti_off
 	var count: int = mini(sample, maxi(0, _ti_end - _ti_off))
 	if count <= 0 or start + count > data.size():
@@ -172,6 +201,68 @@ func section(name: String) -> Array:
 		if str(s[0]) == name:
 			return s
 	return []
+
+
+# Turn recording on before a walk, so every layout and resolve this reader hands
+# out is captured. Call once on a reader opened against a READABLE executable.
+func record() -> void:
+	_rec = true
+
+
+# Write the recorded schema. Small: a few thousand types, not the 176 MB exe.
+# entropy/zeros are carried so an install reading this file can report the source
+# build's figures rather than a meaningless measurement of a database.
+func save_db(path: String) -> bool:
+	var e: Dictionary = ti_entropy()
+	var blob := {
+		"schema": 1,
+		"layouts": _db_layouts,
+		"resolved": _db_resolved,
+		"meta": {"exe_size": file_size, "ti_size": ti_size,
+			"entropy": float(e.get("bits", 3.4)),
+			"zeros": float(e.get("zeros", 65.0)),
+			"types": _db_layouts.size(), "resolved_n": _db_resolved.size()},
+	}
+	var f := FileAccess.open(path, FileAccess.WRITE)
+	if f == null:
+		error = "could not write %s" % path
+		return false
+	f.store_var(blob)
+	f.close()
+	return true
+
+
+# Serve the schema from a generated file instead of an executable. After this the
+# reader answers layout_full/resolve without ever touching `data`, so it works on
+# an install whose executable it cannot read - the whole point.
+func open_db(path: String) -> bool:
+	error = ""
+	if not FileAccess.file_exists(path):
+		error = "no type database at %s" % path
+		return false
+	var f := FileAccess.open(path, FileAccess.READ)
+	if f == null:
+		error = "could not read %s" % path
+		return false
+	var blob = f.get_var()
+	f.close()
+	if typeof(blob) != TYPE_DICTIONARY or not (blob as Dictionary).has("layouts"):
+		error = "%s is not a type database" % path
+		return false
+	var d: Dictionary = blob
+	_db_layouts = d.get("layouts", {})
+	# store_var writes integer keys back as ints; guard against a float key drift
+	# by rebuilding the resolved map with integer keys.
+	_db_resolved = {}
+	for k in (d.get("resolved", {}) as Dictionary):
+		_db_resolved[int(k)] = (d["resolved"] as Dictionary)[k]
+	_db_meta = d.get("meta", {})
+	_db_active = true
+	from_db = true
+	ti_found = true
+	ti_size = int(_db_meta.get("ti_size", 0))
+	file_size = int(_db_meta.get("exe_size", 0))
+	return true
 
 
 # Virtual address -> file offset, or -1.
@@ -293,11 +384,21 @@ func _layout_uncached(guid: PackedByteArray) -> Dictionary:
 # Layout including inherited fields.
 func layout_full(guid: PackedByteArray, depth := 0) -> Dictionary:
 	var key := guid.hex_encode()
+	# SERVED FROM THE DATABASE. The stored dict is already fully resolved (super
+	# fields folded in), so there is nothing to compute and no `data` to read.
+	# An absent key is an unknown type, which the walk counts and fails open on,
+	# exactly as an executable miss would.
+	if _db_active:
+		return _copy(_db_layouts[key]) if _db_layouts.has(key) else {}
 	if depth == 0 and _full_cache.has(key):
 		return _copy(_full_cache[key])
 	var lay := _layout_full_uncached(guid, depth)
 	if depth == 0:
 		_full_cache[key] = lay
+		# RECORDED. Only the depth-0, super-folded result is stored, because that
+		# is exactly what a consumer receives; nested calls are already folded in.
+		if _rec and not lay.is_empty():
+			_db_layouts[key] = _copy(lay)
 		return _copy(lay)
 	return lay
 
@@ -346,6 +447,11 @@ func _guid_at_typeinfo(va: int) -> PackedByteArray:
 
 # A field's typeVA -> {guid, guid_raw, flags, te, cat, elemVA}.
 func resolve(type_va: int) -> Dictionary:
+	# SERVED FROM THE DATABASE. type_va is a build-constant address, valid on any
+	# install of the same build, so a value recorded from Steam resolves an EA
+	# install unchanged. An absent va is a type outside the recorded set.
+	if _db_active:
+		return _copy(_db_resolved[type_va]) if _db_resolved.has(type_va) else {}
 	var o := offset_of(type_va)
 	if o < 0 or o + 8 > data.size():
 		return {}
@@ -370,8 +476,11 @@ func resolve(type_va: int) -> Dictionary:
 			if cand > image_base and not _type_guid_only(cand).is_empty():
 				elem_va = cand
 				break
-	return {"guid": guid_str(guid), "guid_raw": guid, "flags": flags,
+	var out := {"guid": guid_str(guid), "guid_raw": guid, "flags": flags,
 			"te": te, "cat": (flags >> 1) & 0xF, "elemVA": elem_va}
+	if _rec:
+		_db_resolved[type_va] = _copy(out)
+	return out
 
 
 # Does typeVA dereference to a TypeInfoData with a sane type enum?
