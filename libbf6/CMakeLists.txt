@@ -9,6 +9,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(BF6_SOURCES
     src/bf6_core.cpp
     src/oodle.cpp
+    src/cas.cpp
 )
 
 add_library(bf6_core SHARED ${BF6_SOURCES})
@@ -25,3 +26,9 @@ if (MSVC)
     target_compile_options(bf6_core PRIVATE /W4)
     target_compile_options(bf6_core_static PRIVATE /W4)
 endif()
+
+# Validation harness: reads one CAS reference so its output can be byte-compared
+# to the working Godot plugin. Not shipped.
+add_executable(cas_test test/cas_test.cpp)
+target_link_libraries(cas_test PRIVATE bf6_core_static)
+target_include_directories(cas_test PRIVATE src include)
