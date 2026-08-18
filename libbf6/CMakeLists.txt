@@ -6,16 +6,17 @@ project(libbf6 CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-add_library(bf6_core SHARED
+set(BF6_SOURCES
     src/bf6_core.cpp
+    src/oodle.cpp
 )
-target_include_directories(bf6_core PUBLIC include)
+
+add_library(bf6_core SHARED ${BF6_SOURCES})
+target_include_directories(bf6_core PUBLIC include PRIVATE src)
 
 # A static form too, so an Unreal module can link it in rather than ship a DLL.
-add_library(bf6_core_static STATIC
-    src/bf6_core.cpp
-)
-target_include_directories(bf6_core_static PUBLIC include)
+add_library(bf6_core_static STATIC ${BF6_SOURCES})
+target_include_directories(bf6_core_static PUBLIC include PRIVATE src)
 
 if (MSVC)
     target_compile_options(bf6_core PRIVATE /W4)
