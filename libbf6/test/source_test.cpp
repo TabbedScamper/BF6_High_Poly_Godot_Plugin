@@ -25,7 +25,7 @@ int main(int argc, char** argv) {
         int n = 0;
         for (const auto& kv : src.res()) {
             std::printf("RES %s (dsize=%u)\n", kv.first.c_str(), kv.second.dsize);
-            if (++n >= 6) break;
+            if (++n >= 200000) break;
         }
         return 0;
     }
