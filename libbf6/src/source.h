@@ -29,6 +29,8 @@ public:
 
     std::vector<uint8_t> get_res(const std::string& name, std::string& err);
     std::vector<uint8_t> get_ebx(const std::string& name, std::string& err);
+    // Loose chunk or bundle chunk, by guid hex (either spelling - see get_chunk).
+    std::vector<uint8_t> get_chunk(const std::string& guid_hex, std::string& err);
 
     size_t res_count() const { return res_.size(); }
     size_t ebx_count() const { return ebx_.size(); }
@@ -39,7 +41,8 @@ private:
     CasLocator  loc_;
     std::unordered_map<std::string, ResEntry> res_;
     std::unordered_map<std::string, EbxEntry> ebx_;
-    std::map<std::string, CasLoc>             chunks_;   // loose-chunk guid -> loc
+    std::map<std::string, CasLoc>             chunks_;    // loose-chunk guid -> loc
+    std::map<std::string, CasLoc>             chunk_seg_; // bundle-chunk guid -> loc
 
     std::vector<uint8_t> read_seg(const CasLoc& seg, bool allow_raw, std::string& err);
 };

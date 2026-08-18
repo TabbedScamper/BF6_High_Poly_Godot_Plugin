@@ -78,8 +78,24 @@ bool Source::mount_toc(const std::string& toc_path, std::string& err) {
             }
             si++;
         }
+        // Bundle chunks come after res, and mesh vertex data lives in one.
+        for (const std::string& cid : pay.chunk_id) {
+            if (si < nseg && !chunk_seg_.count(cid)) chunk_seg_[cid] = segs[si];
+            si++;
+        }
     }
     return true;
+}
+
+std::vector<uint8_t> Source::get_chunk(const std::string& guid_hex, std::string& err) {
+    std::string g = guid_hex;
+    for (char& ch : g) if (ch >= 'A' && ch <= 'Z') ch += 32;   // lower
+    auto it = chunks_.find(g);
+    if (it != chunks_.end()) return read_seg(it->second, false, err);
+    auto it2 = chunk_seg_.find(g);
+    if (it2 != chunk_seg_.end()) return read_seg(it2->second, false, err);
+    err = "chunk " + g.substr(0, 16) + " is in no chunk map";
+    return std::vector<uint8_t>();
 }
 
 std::vector<uint8_t> Source::get_res(const std::string& name, std::string& err) {

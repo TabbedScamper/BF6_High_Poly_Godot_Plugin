@@ -62,5 +62,23 @@ struct MeshSet {
 
 MeshSet meshset_parse(const uint8_t* d, size_t len, std::string& err);
 
+// One renderable section's geometry, in the game's own space. Focused set:
+// positions, normals, primary UV (TexCoord0) and triangle indices - enough to
+// build a mesh. Material/destruction extras follow with the EBX + depot work.
+struct MeshGeomSection {
+    std::string           material;
+    uint64_t              state_key = 0;
+    uint16_t              material_id = 0;
+    std::vector<float>    positions;   // xyz * vertex_count
+    std::vector<float>    normals;     // xyz * vertex_count, or empty
+    std::vector<float>    uv0;         // uv * vertex_count, or empty
+    std::vector<uint32_t> indices;
+};
+
+// Decode one LOD's sections. `chunk` is the LOD's [vertex buffer][index buffer].
+std::vector<MeshGeomSection> meshset_read_lod(const MeshSet& ms, int lod,
+                                              const uint8_t* chunk, size_t chunk_len,
+                                              std::string& err);
+
 }  // namespace bf6
 #endif
