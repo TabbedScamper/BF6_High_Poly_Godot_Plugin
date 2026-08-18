@@ -12,6 +12,7 @@ set(BF6_SOURCES
     src/cas.cpp
     src/dbobject.cpp
     src/caslocator.cpp
+    src/toc.cpp
 )
 
 add_library(bf6_core SHARED ${BF6_SOURCES})
@@ -39,3 +40,8 @@ target_include_directories(cas_test PRIVATE src include)
 add_executable(loc_test test/loc_test.cpp)
 target_link_libraries(loc_test PRIVATE bf6_core_static)
 target_include_directories(loc_test PRIVATE src include)
+
+# Validates the SuperBundle TOC parse against the plugin.
+add_executable(toc_test test/toc_test.cpp)
+target_link_libraries(toc_test PRIVATE bf6_core_static)
+target_include_directories(toc_test PRIVATE src include)
