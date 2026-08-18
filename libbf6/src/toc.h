@@ -45,6 +45,9 @@ public:
     // Full-data CAS location of a loose chunk (5.4).
     CasLoc chunk_location(const TocChunk& ch) const;
 
+    // The stripped TOC body - a bundle's segments blob lives inside it.
+    const std::vector<uint8_t>& body() const { return body_; }
+
 private:
     std::vector<uint8_t> body_;
     uint32_t bundle_value_off_ = 0, chunk_value_off_ = 0;
