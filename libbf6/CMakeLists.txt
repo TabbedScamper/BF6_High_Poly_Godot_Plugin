@@ -10,6 +10,8 @@ set(BF6_SOURCES
     src/bf6_core.cpp
     src/oodle.cpp
     src/cas.cpp
+    src/dbobject.cpp
+    src/caslocator.cpp
 )
 
 add_library(bf6_core SHARED ${BF6_SOURCES})
@@ -32,3 +34,8 @@ endif()
 add_executable(cas_test test/cas_test.cpp)
 target_link_libraries(cas_test PRIVATE bf6_core_static)
 target_include_directories(cas_test PRIVATE src include)
+
+# Validates cas_path resolution against the plugin.
+add_executable(loc_test test/loc_test.cpp)
+target_link_libraries(loc_test PRIVATE bf6_core_static)
+target_include_directories(loc_test PRIVATE src include)
