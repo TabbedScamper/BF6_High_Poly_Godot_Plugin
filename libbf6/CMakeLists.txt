@@ -15,6 +15,7 @@ set(BF6_SOURCES
     src/toc.cpp
     src/bundle.cpp
     src/source.cpp
+    src/meshset.cpp
 )
 
 add_library(bf6_core SHARED ${BF6_SOURCES})
@@ -52,3 +53,7 @@ target_include_directories(toc_test PRIVATE src include)
 add_executable(source_test test/source_test.cpp)
 target_link_libraries(source_test PRIVATE bf6_core_static)
 target_include_directories(source_test PRIVATE src include)
+
+add_executable(meshset_test test/meshset_test.cpp)
+target_link_libraries(meshset_test PRIVATE bf6_core_static)
+target_include_directories(meshset_test PRIVATE src include)
