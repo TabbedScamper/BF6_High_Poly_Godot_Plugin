@@ -57,3 +57,7 @@ target_include_directories(source_test PRIVATE src include)
 add_executable(meshset_test test/meshset_test.cpp)
 target_link_libraries(meshset_test PRIVATE bf6_core_static)
 target_include_directories(meshset_test PRIVATE src include)
+
+add_executable(mesh_read_test test/mesh_read_test.cpp)
+target_link_libraries(mesh_read_test PRIVATE bf6_core_static)
+target_include_directories(mesh_read_test PRIVATE src include)
