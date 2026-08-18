@@ -13,6 +13,9 @@ set(BF6_SOURCES
 
 add_library(bf6_core SHARED ${BF6_SOURCES})
 target_include_directories(bf6_core PUBLIC include PRIVATE src)
+# Only the shared build tags the public functions for DLL export. The static
+# library (linked into Unreal) leaves BF6_API empty.
+target_compile_definitions(bf6_core PRIVATE BF6_BUILDING_DLL)
 
 # A static form too, so an Unreal module can link it in rather than ship a DLL.
 add_library(bf6_core_static STATIC ${BF6_SOURCES})

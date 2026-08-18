@@ -21,6 +21,17 @@
 
 #include <stdint.h>
 
+/* Windows only exports DLL symbols that are explicitly marked. The shared build
+ * defines BF6_BUILDING_DLL and every public function is tagged for export; a
+ * static build (Unreal linking bf6_core_static) leaves it empty. Consumers that
+ * load the DLL at runtime (GetProcAddress) don't need the import side, so this
+ * stays a plain export tag rather than the usual export/import dance. */
+#if defined(_WIN32) && defined(BF6_BUILDING_DLL)
+#  define BF6_API __declspec(dllexport)
+#else
+#  define BF6_API
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -33,15 +44,15 @@ typedef struct bf6_ctx bf6_ctx;
 /* Open an install: mount, read the type schema, and OOA-lift the executable in
  * memory if it is DRM-wrapped (EA App). All storefront divergence lives behind
  * this one call. Returns NULL on failure and writes a reason into err. */
-bf6_ctx* bf6_open(const char* game_dir, char* err, int err_len);
-void     bf6_close(bf6_ctx*);
+BF6_API bf6_ctx* bf6_open(const char* game_dir, char* err, int err_len);
+BF6_API void     bf6_close(bf6_ctx*);
 
 /* True if the type schema had to be decrypted (EA install). For diagnostics. */
-int      bf6_was_lifted(bf6_ctx*);
+BF6_API int      bf6_was_lifted(bf6_ctx*);
 
 /* --------------------------------------------------------------- enumerate */
-int         bf6_level_count(bf6_ctx*);
-const char* bf6_level_name(bf6_ctx*, int index);      /* e.g. "MP_Badlands" */
+BF6_API int         bf6_level_count(bf6_ctx*);
+BF6_API const char* bf6_level_name(bf6_ctx*, int index);      /* e.g. "MP_Badlands" */
 
 typedef struct {
     const char* res_name;      /* the asset id, e.g. common/.../foo_mesh   */
@@ -50,7 +61,7 @@ typedef struct {
 
 /* Fill out[] with up to out_max catalogue entries matching `search` (NULL or ""
  * = everything). Returns the number written. */
-int bf6_catalogue(bf6_ctx*, const char* search,
+BF6_API int bf6_catalogue(bf6_ctx*, const char* search,
                   bf6_cat_entry* out, int out_max);
 
 /* ---------------------------------------------------------------- geometry */
@@ -79,7 +90,7 @@ typedef struct {
 } bf6_mesh;
 
 /* Build one asset's geometry. lod 0 = full detail. NULL if unreadable. */
-bf6_mesh* bf6_read_mesh(bf6_ctx*, const char* res_name, int lod);
+BF6_API bf6_mesh* bf6_read_mesh(bf6_ctx*, const char* res_name, int lod);
 
 /* ---------------------------------------------------------------- material */
 typedef enum {
@@ -126,7 +137,7 @@ typedef struct {
 
 /* Textures are handed across COMPRESSED (BCn) so the engine uploads them as-is.
  * texture_id comes from a material's bf6_tex_binding. Owned by the ctx. */
-const bf6_texture* bf6_texture_at(bf6_ctx*, int texture_id);
+BF6_API const bf6_texture* bf6_texture_at(bf6_ctx*, int texture_id);
 
 /* --------------------------------------------------------------- placements */
 typedef struct {
@@ -138,7 +149,7 @@ typedef struct {
 
 /* Every placement in a level. Returns the count; if it exceeds out_max, out[]
  * is filled to out_max and the return value tells you to call again bigger. */
-int bf6_level_instances(bf6_ctx*, const char* level,
+BF6_API int bf6_level_instances(bf6_ctx*, const char* level,
                         bf6_instance* out, int out_max);
 
 /* ------------------------------------------------------------------- lights */
@@ -155,7 +166,7 @@ typedef struct {
     const char*    ies_profile;  /* goniometric ref, or NULL */
 } bf6_light;
 
-int bf6_level_lights(bf6_ctx*, const char* level,
+BF6_API int bf6_level_lights(bf6_ctx*, const char* level,
                      bf6_light* out, int out_max);
 
 /* ------------------------------------------------------------------ terrain */
@@ -169,12 +180,12 @@ typedef struct {
     int32_t         color_texture;
 } bf6_terrain;
 
-bf6_terrain* bf6_read_terrain(bf6_ctx*, const char* level);
+BF6_API bf6_terrain* bf6_read_terrain(bf6_ctx*, const char* level);
 
 /* -------------------------------------------------------------------- memory */
 /* Free anything this API returned (bf6_mesh*, bf6_terrain*, ...). The bf6_ctx*
  * itself is freed by bf6_close(), not this. */
-void bf6_free(bf6_ctx*, void* handle);
+BF6_API void bf6_free(bf6_ctx*, void* handle);
 
 #ifdef __cplusplus
 }
