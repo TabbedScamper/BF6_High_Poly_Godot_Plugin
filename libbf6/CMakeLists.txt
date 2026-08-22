@@ -18,6 +18,7 @@ set(BF6_SOURCES
     src/meshset.cpp
     src/placeables.cpp
     src/types.cpp
+    src/ebx.cpp
 )
 
 add_library(bf6_core SHARED ${BF6_SOURCES})
@@ -51,6 +52,12 @@ target_include_directories(loc_test PRIVATE src include)
 add_executable(types_test test/types_test.cpp)
 target_link_libraries(types_test PRIVATE bf6_core_static)
 target_include_directories(types_test PRIVATE src include)
+
+# Module 5: pulls a real partition out of the install and flattens the decode,
+# to be compared line for line with the Python reference.
+add_executable(ebx_test test/ebx_test.cpp)
+target_link_libraries(ebx_test PRIVATE bf6_core_static)
+target_include_directories(ebx_test PRIVATE src include)
 
 # Validates the SuperBundle TOC parse against the plugin.
 add_executable(toc_test test/toc_test.cpp)

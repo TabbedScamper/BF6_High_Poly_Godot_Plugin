@@ -93,6 +93,29 @@ computes. A module isn't done until it matches.
 - Build path: MSVC + CMake -> `bf6_core.dll` (Godot) and `bf6_core_static.lib`
   (Unreal), both compiling from the stub.
 
+- **`ebx` (module 5), 2026-08-22.** `src/ebx.{h,cpp}`: the RIFF container, the
+  EFIX fixup tables, and the value deserializer driven by module 4. Carries the
+  GDScript reader's corrections over ebx.py/ebx_deser.py: PointerRef is a SIGNED
+  32-bit offset in an 8-byte slot (885 of 886 refs recovered), array element
+  stride follows the element TYPE rather than always u32 (5,762 instances were
+  being judged invisible from a bool array read four times past its end), and a
+  field landing outside the file nulls THAT FIELD rather than losing the whole
+  instance (395 placements).
+  VALIDATED line for line against the Python reference on 458 real partitions
+  pulled out of the install: globals 218, and 60 each from vehicles, weapons,
+  characters and ui. All 458 identical, including one of 137,993 values. The
+  harness (`scratchpad/typeport/compare_ebx.py`) applies the same corrections to
+  the Python side, and `--raw` reports where the UNPATCHED reference differs, so
+  the corrections are visibly doing work rather than being asserted.
+  THE VALIDATION FOUND A REAL BUG: decode() and scalar() have DIFFERENT defaults
+  in the reference and the difference is load-bearing. An unhandled type enum is
+  reported as unknown, but an unhandled ARRAY ELEMENT falls back to a u32.
+  Collapsing the two turned real values into null on six of the first 218
+  partitions.
+  Largest sampled partition (553 KB, 54 instances, 101,924 nested fields, 36,069
+  array elements): 113 ms here for parse, decode AND printing 137,993 lines,
+  against 390 ms for the Python decode alone.
+
 ## Build
 
 ```

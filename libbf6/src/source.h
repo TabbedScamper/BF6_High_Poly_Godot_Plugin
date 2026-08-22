@@ -35,6 +35,7 @@ public:
     size_t res_count() const { return res_.size(); }
     size_t ebx_count() const { return ebx_.size(); }
     const std::unordered_map<std::string, ResEntry>& res() const { return res_; }
+    const std::unordered_map<std::string, EbxEntry>& ebx() const { return ebx_; }
 
 private:
     std::string game_;
