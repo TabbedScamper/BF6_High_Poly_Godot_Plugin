@@ -21,6 +21,7 @@ set(BF6_SOURCES
     src/ebx.cpp
     src/walk.cpp
     src/terrain.cpp
+    src/texture.cpp
 )
 
 add_library(bf6_core SHARED ${BF6_SOURCES})
@@ -54,6 +55,12 @@ target_include_directories(loc_test PRIVATE src include)
 add_executable(types_test test/types_test.cpp)
 target_link_libraries(types_test PRIVATE bf6_core_static)
 target_include_directories(types_test PRIVATE src include)
+
+# Module 7: decodes textures and reports the things that go plausibly wrong -
+# a transposed non-square image, a chunk read short, an sRGB flag on linear data.
+add_executable(texture_test test/texture_test.cpp)
+target_link_libraries(texture_test PRIVATE bf6_core_static)
+target_include_directories(texture_test PRIVATE src include)
 
 # Module 10 (heights): reads a level's heightfield and reports the tree it came
 # from, so a wrong stride shows up as a bad shape rather than as bad pixels.
