@@ -27,6 +27,32 @@ public:
     bool open(const std::string& game_dir, std::string& err);   // build the locator
     bool mount_toc(const std::string& toc_path, std::string& err);
 
+    // ---- mounting a LEVEL, not just the shared archives ----
+    //
+    // Non-level archives are always mounted. Level archives are normally just
+    // the one asked for, which is right for READING a level: its terrain, its
+    // placements, its lighting.
+    //
+    // It is the wrong answer for the objects a PLAYER can place. Measured on
+    // mp_dumbo, one level's mount carries pf_portal_ prefabs for 1,609 of the
+    // SDK's 10,883 placeables and another 235 reachable by folder name; the
+    // remaining 9,039 are not in that mount in any form, because a prefab lives
+    // in the bundles of the levels that use the object. all_levels mounts every
+    // level so the whole catalogue resolves. It is not the default, because a
+    // level read does not need it and it is not free.
+    bool mount_level(const std::string& level, bool all_levels, std::string& err);
+
+    // The .toc paths under the install, IN MOUNT ORDER. See the ordering law in
+    // the .cpp: first mount wins, so shared archives go first, then the level
+    // being read, then every other level.
+    std::vector<std::string> find_tocs(const std::string& level, bool all_levels) const;
+
+    // The level ids the install actually carries, from directory names only.
+    std::vector<std::string> available_levels() const;
+
+    static bool        is_level_toc(const std::string& path);
+    static std::string mount_key(const std::string& path);
+
     std::vector<uint8_t> get_res(const std::string& name, std::string& err);
     std::vector<uint8_t> get_ebx(const std::string& name, std::string& err);
     // Loose chunk or bundle chunk, by guid hex (either spelling - see get_chunk).

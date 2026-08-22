@@ -116,6 +116,19 @@ computes. A module isn't done until it matches.
   array elements): 113 ms here for parse, decode AND printing 137,993 lines,
   against 390 ms for the Python decode alone.
 
+- **level mounting, 2026-08-22.** `Source::find_tocs` / `mount_level` /
+  `available_levels`, ported from bf6_source.gd. The mount is FIRST WINS, so the
+  order is the correctness: shared archives first (so a level cannot displace a
+  global it depends on), then the level being read, then every other level when
+  all_levels is asked for. Among levels the rule reads backwards from how it
+  sounds - the level being read must come FIRST, or every other level outranks
+  it for any name they share, and levels share names freely.
+  Verified on the real install: 30 levels found; mp_dumbo's two tocs lead the 60
+  level tocs under all_levels; mounting mp_dumbo alone gives 228,818 ebx /
+  165,693 res with 1,950 partitions belonging to the level itself, including its
+  own root asset. Cost: find 8 ms, mount 6.7 s (the mount reads segment 0 of
+  every bundle, which is the documented price and what the plugin caches).
+
 ## Build
 
 ```

@@ -53,6 +53,11 @@ add_executable(types_test test/types_test.cpp)
 target_link_libraries(types_test PRIVATE bf6_core_static)
 target_include_directories(types_test PRIVATE src include)
 
+# Level mounting: the order is the correctness, so it is printed and checked.
+add_executable(level_test test/level_test.cpp)
+target_link_libraries(level_test PRIVATE bf6_core_static)
+target_include_directories(level_test PRIVATE src include)
+
 # Module 5: pulls a real partition out of the install and flattens the decode,
 # to be compared line for line with the Python reference.
 add_executable(ebx_test test/ebx_test.cpp)
