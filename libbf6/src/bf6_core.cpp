@@ -10,11 +10,15 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
 #include "source.h"
 #include "meshset.h"
+#include "terrain.h"
+#include "walk.h"
 #include "placeables.h"
 
 namespace fs = std::filesystem;
@@ -23,10 +27,37 @@ struct bf6_ctx {
     bf6::Source      src;
     bf6::PlaceableDB pdb;
     int lifted = 0;
+
+    // The level currently mounted and walked, with the type schema it needed.
+    // Held on the context because mounting and indexing cost seconds: a caller
+    // that asked for placements twice should pay once.
+    std::unique_ptr<bf6::TypeDb> types;
+    std::unique_ptr<bf6::Walk>   walk;
+    std::string                  walked_level;
+
+    // WHAT EACH HANDED-OUT POINTER ACTUALLY IS.
+    //
+    // bf6_free takes a void* and used to cast it to MeshHandle* unconditionally,
+    // which was fine while a mesh was the only thing this API handed out. The
+    // moment a second handle type existed, freeing one ran the WRONG
+    // destructor over it and released whatever the other type happened to have
+    // at those offsets - an access violation inside the free, nowhere near the
+    // call that was actually wrong.
+    //
+    // The ABI hands out bare pointers by design, so the type has to be
+    // remembered here. Registered on the way out, looked up on the way back.
+    enum HandleKind { HK_MESH = 1, HK_TERRAIN = 2 };
+    std::map<void*, int> handles;
 };
 
 // Backing store for a returned bf6_mesh. `mesh` is the first member so a
 // bf6_mesh* handed out can be cast back for bf6_free.
+// Backing store for a returned bf6_terrain.
+struct TerrainHandle {
+    bf6_terrain           t{};
+    std::vector<uint16_t> heights;
+};
+
 struct MeshHandle {
     bf6_mesh                            mesh{};
     std::vector<bf6_section>            sections;
@@ -221,15 +252,130 @@ bf6_mesh* bf6_read_mesh(bf6_ctx* c, const char* res_name, int lod) {
     mh->mesh.materials      = nullptr;   // depot materials: later
     mh->mesh.material_count = 0;
     for (int k = 0; k < 3; k++) { mh->mesh.aabb_min[k] = lo[k]; mh->mesh.aabb_max[k] = hi[k]; }
+    c->handles[&mh->mesh] = bf6_ctx::HK_MESH;
     return &mh->mesh;
 }
 const bf6_texture* bf6_texture_at(bf6_ctx*, int) { return nullptr; }
-int bf6_level_instances(bf6_ctx*, const char*, bf6_instance*, int) { return 0; }
-int bf6_level_lights(bf6_ctx*, const char*, bf6_light*, int) { return 0; }
-bf6_terrain* bf6_read_terrain(bf6_ctx*, const char*) { return nullptr; }
+int bf6_open_level(bf6_ctx* c, const char* level, const char* exe_path,
+                   int all_levels, char* err, int err_len) {
+    auto fail = [&](const std::string& m) {
+        if (err && err_len > 0) {
+            std::snprintf(err, (size_t)err_len, "%s", m.c_str());
+        }
+        return 1;
+    };
+    if (!c || !level || !*level) return fail("no level");
+    if (c->walked_level == level && c->walk) return 0;   // already open
 
-void bf6_free(bf6_ctx*, void* handle) {
-    if (handle) delete reinterpret_cast<MeshHandle*>(handle);
+    std::string e;
+    if (!c->src.mount_level(level, all_levels != 0, e)) return fail(e);
+
+    c->types.reset(new bf6::TypeDb());
+    if (exe_path && *exe_path) {
+        if (!c->types->open(exe_path, e)) return fail("type schema: " + e);
+    } else {
+        // No exe given: try the install's own, MP first because that is the
+        // build a Portal level comes from.
+        bool ok = false;
+        for (const std::string& cand : bf6::TypeDb::exe_candidates(c->src.game_dir())) {
+            if (c->types->open(cand, e)) { ok = true; break; }
+        }
+        if (!ok) return fail("no readable executable for the type schema");
+    }
+    if (c->types->looks_encrypted())
+        return fail("this install's type table is encrypted (EA App build); "
+                    "placements cannot be read from it yet");
+
+    c->walk.reset(new bf6::Walk(c->src, *c->types));
+    c->walk->build_catalog();
+    if (!c->walk->run(level, e)) { c->walk.reset(); return fail(e); }
+    c->walked_level = level;
+    return 0;
+}
+
+int bf6_level_instances(bf6_ctx* c, const char* level,
+                        bf6_instance* out, int out_max) {
+    if (!c || !c->walk || !level || c->walked_level != level) return 0;
+    const std::vector<bf6::WalkRow>& rows = c->walk->rows();
+    const int n = (int)rows.size();
+    for (int i = 0; i < n && i < out_max; i++) {
+        const bf6::WalkRow& r = rows[(size_t)i];
+        out[i].res_name = r.mesh.c_str();     // owned by the walk, alive until reopen
+        // 3x4 row-major: the three basis rows then the origin, in the GAME's
+        // space. The binding converts handedness and units, not this.
+        for (int k = 0; k < 4; k++) {
+            out[i].xform[k * 3 + 0] = r.xf.m[k].x;
+            out[i].xform[k * 3 + 1] = r.xf.m[k].y;
+            out[i].xform[k * 3 + 2] = r.xf.m[k].z;
+        }
+        out[i].material_scope = 0;
+    }
+    return n;
+}
+int bf6_level_lights(bf6_ctx*, const char*, bf6_light*, int) { return 0; }
+bf6_terrain* bf6_read_terrain(bf6_ctx* c, const char* level) {
+    if (!c || !level || !*level) return nullptr;
+
+    // The level's heightfield lives in its streaming-tree resource, which is
+    // the one whose name carries both "streamingtree" and the level id. Found
+    // by name because that is what the mount gives us: there is no table that
+    // says "this level's terrain is here".
+    std::string want;
+    {
+        std::string lvl = level;
+        for (char& ch : lvl) ch = (char)std::tolower((unsigned char)ch);
+        for (const auto& kv : c->src.res()) {
+            std::string n = kv.first;
+            for (char& ch : n) ch = (char)std::tolower((unsigned char)ch);
+            if (n.find("streamingtree") != std::string::npos &&
+                n.find(lvl) != std::string::npos) { want = kv.first; break; }
+        }
+    }
+    if (want.empty()) return nullptr;
+
+    std::string err;
+    std::vector<uint8_t> res = c->src.get_res(want, err);
+    if (res.empty()) return nullptr;
+
+    bf6::Terrain t;
+    if (!t.parse(res, err)) return nullptr;
+    t.resolve_external([&](const std::string& guid) {
+        std::string e;
+        return c->src.get_chunk(guid, e);
+    });
+
+    bf6::TerrainGrid g;
+    if (!t.composite(g, 0, err)) return nullptr;
+
+    TerrainHandle* th = new TerrainHandle();
+    th->heights = std::move(g.heights);
+    th->t.width = th->t.height = g.size;
+    th->t.heights = th->heights.data();
+    for (int i = 0; i < 3; i++) {
+        th->t.world_min[i] = g.lo[i];
+        th->t.world_max[i] = g.hi[i];
+    }
+    th->t.height_scale  = g.world_size_y;
+    th->t.splat_texture = -1;
+    th->t.color_texture = -1;
+    c->handles[&th->t] = bf6_ctx::HK_TERRAIN;
+    return &th->t;
+}
+
+void bf6_free(bf6_ctx* c, void* handle) {
+    if (!handle || !c) return;
+    auto it = c->handles.find(handle);
+    // A pointer this context never handed out is not ours to delete. Better to
+    // leak than to run a destructor over memory of unknown type, which is the
+    // exact mistake this table exists to stop.
+    if (it == c->handles.end()) return;
+    const int kind = it->second;
+    c->handles.erase(it);
+    switch (kind) {
+    case bf6_ctx::HK_MESH:    delete reinterpret_cast<MeshHandle*>(handle);    break;
+    case bf6_ctx::HK_TERRAIN: delete reinterpret_cast<TerrainHandle*>(handle); break;
+    default: break;
+    }
 }
 
 }  // extern "C"

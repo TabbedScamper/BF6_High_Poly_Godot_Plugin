@@ -191,8 +191,22 @@ typedef struct {
     int32_t     material_scope;/* pre-resolved variation key, for caching    */
 } bf6_instance;
 
+/* Mount a level's archives and read the type schema, which every placement
+ * call needs. all_levels also mounts every OTHER level, which is what makes the
+ * whole placeable catalogue resolvable and is not free. Returns 0 on success,
+ * with a message in err.
+ *
+ * Expensive and cached on the context: mounting is a few seconds and indexing
+ * every partition's guid is a few more. Call it once per level. */
+BF6_API int bf6_open_level(bf6_ctx*, const char* level, const char* exe_path,
+                   int all_levels, char* err, int err_len);
+
 /* Every placement in a level. Returns the count; if it exceeds out_max, out[]
- * is filled to out_max and the return value tells you to call again bigger. */
+ * is filled to out_max and the return value tells you to call again bigger.
+ * bf6_open_level must have been called for this level first.
+ *
+ * res_name points into storage owned by the context and stays valid until the
+ * next bf6_open_level. */
 BF6_API int bf6_level_instances(bf6_ctx*, const char* level,
                         bf6_instance* out, int out_max);
 
@@ -215,12 +229,13 @@ BF6_API int bf6_level_lights(bf6_ctx*, const char* level,
 
 /* ------------------------------------------------------------------ terrain */
 typedef struct {
-    int32_t         width;         /* samples, e.g. 8193 */
+    int32_t         width;         /* samples per side, from the tree itself */
     int32_t         height;
     const uint16_t* heights;       /* row-major, width*height samples */
-    float           world_size;    /* metres across */
-    float           height_scale;  /* sample -> metres */
-    int32_t         splat_texture; /* index for bf6_texture_at(), or -1 */
+    float           world_min[3];  /* the AABB the grid spans, GAME space */
+    float           world_max[3];
+    float           height_scale;  /* the header's height scale             */
+    int32_t         splat_texture; /* index for bf6_texture_at(), or -1     */
     int32_t         color_texture;
 } bf6_terrain;
 

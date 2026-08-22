@@ -64,6 +64,7 @@ public:
     // Loose chunk or bundle chunk, by guid hex (either spelling - see get_chunk).
     std::vector<uint8_t> get_chunk(const std::string& guid_hex, std::string& err);
 
+    const std::string& game_dir() const { return game_; }
     size_t res_count() const { return res_.size(); }
     size_t ebx_count() const { return ebx_.size(); }
     const std::unordered_map<std::string, ResEntry>& res() const { return res_; }

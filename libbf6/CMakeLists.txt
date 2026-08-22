@@ -20,6 +20,7 @@ set(BF6_SOURCES
     src/types.cpp
     src/ebx.cpp
     src/walk.cpp
+    src/terrain.cpp
 )
 
 add_library(bf6_core SHARED ${BF6_SOURCES})
@@ -53,6 +54,12 @@ target_include_directories(loc_test PRIVATE src include)
 add_executable(types_test test/types_test.cpp)
 target_link_libraries(types_test PRIVATE bf6_core_static)
 target_include_directories(types_test PRIVATE src include)
+
+# Module 10 (heights): reads a level's heightfield and reports the tree it came
+# from, so a wrong stride shows up as a bad shape rather than as bad pixels.
+add_executable(terrain_test test/terrain_test.cpp)
+target_link_libraries(terrain_test PRIVATE bf6_core_static)
+target_include_directories(terrain_test PRIVATE src include)
 
 # Module 9: the placement walk, dumped so it can be compared row for row with
 # the shipping Godot plugin's own cached walk of the same map.
