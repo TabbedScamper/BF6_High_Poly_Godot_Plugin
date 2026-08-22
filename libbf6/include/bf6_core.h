@@ -43,7 +43,10 @@ typedef struct bf6_ctx bf6_ctx;
 
 /* Open an install: mount, read the type schema, and OOA-lift the executable in
  * memory if it is DRM-wrapped (EA App). All storefront divergence lives behind
- * this one call. Returns NULL on failure and writes a reason into err. */
+ * this one call. Returns NULL on failure and writes a reason into err.
+ * An empty game_dir is the explicit no-install mode: it always succeeds and
+ * returns a context with nothing mounted. Mesh reads fail on it, but the
+ * placeable catalogue (bf6_load_placeables and friends) works fully. */
 BF6_API bf6_ctx* bf6_open(const char* game_dir, char* err, int err_len);
 BF6_API void     bf6_close(bf6_ctx*);
 
@@ -51,8 +54,49 @@ BF6_API void     bf6_close(bf6_ctx*);
 BF6_API int      bf6_was_lifted(bf6_ctx*);
 
 /* --------------------------------------------------------------- enumerate */
+/* The SDK ships its placeable-object catalogue as JSON (level_info.json +
+ * asset_types.json under FbExportData/). Point this at that directory once after
+ * bf6_open; it populates the level list and the placeable catalogue below.
+ * Returns the number of placeables loaded, 0 on failure (reason in err). Until
+ * called, bf6_level_count and bf6_list_placeables report empty. */
+BF6_API int bf6_load_placeables(bf6_ctx*, const char* fbexport_dir,
+                                char* err, int err_len);
+
 BF6_API int         bf6_level_count(bf6_ctx*);
 BF6_API const char* bf6_level_name(bf6_ctx*, int index);      /* e.g. "MP_Badlands" */
+
+/* One SDK-placeable object. Strings point into the ctx and live until close. */
+typedef struct {
+    const char* type;          /* the placeable's name, e.g. "AAGun_01"     */
+    const char* directory;     /* UI category, e.g. "Generic/Common/Props"  */
+    const char* mesh;          /* the 'mesh' constant - a resource stem      */
+    int32_t     physics_cost;
+    int32_t     universal;     /* 1 if allowed on every level (no restriction) */
+} bf6_placeable;
+
+/* List the SDK placeables available on `level` - the objects allowed on that
+ * level PLUS the universal ones - exactly the Portal object library's per-level
+ * set. level NULL/"" lists every placeable. `search` filters by type substring
+ * (NULL/"" = all). Returns the TOTAL match count; writes up to out_max. */
+BF6_API int bf6_list_placeables(bf6_ctx*, const char* level, const char* search,
+                                bf6_placeable* out, int out_max);
+
+/* One editable field the SDK exposes on a placeable (from its properties[]). */
+typedef struct {
+    const char* name;       /* "CameraFOV", "Team", "ObjId"                   */
+    const char* type;       /* "float","int","bool","string","vector",       */
+                            /* "selection", or an object-link type like       */
+                            /* "PolygonVolume" / "Array[SpawnPoint]"          */
+    const char* def;        /* default value as a string, may be ""           */
+    const char* selections; /* "selection" enum options, newline-joined; ""   */
+                            /* when the field is not an enum                  */
+} bf6_prop;
+
+/* List the editable properties of placeable `type` (e.g. a CapturePoint has ~34;
+ * a plain prop has just "ObjId"). Returns the TOTAL count; writes up to out_max.
+ * Strings point into the ctx and live until close. */
+BF6_API int bf6_placeable_props(bf6_ctx*, const char* type,
+                                bf6_prop* out, int out_max);
 
 typedef struct {
     const char* res_name;      /* the asset id, e.g. common/.../foo_mesh   */

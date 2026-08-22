@@ -67,6 +67,29 @@ computes. A module isn't done until it matches.
 ## Already done
 
 - `oodle` (module 1) — exists in C++, reused.
+- Modules 2 (container: cas, dbobject, caslocator, toc, bundle, source) and 6
+  (meshset geometry), byte-validated against the plugin.
+- `placeables` — the SDK's own catalogue JSON, per-level filtered.
+- **`types` (module 4), 2026-08-22.** `src/types.{h,cpp}`: PE parse, the
+  `typeinfo` section, guid search with a whole-file fallback, `layout`,
+  `layout_full` (superclass fold, dedup by nameHash) and `resolve`. Carries the
+  GDScript reader's two corrections over the older Python reference: the
+  `0xFFFF` "no serialized slot" sentinel is dropped rather than read as an
+  offset, and inherited fields dedup by nameHash rather than by offset.
+  VALIDATED against `typesdk.py` over 8,609 real type guids
+  (`BF6_Frostbite_Research/data/ebx_type_identities.tsv`), on BOTH executables,
+  with the harness applying those same two fixes to the Python side so the
+  comparison is like for like:
+    - SP build: 8,011 identical, 598 absent from both, 0 different.
+    - MP build: 8,308 identical, 301 absent from both, 0 different.
+      (The counts differing IS the SP/MP schema split, as documented.)
+  Speed, same 8,011 types: C++ 2.27 s INCLUDING reading the 176 MB executable,
+  Python 21.1 s for the lookups alone. Both use a native substring search, so
+  that 9.3x is per-lookup overhead, not the search.
+  NOT ported yet, deliberately: the EA App DRM lift and the generated type
+  database it feeds. Detection IS ported (entropy: 3.38 bits / 64.8% zero on a
+  plain build, against ~8.0 for ciphertext), so an EA install can be told
+  plainly instead of silently opening every map empty.
 - Build path: MSVC + CMake -> `bf6_core.dll` (Godot) and `bf6_core_static.lib`
   (Unreal), both compiling from the stub.
 

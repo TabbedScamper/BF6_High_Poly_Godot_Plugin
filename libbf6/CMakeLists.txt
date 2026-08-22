@@ -16,6 +16,8 @@ set(BF6_SOURCES
     src/bundle.cpp
     src/source.cpp
     src/meshset.cpp
+    src/placeables.cpp
+    src/types.cpp
 )
 
 add_library(bf6_core SHARED ${BF6_SOURCES})
@@ -44,6 +46,12 @@ add_executable(loc_test test/loc_test.cpp)
 target_link_libraries(loc_test PRIVATE bf6_core_static)
 target_include_directories(loc_test PRIVATE src include)
 
+# Module 4: dumps type layouts so they can be compared to typesdk.py, the
+# Python reference the GDScript reader was itself ported from.
+add_executable(types_test test/types_test.cpp)
+target_link_libraries(types_test PRIVATE bf6_core_static)
+target_include_directories(types_test PRIVATE src include)
+
 # Validates the SuperBundle TOC parse against the plugin.
 add_executable(toc_test test/toc_test.cpp)
 target_link_libraries(toc_test PRIVATE bf6_core_static)
@@ -61,3 +69,9 @@ target_include_directories(meshset_test PRIVATE src include)
 add_executable(mesh_read_test test/mesh_read_test.cpp)
 target_link_libraries(mesh_read_test PRIVATE bf6_core_static)
 target_include_directories(mesh_read_test PRIVATE src include)
+
+# Validates the SDK placeable catalogue + per-level filter against the counts we
+# computed straight from the JSON (universal 1516; e.g. MP_Dumbo total 3015).
+add_executable(placeables_test test/placeables_test.cpp)
+target_link_libraries(placeables_test PRIVATE bf6_core_static)
+target_include_directories(placeables_test PRIVATE src include)

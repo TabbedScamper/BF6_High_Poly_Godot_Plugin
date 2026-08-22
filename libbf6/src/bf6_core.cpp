@@ -15,11 +15,13 @@
 
 #include "source.h"
 #include "meshset.h"
+#include "placeables.h"
 
 namespace fs = std::filesystem;
 
 struct bf6_ctx {
-    bf6::Source src;
+    bf6::Source      src;
+    bf6::PlaceableDB pdb;
     int lifted = 0;
 };
 
@@ -35,9 +37,11 @@ struct MeshHandle {
 extern "C" {
 
 bf6_ctx* bf6_open(const char* game_dir, char* err, int err_len) {
+    // Empty game_dir is the explicit no-install mode: a context with nothing
+    // mounted. Mesh reads will fail, but the placeable catalogue (which only
+    // needs bf6_load_placeables' SDK data) works fully.
     if (!game_dir || !*game_dir) {
-        if (err && err_len > 0) std::snprintf(err, (size_t)err_len, "no game_dir given");
-        return nullptr;
+        return new bf6_ctx();
     }
     bf6_ctx* c = new bf6_ctx();
     std::string e;
@@ -71,8 +75,78 @@ void bf6_close(bf6_ctx* c) { delete c; }
 
 int bf6_was_lifted(bf6_ctx* c) { return c ? c->lifted : 0; }
 
-int bf6_level_count(bf6_ctx*) { return 0; }              // per-level mount: later
-const char* bf6_level_name(bf6_ctx*, int) { return ""; }
+int bf6_load_placeables(bf6_ctx* c, const char* fbexport_dir, char* err, int err_len) {
+    if (!c || !fbexport_dir) return 0;
+    std::string e;
+    if (!c->pdb.load(fbexport_dir, e)) {
+        if (err && err_len > 0) std::snprintf(err, (size_t)err_len, "%s", e.c_str());
+        return 0;
+    }
+    return (int)c->pdb.items().size();
+}
+
+int bf6_level_count(bf6_ctx* c) { return c ? (int)c->pdb.levels().size() : 0; }
+
+const char* bf6_level_name(bf6_ctx* c, int index) {
+    if (!c) return "";
+    const auto& lv = c->pdb.levels();
+    if (index < 0 || index >= (int)lv.size()) return "";
+    return lv[index].c_str();
+}
+
+// Case-insensitive substring test (search is expected lowercase-friendly enough;
+// we lower both sides so "dumbo" matches "Dumbo").
+static bool ci_contains(const std::string& hay, const std::string& needle) {
+    if (needle.empty()) return true;
+    if (needle.size() > hay.size()) return false;
+    auto lower = [](char c){ return (c >= 'A' && c <= 'Z') ? char(c + 32) : c; };
+    for (size_t i = 0; i + needle.size() <= hay.size(); i++) {
+        size_t j = 0;
+        for (; j < needle.size(); j++)
+            if (lower(hay[i + j]) != lower(needle[j])) break;
+        if (j == needle.size()) return true;
+    }
+    return false;
+}
+
+int bf6_list_placeables(bf6_ctx* c, const char* level, const char* search,
+                        bf6_placeable* out, int out_max) {
+    if (!c) return 0;
+    std::string lvl = level ? level : "";
+    std::string q   = search ? search : "";
+    int total = 0, written = 0;
+    for (const auto& p : c->pdb.items()) {
+        if (!bf6::PlaceableDB::allowed_on(p, lvl)) continue;
+        if (!q.empty() && !ci_contains(p.type, q)) continue;
+        if (out && written < out_max) {
+            out[written].type         = p.type.c_str();
+            out[written].directory    = p.directory.c_str();
+            out[written].mesh         = p.mesh.c_str();
+            out[written].physics_cost = p.physics_cost;
+            out[written].universal    = p.universal ? 1 : 0;
+            written++;
+        }
+        total++;
+    }
+    return total;
+}
+
+int bf6_placeable_props(bf6_ctx* c, const char* type, bf6_prop* out, int out_max) {
+    if (!c || !type) return 0;
+    const std::string t = type;
+    for (const auto& p : c->pdb.items()) {
+        if (p.type != t) continue;
+        const int total = (int)p.props.size();
+        for (int i = 0; i < total && out && i < out_max; i++) {
+            out[i].name = p.props[i].name.c_str();
+            out[i].type = p.props[i].type.c_str();
+            out[i].def  = p.props[i].def.c_str();
+            out[i].selections = p.props[i].selections.c_str();
+        }
+        return total;
+    }
+    return 0;
+}
 
 // Count matches; write up to out_max. Returns the TOTAL match count, so a caller
 // passing out_max=0 learns the catalogue size. res_name points into the ctx.
