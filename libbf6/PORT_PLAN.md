@@ -129,6 +129,37 @@ computes. A module isn't done until it matches.
   own root asset. Cost: find 8 ms, mount 6.7 s (the mount reads segment 0 of
   every bundle, which is the documented price and what the plugin caches).
 
+- **`walk` (module 9), 2026-08-22. FIRST PASS, 99.96% against the plugin.**
+  `src/walk.{h,cpp}` + `Source::partition_index`. The traversal, the transform
+  composition, the StaticModelGroup emit with per-instance variation and the
+  packed-bool unpack, the destruction-branch stop, the subworld bridge and the
+  leaf fallback.
+  ORACLE: the shipping Godot plugin's OWN cached walk,
+  `%APPDATA%/Godot/app_userdata/.../bf6_walk_mp_dumbo_v4_<sig>.idx`, read with
+  `scratchpad/typeport/gdvar.py`. Two caches from different game builds were
+  compared to each other first and are byte-identical, so the oracle is stable
+  and a difference cannot be blamed on a patch.
+  RESULT on mp_dumbo: 48,127 rows against the plugin's 48,126, of which 48,107
+  are identical including every transform float. What remains:
+    - 14 rows differ ONLY in which name the partition index resolved for the
+      variation. Same mesh, same transform, same placement: a duplicate asset
+      shipped under two paths shares one partition guid, and "first name wins"
+      is decided by iteration order. Ours is now tie-broken by name so it is at
+      least stable run to run; the plugin has no tie-break, so the two can
+      legitimately disagree about what to call the same partition.
+    - 1 sandbags row whose translation differs by about 0.12.
+    - 5 latereflections sound-prefab leaf rows against the plugin's 4, from the
+      same source partition, with different transforms. NOT EXPLAINED YET.
+  TWO FLOAT LAWS, both found by the comparison and both worth 100+ rows:
+  GDScript has one float type and it is a DOUBLE, so a Vector3 component widens
+  on read and the whole multiply-add runs in double before being stored back as
+  float32 (175 rows differed in the sixth significant digit until this matched).
+  And the basis rows must not add a "+ 0.0" translation term, because adding a
+  positive zero turns a NEGATIVE zero positive (52 more rows).
+  Cost on mp_dumbo: mount 4.4 s, types 0.05 s, partition index 19 s, walk 2.45 s.
+  The plugin's own figures for the same map are 16 s mounting, 19 s indexing and
+  53 s walking, so the traversal itself is roughly 20x.
+
 ## Build
 
 ```

@@ -19,6 +19,7 @@ set(BF6_SOURCES
     src/placeables.cpp
     src/types.cpp
     src/ebx.cpp
+    src/walk.cpp
 )
 
 add_library(bf6_core SHARED ${BF6_SOURCES})
@@ -52,6 +53,12 @@ target_include_directories(loc_test PRIVATE src include)
 add_executable(types_test test/types_test.cpp)
 target_link_libraries(types_test PRIVATE bf6_core_static)
 target_include_directories(types_test PRIVATE src include)
+
+# Module 9: the placement walk, dumped so it can be compared row for row with
+# the shipping Godot plugin's own cached walk of the same map.
+add_executable(walk_test test/walk_test.cpp)
+target_link_libraries(walk_test PRIVATE bf6_core_static)
+target_include_directories(walk_test PRIVATE src include)
 
 # Level mounting: the order is the correctness, so it is printed and checked.
 add_executable(level_test test/level_test.cpp)

@@ -50,6 +50,12 @@ public:
     // The level ids the install actually carries, from directory names only.
     std::vector<std::string> available_levels() const;
 
+    // Partition guid -> "<name>.ebx", for resolving EBX imports to real names.
+    // Every partition's EFIX header is read to build it, which is the whole
+    // cost; the result is cached on this Source. First name wins, so the result
+    // is stable across runs rather than dependent on iteration order.
+    const std::map<std::string, std::string>& partition_index();
+
     static bool        is_level_toc(const std::string& path);
     static std::string mount_key(const std::string& path);
 
@@ -70,6 +76,8 @@ private:
     std::unordered_map<std::string, EbxEntry> ebx_;
     std::map<std::string, CasLoc>             chunks_;    // loose-chunk guid -> loc
     std::map<std::string, CasLoc>             chunk_seg_; // bundle-chunk guid -> loc
+    std::map<std::string, std::string>        pidx_;      // partition guid -> name.ebx
+    bool                                      pidx_built_ = false;
 
     std::vector<uint8_t> read_seg(const CasLoc& seg, bool allow_raw, std::string& err);
 };

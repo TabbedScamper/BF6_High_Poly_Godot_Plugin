@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 
 #include "bundle.h"
@@ -120,6 +121,87 @@ std::vector<uint8_t> Source::get_ebx(const std::string& name, std::string& err) 
     std::vector<uint8_t> d = read_seg(it->second.loc, false, err);
     if (d.size() != it->second.dsize) { err = "ebx size mismatch"; return std::vector<uint8_t>(); }
     return d;
+}
+
+// ---------------------------------------------------------------------------
+// Partition index
+// ---------------------------------------------------------------------------
+
+// A partition's own GUID, out of its EFIX fixup.
+//
+// Deliberately NOT done by handing the bytes to the deserializer: this is a
+// header read of every partition in the mount, and the guid sits in a known
+// place. The formatting MUST match the one the EBX reader produces, because
+// this index is looked up with the keys that reader hands out: .NET mixed
+// endian, first three groups little-endian and the last eight bytes as they lie.
+static std::string efix_guid(const std::vector<uint8_t>& raw)
+{
+    if (raw.size() < 12 || std::memcmp(raw.data(), "RIFF", 4) != 0) return std::string();
+    size_t o = 12;
+    while (o + 8 <= raw.size())
+    {
+        uint32_t sz = 0;
+        std::memcpy(&sz, raw.data() + o + 4, 4);
+        if (std::memcmp(raw.data() + o, "EFIX", 4) == 0)
+        {
+            const size_t s = o + 8;
+            if (s + 16 > raw.size()) return std::string();
+            char buf[40];
+            const uint8_t* g = raw.data() + s;
+            std::snprintf(buf, sizeof(buf),
+                "%08x-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+                (unsigned)(g[0] | (g[1] << 8) | (g[2] << 16) | ((unsigned)g[3] << 24)),
+                (unsigned)(g[4] | (g[5] << 8)), (unsigned)(g[6] | (g[7] << 8)),
+                g[8], g[9], g[10], g[11], g[12], g[13], g[14], g[15]);
+            return buf;
+        }
+        o += 8 + (size_t)sz;
+        if (o % 2 == 1) o++;
+    }
+    return std::string();
+}
+
+const std::map<std::string, std::string>& Source::partition_index()
+{
+    if (pidx_built_) return pidx_;
+    pidx_built_ = true;
+
+    // CAS LOCALITY ORDER, not name order. Every partition in the mount is read
+    // to get one 16-byte header, so the reads want to run down each archive in
+    // the order the blocks lie rather than jumping the disk per name.
+    std::vector<const std::pair<const std::string, EbxEntry>*> order;
+    order.reserve(ebx_.size());
+    for (const auto& kv : ebx_) order.push_back(&kv);
+    std::sort(order.begin(), order.end(),
+        [](const std::pair<const std::string, EbxEntry>* a,
+           const std::pair<const std::string, EbxEntry>* b)
+        {
+            if (a->second.loc.chunk_id != b->second.loc.chunk_id)
+                return a->second.loc.chunk_id < b->second.loc.chunk_id;
+            if (a->second.loc.cas_ix != b->second.loc.cas_ix)
+                return a->second.loc.cas_ix < b->second.loc.cas_ix;
+            if (a->second.loc.off != b->second.loc.off)
+                return a->second.loc.off < b->second.loc.off;
+            // SAME BYTES UNDER TWO NAMES. An asset shipped at two paths shares
+            // one partition guid, so "first name wins" is decided by whatever
+            // order the sort happened to leave them in - which is not an order
+            // at all when the locations are equal. Broken by name so this index
+            // is at least the same on every run. Note the Godot plugin has no
+            // such tie-break, so its pick depends on dictionary order and the
+            // two readers can legitimately name the same partition differently.
+            return a->first < b->first;
+        });
+
+    std::string err;
+    for (const auto* kv : order)
+    {
+        std::vector<uint8_t> bytes = get_ebx(kv->first, err);
+        if (bytes.empty()) continue;
+        const std::string g = efix_guid(bytes);
+        // First name wins, so the result is stable across runs.
+        if (!g.empty()) pidx_.emplace(g, kv->first + ".ebx");
+    }
+    return pidx_;
 }
 
 // ---------------------------------------------------------------------------
