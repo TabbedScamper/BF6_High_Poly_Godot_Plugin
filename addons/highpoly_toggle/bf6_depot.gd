@@ -79,7 +79,18 @@ const SLOT_BASECOLOR_VEG := 0x54bbcd36   # vegetation *_cu sheet; its opacity
 # name and the suffixes counted per slot. The method was checked against the
 # slot we already knew: 0x54bbcd30 came back "_cs" on 99.1% of 7,074 bindings.
 # See BF6_Frostbite_Research/findings/depot-slot-hashes-named-from-bindings.md.
-const SLOT_NORMAL := 0xec35a757
+# AND THERE IS MORE THAN ONE. The hash differs by SHADER FAMILY: props and
+# weapons use 0xec35a757 ("_nmt"), characters use 0xec35a68c ("_nx") and the
+# facerig uses 0xec35a697. A sample drawn from one family names only that one -
+# the first pass here saw weapons, named 0xec35a757, and then reported zero
+# normals when run over character meshes.
+const SLOT_NORMAL := 0xec35a757          # props, weapons: 5,415 uses, 93.2% _nmt
+const SLOT_NORMAL_CHA := 0xec35a68c      # characters:     1,198 uses, 100% _nx
+const SLOT_NORMAL_FACE := 0xec35a697     # facerig:          534 uses, 100% _nx
+# ONE MEMBER OF THE SAME FAMILY IS NOT A NORMAL. Binding it as one would put a
+# subsurface-scattering map on every face in the game, so the family prefix is
+# NOT a safe rule and each member is named on its own evidence.
+const SLOT_SUBSURFACE := 0xec35b353      #                   499 uses, 100% _sssrtm
 # Kept so it is RECOGNISED rather than lost if it ever does turn up.
 const SLOT_NORMAL_UNUSED := 0xec35a74c
 const SLOT_NORMAL_VT := 0xec35a9e2       # architecture normal paired with the
@@ -138,6 +149,10 @@ const SLOT_NAME := {
 	SLOT_DECAL_CA: "decal_ca", SLOT_DECAL_NRM: "decal_nrm",
 	SLOT_EMISSIVE_LIT: "emissive_lit",
 	SLOT_NORMAL_UNUSED: "normal_unused", SLOT_OCCL_ROUGH: "occl_rough",
+	# Both spell "normal" on purpose: a material belongs to one shader family,
+	# so only one of them appears on it, and the consumers ask for "normal".
+	SLOT_NORMAL_CHA: "normal", SLOT_NORMAL_FACE: "normal_face",
+	SLOT_SUBSURFACE: "subsurface",
 	# Global shader inputs: shared weathering and detail layers that nearly
 	# every material binds to the same few textures. Named so they are
 	# recognisable rather than mistaken for a prop's own maps.

@@ -80,6 +80,13 @@ bool Source::mount_toc(const std::string& toc_path, std::string& err) {
                 ResEntry re; re.loc = segs[si]; re.dsize = r.size;
                 re.type = r.type; re.rid = r.rid;
                 res_[r.name] = re;
+                res_bundle_[r.name] = b.name;
+
+                // A depot names the bundle it covers, so the index is built
+                // from the name rather than from a second pass.
+                const size_t sh = r.name.find("_win32_shaderstate/shaderblockdepot_");
+                if (sh != std::string::npos)
+                    depot_by_bundle_.emplace(r.name.substr(0, sh), r.name);
             }
             si++;
         }
@@ -123,6 +130,32 @@ std::vector<uint8_t> Source::get_ebx(const std::string& name, std::string& err) 
     std::vector<uint8_t> d = read_seg(it->second.loc, false, err);
     if (d.size() != it->second.dsize) { err = "ebx size mismatch"; return std::vector<uint8_t>(); }
     return d;
+}
+
+const std::string& Source::bundle_of(const std::string& res_name) const
+{
+    static const std::string kEmpty;
+    auto it = res_bundle_.find(res_name);
+    return it == res_bundle_.end() ? kEmpty : it->second;
+}
+
+std::string Source::depot_for_res(const std::string& res_name) const
+{
+    const std::string& b = bundle_of(res_name);
+    if (b.empty()) return std::string();
+
+    // A TOC SPELLS A BUNDLE "win32/game/..." AND A DEPOT SPELLS IT "game/...".
+    // Depot resources are named after the bundle's ASSET path, which carries no
+    // platform prefix. One token apart, and the lookup misses every time
+    // without saying so.
+    auto hit = depot_by_bundle_.find(b);
+    if (hit != depot_by_bundle_.end()) return hit->second;
+    if (b.rfind("win32/", 0) == 0)
+    {
+        hit = depot_by_bundle_.find(b.substr(6));
+        if (hit != depot_by_bundle_.end()) return hit->second;
+    }
+    return std::string();
 }
 
 // ---------------------------------------------------------------------------

@@ -62,6 +62,20 @@ public:
     // is stable across runs rather than dependent on iteration order.
     const std::map<std::string, std::string>& partition_index();
 
+    // WHICH BUNDLE A RESOURCE CAME IN, which is how a mesh finds its depot.
+    //
+    // A shader state key is only unique within a scope, and the scope is the
+    // BUNDLE, not the directory: depots are named
+    // <bundle asset path>_win32_shaderstate/shaderblockdepot_<n>. Nothing else
+    // in the mount records this, so it has to be captured while the bundles are
+    // being read.
+    const std::string& bundle_of(const std::string& res_name) const;
+
+    // The depot resource covering that bundle, or empty. Handles the one-token
+    // difference that makes this fail silently: a TOC spells a bundle
+    // "win32/game/..." while a depot spells it "game/...".
+    std::string depot_for_res(const std::string& res_name) const;
+
     static bool        is_level_toc(const std::string& path);
     static std::string mount_key(const std::string& path);
 
@@ -84,6 +98,8 @@ private:
     std::map<std::string, CasLoc>             chunks_;    // loose-chunk guid -> loc
     std::map<std::string, CasLoc>             chunk_seg_; // bundle-chunk guid -> loc
     Progress                                  progress_;
+    std::unordered_map<std::string, std::string> res_bundle_;  // res -> bundle
+    std::map<std::string, std::string>        depot_by_bundle_; // bundle -> depot res
     std::map<std::string, std::string>        pidx_;      // partition guid -> name.ebx
     bool                                      pidx_built_ = false;
 

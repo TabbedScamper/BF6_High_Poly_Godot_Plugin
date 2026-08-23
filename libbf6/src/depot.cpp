@@ -86,7 +86,19 @@ const Slot kSlots[] = {
     // These two are the per-asset maps that were being dropped. The table above
     // named a "normal" at 0xec35a74c which NEVER APPEARS in any depot; the slot
     // the game actually uses is 0xec35a757, in the same 0xec35 family.
-    { 0xec35a757, "normal" },        // 5,415 uses, 93.2% "_nmt"
+    // THERE IS MORE THAN ONE NORMAL SLOT: the hash differs by SHADER FAMILY, and
+    // a sample drawn from one family names only that family's. The first pass
+    // here saw weapons and props and named 0xec35a757; running the whole chain
+    // on character meshes then reported zero normals, because characters use
+    // 0xec35a68c. Both are normals and both are needed.
+    { 0xec35a757, "normal" },        // 5,415 uses, 93.2% "_nmt"  - props, weapons
+    { 0xec35a68c, "normal" },        // 1,198 uses, 100%  "_nx"   - characters
+    { 0xec35a697, "normal_face" },   //   534 uses, 100%  "_nx"   - facerig
+    // AND ONE MEMBER OF THE SAME FAMILY IS NOT A NORMAL AT ALL. A blanket
+    // "0xec35* is a normal" rule would bind a subsurface-scattering map as a
+    // normal on every face in the game, which is exactly the kind of plausible
+    // wrongness this table exists to prevent.
+    { 0xec35b353, "subsurface" },    //   499 uses, 100%  "_sssrtm"
     { 0xb1a29a3c, "occl_rough" },    // 4,998 uses, 99.2% "_wo"
 
     // Global shader inputs rather than a prop's own maps: shared weathering and

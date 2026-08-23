@@ -57,6 +57,13 @@ add_executable(types_test test/types_test.cpp)
 target_link_libraries(types_test PRIVATE bf6_core_static)
 target_include_directories(types_test PRIVATE src include)
 
+# The whole material chain end to end: section -> state key -> bundle -> depot
+# -> slots -> guids -> asset names -> pixels. Reports the survival rate at every
+# link, because a break anywhere gives an untextured prop and no error.
+add_executable(material_test test/material_test.cpp)
+target_link_libraries(material_test PRIVATE bf6_core_static)
+target_include_directories(material_test PRIVATE src include)
+
 # Research: names the depot's texture slots from the data, by resolving what is
 # bound to each and counting the asset-name suffixes.
 add_executable(slots_test test/slots_test.cpp)
