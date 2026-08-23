@@ -72,6 +72,7 @@ bool Source::mount_toc(const std::string& toc_path, std::string& err) {
             if (si < nseg && !ebx_.count(e.first)) {
                 EbxEntry ee; ee.loc = segs[si]; ee.dsize = e.second;
                 ebx_[e.first] = ee;
+                ebx_bundle_[e.first] = b.name;
             }
             si++;
         }
@@ -139,23 +140,49 @@ const std::string& Source::bundle_of(const std::string& res_name) const
     return it == res_bundle_.end() ? kEmpty : it->second;
 }
 
-std::string Source::depot_for_res(const std::string& res_name) const
+const std::string& Source::bundle_of_ebx(const std::string& ebx_name) const
 {
-    const std::string& b = bundle_of(res_name);
-    if (b.empty()) return std::string();
+    static const std::string kEmpty;
+    auto it = ebx_bundle_.find(ebx_name);
+    return it == ebx_bundle_.end() ? kEmpty : it->second;
+}
+
+std::string Source::depot_for_bundle(const std::string& bundle) const
+{
+    if (bundle.empty()) return std::string();
 
     // A TOC SPELLS A BUNDLE "win32/game/..." AND A DEPOT SPELLS IT "game/...".
     // Depot resources are named after the bundle's ASSET path, which carries no
     // platform prefix. One token apart, and the lookup misses every time
     // without saying so.
+    std::string b = bundle;
+    if (b.rfind("win32/", 0) == 0) b = b.substr(6);
+
     auto hit = depot_by_bundle_.find(b);
     if (hit != depot_by_bundle_.end()) return hit->second;
-    if (b.rfind("win32/", 0) == 0)
+
+    // ANCESTORS ONLY. Bundle paths nest by directory and a container's own
+    // bundle repeats its directory name, so ".../mp_dumbo/sub_art_10_oob"
+    // widens to ".../mp_dumbo/mp_dumbo". Never sideways: see the header.
+    for (;;)
     {
-        hit = depot_by_bundle_.find(b.substr(6));
+        const size_t slash = b.find_last_of('/');
+        if (slash == std::string::npos) break;
+        b = b.substr(0, slash);
+        const size_t leaf = b.find_last_of('/');
+        const std::string cand = leaf == std::string::npos
+            ? b + "/" + b : b + "/" + b.substr(leaf + 1);
+        hit = depot_by_bundle_.find(cand);
+        if (hit != depot_by_bundle_.end()) return hit->second;
+        hit = depot_by_bundle_.find(b);
         if (hit != depot_by_bundle_.end()) return hit->second;
     }
     return std::string();
+}
+
+std::string Source::depot_for_res(const std::string& res_name) const
+{
+    return depot_for_bundle(bundle_of(res_name));
 }
 
 // ---------------------------------------------------------------------------

@@ -48,6 +48,11 @@ struct WalkRow {
     std::string kind;     // smg | smg0 | leaf | ref
     std::string var;      // per-instance ObjectVariation, empty for none
     std::string scope;    // depot scope inherited down the walk
+    std::string bundle;
+    // THE PLACING BUNDLE: the bundle whose placement pulled this mesh in, which
+    // is the bundle the row's `src` partition came in. This is what a material
+    // lookup keys on - NOT the bundle the mesh resource lives in. Stamped here
+    // because the walk is the only thing that knows it.
 };
 
 class Walk {
@@ -102,6 +107,7 @@ private:
     std::vector<WalkRow>                         rows_;
     std::map<TypeGuid, bool>                     matters_;
     std::string                                  scope_;
+    std::string                                  bundle_;
     Progress                                     progress_;
 };
 

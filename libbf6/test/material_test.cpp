@@ -17,6 +17,8 @@
 #include "meshset.h"
 #include "source.h"
 #include "texture.h"
+#include "types.h"
+#include "walk.h"
 
 #include <algorithm>
 #include <chrono>
@@ -35,6 +37,10 @@ int main(int argc, char** argv)
         return 2;
     }
     const int limit = argc > 3 ? std::atoi(argv[3]) : 200;
+    // With an exe path, the level is walked and the PLACING bundle rule is
+    // compared head to head against the mesh-resource rule on the same
+    // sections. Without one, only the resource rule can be measured.
+    const std::string exe = argc > 5 ? argv[5] : std::string();
     // A substring the mesh name must contain. Without it the sample is whatever
     // sorts first, and "common/characters" sorts before "common/environment" -
     // so three thousand meshes can be entirely characters while the thing being
@@ -67,6 +73,29 @@ int main(int argc, char** argv)
     std::map<std::string, Depot> depot_cache;
     std::map<std::string, std::vector<uint8_t>> depot_bytes;
 
+    // mesh res name -> the bundle that PLACED it, from the walk.
+    std::map<std::string, std::string> placing;
+    TypeDb types;
+    if (!exe.empty() && types.open(exe, err))
+    {
+        Walk w(src, types);
+        w.build_catalog();
+        std::string e;
+        if (w.run(argv[2], e))
+        {
+            for (const WalkRow& r : w.rows())
+            {
+                std::string m = r.mesh;
+                if (m.size() > 4 && m.compare(m.size() - 4, 4, ".ebx") == 0) m.resize(m.size() - 4);
+                placing.emplace(m + "_mesh", r.bundle);
+            }
+            std::fprintf(stderr, "walked: %zu rows, %zu distinct meshes placed\n",
+                         w.rows().size(), placing.size());
+        }
+    }
+
+    int by_res = 0, by_placing = 0, placing_known = 0;
+    int differ_sections = 0, hit_placing = 0, hit_res = 0;
     auto fetch = [&](const std::string& g) { std::string e; return src.get_chunk(g, e); };
     const auto t0 = std::chrono::steady_clock::now();
 
@@ -80,7 +109,20 @@ int main(int argc, char** argv)
         if (!ms.ok || ms.lods.empty()) continue;
         n_mesh++;
 
-        const std::string dname = src.depot_for_res(mname);
+        // THE TWO RULES, side by side on the same mesh.
+        const std::string res_rule = src.depot_for_res(mname);
+        std::string place_rule;
+        auto pit = placing.find(mname);
+        if (pit != placing.end())
+        {
+            placing_known++;
+            place_rule = src.depot_for_bundle(pit->second);
+        }
+        if (!res_rule.empty()) by_res++;
+        if (!place_rule.empty()) by_placing++;
+
+        // The placing bundle wins when we have it; that is the measured rule.
+        const std::string dname = !place_rule.empty() ? place_rule : res_rule;
         if (dname.empty()) { no_depot++; continue; }
 
         if (!depot_cache.count(dname))
@@ -95,11 +137,44 @@ int main(int argc, char** argv)
         Depot& dep = depot_cache[dname];
         const std::vector<uint8_t>& db = depot_bytes[dname];
 
+        // HEAD TO HEAD, on the same sections. Both rules find A depot; the
+        // question is whether it is the RIGHT one, and only the key lookup
+        // answers that.
+        Depot* dep_res = nullptr;
+        const std::vector<uint8_t>* db_res = nullptr;
+        if (!res_rule.empty() && !place_rule.empty() && res_rule != place_rule)
+        {
+            if (!depot_cache.count(res_rule))
+            {
+                std::vector<uint8_t> rb = src.get_res(res_rule, err);
+                Depot rp;
+                std::string e2;
+                if (!rb.empty() && rp.parse(rb, e2))
+                {
+                    depot_bytes[res_rule] = std::move(rb);
+                    depot_cache[res_rule] = std::move(rp);
+                }
+            }
+            if (depot_cache.count(res_rule))
+            {
+                dep_res = &depot_cache[res_rule];
+                db_res  = &depot_bytes[res_rule];
+            }
+        }
+        const bool rules_differ = (dep_res != nullptr);
+
         for (const MeshSection& s : ms.lods[0].sections)
         {
             sections++;
             if (s.state_key == 0) continue;
             keyed++;
+
+            if (rules_differ)
+            {
+                differ_sections++;
+                if (dep.has_key(s.state_key)) hit_placing++;
+                if (dep_res->has_key(s.state_key)) hit_res++;
+            }
 
             MaterialBinding mb = dep.textures_for(s.state_key, db);
             if (!mb.valid) continue;
@@ -139,6 +214,8 @@ int main(int argc, char** argv)
         std::chrono::steady_clock::now() - t0).count();
 
     std::printf("\n%d mesh(es) in %.1fs\n", n_mesh, sec);
+    std::printf("  placing bundle known for %d of %d mesh(es)\n", placing_known, n_mesh);
+    std::printf("  depot by resource rule %d, by PLACING rule %d\n", by_res, by_placing);
     std::printf("  depot found for the mesh's bundle : %d of %d (%d missing, %d unreadable)\n",
                 n_mesh - no_depot - depot_bad, n_mesh, no_depot, depot_bad);
     std::printf("  sections %d, with a state key %d, joined to a depot record %d (%.1f%%)\n",
@@ -147,6 +224,8 @@ int main(int argc, char** argv)
                 with_basecolor, with_normal, with_occl);
     std::printf("  basecolor guid resolved to an asset %d, decoded to pixels %d, failed %d\n",
                 tex_named, tex_decoded, tex_failed);
+    std::printf("  where the two rules pick DIFFERENT depots: %d section(s), placing-rule hits %d, resource-rule hits %d\n",
+                differ_sections, hit_placing, hit_res);
     std::printf("  slots seen:");
     for (const auto& kv : slot_hits) std::printf(" %s=%d", kv.first.c_str(), kv.second);
     std::printf("\n");

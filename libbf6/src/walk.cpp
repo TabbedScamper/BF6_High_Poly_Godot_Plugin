@@ -367,7 +367,7 @@ void Walk::emit_smg(const EbxValue& inst, const Mat34& parent, const std::string
         {
             // no instance transforms: one row at the bare parent, if visible
             if (visible_at(enabled, visible, 0))
-                rows_.push_back({ path, parent, src_ref, "smg0", var_of(0), scope_ });
+                rows_.push_back({ path, parent, src_ref, "smg0", var_of(0), scope_ , bundle_ });
             continue;
         }
         for (size_t i = 0; i < xf->items.size(); i++)
@@ -375,7 +375,7 @@ void Walk::emit_smg(const EbxValue& inst, const Mat34& parent, const std::string
             if (!is_lt(&xf->items[i])) continue;
             if (!visible_at(enabled, visible, i)) { n_smg_hidden++; continue; }
             rows_.push_back({ path, mat_mul(parent, lt_to_mat(&xf->items[i])),
-                              src_ref, "smg", var_of(i), scope_ });
+                              src_ref, "smg", var_of(i), scope_ , bundle_ });
         }
     }
 }
@@ -447,11 +447,11 @@ void Walk::visit(const EbxValue& inst, const Mat34& parent, const std::string& r
             walk_ref(tgt, world, guard, depth + 1);
             if (rows_.size() == before)
             {
-                rows_.push_back({ tgt, world, ref, "leaf", "", scope_ });
+                rows_.push_back({ tgt, world, ref, "leaf", "", scope_ , bundle_ });
                 n_leaf++;
             }
         }
-        else rows_.push_back({ tgt, world, ref, "ref", "", scope_ });
+        else rows_.push_back({ tgt, world, ref, "ref", "", scope_ , bundle_ });
         return;
     }
 
@@ -493,6 +493,16 @@ void Walk::walk_ref(const std::string& ref, const Mat34& parent,
     // relationship at all. On Dumbo, matching by directory ancestry resolved
     // 54.7% of sections, and 213 of the 214 absent keys turned up in another
     // subworld's depot of the same level - the one that actually placed them.
+    // The bundle this partition came in. Everything emitted below inherits it,
+    // because a placement's material resolves against the bundle that placed
+    // it. Restored on the way out for the same reason scope is.
+    const std::string prev_bundle = bundle_;
+    {
+        std::string bare = name;
+        const std::string& b = src_.bundle_of_ebx(bare);
+        if (!b.empty()) bundle_ = b;
+    }
+
     const std::string prev_scope = scope_;
     if (!scope_index.empty())
     {
@@ -529,6 +539,7 @@ void Walk::walk_ref(const std::string& ref, const Mat34& parent,
     // Restored on the way out: a sibling branch must not inherit the scope a
     // subworld set for its own subtree.
     scope_ = prev_scope;
+    bundle_ = prev_bundle;
 }
 
 bool Walk::run(const std::string& level_rel, std::string& err)

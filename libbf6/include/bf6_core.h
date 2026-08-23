@@ -166,7 +166,12 @@ struct bf6_material_desc {
 typedef enum {
     BF6_FMT_RGBA8 = 0,
     BF6_FMT_BC1,   BF6_FMT_BC3,   BF6_FMT_BC4,
-    BF6_FMT_BC5,   BF6_FMT_BC7
+    BF6_FMT_BC5,   BF6_FMT_BC7,
+    /* Added rather than reusing a slot: skies and light probes are BC6H, and a
+     * binding that quietly reported them as BC7 would upload garbage. */
+    BF6_FMT_BC6H_U, BF6_FMT_BC6H_S,
+    BF6_FMT_R8,     BF6_FMT_RGBA16F,
+    BF6_FMT_UNKNOWN = 255
 } bf6_fmt;
 
 typedef struct {

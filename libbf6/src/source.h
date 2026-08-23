@@ -71,9 +71,23 @@ public:
     // being read.
     const std::string& bundle_of(const std::string& res_name) const;
 
-    // The depot resource covering that bundle, or empty. Handles the one-token
-    // difference that makes this fail silently: a TOC spells a bundle
-    // "win32/game/..." while a depot spells it "game/...".
+    // Which bundle an EBX partition came in. This is the one that matters for
+    // materials: the depot rule is THE PLACING BUNDLE - the bundle whose
+    // placement pulled a mesh in - not the bundle the mesh resource happens to
+    // live in. Measured over 79,000 placed instances on a retail level, the
+    // placing bundle's own depot carries every one of its section keys.
+    const std::string& bundle_of_ebx(const std::string& ebx_name) const;
+
+    // The depot covering a bundle, or empty. Handles the one-token difference
+    // that makes this fail silently: a TOC spells a bundle "win32/game/..."
+    // while a depot spells it "game/...".
+    //
+    // On a miss it widens to the bundle's ANCESTORS and never to a sibling. A
+    // state key is unique only within a scope, so a sibling that happens to
+    // hold the key binds a material that merely collides - a confidently wrong
+    // texture, which is worse than an untextured surface because nothing about
+    // it looks broken.
+    std::string depot_for_bundle(const std::string& bundle) const;
     std::string depot_for_res(const std::string& res_name) const;
 
     static bool        is_level_toc(const std::string& path);
@@ -99,6 +113,7 @@ private:
     std::map<std::string, CasLoc>             chunk_seg_; // bundle-chunk guid -> loc
     Progress                                  progress_;
     std::unordered_map<std::string, std::string> res_bundle_;  // res -> bundle
+    std::unordered_map<std::string, std::string> ebx_bundle_;  // ebx -> bundle
     std::map<std::string, std::string>        depot_by_bundle_; // bundle -> depot res
     std::map<std::string, std::string>        pidx_;      // partition guid -> name.ebx
     bool                                      pidx_built_ = false;
