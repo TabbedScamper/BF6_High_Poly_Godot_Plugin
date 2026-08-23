@@ -22,6 +22,7 @@ set(BF6_SOURCES
     src/walk.cpp
     src/terrain.cpp
     src/texture.cpp
+    src/depot.cpp
 )
 
 add_library(bf6_core SHARED ${BF6_SOURCES})
@@ -55,6 +56,13 @@ target_include_directories(loc_test PRIVATE src include)
 add_executable(types_test test/types_test.cpp)
 target_link_libraries(types_test PRIVATE bf6_core_static)
 target_include_directories(types_test PRIVATE src include)
+
+# Module 8: the depot join. The format is unusually self-checking - records must
+# tile the blob area and blobs must be consumed to the byte - so a wrong parse
+# cannot pass quietly.
+add_executable(depot_test test/depot_test.cpp)
+target_link_libraries(depot_test PRIVATE bf6_core_static)
+target_include_directories(depot_test PRIVATE src include)
 
 # Module 7: decodes textures and reports the things that go plausibly wrong -
 # a transposed non-square image, a chunk read short, an sRGB flag on linear data.
