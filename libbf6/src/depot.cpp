@@ -42,11 +42,21 @@ int scalar_size(uint32_t th)
     }
 }
 
+// THE SAME SPELLING THE PARTITION INDEX USES, which is the whole point of
+// producing it: these guids are looked up there to get an asset name. .NET
+// mixed endian - first three groups little-endian, the last eight bytes as they
+// lie. Raw hex would be a perfectly reasonable-looking string that resolves
+// nothing at all, and would fail silently on every texture.
 std::string guid_str16(const std::vector<uint8_t>& d, size_t o)
 {
-    char t[33];
-    for (int i = 0; i < 16; i++) std::snprintf(t + i * 2, 3, "%02x", d[o + (size_t)i]);
-    return std::string(t, 32);
+    const uint8_t* g = d.data() + o;
+    char t[40];
+    std::snprintf(t, sizeof(t),
+        "%08x-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+        (unsigned)(g[0] | (g[1] << 8) | (g[2] << 16) | ((unsigned)g[3] << 24)),
+        (unsigned)(g[4] | (g[5] << 8)), (unsigned)(g[6] | (g[7] << 8)),
+        g[8], g[9], g[10], g[11], g[12], g[13], g[14], g[15]);
+    return t;
 }
 
 struct Slot { uint32_t n32; const char* name; };
@@ -67,6 +77,30 @@ const Slot kSlots[] = {
     { 0xd0182167, "smoke_noise2" },     { 0x0127e78c, "smoke_ramp" },
     { 0x42ec27b9, "smoke_edge" },       { 0x87180b38, "decal_ca" },
     { 0x6a19658a, "decal_nrm" },
+
+    // NAMED FROM THE DATA, 2026-08-22, by resolving what each slot is bound to
+    // across MP_Battery's whole mount and counting asset-name suffixes
+    // (test/slots_test.cpp). The method validated itself on the known slot:
+    // 0x54bbcd30 came back "cs" on 99.1% of 7,074 bindings.
+    //
+    // These two are the per-asset maps that were being dropped. The table above
+    // named a "normal" at 0xec35a74c which NEVER APPEARS in any depot; the slot
+    // the game actually uses is 0xec35a757, in the same 0xec35 family.
+    { 0xec35a757, "normal" },        // 5,415 uses, 93.2% "_nmt"
+    { 0xb1a29a3c, "occl_rough" },    // 4,998 uses, 99.2% "_wo"
+
+    // Global shader inputs rather than a prop's own maps: shared weathering and
+    // detail layers, bound by nearly every material to the same few textures.
+    // Named so they can be recognised and skipped, not because a prop needs
+    // them resolved per-asset.
+    { 0x5075fa43, "detail_ncs" },    // ta_weapondetailmaps_ncs
+    { 0x70ceae93, "tiling_dust" },   // t_veh_tilingdust_a
+    { 0xc79fa238, "rain_nm" },       // t_vehiclerain_drops_1k_nm
+    { 0x6ab5f4f2, "rain_streaks" },  // t_vehiclerain_streaks
+    { 0x13a62eca, "mud_nch" },       // t_hardwaremud_03_nch
+    { 0x9d012723, "splatter_nca" },  // t_weathering_splatter_nca
+    { 0x3d90fc7b, "snow_sparkle" },  // t_snowsparke_rgb
+    { 0xd8236463, "blackbody_ramp" },// t_blackbodyramps_01_m
 };
 
 }  // namespace

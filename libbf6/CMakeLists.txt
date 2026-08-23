@@ -57,6 +57,12 @@ add_executable(types_test test/types_test.cpp)
 target_link_libraries(types_test PRIVATE bf6_core_static)
 target_include_directories(types_test PRIVATE src include)
 
+# Research: names the depot's texture slots from the data, by resolving what is
+# bound to each and counting the asset-name suffixes.
+add_executable(slots_test test/slots_test.cpp)
+target_link_libraries(slots_test PRIVATE bf6_core_static)
+target_include_directories(slots_test PRIVATE src include)
+
 # Module 8: the depot join. The format is unusually self-checking - records must
 # tile the blob area and blobs must be consumed to the byte - so a wrong parse
 # cannot pass quietly.
