@@ -506,6 +506,14 @@ void Walk::walk_ref(const std::string& ref, const Mat34& parent,
     for (size_t i = 0; i < e.instance_count(); i++)
     {
         n_instances++;
+        // THE ONLY PLACE THIS WALK CAN REPORT FROM. The traversal is recursive
+        // and has no outer loop to count, but every instance the level contains
+        // passes through here. Reported by placements FOUND against instances
+        // seen, because there is no honest denominator: nothing knows how many
+        // instances a level has until the walk has ended.
+        if (progress_ && (n_instances & 8191) == 0)
+            progress_("walking the level", (int)rows_.size(), (int)n_instances);
+
         // CAN THIS INSTANCE POSSIBLY MATTER? visit() reads exactly the walk
         // fields, so an instance whose type declares none of them is a provable
         // no-op. Decoding it means building every field of every nested struct

@@ -2,7 +2,9 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <atomic>
 #include <cstring>
+#include <thread>
 #include <filesystem>
 
 #include "bundle.h"
@@ -192,15 +194,50 @@ const std::map<std::string, std::string>& Source::partition_index()
             return a->first < b->first;
         });
 
-    std::string err;
-    for (const auto* kv : order)
+    // READ IN PARALLEL, PUBLISH IN ORDER.
+    //
+    // This reads every partition in the mount for one 16-byte header, which is
+    // the single biggest cost of opening a level - about 19 seconds on mp_dumbo
+    // against 4 for the mount and 2.5 for the walk. It is also embarrassingly
+    // parallel: each read is independent, and the only shared thing is the
+    // result.
+    //
+    // The GUIDS ARE COLLECTED INTO A SLOT PER PARTITION and folded in afterwards
+    // in the original order, NOT inserted from the workers. "First name wins"
+    // is the rule that makes this index stable across runs, and a map written
+    // from several threads would resolve ties by whichever thread got there
+    // first - which is no rule at all.
+    const size_t n = order.size();
+    std::vector<std::string> found(n);
+    const unsigned hw = std::thread::hardware_concurrency();
+    const size_t workers = std::max<size_t>(1, std::min<size_t>(hw ? hw : 4, 16));
+
+    std::atomic<size_t> next{0};
+    auto worker = [&]()
     {
-        std::vector<uint8_t> bytes = get_ebx(kv->first, err);
-        if (bytes.empty()) continue;
-        const std::string g = efix_guid(bytes);
-        // First name wins, so the result is stable across runs.
-        if (!g.empty()) pidx_.emplace(g, kv->first + ".ebx");
-    }
+        std::string e;
+        for (;;)
+        {
+            const size_t i = next.fetch_add(1);
+            if (i >= n) return;
+            // Every few hundred, from whichever worker got there. The callback
+            // is documented as concurrent for exactly this.
+            if (progress_ && (i & 511) == 0 && !progress_("indexing partitions", (int)i, (int)n))
+                return;
+            // Safe to run concurrently: cas_path only reads the locator, and
+            // cas_read opens its own handle. Nothing here touches Source state.
+            std::vector<uint8_t> bytes = read_seg(order[i]->second.loc, false, e);
+            if (!bytes.empty()) found[i] = efix_guid(bytes);
+        }
+    };
+
+    std::vector<std::thread> pool;
+    pool.reserve(workers);
+    for (size_t i = 0; i < workers; i++) pool.emplace_back(worker);
+    for (std::thread& t : pool) t.join();
+
+    for (size_t i = 0; i < n; i++)
+        if (!found[i].empty()) pidx_.emplace(found[i], order[i]->first + ".ebx");
     return pidx_;
 }
 
@@ -334,8 +371,11 @@ bool Source::mount_level(const std::string& level, bool all_levels, std::string&
     const std::vector<std::string> tocs = find_tocs(level, all_levels);
     if (tocs.empty()) { err = "no .toc found under " + game_; return false; }
     size_t mounted = 0;
+    int done = 0;
     for (const std::string& t : tocs)
     {
+        if (progress_ && !progress_("mounting the level's archives", done++, (int)tocs.size()))
+        { err = "cancelled"; return false; }
         std::string e;
         if (mount_toc(t, e)) mounted++;
         // A toc that will not mount is not fatal on its own: the install

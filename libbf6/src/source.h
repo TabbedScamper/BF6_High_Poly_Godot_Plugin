@@ -9,6 +9,7 @@
 #define LIBBF6_SOURCE_H
 
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <string>
 #include <unordered_map>
@@ -26,6 +27,11 @@ class Source {
 public:
     bool open(const std::string& game_dir, std::string& err);   // build the locator
     bool mount_toc(const std::string& toc_path, std::string& err);
+
+    // Called from inside the long loops. See the ABI's note: it can be called
+    // from several threads at once and must not touch a UI. False asks to stop.
+    using Progress = std::function<bool(const char*, int, int)>;
+    void set_progress(Progress p) { progress_ = std::move(p); }
 
     // ---- mounting a LEVEL, not just the shared archives ----
     //
@@ -77,6 +83,7 @@ private:
     std::unordered_map<std::string, EbxEntry> ebx_;
     std::map<std::string, CasLoc>             chunks_;    // loose-chunk guid -> loc
     std::map<std::string, CasLoc>             chunk_seg_; // bundle-chunk guid -> loc
+    Progress                                  progress_;
     std::map<std::string, std::string>        pidx_;      // partition guid -> name.ebx
     bool                                      pidx_built_ = false;
 

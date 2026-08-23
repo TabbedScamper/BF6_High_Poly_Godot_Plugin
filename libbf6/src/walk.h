@@ -18,6 +18,7 @@
 
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <set>
 #include <string>
@@ -58,6 +59,12 @@ public:
     // dump or a shipped table.
     void build_catalog();
 
+    // (placements found, instances seen) as the traversal runs. There is no
+    // honest denominator - nothing knows how many instances a level has until
+    // the walk ends - so total is the instances seen so far.
+    using Progress = std::function<bool(const char*, int, int)>;
+    void set_progress(Progress p) { progress_ = std::move(p); }
+
     // level_rel is the level's asset path, e.g. "game/glaciermp/levels/mp_dumbo",
     // or just the leaf. False when the root cannot be resolved.
     bool run(const std::string& level_rel, std::string& err);
@@ -95,6 +102,7 @@ private:
     std::vector<WalkRow>                         rows_;
     std::map<TypeGuid, bool>                     matters_;
     std::string                                  scope_;
+    Progress                                     progress_;
 };
 
 }  // namespace bf6

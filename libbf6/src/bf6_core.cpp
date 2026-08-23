@@ -48,6 +48,16 @@ struct bf6_ctx {
     // remembered here. Registered on the way out, looked up on the way back.
     enum HandleKind { HK_MESH = 1, HK_TERRAIN = 2 };
     std::map<void*, int> handles;
+
+    bf6_progress_fn progress = nullptr;
+    void*           progress_user = nullptr;
+
+    // Fanned out to the pieces that take time. Returns false when the caller
+    // asked to stop.
+    bool report(const char* stage, int done, int total) {
+        if (!progress) return true;
+        return progress(progress_user, stage, done, total) != 0;
+    }
 };
 
 // Backing store for a returned bf6_mesh. `mesh` is the first member so a
@@ -256,6 +266,12 @@ bf6_mesh* bf6_read_mesh(bf6_ctx* c, const char* res_name, int lod) {
     return &mh->mesh;
 }
 const bf6_texture* bf6_texture_at(bf6_ctx*, int) { return nullptr; }
+void bf6_set_progress(bf6_ctx* c, bf6_progress_fn fn, void* user) {
+    if (!c) return;
+    c->progress = fn;
+    c->progress_user = user;
+}
+
 int bf6_open_level(bf6_ctx* c, const char* level, const char* exe_path,
                    int all_levels, char* err, int err_len) {
     auto fail = [&](const std::string& m) {
@@ -268,6 +284,11 @@ int bf6_open_level(bf6_ctx* c, const char* level, const char* exe_path,
     if (c->walked_level == level && c->walk) return 0;   // already open
 
     std::string e;
+    auto tick = [c](const char* stage, int done, int total) {
+        return c->report(stage, done, total);
+    };
+    c->src.set_progress(tick);
+
     if (!c->src.mount_level(level, all_levels != 0, e)) return fail(e);
 
     c->types.reset(new bf6::TypeDb());
@@ -286,7 +307,9 @@ int bf6_open_level(bf6_ctx* c, const char* level, const char* exe_path,
         return fail("this install's type table is encrypted (EA App build); "
                     "placements cannot be read from it yet");
 
+    c->report("reading the object graph", 0, 0);
     c->walk.reset(new bf6::Walk(c->src, *c->types));
+    c->walk->set_progress(tick);
     c->walk->build_catalog();
     if (!c->walk->run(level, e)) { c->walk.reset(); return fail(e); }
     c->walked_level = level;

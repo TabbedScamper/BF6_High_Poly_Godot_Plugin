@@ -1,5 +1,7 @@
 #include "cas.h"
 
+#include <map>
+
 #include <cstdio>
 
 #include "oodle.h"
@@ -67,16 +69,52 @@ static bool decode_one(const uint8_t* buf, size_t at, uint32_t csize,
     return true;
 }
 
+namespace {
+
+// OPEN EACH ARCHIVE ONCE PER THREAD, not once per read.
+//
+// This used to fopen and fclose around every read, which is fine for a handful
+// and ruinous for the partition index: that walks every partition in the mount
+// for one 16-byte header, so mp_dumbo alone paid 228,818 file opens. Threading
+// the index only took it from 19 seconds to 14 precisely because the cost was
+// syscalls rather than work.
+//
+// THREAD_LOCAL RATHER THAN SHARED, deliberately. A FILE* carries one position,
+// so a shared handle would need a lock around the seek and the read together,
+// which serialises exactly the thing being parallelised. A handle per thread per
+// archive costs a few dozen opens in total and needs no lock at all.
+//
+// Handles close when the thread ends, which for the index's short-lived workers
+// is immediately after.
+struct CasHandles
+{
+    std::map<std::string, FILE*> open;
+    ~CasHandles()
+    {
+        for (auto& kv : open) if (kv.second) std::fclose(kv.second);
+    }
+};
+
+FILE* cas_handle(const std::string& path)
+{
+    static thread_local CasHandles cache;
+    auto it = cache.open.find(path);
+    if (it != cache.open.end()) return it->second;
+    FILE* f = std::fopen(path.c_str(), "rb");
+    cache.open.emplace(path, f);   // a null is cached too: a missing archive
+    return f;                      // should not be reopened once per read either
+}
+
+}  // namespace
+
 std::vector<uint8_t> cas_read(const std::string& path, int64_t offset,
                               int64_t size, bool allow_raw, std::string& err) {
     std::vector<uint8_t> empty;
-    // A handle cache lands with the mount later; correctness needs only the read.
-    FILE* f = std::fopen(path.c_str(), "rb");
+    FILE* f = cas_handle(path);
     if (!f) { err = "cannot open " + path; return empty; }
     _fseeki64(f, offset, SEEK_SET);
     std::vector<uint8_t> buf((size_t)size);
     size_t got = std::fread(buf.data(), 1, (size_t)size, f);
-    std::fclose(f);
     buf.resize(got);
     if (got < 8) { err = "CAS reference shorter than a block header"; return empty; }
 

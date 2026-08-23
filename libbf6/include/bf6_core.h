@@ -191,6 +191,21 @@ typedef struct {
     int32_t     material_scope;/* pre-resolved variation key, for caching    */
 } bf6_instance;
 
+/* ---------------------------------------------------------------- progress */
+/* Called from inside the long calls so a caller can show something moving.
+ * `stage` is a short label ("mounting", "indexing partitions", "walking");
+ * done/total are that stage's own counts, and total may be 0 when it is not
+ * known yet.
+ *
+ * CALLED FROM WHATEVER THREAD IS DOING THE WORK, including several at once
+ * during indexing, so an implementation must be safe to call concurrently and
+ * must NOT touch a UI directly. Store the numbers and let the UI thread read
+ * them. Return 0 to ask the operation to stop.
+ */
+typedef int (*bf6_progress_fn)(void* user, const char* stage, int done, int total);
+
+BF6_API void bf6_set_progress(bf6_ctx*, bf6_progress_fn, void* user);
+
 /* Mount a level's archives and read the type schema, which every placement
  * call needs. all_levels also mounts every OTHER level, which is what makes the
  * whole placeable catalogue resolvable and is not free. Returns 0 on success,
