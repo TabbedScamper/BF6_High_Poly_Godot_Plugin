@@ -64,9 +64,31 @@ const SCALAR_SIZE := {
 const SLOT_BASECOLOR := 0x54bbcd30
 const SLOT_BASECOLOR_VEG := 0x54bbcd36   # vegetation *_cu sheet; its opacity
                                          # rides the ALPHA twin, not the _cs
-const SLOT_NORMAL := 0xec35a74c
+# THE NORMAL SLOT, CORRECTED 2026-08-22. This was 0xec35a74c, which does not
+# appear in any depot examined: 3,000 depots on MP_Battery bind it zero times.
+# The slot the game actually uses is 0xec35a757, one member along in the same
+# 0xec35 family, with 5,415 bindings of which 93.2% are "_nmt" textures.
+#
+# An unnamed slot is silently skipped, so for as long as this was wrong EVERY
+# prop rendered with a basecolor and no normal map. It reads as flat lighting
+# rather than as a missing texture, which is why it survived so long.
+#
+# Named from the data rather than guessed - the hash function is not the one
+# older Frostbite used, so a name cannot be hashed to find its slot. Instead
+# each binding's file guid was resolved through the partition index to an asset
+# name and the suffixes counted per slot. The method was checked against the
+# slot we already knew: 0x54bbcd30 came back "_cs" on 99.1% of 7,074 bindings.
+# See BF6_Frostbite_Research/findings/depot-slot-hashes-named-from-bindings.md.
+const SLOT_NORMAL := 0xec35a757
+# Kept so it is RECOGNISED rather than lost if it ever does turn up.
+const SLOT_NORMAL_UNUSED := 0xec35a74c
 const SLOT_NORMAL_VT := 0xec35a9e2       # architecture normal paired with the
                                          # tiling basecolor; RG only
+
+# Occlusion / roughness, the other per-asset map that was being dropped:
+# 4,998 bindings, 99.2% "_wo", and it appears on the same materials as the
+# basecolor and normal above (t_..._cs / _nmt / _wo are one set).
+const SLOT_OCCL_ROUGH := 0xb1a29a3c
 const SLOT_EMISSIVE := 0xd405b0e5
 const SLOT_ALPHA := 0xd405b0e1
 const SLOT_TILEBREAKER := 0x851a1207
@@ -115,6 +137,14 @@ const SLOT_NAME := {
 	SLOT_GLASS_VOLUME: "glass_volume", SLOT_CARPAINT_FLAKES: "carpaint_flakes",
 	SLOT_DECAL_CA: "decal_ca", SLOT_DECAL_NRM: "decal_nrm",
 	SLOT_EMISSIVE_LIT: "emissive_lit",
+	SLOT_NORMAL_UNUSED: "normal_unused", SLOT_OCCL_ROUGH: "occl_rough",
+	# Global shader inputs: shared weathering and detail layers that nearly
+	# every material binds to the same few textures. Named so they are
+	# recognisable rather than mistaken for a prop's own maps.
+	0x5075fa43: "detail_ncs", 0x70ceae93: "tiling_dust",
+	0xc79fa238: "rain_nm", 0x6ab5f4f2: "rain_streaks",
+	0x13a62eca: "mud_nch", 0x9d012723: "splatter_nca",
+	0x3d90fc7b: "snow_sparkle", 0xd8236463: "blackbody_ramp",
 	SLOT_SMOKE_CA: "smoke_ca", SLOT_SMOKE_NOISE: "smoke_noise",
 	SLOT_SMOKE_NOISE2: "smoke_noise2", SLOT_SMOKE_RAMP: "smoke_ramp",
 	SLOT_SMOKE_EDGE: "smoke_edge",
