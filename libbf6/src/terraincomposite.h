@@ -30,17 +30,19 @@
  * roughly a tenth of its authored rate. Anything ported from that plugin
  * carries the same bug and should be corrected against this, not the reverse.
  *
- * THE ONE HONEST GAP, stated here rather than buried. A terrain layer's
- * textures reach the shader by TWO routes: a bindless descriptor index in its
- * ShaderLayerInfos row (which the layer-graph depot fills, and which
- * terrainlayers.h decodes), and STATIC binding from the compute permutation's
- * CommonBindingSet (26 of the 40 layer bodies on Aftermath). Only the first is
- * decoded anywhere in this library, so layers taking the second route arrive
- * here with no colour sheet at all - 28 of 40 on mp_aftermath, 34 of 47 on
- * mp_dumbo. Those layers are SKIPPED, never faked, and the fraction of texels
- * they leave untouched is reported as `texels_untouched`. A bake with a large
- * untouched fraction is a real shortfall in the input chain and is meant to
- * look like one.
+ * BOTH TEXTURE ROUTES ARE NOW DECODED. A terrain layer's textures reach the
+ * shader two ways: a bindless descriptor index in its ShaderLayerInfos row
+ * (which the layer-graph depot fills, and which terrainlayers.h decodes), and
+ * STATIC binding from the compute permutation's CommonBindingSet - 26 of the 40
+ * layer bodies on Aftermath and 34 of 47 on Dumbo, where they are the road
+ * surfaces. `terrainstatic.h` decodes the second route and this file falls back
+ * to it, under TerrainBakeOpts::static_fallback, for any layer the depot left
+ * without a colour. What is exact and what is not is set out in that header:
+ * the descriptor table resolves completely, the descriptor-triple-to-layer join
+ * is an ordinal walk that matches the shipped evaluator bytecode on aftermath
+ * and dumbo and drifts on isolated. A layer neither route reaches is still
+ * SKIPPED, never faked, and the texels it leaves are still counted in
+ * `texels_untouched`.
  *
  * NO ENGINE HEADERS, no exceptions, no image library. The BCn decoder is here
  * because the library genuinely has none: texture.h hands back compressed
@@ -128,6 +130,21 @@ struct TerrainBakeOpts {
     // Metres per repeat for a layer that authors no tiling.
     float default_metres_per_repeat = 4.0f;
     int   threads = 0;          // 0 = hardware concurrency
+
+    // Fall back to the STATICALLY BOUND texture table (terrainstatic.h) for a
+    // layer the layer-graph depot gave no base colour. This is what puts an
+    // asphalt street under an urban map; without it mp_dumbo's entire road grid
+    // bakes as the fallback colour.
+    //
+    // ON BY DEFAULT, and here is the case against it, stated where it can be
+    // acted on. The descriptor table is exact; the join from a descriptor
+    // triple to a LAYER is an ordinal walk validated against the shipped
+    // evaluator bytecode on three maps - exact on mp_aftermath (15/16) and
+    // mp_dumbo (19/20), and DRIFTING on mp_isolated (5/20), where two static
+    // layers sample nothing and slip the walk by one. A drifted mapping paints
+    // roads with grass and looks plausible while being wrong. Turn this off to
+    // get back the honest hole: `texels_untouched` counts real holes either way.
+    bool  static_fallback = true;
 };
 
 // Per-layer accounting, so a wrong palette shows up as a named layer rather

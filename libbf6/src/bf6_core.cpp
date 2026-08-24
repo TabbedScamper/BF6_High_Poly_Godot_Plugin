@@ -25,6 +25,7 @@
 #include "destruction.h"
 #include "terrain.h"
 #include "terraincomposite.h"
+#include "groundsplat.h"
 #include "texture.h"
 #include "walk.h"
 #include "placeables.h"
@@ -56,6 +57,11 @@ struct bf6_ctx {
     // remembered here. Registered on the way out, looked up on the way back.
     enum HandleKind { HK_MESH = 1, HK_TERRAIN = 2 };
     std::map<void*, int> handles;
+
+    // The last coverage, and the C view of its material list. Same lifetime
+    // rule as the bake: the context owns them so a caller frees nothing.
+    std::unique_ptr<bf6::GroundCoverage> ground;
+    std::vector<bf6_ground_material>     ground_mats;
 
     // The last ground bake, so its buffers outlive the call that made it and
     // a second bake replaces the first rather than leaking it.
@@ -1359,6 +1365,54 @@ static void BF6_SimRow(const bf6::EbxValue& d, bf6_water_sim& s)
 // terraincomposite does the work; this owns the buffers so a caller across the
 // ABI never has to free anything, and so a second bake replaces the first
 // instead of leaking it.
+int bf6_ground_coverage_get(bf6_ctx* c, const char* level, int size,
+                            bf6_ground_coverage* out, char* err, int err_len)
+{
+    auto fail = [&](const std::string& m) {
+        if (err && err_len > 0) {
+            std::strncpy(err, m.c_str(), (size_t)err_len - 1);
+            err[err_len - 1] = 0;
+        }
+        return 0;
+    };
+    if (!c || !level || !*level || !out) return fail("bad arguments");
+
+    c->ground.reset(new bf6::GroundCoverage());
+    std::string e;
+    if (!bf6::ground_coverage(c->src, level, size, *c->ground, e)) {
+        c->ground.reset();
+        return fail(e.empty() ? "coverage failed" : e);
+    }
+
+    // The C view holds pointers into the C++ strings, so those strings have to
+    // outlive the call: they do, because the context owns the coverage.
+    c->ground_mats.clear();
+    c->ground_mats.reserve(c->ground->materials.size());
+    for (const bf6::GroundMaterial& m : c->ground->materials) {
+        bf6_ground_material g{};
+        g.layer = m.layer;
+        g.albedo_res = m.albedo_res.c_str();
+        g.normal_res = m.normal_res.c_str();
+        g.metres_per_repeat = m.metres_per_repeat;
+        g.uv_rotation_deg = m.uv_rotation_deg;
+        g.tint[0] = m.tint[0]; g.tint[1] = m.tint[1]; g.tint[2] = m.tint[2];
+        c->ground_mats.push_back(g);
+    }
+
+    *out = bf6_ground_coverage{};
+    out->size = c->ground->size;
+    out->lo[0] = c->ground->lo[0]; out->lo[1] = c->ground->lo[1];
+    out->hi[0] = c->ground->hi[0]; out->hi[1] = c->ground->hi[1];
+    out->idx = c->ground->idx.empty() ? nullptr : c->ground->idx.data();
+    out->weight = c->ground->w.empty() ? nullptr : c->ground->w.data();
+    out->materials = c->ground_mats.empty() ? nullptr : c->ground_mats.data();
+    out->material_count = (int32_t)c->ground_mats.size();
+    const double total = (double)c->ground->size * (double)c->ground->size;
+    out->empty_fraction = total > 0.0
+        ? (float)((double)c->ground->empty_texels / total) : 0.f;
+    return 1;
+}
+
 int bf6_bake_terrain(bf6_ctx* c, const char* level,
                      const bf6_terrain_bake_opts* opts,
                      bf6_terrain_bake* out, char* err, int err_len)

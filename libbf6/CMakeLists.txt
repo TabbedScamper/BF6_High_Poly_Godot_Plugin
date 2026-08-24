@@ -27,6 +27,9 @@ set(BF6_SOURCES
     src/decals.cpp
     src/splat.cpp
     src/terrainlayers.cpp
+    src/terrainstatic.cpp
+    src/terraincomposite.cpp
+    src/groundsplat.cpp
 )
 
 add_library(bf6_core SHARED ${BF6_SOURCES})
@@ -83,6 +86,10 @@ target_link_libraries(splat_test PRIVATE bf6_core_static)
 add_executable(terrainlayers_test test/terrainlayers_test.cpp)
 target_include_directories(terrainlayers_test PRIVATE src include)
 target_link_libraries(terrainlayers_test PRIVATE bf6_core_static)
+
+add_executable(groundcov_test test/groundcov_test.cpp)
+target_include_directories(groundcov_test PRIVATE src include)
+target_link_libraries(groundcov_test PRIVATE bf6_core_static)
 
 add_executable(terrainstatic_test test/terrainstatic_test.cpp)
 target_include_directories(terrainstatic_test PRIVATE src include)

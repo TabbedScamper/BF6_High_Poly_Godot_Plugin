@@ -11,6 +11,7 @@
 #include "source.h"
 #include "splat.h"
 #include "terrainlayers.h"
+#include "terrainstatic.h"
 #include "texture.h"
 
 namespace bf6 {
@@ -740,6 +741,34 @@ bool TerrainComposite::bake(Source& src, const std::string& level,
     const std::map<std::string, std::string>& pidx = src.partition_index();
     const int tex_dim = opt.texture_dim > 0 ? opt.texture_dim : 512;
 
+    // ---- 6a. the statically bound half of the palette ------------------------
+    //
+    // A layer whose ShaderLayerInfos row carries no bindless colour is not
+    // shader-computed: its sheets are bound directly by the compute permutation
+    // and sampled by register. terrainstatic.h resolves that table and joins it
+    // to layers; the join's accuracy, and why it is switchable, are documented
+    // there and on TerrainBakeOpts::static_fallback.
+    //
+    // The STATIC-LAYER LIST is built over the whole palette, not over the layers
+    // this window happens to reach, because the join is ORDINAL: dropping a
+    // layer that is off-window would slide every later layer onto its
+    // neighbour's sheet.
+    TerrainStaticTable stat;
+    std::map<int, int> stat_assign;      // layer -> group index
+    if (opt.static_fallback && have_palette)
+    {
+        std::string serr;
+        if (stat.load(src, level, serr))
+        {
+            std::vector<int> static_layers;
+            for (size_t i = 0; i < tl.layers().size(); i++)
+                if (!tl.layers()[i].empty && tl.layers()[i].material.base_color().empty())
+                    static_layers.push_back((int)i);
+            stat_assign = stat.assign(static_layers);
+        }
+        else out.failures.push_back("static texture table: " + serr);
+    }
+
     std::map<int, LayerRT> rt;
     for (int li : present)
     {
@@ -759,13 +788,29 @@ bool TerrainComposite::bake(Source& src, const std::string& level,
         const TerrainLayerMaterial& M = L.material;
         rep.metres_per_repeat = M.metres_per_repeat(opt.default_metres_per_repeat);
         rep.tiling_authored = M.uv_tiling_set;
-        rep.has_sheet = !M.base_color().empty();
+        // Route one: the bindless colour the layer-graph depot bound. Route two:
+        // the compositor's own static table. The constants (tiling, height
+        // blend, overlay, tint) come from the depot record either way - only the
+        // SHEETS move.
+        std::string base_guid = M.base_color();
+        std::string nrmh_guid = M.normal_height();
+        if (base_guid.empty())
+        {
+            auto sit = stat_assign.find(li);
+            if (sit != stat_assign.end())
+            {
+                const TerrainStaticGroup& g = stat.groups()[(size_t)sit->second];
+                base_guid = g.tex[(size_t)g.base_color].file_guid;
+                if (g.normal_height >= 0)
+                    nrmh_guid = g.tex[(size_t)g.normal_height].file_guid;
+            }
+        }
+        rep.has_sheet = !base_guid.empty();
         if (!rep.has_sheet)
         {
-            // The honest gap: this layer's textures are bound statically by the
-            // compute permutation, not by the depot. Skipped, never faked.
-            rep.failure = "no base colour in the layer-graph depot "
-                          "(statically bound in the shader's CommonBindingSet)";
+            // Neither route reaches this layer. Skipped, never faked.
+            rep.failure = "no base colour on either route "
+                          "(layer-graph depot empty, no static group assigned)";
             out.layers.push_back(rep);
             continue;
         }
@@ -788,7 +833,7 @@ bool TerrainComposite::bake(Source& src, const std::string& level,
         LayerRT r;
         std::string why;
         int dxgi = 0;
-        if (!load_sheet(src, pidx, M.base_color(), cap, true, r.base, dxgi, why))
+        if (!load_sheet(src, pidx, base_guid, cap, true, r.base, dxgi, why))
         {
             rep.failure = why;
             out.failures.push_back("L" + std::to_string(li) + " base colour: " + why);
@@ -797,12 +842,12 @@ bool TerrainComposite::bake(Source& src, const std::string& level,
         }
         rep.decoded = true;
         rep.width = r.base.w; rep.height = r.base.h; rep.dxgi = dxgi;
-        auto it = pidx.find(M.base_color());
+        auto it = pidx.find(base_guid);
         if (it != pidx.end()) rep.asset = strip_ebx(it->second);
 
         int ndxgi = 0;
         std::string nwhy;
-        if (!load_sheet(src, pidx, M.normal_height(), cap, false, r.nrmh, ndxgi, nwhy))
+        if (!load_sheet(src, pidx, nrmh_guid, cap, false, r.nrmh, ndxgi, nwhy))
             r.nrmh = Sheet();     // height falls back to neutral 0.5
 
         r.mpr = rep.metres_per_repeat;

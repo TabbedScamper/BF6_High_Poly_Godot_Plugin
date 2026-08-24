@@ -476,6 +476,50 @@ BF6_API int bf6_bake_terrain(bf6_ctx*, const char* level,
                              const bf6_terrain_bake_opts* opts,
                              bf6_terrain_bake* out, char* err, int err_len);
 
+/* ---------------------------------------------- ground coverage (per pixel) */
+/* The ground as WEIGHTS plus a material list, for a renderer that blends per
+ * pixel rather than consuming a flattened bake.
+ *
+ * bf6_bake_terrain flattens the ground into one albedo raster, which is the
+ * right answer for a thumbnail and the wrong one for a viewport: a whole-map
+ * raster lands at two to four metres a texel while the ground materials
+ * themselves repeat every one to seven metres, so flattening averages every
+ * material away before the renderer sees it and the result reads as a
+ * low-resolution photograph of ground.
+ *
+ * This carries the coverage instead - which varies slowly and rasterises
+ * happily at a couple of metres - and leaves the materials to be sampled per
+ * pixel at their own tiling. The detail then comes from the sheets at full
+ * resolution and only the mixing weights are baked. */
+typedef struct {
+    int32_t     layer;              /* the layer index this came from       */
+    const char* albedo_res;         /* texture resource, "" when unbound    */
+    const char* normal_res;
+    float       metres_per_repeat;  /* world metres per texture repeat      */
+    float       uv_rotation_deg;
+    float       tint[3];
+} bf6_ground_material;
+
+typedef struct {
+    int32_t        size;
+    float          lo[2];           /* world XZ of the low corner, metres   */
+    float          hi[2];
+    /* size*size*4 each, owned by the context. idx indexes MATERIALS, not raw
+     * layer ids, and 255 means "no layer here"; w is that slot's weight,
+     * weight-sorted with the first zero ending the list. Sample idx with
+     * POINT filtering - a bilinear read of an index is a different index. */
+    const uint8_t* idx;
+    const uint8_t* weight;
+    const bf6_ground_material* materials;
+    int32_t        material_count;
+    float          empty_fraction;
+} bf6_ground_coverage;
+
+/* Requires bf6_open_level. size 0 -> 2048. Returns 1 on success. */
+BF6_API int bf6_ground_coverage_get(bf6_ctx*, const char* level, int size,
+                                    bf6_ground_coverage* out,
+                                    char* err, int err_len);
+
 /* -------------------------------------------------------------------- memory */
 /* Free anything this API returned (bf6_mesh*, bf6_terrain*, ...). The bf6_ctx*
  * itself is freed by bf6_close(), not this. */

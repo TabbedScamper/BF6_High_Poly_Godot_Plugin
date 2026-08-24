@@ -278,6 +278,8 @@ int main(int argc, char** argv)
         else if (a == "--no-colourmap") opt.colour_map = false;
         else if (a == "--no-f16") opt.quantise_f16 = false;
         else if (a == "--no-prime") opt.prime_first_layer = false;
+        // The before/after switch for the statically bound half of the palette.
+        else if (a == "--no-static") opt.static_fallback = false;
         else if (a.rfind("--scan=", 0) == 0) scan_span = (float)std::atof(a.c_str() + 7);
         else if (a.rfind("--scangrid=", 0) == 0) scan_grid = std::atoi(a.c_str() + 11);
         else if (a.rfind("--window=", 0) == 0)
@@ -312,7 +314,8 @@ int main(int argc, char** argv)
                 opt.stochastic ? "on" : "off",
                 bake.colour_map_used ? "on" : "off", bake.colour_tiles,
                 opt.quantise_f16 ? "on" : "off",
-                opt.prime_first_layer ? "on" : "off");
+                opt.prime_first_layer ? "on" : "off",
+                opt.static_fallback ? "on" : "off");
 
     std::printf("\nLAYERS  %d in the palette | %d reached this window | "
                 "%d bound a colour sheet | %d decoded\n",
