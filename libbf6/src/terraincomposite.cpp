@@ -862,7 +862,17 @@ bool TerrainComposite::bake(Source& src, const std::string& level,
         r.base_height  = M.base_height;
         r.ramp_exp     = M.mask_ramp_exp_set && M.mask_ramp_exp > 0.f ? M.mask_ramp_exp : 1.f;
         r.height_blend = M.height_blend;
-        r.overlay      = M.overlay_strength_set ? M.overlay_strength : 0.f;
+        // AN UNAUTHORED OVERLAY STRENGTH IS FULL, NOT ZERO.
+        //
+        // Between a quarter and a half of layers omit 0xE68B2B10, and on
+        // dumbo, battery, plaza, abbasid and capstone NONE of the residual
+        // base layers carries it. Defaulting those to zero switches the
+        // colour map off exactly where it does the most work: the neutral
+        // t_ter_defaulttexture_cv cover layers are a flat 206/206/206 and
+        // take ALL their hue from this path, so with the map off they stay
+        // grey. Measured, the wrong default put one colour on 92.5% of dumbo
+        // against 1.1%, and 100% of plaza against 17%.
+        r.overlay      = M.overlay_strength_set ? M.overlay_strength : 1.f;
         r.tint[0] = M.tint[0]; r.tint[1] = M.tint[1]; r.tint[2] = M.tint[2];
         r.usable = true;
         rt[li] = std::move(r);

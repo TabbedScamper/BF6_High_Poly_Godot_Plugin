@@ -520,6 +520,20 @@ BF6_API int bf6_ground_coverage_get(bf6_ctx*, const char* level, int size,
                                     bf6_ground_coverage* out,
                                     char* err, int err_len);
 
+/* One material sheet, DECODED and resampled to a square of `size`, so a
+ * renderer can put every ground layer into one texture array.
+ *
+ * bf6_texture_at hands back COMPRESSED blocks at whatever size the asset
+ * ships, which is right for binding a sheet on its own and useless for an
+ * array: an array needs one size and one format for every slice. This does
+ * the decode and the box-resample so a caller does not need a BCn decoder of
+ * its own.
+ *
+ * Writes size*size*4 bytes of RGBA8 into `out`, which the CALLER owns and
+ * sizes. Returns 1 on success. */
+BF6_API int bf6_layer_sheet(bf6_ctx*, const char* res_name, int size,
+                            uint8_t* out, char* err, int err_len);
+
 /* -------------------------------------------------------------------- memory */
 /* Free anything this API returned (bf6_mesh*, bf6_terrain*, ...). The bf6_ctx*
  * itself is freed by bf6_close(), not this. */

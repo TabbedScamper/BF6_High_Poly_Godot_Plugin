@@ -1365,6 +1365,79 @@ static void BF6_SimRow(const bf6::EbxValue& d, bf6_water_sim& s)
 // terraincomposite does the work; this owns the buffers so a caller across the
 // ABI never has to free anything, and so a second bake replaces the first
 // instead of leaking it.
+int bf6_layer_sheet(bf6_ctx* c, const char* res_name, int size,
+                    uint8_t* out, char* err, int err_len)
+{
+    auto fail = [&](const std::string& m) {
+        if (err && err_len > 0) {
+            std::strncpy(err, m.c_str(), (size_t)err_len - 1);
+            err[err_len - 1] = 0;
+        }
+        return 0;
+    };
+    if (!c || !res_name || !*res_name || !out || size <= 0) return fail("bad arguments");
+
+    // The texture module already caches decodes, so this is the same path a
+    // mesh binding takes; only the resampling is new.
+    const int id = c->texture_id(res_name);
+    const bf6_texture* tx = bf6_texture_at(c, id);
+    if (!tx || !tx->data || tx->width <= 0 || tx->height <= 0)
+        return fail(std::string("no texture at ") + res_name);
+
+    // The ABI carries a bf6_fmt; the decoder speaks DXGI. sRGB pairs are
+    // deliberately NOT selected here - the decode is the same bits either
+    // way, and the consumer decides how to interpret them.
+    int dxgi = 0;
+    switch (tx->format) {
+    case BF6_FMT_BC1:   dxgi = 71; break;
+    case BF6_FMT_BC3:   dxgi = 77; break;
+    case BF6_FMT_BC4:   dxgi = 80; break;
+    case BF6_FMT_BC5:   dxgi = 83; break;
+    case BF6_FMT_BC7:   dxgi = 98; break;
+    case BF6_FMT_RGBA8: dxgi = 28; break;
+    default: return fail("unsupported texture format");
+    }
+
+    std::vector<uint8_t> rgba;
+    std::string e;
+    if (tx->format == BF6_FMT_RGBA8) {
+        const int64_t need = (int64_t)tx->width * tx->height * 4;
+        if ((int64_t)tx->data_len < need) return fail("short rgba payload");
+        rgba.assign(tx->data, tx->data + need);
+    } else if (!bf6::bcn_to_rgba8(tx->data, (size_t)tx->data_len, tx->width,
+                                  tx->height, dxgi, rgba, e)) {
+        return fail(e.empty() ? "decode failed" : e);
+    }
+    if ((int64_t)rgba.size() < (int64_t)tx->width * tx->height * 4)
+        return fail("short decode");
+
+    // BOX RESAMPLE, not a point pick. A ground sheet resampled by nearest
+    // neighbour keeps its highest frequencies and then aliases against the
+    // tiling, which reads as crawling gravel; averaging the block that maps to
+    // each output texel is the cheap correct answer.
+    for (int y = 0; y < size; y++) {
+        const int sy0 = (int)((int64_t)y * tx->height / size);
+        const int sy1 = std::max(sy0 + 1, (int)((int64_t)(y + 1) * tx->height / size));
+        for (int x = 0; x < size; x++) {
+            const int sx0 = (int)((int64_t)x * tx->width / size);
+            const int sx1 = std::max(sx0 + 1, (int)((int64_t)(x + 1) * tx->width / size));
+            uint32_t acc[4] = {0, 0, 0, 0};
+            uint32_t n = 0;
+            for (int sy = sy0; sy < sy1 && sy < tx->height; sy++)
+                for (int sx = sx0; sx < sx1 && sx < tx->width; sx++) {
+                    const uint8_t* s = &rgba[((size_t)sy * tx->width + sx) * 4];
+                    acc[0] += s[0]; acc[1] += s[1]; acc[2] += s[2]; acc[3] += s[3];
+                    n++;
+                }
+            uint8_t* d = &out[((size_t)y * size + x) * 4];
+            if (n == 0) { d[0] = d[1] = d[2] = 0; d[3] = 255; continue; }
+            d[0] = (uint8_t)(acc[0] / n); d[1] = (uint8_t)(acc[1] / n);
+            d[2] = (uint8_t)(acc[2] / n); d[3] = (uint8_t)(acc[3] / n);
+        }
+    }
+    return 1;
+}
+
 int bf6_ground_coverage_get(bf6_ctx* c, const char* level, int size,
                             bf6_ground_coverage* out, char* err, int err_len)
 {

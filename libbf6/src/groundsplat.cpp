@@ -6,6 +6,7 @@
 
 #include "splat.h"
 #include "terrainlayers.h"
+#include "terrainstatic.h"
 
 namespace bf6 {
 
@@ -59,6 +60,18 @@ bool ground_coverage(Source& src, const std::string& level, int size,
         err = "layers: " + le;
     }
 
+    // The static table hands back an asset LEAF name; the resource wants the
+    // full path, so it is looked up in the mount rather than assumed.
+    auto res_for_name = [&src](const std::string& leaf) -> std::string {
+        if (leaf.empty()) return std::string();
+        for (const auto& kv : src.res()) {
+            const size_t sl = kv.first.find_last_of('/');
+            const std::string tail = sl == std::string::npos ? kv.first : kv.first.substr(sl + 1);
+            if (tail == leaf) return kv.first;
+        }
+        return std::string();
+    };
+
     // guid -> resource name, the same walk every other consumer does
     const std::map<std::string, std::string>& gi = src.partition_index();
     auto res_for_guid = [&gi](const std::string& g) -> std::string {
@@ -69,6 +82,31 @@ bool ground_coverage(Source& src, const std::string& level, int size,
         if (n.size() > 4 && n.compare(n.size() - 4, 4, ".ebx") == 0) n.resize(n.size() - 4);
         return n;
     };
+
+    // THE STATIC HALF OF THE TEXTURES.
+    //
+    // Only some layers name their sheet through the layer-graph depot. The
+    // rest are bound statically out of the compositor's own BindingSet, and
+    // on an urban map those are the road surfaces - a coverage list built
+    // from the bindless path alone hands a renderer thirty materials of
+    // which four have textures. Same join the bake uses.
+    TerrainStaticTable stab;
+    std::map<int, int> static_slot;
+    {
+        std::string se;
+        if (stab.load(src, level, se)) {
+            std::vector<int> need;
+            for (int L = 0; L < 256 && have_layers; L++) {
+                if (cov.layer_texels[L] == 0) continue;
+                if (L >= (int)tl.layers().size()) continue;
+                const TerrainLayer& lay = tl.layers()[(size_t)L];
+                if (lay.empty) continue;
+                if (!lay.material.base_color().empty()) continue;   // bindless already
+                need.push_back(L);
+            }
+            static_slot = stab.assign(need);
+        }
+    }
 
     // COMPACT THE LAYER SPACE. The coverage carries raw layer indices, which
     // run to 47 on some maps while a handful ever appear. A renderer binds one
@@ -92,6 +130,17 @@ bool ground_coverage(Source& src, const std::string& level, int size,
             // and looks like an unbound layer.
             m.albedo_res = res_for_guid(lay.material.base_color());
             m.normal_res = res_for_guid(lay.material.normal_height());
+            if (m.albedo_res.empty()) {
+                auto sit = static_slot.find(L);
+                if (sit != static_slot.end() &&
+                    sit->second >= 0 && sit->second < (int)stab.groups().size()) {
+                    const TerrainStaticGroup& g = stab.groups()[(size_t)sit->second];
+                    if (g.base_color >= 0)
+                        m.albedo_res = res_for_name(g.tex[(size_t)g.base_color].asset);
+                    if (m.normal_res.empty() && g.normal_height >= 0)
+                        m.normal_res = res_for_name(g.tex[(size_t)g.normal_height].asset);
+                }
+            }
             m.metres_per_repeat = lay.material.metres_per_repeat(4.f);
             if (lay.material.uv_rotation_deg_set)
                 m.uv_rotation_deg = lay.material.uv_rotation_deg;

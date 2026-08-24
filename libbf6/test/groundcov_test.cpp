@@ -44,6 +44,18 @@ int main(int argc, char** argv)
         for (const char* p = a; *p; p++) if (*p == '/') sl = p + 1;
         std::printf("%-4d %-6d %-9.2f %s\n", i, m.layer, m.metres_per_repeat, sl);
     }
+    // decode every bound sheet, which is what a texture array would need
+    std::vector<unsigned char> buf(512 * 512 * 4);
+    int ok = 0, bad = 0;
+    for (int i = 0; i < g.material_count; i++) {
+        const char* a = g.materials[i].albedo_res;
+        if (!a || !*a) continue;
+        char e2[256] = {0};
+        if (bf6_layer_sheet(ctx, a, 512, buf.data(), e2, sizeof(e2))) ok++;
+        else { bad++; if (bad <= 3) std::printf("  sheet FAIL %s: %s\n", a, e2); }
+    }
+    std::printf("\nsheets decoded to 512: %d ok, %d failed\n", ok, bad);
+
     bf6_close(ctx);
     return 0;
 }
