@@ -700,6 +700,29 @@ bf6_mesh* bf6_read_mesh_scoped(bf6_ctx* c, const char* res_name, int lod,
     // people complain about. A mesh with no per-vertex part index cannot be
     // filtered whatever its table says, and that test is free: the index was
     // already decoded with the geometry.
+    // SHADOW GEOMETRY IS NOT VISUAL GEOMETRY. A section named *_Shadow or
+    // *_ZOnly is the game's dedicated shadow caster or depth-prepass twin -
+    // its depot record binds an alpha mask and NO colour, because the main
+    // pass never draws it. Rendered anyway it is a white card floating in the
+    // tree that draws it correctly right beside it, which is exactly how the
+    // bug read. The reference pipeline skips both families (depot_join.py):
+    // the visual sections carry the look, and in an engine that shadows its
+    // own visible geometry the shadow twin has no job at all.
+    {
+        auto shadow_only = [](const bf6::MeshGeomSection& g)
+        {
+            const std::string& m = g.material;
+            auto ends = [&m](const char* s)
+            {
+                const size_t n = strlen(s);
+                return m.size() >= n && m.compare(m.size() - n, n, s) == 0;
+            };
+            return ends("_Shadow") || ends("_ZOnly");
+        };
+        secs.erase(std::remove_if(secs.begin(), secs.end(), shadow_only), secs.end());
+        if (secs.empty()) return nullptr;
+    }
+
     bool has_parts = false;
     for (const auto& g : secs)
         if (!g.parts.empty() && g.parts.size() == g.positions.size() / 3) { has_parts = true; break; }
