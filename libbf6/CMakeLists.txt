@@ -23,6 +23,8 @@ set(BF6_SOURCES
     src/terrain.cpp
     src/texture.cpp
     src/depot.cpp
+    src/destruction.cpp
+    src/decals.cpp
 )
 
 add_library(bf6_core SHARED ${BF6_SOURCES})
@@ -86,6 +88,9 @@ target_include_directories(texture_test PRIVATE src include)
 # Module 10 (heights): reads a level's heightfield and reports the tree it came
 # from, so a wrong stride shows up as a bad shape rather than as bad pixels.
 add_executable(terrain_test test/terrain_test.cpp)
+add_executable(terrainfit_test test/terrainfit_test.cpp)
+target_link_libraries(terrainfit_test PRIVATE bf6_core_static)
+target_include_directories(terrainfit_test PRIVATE src include)
 target_link_libraries(terrain_test PRIVATE bf6_core_static)
 target_include_directories(terrain_test PRIVATE src include)
 
@@ -129,3 +134,15 @@ target_include_directories(mesh_read_test PRIVATE src include)
 add_executable(placeables_test test/placeables_test.cpp)
 target_link_libraries(placeables_test PRIVATE bf6_core_static)
 target_include_directories(placeables_test PRIVATE src include)
+add_executable(albedo_test test/albedo_test.cpp)
+target_link_libraries(albedo_test PRIVATE bf6_core_static)
+target_include_directories(albedo_test PRIVATE src include)
+add_executable(destruction_test test/destruction_test.cpp)
+target_link_libraries(destruction_test PRIVATE bf6_core_static)
+target_include_directories(destruction_test PRIVATE src include)
+add_executable(pipeline_test test/pipeline_test.cpp)
+target_link_libraries(pipeline_test PRIVATE bf6_core_static)
+target_include_directories(pipeline_test PRIVATE src include)
+add_executable(decals_test test/decals_test.cpp)
+target_link_libraries(decals_test PRIVATE bf6_core_static)
+target_include_directories(decals_test PRIVATE src include)

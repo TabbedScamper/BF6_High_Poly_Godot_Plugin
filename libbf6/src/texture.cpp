@@ -142,7 +142,9 @@ bool Texture::dims_for(const TextureHeader& h, const std::vector<uint8_t>& pix,
     // reach the same answer but by coincidence of ordering.
     if (!h.mip_sizes.empty() && pix.size() == (size_t)h.mip_sizes[0] * (size_t)slices)
     {
-        out.width = w; out.height = ht; out.blocks = pix;
+        // The streamed chunk is mip0 ON ITS OWN, so this really is one level.
+        // A consumer that needs a chain for this texture has to build one.
+        out.width = w; out.height = ht; out.blocks = pix; out.mip_count = 1;
         return true;
     }
 
@@ -169,13 +171,14 @@ bool Texture::dims_for(const TextureHeader& h, const std::vector<uint8_t>& pix,
 
                 size_t off = 0;
                 for (int i = fm; i < lvl; i++) off += (size_t)h.mip_sizes[(size_t)i] * (size_t)slices;
-                const size_t n = (size_t)h.mip_sizes[(size_t)lvl] * (size_t)slices;
-                const size_t end = std::min(off + n, pix.size());
                 if (off >= pix.size()) return false;
 
                 out.width  = std::max(1, w  >> lvl);
                 out.height = std::max(1, ht >> lvl);
-                out.blocks.assign(pix.begin() + (ptrdiff_t)off, pix.begin() + (ptrdiff_t)end);
+                // EVERYTHING FROM HERE DOWN, not just this level. The chain is
+                // contiguous and largest-first, so the tail is the mip chain.
+                out.blocks.assign(pix.begin() + (ptrdiff_t)off, pix.end());
+                out.mip_count = mipcount - lvl;
                 return true;
             }
         }
@@ -236,6 +239,8 @@ bool Texture::decode(const std::vector<uint8_t>& res, const FetchChunk& fetch,
 
     // Refuse rather than render bytes as if there were more of them: a short
     // buffer drawn at full dimensions is garbage that looks like a texture.
+    // Only the TOP level has to be present in full; the tail is a bonus and a
+    // short one simply means fewer mips.
     const size_t need = (size_t)level_size(out.width, out.height, out.dxgi) * (size_t)out.slices;
     if (out.blocks.size() < need)
     {

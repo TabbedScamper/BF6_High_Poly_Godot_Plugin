@@ -47,6 +47,16 @@ struct TextureImage {
     int32_t  dxgi = 0;
     bool     srgb = false;
     int32_t  slices = 1;
+    // THE WHOLE CHAIN from `width`x`height` down, not one level. A chunk is
+    // front-ordered largest-first with no padding, so the remainder after the
+    // chosen level is already a valid chain and only needs to be handed over
+    // rather than sliced away.
+    //
+    // It matters most for MASKS: foliage drawn with a hard alpha test against a
+    // mask with no mip chain speckles per frame and crawls with the camera -
+    // the "lacy, moth-eaten" look - and it is INVARIANT to mask resolution, so
+    // capping the size never fixes it and the mask gets blamed instead.
+    int32_t  mip_count = 1;
     std::vector<uint8_t> blocks;      // BCn as it lies, ready for upload
 };
 

@@ -21,6 +21,7 @@
 #include <chrono>
 #include <cstdio>
 #include <string>
+#include <string>
 
 using namespace bf6;
 
@@ -95,8 +96,49 @@ int main(int argc, char** argv)
     std::printf("world x %.1f..%.1f  y %.1f..%.1f  z %.1f..%.1f  (%.0f x %.0f m)\n",
                 g.lo[0], g.hi[0], g.lo[1], g.hi[1], g.lo[2], g.hi[2],
                 g.hi[0] - g.lo[0], g.hi[2] - g.lo[2]);
+    // THE HEIGHT DECODE, SETTLED BY THE DATA RATHER THAN BY WHICH FORMULA
+    // LOOKS REASONABLE. The spec says y = u16 / 65536 * WorldSizeY, a pure
+    // scale through zero. A consumer that instead fits a line from the AABB's
+    // y range onto the raw range gets the two endpoints right and sags
+    // everywhere in between, because the minimum raw value is not zero. If the
+    // spec's rule holds, both of these print as the AABB's own y bounds.
+    std::printf("height scale %.3f: raw %u -> %.2f (aabb lo %.2f), raw %u -> %.2f (aabb hi %.2f)\n",
+                g.world_size_y,
+                lo, (double)lo / 65536.0 * g.world_size_y, g.lo[1],
+                hi, (double)hi / 65536.0 * g.world_size_y, g.hi[1]);
+    {
+        // And what the AABB-fitted line would have said at the middle of the
+        // range, which is where the two disagree most.
+        const double mid = 0.5 * ((double)lo + (double)hi);
+        const double truth = mid / 65536.0 * g.world_size_y;
+        const double fitted = g.lo[1] + (g.hi[1] - g.lo[1]) * (mid - lo) / (double)(hi - lo);
+        std::printf("  at mid raw %.0f: spec %.2f, aabb-fitted %.2f  (fitted is %.2f m low)\n",
+                    mid, truth, fitted, truth - fitted);
+    }
     std::printf("parse %.0f ms, chunks %.0f ms, composite %.0f ms\n",
                 ms(t0, t1), ms(t1, t2), ms(t2, t3));
+
+    // A RAW DUMP, for comparing this ground against another one numerically.
+    // The pgm below is 8-bit and normalised, which is fine for looking at the
+    // shape and useless for asking whether the ground sits at the right
+    // height. This writes the grid as it is, with the world box and the height
+    // scale in front of it, so a consumer can reconstruct metres.
+    if (argc > 3 && std::string(argv[3]).size() > 4 &&
+        std::string(argv[3]).substr(std::string(argv[3]).size() - 4) == ".raw")
+    {
+        FILE* f = std::fopen(argv[3], "wb");
+        if (f)
+        {
+            std::fwrite(&g.size, 4, 1, f);
+            std::fwrite(g.lo, 4, 3, f);
+            std::fwrite(g.hi, 4, 3, f);
+            std::fwrite(&g.world_size_y, 4, 1, f);
+            std::fwrite(g.heights.data(), 2, g.heights.size(), f);
+            std::fclose(f);
+            std::printf("wrote %s (%d x %d raw u16)\n", argv[3], g.size, g.size);
+        }
+        return 0;
+    }
 
     if (argc > 3)
     {

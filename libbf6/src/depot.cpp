@@ -304,19 +304,18 @@ MaterialBinding Depot::textures_for(uint64_t state_key, const std::vector<uint8_
         if (p.type_hash == TH_TEXTURE)
         {
             if (p.refs.empty()) continue;
-            const char* nm = slot_name(p.name32);
-            char fallback[16];
-            if (!nm)
-            {
-                std::snprintf(fallback, sizeof(fallback), "nh_%08x", p.name32);
-                nm = fallback;
-            }
-            out.textures[nm] = p.refs[0].second;   // the FILE guid
+            out.textures[p.name32] = p.refs[0].second;   // the FILE guid
         }
         else out.constants[p.name32] = p.raw;
     }
     out.valid = true;
     return out;
+}
+
+const char* MaterialBinding::display_name(uint32_t name32)
+{
+    const char* n = Depot::slot_name(name32);
+    return n ? n : "(unnamed)";
 }
 
 }  // namespace bf6

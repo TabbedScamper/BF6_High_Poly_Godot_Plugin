@@ -96,6 +96,7 @@ int main(int argc, char** argv)
 
     int by_res = 0, by_placing = 0, placing_known = 0;
     int differ_sections = 0, hit_placing = 0, hit_res = 0;
+    int carpaint = 0, carpaint_const = 0, carpaint_tc1 = 0, carpaint_tc3 = 0;
     auto fetch = [&](const std::string& g) { std::string e; return src.get_chunk(g, e); };
     const auto t0 = std::chrono::steady_clock::now();
 
@@ -180,14 +181,44 @@ int main(int argc, char** argv)
             if (!mb.valid) continue;
             joined++;
 
-            for (const auto& kv : mb.textures) slot_hits[kv.first]++;
-            if (mb.textures.count("basecolor")) with_basecolor++;
-            if (mb.textures.count("normal"))    with_normal++;
-            if (mb.textures.count("occl_rough")) with_occl++;
+            for (const auto& kv : mb.textures) slot_hits[MaterialBinding::display_name(kv.first)]++;
+
+            // WHICH TEXCOORD THE RULE PICKS, and whether the depot actually
+            // says. Reported rather than trusted: the last time a channel was
+            // chosen without the depot it was wrong and had to be retracted.
+            {
+                // DATA-DRIVEN, not by name: carpaint is the flakes-normal slot
+                // being bound. The material names in this data do not contain
+                // "carpaint" at all, so a name test finds nothing and reports
+                // a clean zero, which looks like agreement and is not.
+                // THE FULL CONJUNCTION. Flakes alone is not carpaint: a fuel
+                // canister and a machine gun bind it too, and forcing them onto
+                // TC3 would break props that are fine on TC0.
+                if (mb.textures.count(0xA11011B8) &&
+                    !mb.textures.count(0x54BBCD30) &&
+                    !mb.constants.count(0xF1CEE56D) && !mb.constants.count(0xF1CEE56E))
+                {
+                    carpaint++;
+                    auto it = mb.constants.find(0x4F5F0664);
+                    const bool present = it != mb.constants.end() && !it->second.empty();
+                    const bool tc1 = present && it->second[0] != 0;
+                    if (present) carpaint_const++;
+                    if (tc1) carpaint_tc1++; else carpaint_tc3++;
+                    if (carpaint <= 6)
+                        std::printf("  carpaint: %-44s const %s -> TC%d\n",
+                                    s.material.substr(0, 44).c_str(),
+                                    present ? "present" : "ABSENT ", tc1 ? 1 : 3);
+                }
+            }
+            // By hash now, which is what the binding carries.
+            if (mb.textures.count(0x54BBCD30)) with_basecolor++;
+            if (mb.textures.count(0xEC35A757) || mb.textures.count(0xEC35A68C) ||
+                mb.textures.count(0xEC35A9E2) || mb.textures.count(0xEC35A74C)) with_normal++;
+            if (mb.textures.count(0xB1A29A3C)) with_occl++;
 
             // Take the basecolor all the way to pixels: that is the link that
             // proves the guid spelling and the texture decode agree.
-            auto bc = mb.textures.find("basecolor");
+            auto bc = mb.textures.find(0x54BBCD30);
             if (bc == mb.textures.end()) continue;
             auto asset = gi.find(bc->second);
             if (asset == gi.end()) continue;
@@ -226,6 +257,8 @@ int main(int argc, char** argv)
                 tex_named, tex_decoded, tex_failed);
     std::printf("  where the two rules pick DIFFERENT depots: %d section(s), placing-rule hits %d, resource-rule hits %d\n",
                 differ_sections, hit_placing, hit_res);
+    std::printf("  carpaint sections %d: %d carry the channel const, %d -> TC1, %d -> TC3\n",
+                carpaint, carpaint_const, carpaint_tc1, carpaint_tc3);
     std::printf("  slots seen:");
     for (const auto& kv : slot_hits) std::printf(" %s=%d", kv.first.c_str(), kv.second);
     std::printf("\n");

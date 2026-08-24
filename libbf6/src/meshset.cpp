@@ -84,6 +84,9 @@ static std::vector<MeshSection> sections_at(const uint8_t* d, size_t len,
 
 // Vertex-element usage codes.
 static const int U_POS = 1, U_NORMAL = 6, U_UV0 = 33, U_UV4 = 37;
+// BoneIndices. On a Rigid or Composite destructible this is the per-vertex
+// destruction part index; on a Skinned mesh it is a skeleton bone id.
+static const int U_BONE = 2;
 
 static int fmt_size(int fmt) {
     switch (fmt) {
@@ -234,7 +237,7 @@ std::vector<MeshGeomSection> meshset_read_lod(const MeshSet& ms, int lod,
         int voff = s.vertex_offset;
         std::vector<float> pos, nrm;
         int pos_comps = 0, nrm_comps = 0;
-        std::vector<std::pair<std::vector<float>, int>> uv_sets;
+        std::pair<std::vector<float>, int> uv_ch[5];   // by channel, not by order
         for (const auto& el : s.decl.elements) {
             int usage = el[0];
             if (usage == U_POS && pos.empty()) {
@@ -243,9 +246,14 @@ std::vector<MeshGeomSection> meshset_read_lod(const MeshSet& ms, int lod,
             } else if (usage == U_NORMAL && nrm.empty()) {
                 auto r = read_attr(chunk, clen, voff, vcount, el, s.decl.streams);
                 if (!r.first.empty()) { nrm = std::move(r.first); nrm_comps = r.second; }
-            } else if (usage >= U_UV0 && usage <= 36) {
-                auto r = read_attr(chunk, clen, voff, vcount, el, s.decl.streams);
-                if (!r.first.empty() && r.second >= 2) uv_sets.push_back({std::move(r.first), r.second});
+            } else if (usage >= U_UV0 && usage <= U_UV4) {
+                // <= U_UV4, not <= 36: the old bound silently dropped TC4,
+                // which is the channel a pictorial wrap lives on.
+                const int ch = usage - U_UV0;
+                if (uv_ch[ch].first.empty()) {
+                    auto r = read_attr(chunk, clen, voff, vcount, el, s.decl.streams);
+                    if (!r.first.empty() && r.second >= 2) uv_ch[ch] = std::move(r);
+                }
             }
         }
         if (pos.empty() || pos_comps < 3) continue;
@@ -257,11 +265,19 @@ std::vector<MeshGeomSection> meshset_read_lod(const MeshSet& ms, int lod,
             int o = i * pos_comps;
             g.positions[i * 3] = pos[o]; g.positions[i * 3 + 1] = pos[o + 1]; g.positions[i * 3 + 2] = pos[o + 2];
         }
-        if (!uv_sets.empty()) {   // default.tc0: the first declared texcoord
-            const auto& src = uv_sets[0].first; int c = uv_sets[0].second;
-            g.uv0.resize((size_t)vcount * 2);
-            for (int i = 0; i < vcount; i++) { g.uv0[i * 2] = src[i * c]; g.uv0[i * 2 + 1] = src[i * c + 1]; }
+        for (int ch = 0; ch < 5; ch++) {
+            if (uv_ch[ch].first.empty()) continue;
+            const auto& src = uv_ch[ch].first;
+            const int c = uv_ch[ch].second;
+            g.uv[ch].resize((size_t)vcount * 2);
+            for (int i = 0; i < vcount; i++) {
+                g.uv[ch][i * 2]     = src[i * c];
+                g.uv[ch][i * 2 + 1] = src[i * c + 1];
+            }
         }
+        // TC0 is the primary for everything except car paint, and the caller
+        // overrides it there once it has read the depot.
+        g.uv0 = g.uv[0];
         if (nrm_comps >= 3) {
             g.normals.resize((size_t)vcount * 3);
             for (int i = 0; i < vcount; i++) {
@@ -269,6 +285,49 @@ std::vector<MeshGeomSection> meshset_read_lod(const MeshSet& ms, int lod,
                 g.normals[i * 3] = nrm[o]; g.normals[i * 3 + 1] = nrm[o + 1]; g.normals[i * 3 + 2] = nrm[o + 2];
             }
         }
+        // THE PART INDEX, READ RAW.
+        //
+        // Three things about this element are easy to get wrong, and each
+        // corrupts a different subset of vertices rather than failing outright:
+        //
+        //   SLOT 0 IS STORED LAST inside the element, so the lane to read is
+        //   laneCount-1 and not 0. Lane count comes from the format: the 2-lane
+        //   formats are UShort2 (22) and UShort2N (24), the 4-lane ones are
+        //   Short4 (17), Short4N (21), UShort4 (23) and UShort4N (25).
+        //
+        //   THE VALUE IS A DIRECT GLOBAL PART INDEX. The section's own bone
+        //   list is the SET of parts it touches, not a palette to map through;
+        //   mapping through it corrupts exactly those vertices whose part id
+        //   happens to fall inside the palette's length.
+        //
+        //   IT MUST BE READ RAW, not through read_attr, which normalises the
+        //   N formats and would turn part 17 into 0.00026.
+        //
+        //   AND IT MAY BE IN EITHER DECLARATION, so both are searched.
+        for (const MeshDecl* dc : { &s.decl0, &s.decl1 }) {
+            if (!g.parts.empty()) break;
+            for (const auto& el : dc->elements) {
+                if (el[0] != U_BONE) continue;
+                const int fmt = el[1];
+                int lanes = 0;
+                if (fmt == 22 || fmt == 24) lanes = 2;
+                else if (fmt == 17 || fmt == 21 || fmt == 23 || fmt == 25) lanes = 4;
+                if (lanes == 0) continue;
+                const int si = el[3];
+                if (si >= (int)dc->streams.size()) continue;
+                const int sstride = dc->streams[si][0];
+                if (sstride == 0) continue;
+                size_t sbase = (size_t)voff;
+                for (int k = 0; k < si; k++) sbase += (size_t)dc->streams[k][0] * vcount;
+                const size_t off = (size_t)el[2] + (size_t)(lanes - 1) * 2;
+                if (sbase + (size_t)(vcount - 1) * sstride + off + 2 > clen) continue;
+                g.parts.resize((size_t)vcount);
+                for (int i = 0; i < vcount; i++)
+                    g.parts[(size_t)i] = u16(chunk, sbase + (size_t)i * sstride + off);
+                break;
+            }
+        }
+
         g.indices = read_indices(chunk, clen, vsize, isize, L.idx32, s.start_index, pcount, vcount, voff);
         if (g.indices.empty()) continue;
         out.push_back(std::move(g));

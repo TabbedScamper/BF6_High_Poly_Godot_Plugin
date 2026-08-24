@@ -54,9 +54,15 @@ struct DepotRecord {
 // What one piece of geometry binds: slot name -> texture FILE guid, plus the
 // inline constants by name hash.
 struct MaterialBinding {
-    std::map<std::string, std::string> textures;
+    // Keyed by the slot's NAME32 rather than by a display name. A consumer maps
+    // hashes to its own slots, and a name would mean going back through a table
+    // to recover the number it was derived from.
+    std::map<uint32_t, std::string> textures;         // name32 -> file guid
     std::map<uint32_t, std::vector<uint8_t>> constants;
     bool valid = false;
+
+    // For reporting only.
+    static const char* display_name(uint32_t name32);
 };
 
 class Depot {

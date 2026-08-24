@@ -71,8 +71,24 @@ struct MeshGeomSection {
     uint16_t              material_id = 0;
     std::vector<float>    positions;   // xyz * vertex_count
     std::vector<float>    normals;     // xyz * vertex_count, or empty
+    // THE PRIMARY UV, already chosen. Which channel that is depends on the
+    // material FAMILY, and for car paint the depot names it - see the caller.
+    // Consumers should sample this and not think about channels.
     std::vector<float>    uv0;         // uv * vertex_count, or empty
+    // EVERY texcoord the section declares, indexed by channel (TC0..TC4), so a
+    // caller that knows the rule can pick. Keyed by the declared USAGE rather
+    // than by declaration order: the old code kept "the first one declared",
+    // which is not TC0 in general and gave no way to ask for TC3 at all.
+    std::vector<float>    uv[5];
     std::vector<uint32_t> indices;
+    // ONE DESTRUCTION PART INDEX PER VERTEX, or empty.
+    //
+    // The BoneIndices element (usage 2). On a Rigid or Composite destructible
+    // this is the per-vertex DESTRUCTION PART; on a Skinned mesh the same
+    // element is a skeleton bone, which is a different and differently sized
+    // index space, so a caller must know which kind of mesh it has before
+    // using this for anything.
+    std::vector<uint16_t> parts;
 };
 
 // Decode one LOD's sections. `chunk` is the LOD's [vertex buffer][index buffer].
