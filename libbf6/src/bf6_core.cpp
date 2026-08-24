@@ -56,6 +56,11 @@ struct bf6_ctx {
     enum HandleKind { HK_MESH = 1, HK_TERRAIN = 2 };
     std::map<void*, int> handles;
 
+    // bf6_variation_live answers, keyed res|bundle|variation. The question is
+    // asked once per distinct triple while a level's groups are being formed,
+    // and each answer costs a meshset parse.
+    std::map<std::string, int> var_live;
+
     // ---- terraindecals ---------------------------------------------------
     // Parsed once per level and kept, for the same reason the walk is: the
     // container is megabytes and a caller commonly asks for a count before it
@@ -490,15 +495,21 @@ static bool is_detail_layer(uint32_t n32)
     return n32 == 0x002E8ADD || n32 == 0x05FFAEDA;
 }
 
-// djb2 over the lowercased path, for the variation key.
+// djb2 over the lowercased path, for the variation key. THE XOR VARIANT,
+// MASKED TO 32 BITS: 5381 / *33 / ^c per the hub's HASHING_AND_IDS.md and the
+// pipeline's own djb2_lower. This function first shipped as the classic ADD
+// variant accumulating 64 bits, and every derived key it produced resolved
+// nothing - which never errored, because a missing variation key falls back
+// to the base record. That silent fallback is what "the liveries are not
+// coming in" looks like from the outside.
 static uint64_t djb2_lower(const std::string& s)
 {
-    uint64_t h = 5381;
+    uint32_t h = 5381;
     for (unsigned char c : s) {
         if (c >= 'A' && c <= 'Z') c = (unsigned char)(c + 32);
-        h = ((h << 5) + h) + c;
+        h = (h * 33u) ^ c;
     }
-    return h;
+    return (uint64_t)h;
 }
 
 // A variation reuses a DERIVED key: sectionStateKey + djb2(variation path), as
@@ -507,7 +518,14 @@ static uint64_t djb2_lower(const std::string& s)
 static uint64_t variation_key(uint64_t state_key, const std::string& variation)
 {
     if (variation.empty()) return state_key;
-    return state_key + djb2_lower(variation);
+    // The hash is over the asset path with ".ebx" DROPPED and forward slashes,
+    // exactly as the reference computes it - hashing the raw reference string
+    // misses every entry, silently, thanks to the base-key fallback.
+    std::string p = variation;
+    for (char& ch : p) if (ch == 0x5C) ch = '/';
+    if (p.size() > 4 && p.compare(p.size() - 4, 4, ".ebx") == 0) p.resize(p.size() - 4);
+    if (p.empty()) return state_key;
+    return state_key + djb2_lower(p);
 }
 
 struct MeshHandle {
@@ -700,6 +718,13 @@ bf6_mesh* bf6_read_mesh_scoped(bf6_ctx* c, const char* res_name, int lod,
     // people complain about. A mesh with no per-vertex part index cannot be
     // filtered whatever its table says, and that test is free: the index was
     // already decoded with the geometry.
+    // Every section's state key by material name, taken BEFORE the shadow
+    // filter below: a visual section's variation can resolve through its
+    // _ZOnly twin's key (reference: _candidate_keys, SHADERS.md 5.2), and the
+    // twin is exactly what the filter is about to remove.
+    std::map<std::string, uint64_t> twin_keys;
+    for (const auto& g : secs) twin_keys.emplace(g.material, g.state_key);
+
     // SHADOW GEOMETRY IS NOT VISUAL GEOMETRY. A section named *_Shadow or
     // *_ZOnly is the game's dedicated shadow caster or depth-prepass twin -
     // its depot record binds an alpha mask and NO colour, because the main
@@ -826,13 +851,37 @@ bf6_mesh* bf6_read_mesh_scoped(bf6_ctx* c, const char* res_name, int lod,
         md.texture_count = 0;
         if (!dep) continue;
 
-        const uint64_t key = variation_key(secs[i].state_key, variant);
-        bf6::MaterialBinding mb = dep->textures_for(key, *dbytes);
-        // A variation whose derived key is absent is not an error: not every
-        // section has a variant. Fall back to the base key rather than binding
-        // nothing.
-        if (!mb.valid && key != secs[i].state_key)
-            mb = dep->textures_for(secs[i].state_key, *dbytes);
+        // THE CANDIDATE KEYS, in the reference's order (SHADERS.md 5.2):
+        // the section's own variation key, the _ZOnly twin's variation key,
+        // then the base key - and the records MERGED, first-wins per slot,
+        // never taken first-hit. A variant record often carries only the
+        // DELTA - a livery overlay, a colour table - while the base record
+        // carries the texture set, so stopping at the first resolving record
+        // loses whichever half it did not hold. First-hit is exactly why
+        // liveries and paints never arrived.
+        uint64_t cands[3];
+        int nc = 0;
+        const uint64_t base_key = secs[i].state_key;
+        if (!variant.empty()) {
+            cands[nc++] = variation_key(base_key, variant);
+            auto tw = twin_keys.find(secs[i].material + "_ZOnly");
+            if (tw != twin_keys.end() && tw->second != base_key)
+                cands[nc++] = variation_key(tw->second, variant);
+        }
+        cands[nc++] = base_key;
+
+        bf6::MaterialBinding mb;
+        for (int ci = 0; ci < nc; ci++) {
+            bool dup = false;
+            for (int cj = 0; cj < ci; cj++) if (cands[cj] == cands[ci]) dup = true;
+            if (dup) continue;
+            bf6::MaterialBinding one = dep->textures_for(cands[ci], *dbytes);
+            if (!one.valid) continue;
+            mb.valid = true;
+            // emplace, not assignment: an earlier candidate's slot stands.
+            for (const auto& kv : one.textures)  mb.textures.emplace(kv.first, kv.second);
+            for (const auto& kv : one.constants) mb.constants.emplace(kv.first, kv.second);
+        }
         if (!mb.valid) continue;
 
         // ---- what KIND of surface this is, from the record ----------------
@@ -1168,6 +1217,42 @@ static bool BF6_CountsWater(bf6_ctx* c, const std::string& name)
     for (size_t i = 0; i < e.instance_count(); i++)
         if (bf6::TypeDb::guid_str(e.instance_type(i)) == kWaterTypeGuid) return true;
     return false;
+}
+
+int bf6_variation_live(bf6_ctx* c, const char* res_name,
+                       const char* placing_bundle, const char* variation)
+{
+    if (!c || !res_name || !variation || !*variation) return 0;
+    const std::string res = res_name;
+    const std::string place = placing_bundle ? placing_bundle : "";
+    const std::string var = variation;
+
+    const std::string ck = res + "|" + place + "|" + var;
+    auto it = c->var_live.find(ck);
+    if (it != c->var_live.end()) return it->second;
+    int& slot = c->var_live[ck];
+    slot = 0;
+
+    const std::string dname = place.empty()
+        ? c->src.depot_for_res(res)
+        : c->src.depot_for_bundle(place);
+    const std::vector<uint8_t>* dbytes = nullptr;
+    bf6::Depot* dep = c->depot_named(dname, &dbytes);
+    if (!dep) return 0;
+
+    std::string err;
+    std::vector<uint8_t> mres = c->src.get_res(res, err);
+    if (mres.empty()) return 0;
+    bf6::MeshSet ms = bf6::meshset_parse(mres.data(), mres.size(), err);
+    if (!ms.ok || ms.lods.empty()) return 0;
+
+    for (const bf6::MeshSection& s : ms.lods[0].sections)
+    {
+        if (!s.state_key) continue;
+        const uint64_t vk = variation_key(s.state_key, var);
+        if (vk != s.state_key && dep->has_key(vk)) { slot = 1; break; }
+    }
+    return slot;
 }
 
 int bf6_level_water(bf6_ctx* c, const char* level, bf6_water* out, int out_max)

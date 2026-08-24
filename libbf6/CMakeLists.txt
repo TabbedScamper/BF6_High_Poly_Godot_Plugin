@@ -73,6 +73,10 @@ target_link_libraries(water_test PRIVATE bf6_core_static)
 
 add_executable(whitecards_test test/whitecards_test.cpp)
 target_include_directories(whitecards_test PRIVATE src include)
+
+add_executable(variation_test test/variation_test.cpp)
+target_include_directories(variation_test PRIVATE src include)
+target_link_libraries(variation_test PRIVATE bf6_core_static)
 target_link_libraries(whitecards_test PRIVATE bf6_core_static)
 target_include_directories(material_test PRIVATE src include)
 
