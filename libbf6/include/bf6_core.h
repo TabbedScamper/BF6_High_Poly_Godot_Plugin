@@ -432,6 +432,50 @@ typedef struct {
  * entity, else 0. */
 BF6_API int bf6_level_water_sim(bf6_ctx*, const char* level, bf6_water_sim* out);
 
+/* ------------------------------------------------------------ ground bake */
+/* The terrain's real ground materials, composited the way the game's own
+ * ComputeLayer evaluator does it: per-texel layer coverage from the splat,
+ * each layer's sheet sampled in world space at its authored tiling, blended
+ * in ascending layer order, with the colour map applied as an Overlay.
+ *
+ * This is a BAKE, not a live shader. A renderer drapes the result over the
+ * heightfield and gets ground that matches the game rather than flat grey.
+ *
+ * The window is in world XZ metres. rect_size <= 0 bakes the whole footprint,
+ * which on a 4 km map means a metre per texel at 4096 - the pages are far
+ * denser than that, so a window is how real detail is recovered. */
+typedef struct {
+    float   rect_min[2];
+    float   rect_size;      /* <= 0 = the whole map */
+    int32_t size;           /* output texels per side, 0 -> 1024 */
+    int32_t want_normal;    /* 0/1 */
+    int32_t stochastic;     /* 0/1, the shader's own repetition breakup */
+    int32_t colour_map;     /* 0/1, the per-layer Overlay blend */
+} bf6_terrain_bake_opts;
+
+typedef struct {
+    int32_t        size;
+    float          lo[2];   /* world XZ of the low corner */
+    float          hi[2];
+    float          metres_per_texel;
+    /* RGBA8, size*size*4, sRGB-ENCODED. Owned by the context, valid until
+     * the next bake or bf6_close. */
+    const uint8_t* albedo;
+    /* RGBA8 or NULL. RGB is the tangent-space layer normal as 0.5n+0.5; A is
+     * composite height over -1..+1 m. This is NOT the final world normal -
+     * the game finishes by combining it with the heightfield's own normal,
+     * which a renderer holding terrain.h data can do better itself. */
+    const uint8_t* normal;
+    int32_t        layers_used;
+    int32_t        layers_textured;
+    float          fallback_fraction;   /* texels no textured layer reached */
+} bf6_terrain_bake;
+
+/* Requires bf6_open_level. Returns 1 on success. */
+BF6_API int bf6_bake_terrain(bf6_ctx*, const char* level,
+                             const bf6_terrain_bake_opts* opts,
+                             bf6_terrain_bake* out, char* err, int err_len);
+
 /* -------------------------------------------------------------------- memory */
 /* Free anything this API returned (bf6_mesh*, bf6_terrain*, ...). The bf6_ctx*
  * itself is freed by bf6_close(), not this. */

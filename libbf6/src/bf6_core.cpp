@@ -24,6 +24,7 @@
 #include "decals.h"
 #include "destruction.h"
 #include "terrain.h"
+#include "terraincomposite.h"
 #include "texture.h"
 #include "walk.h"
 #include "placeables.h"
@@ -55,6 +56,10 @@ struct bf6_ctx {
     // remembered here. Registered on the way out, looked up on the way back.
     enum HandleKind { HK_MESH = 1, HK_TERRAIN = 2 };
     std::map<void*, int> handles;
+
+    // The last ground bake, so its buffers outlive the call that made it and
+    // a second bake replaces the first rather than leaking it.
+    std::unique_ptr<bf6::TerrainBake> bake;
 
     // bf6_variation_live answers, keyed res|bundle|variation. The question is
     // asked once per distinct triple while a level's groups are being formed,
@@ -1347,6 +1352,57 @@ static void BF6_SimRow(const bf6::EbxValue& d, bf6_water_sim& s)
         s.dist_x[i] = (i < n - 1 && i < 12) ? xs[i] : 1.f;
         s.dist_y[i] = (i < 16) ? ys[i] : 0.f;
     }
+}
+
+// ---- the ground bake ------------------------------------------------------
+//
+// terraincomposite does the work; this owns the buffers so a caller across the
+// ABI never has to free anything, and so a second bake replaces the first
+// instead of leaking it.
+int bf6_bake_terrain(bf6_ctx* c, const char* level,
+                     const bf6_terrain_bake_opts* opts,
+                     bf6_terrain_bake* out, char* err, int err_len)
+{
+    auto fail = [&](const std::string& m) {
+        if (err && err_len > 0) {
+            std::strncpy(err, m.c_str(), (size_t)err_len - 1);
+            err[err_len - 1] = 0;
+        }
+        return 0;
+    };
+    if (!c || !level || !*level || !out) return fail("bad arguments");
+
+    bf6::TerrainBakeOpts o;
+    if (opts) {
+        o.rect_min[0] = opts->rect_min[0];
+        o.rect_min[1] = opts->rect_min[1];
+        o.rect_size   = opts->rect_size;
+        if (opts->size > 0) o.size = opts->size;
+        o.want_normal = opts->want_normal != 0;
+        o.stochastic  = opts->stochastic != 0;
+        o.colour_map  = opts->colour_map != 0;
+    }
+
+    c->bake.reset(new bf6::TerrainBake());
+    std::string e;
+    if (!bf6::TerrainComposite::bake(c->src, level, o, *c->bake, e)) {
+        c->bake.reset();
+        return fail(e.empty() ? "bake failed" : e);
+    }
+
+    *out = bf6_terrain_bake{};
+    out->size = c->bake->size;
+    out->lo[0] = c->bake->lo[0]; out->lo[1] = c->bake->lo[1];
+    out->hi[0] = c->bake->hi[0]; out->hi[1] = c->bake->hi[1];
+    out->metres_per_texel = c->bake->metres_per_texel;
+    out->albedo = c->bake->albedo.empty() ? nullptr : c->bake->albedo.data();
+    out->normal = c->bake->normal.empty() ? nullptr : c->bake->normal.data();
+    out->layers_used = c->bake->layers_present;
+    out->layers_textured = c->bake->layers_decoded;
+    const double total = (double)c->bake->size * (double)c->bake->size;
+    out->fallback_fraction = total > 0.0
+        ? (float)((double)c->bake->texels_untouched / total) : 0.f;
+    return 1;
 }
 
 int bf6_level_water_sim(bf6_ctx* c, const char* level, bf6_water_sim* out)
