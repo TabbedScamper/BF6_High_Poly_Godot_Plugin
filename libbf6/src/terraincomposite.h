@@ -109,6 +109,22 @@ struct TerrainBakeOpts {
     // initial value is magenta (1, 0, 1) and that is kept, because a bake with
     // a hole in it should look like a bake with a hole in it.
     float fallback[3] = {1.f, 0.f, 1.f};
+
+    // Promote the FIRST layer that has a sheet to full coverage, for the colour
+    // accumulator only (the height accumulators keep its real coverage).
+    //
+    // Why this exists, and why it defaults on. In the game the bottom of every
+    // stack is a layer that always has a texture, so the magenta initial value
+    // is always overwritten. Here the bottom of the stack is frequently one of
+    // the statically-bound layers this library cannot resolve, and the layers
+    // above it arrive at PARTIAL coverage - so `lerp(magenta, colour, 0.3)`
+    // leaves two thirds magenta and the result is a pink haze across ground
+    // that is not actually uncovered. Promoting the first real layer removes
+    // the haze without inventing a colour: it says "whatever is lowest in this
+    // stack that I can see, treat as the ground". Turn it OFF to see the raw
+    // extent of the gap; `texels_untouched` counts genuine holes either way and
+    // is unaffected by this switch.
+    bool  prime_first_layer = true;
     // Metres per repeat for a layer that authors no tiling.
     float default_metres_per_repeat = 4.0f;
     int   threads = 0;          // 0 = hardware concurrency

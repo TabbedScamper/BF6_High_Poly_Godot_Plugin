@@ -84,6 +84,10 @@ add_executable(terrainlayers_test test/terrainlayers_test.cpp)
 target_include_directories(terrainlayers_test PRIVATE src include)
 target_link_libraries(terrainlayers_test PRIVATE bf6_core_static)
 
+add_executable(terrainstatic_test test/terrainstatic_test.cpp)
+target_include_directories(terrainstatic_test PRIVATE src include)
+target_link_libraries(terrainstatic_test PRIVATE bf6_core_static)
+
 add_executable(bindingset_test test/bindingset_test.cpp)
 target_include_directories(bindingset_test PRIVATE src include)
 target_link_libraries(bindingset_test PRIVATE bf6_core_static)
