@@ -381,6 +381,17 @@ typedef struct {
     float   shallow[3];    /* linear; [0] < 0 when the record had no colour */
     float   deep[3];       /* linear; [0] < 0 when absent (always on ocean) */
     int32_t is_ocean;      /* 0/1                                           */
+    /* THE SHEETS THE GAME'S OWN WATER BINDS, for bf6_texture_at, or -1.
+     * Colour alone gives a flat pane; these are what make it read as water:
+     * detail_normal is the micro-ripple normal the surface is covered in,
+     * foam_normal and foam_rgb are the foam sheets (R patches, G bubbles,
+     * B crest streaks), and noise/perlin drive the break-up. They come off
+     * the same depot record as the colours. */
+    int32_t detail_normal;
+    int32_t foam_normal;
+    int32_t foam_rgb;
+    int32_t noise;
+    int32_t perlin;
 } bf6_water;
 
 /* Requires bf6_open_level for this level first (the scan needs the mounted

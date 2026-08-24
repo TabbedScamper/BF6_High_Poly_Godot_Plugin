@@ -27,6 +27,8 @@ int main(int argc, char** argv)
                 s.size[0], s.size[1], s.center[0], s.center[1]);
             if (s.shallow[0] >= 0.f)
                 std::printf("  shallow %.3f %.3f %.3f", s.shallow[0], s.shallow[1], s.shallow[2]);
+            std::printf("  tex detail=%d foamN=%d foamRGB=%d noise=%d perlin=%d", 
+                s.detail_normal, s.foam_normal, s.foam_rgb, s.noise, s.perlin);
             if (s.deep[0] >= 0.f)
                 std::printf("  deep %.3f %.3f %.3f", s.deep[0], s.deep[1], s.deep[2]);
             std::printf("\n");

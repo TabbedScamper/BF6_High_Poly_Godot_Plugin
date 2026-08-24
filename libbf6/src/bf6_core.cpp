@@ -1204,8 +1204,11 @@ static const uint32_t kWaterStateKeyField = 0x2E15621F;
 static const uint32_t kWSlotWaterA     = 0x50b54e74;   // linear float3, brighter
 static const uint32_t kWSlotWaterB     = 0xdfcb439c;   // linear float3, darker
 static const uint32_t kWSlotOceanColor = 0xeaca953a;   // the ocean variant's one colour
-static const uint32_t kWSlotFoamNsh    = 0x60181bbf;
-static const uint32_t kWSlotDetailNsh  = 0x635b5631;
+static const uint32_t kWSlotFoamNsh    = 0x60181bbf;   // t_oceanfoam_nsh
+static const uint32_t kWSlotDetailNsh  = 0x635b5631;   // t_oceanmicrodetail_nsh
+static const uint32_t kWSlotFoamRgb    = 0x3faa6a0b;   // t_waterfoam_rgb
+static const uint32_t kWSlotNoise      = 0x18caba16;   // t_oceannoise
+static const uint32_t kWSlotPerlin     = 0xf9b82d1e;   // perlin2d
 
 static bool BF6_CountsWater(bf6_ctx* c, const std::string& name)
 {
@@ -1460,6 +1463,7 @@ int bf6_level_water(bf6_ctx* c, const char* level, bf6_water* out, int out_max)
         if (std::fabs(sx) < 1.f || std::fabs(sz) < 1.f) continue;
 
         bf6_water w{};
+        w.detail_normal = w.foam_normal = w.foam_rgb = w.noise = w.perlin = -1;
         w.center[0] = tx; w.center[1] = tz;
         w.size[0] = std::fabs(sx); w.size[1] = std::fabs(sz);
         w.height = ty;
@@ -1490,6 +1494,41 @@ int bf6_level_water(bf6_ctx* c, const char* level, bf6_water* out, int out_max)
                 if (!mb.valid) continue;
                 w.is_ocean = (mb.textures.count(kWSlotDetailNsh) ||
                               mb.textures.count(kWSlotFoamNsh)) ? 1 : 0;
+
+                // THE SHEETS. Same resolution the mesh path uses: the slot
+                // holds a FILE guid, the partition index turns that into an
+                // asset name, and the name without .ebx is the resource.
+                {
+                    const auto& gi = c->src.partition_index();
+                    auto grab = [&](uint32_t slot) -> int32_t {
+                        auto sit = mb.textures.find(slot);
+                        if (sit == mb.textures.end()) return -1;
+                        auto ait = gi.find(sit->second);
+                        if (ait == gi.end()) return -1;
+                        std::string tres = ait->second;
+                        if (tres.size() > 4 && tres.compare(tres.size() - 4, 4, ".ebx") == 0)
+                            tres.resize(tres.size() - 4);
+                        return c->texture_id(tres);
+                    };
+                    w.detail_normal = grab(kWSlotDetailNsh);
+                    w.foam_normal   = grab(kWSlotFoamNsh);
+                    w.foam_rgb      = grab(kWSlotFoamRgb);
+                    w.noise         = grab(kWSlotNoise);
+                    w.perlin        = grab(kWSlotPerlin);
+
+                    // EVERY slot this record binds, named or not. The five
+                    // named ones came from one variant; a level on another
+                    // variant binds its detail elsewhere, and a reader that
+                    // only looks for the names it knows reports "no textures"
+                    // for a surface that is covered in them.
+                    if (getenv("BF6_WATER_SLOTS")) {
+                        for (const auto& kv2 : mb.textures) {
+                            auto a2 = gi.find(kv2.second);
+                            std::fprintf(stderr, "    water slot %08x -> %s\n",
+                                kv2.first, a2 == gi.end() ? "?" : a2->second.c_str());
+                        }
+                    }
+                }
                 float c3[3];
                 if (w.is_ocean) {
                     // ONE colour; deep stays absent on purpose - the consumer
