@@ -74,6 +74,18 @@ target_link_libraries(water_test PRIVATE bf6_core_static)
 add_executable(whitecards_test test/whitecards_test.cpp)
 target_include_directories(whitecards_test PRIVATE src include)
 
+add_executable(kernelcensus_test test/kernelcensus_test.cpp)
+target_include_directories(kernelcensus_test PRIVATE src include)
+target_link_libraries(kernelcensus_test PRIVATE bf6_core_static)
+
+add_executable(findocean_test test/findocean_test.cpp)
+target_include_directories(findocean_test PRIVATE src include)
+target_link_libraries(findocean_test PRIVATE bf6_core_static)
+
+add_executable(oceankernel_test test/oceankernel_test.cpp)
+target_include_directories(oceankernel_test PRIVATE src include)
+target_link_libraries(oceankernel_test PRIVATE bf6_core_static)
+
 add_executable(watershaders_test test/watershaders_test.cpp)
 target_include_directories(watershaders_test PRIVATE src include)
 target_link_libraries(watershaders_test PRIVATE bf6_core_static)
