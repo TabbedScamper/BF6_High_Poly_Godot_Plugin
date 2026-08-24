@@ -74,6 +74,10 @@ target_link_libraries(water_test PRIVATE bf6_core_static)
 add_executable(whitecards_test test/whitecards_test.cpp)
 target_include_directories(whitecards_test PRIVATE src include)
 
+add_executable(watershaders_test test/watershaders_test.cpp)
+target_include_directories(watershaders_test PRIVATE src include)
+target_link_libraries(watershaders_test PRIVATE bf6_core_static)
+
 add_executable(oceanshader_test test/oceanshader_test.cpp)
 target_include_directories(oceanshader_test PRIVATE src include)
 target_link_libraries(oceanshader_test PRIVATE bf6_core_static)
