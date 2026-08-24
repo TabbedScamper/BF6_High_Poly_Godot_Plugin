@@ -64,6 +64,9 @@ target_include_directories(types_test PRIVATE src include)
 # link, because a break anywhere gives an untextured prop and no error.
 add_executable(material_test test/material_test.cpp)
 target_link_libraries(material_test PRIVATE bf6_core_static)
+
+add_executable(vista_test test/vista_test.cpp)
+target_link_libraries(vista_test PRIVATE bf6_core_static)
 target_include_directories(material_test PRIVATE src include)
 
 # Research: names the depot's texture slots from the data, by resolving what is

@@ -798,6 +798,7 @@ bf6_mesh* bf6_read_mesh_scoped(bf6_ctx* c, const char* res_name, int lod,
         md.alpha_test = 0;
         md.translucent = 0;
         md.alpha_from_albedo = 0;
+        md.normal_is_nsm = 0;
         md.textures = nullptr;
         md.texture_count = 0;
         if (!dep) continue;
@@ -911,6 +912,13 @@ bf6_mesh* bf6_read_mesh_scoped(bf6_ctx* c, const char* res_name, int lod,
             b.slot = slot;
             b.texture = c->texture_id(tres);
             mh->bindings[i].push_back(b);
+
+            // The vista "_nsm" is not an ordinary normal map: RG normal,
+            // B wetness, A smoothness. The consumer has to unpack it
+            // differently, so the record says so - keyed on the slot hash,
+            // which is exact, not on the asset's name.
+            if (n32 == 0xEC35AA10 && slot == BF6_TEX_NORMAL)
+                md.normal_is_nsm = 1;
         }
         md.textures = mh->bindings[i].empty() ? nullptr : mh->bindings[i].data();
         md.texture_count = (int32_t)mh->bindings[i].size();
