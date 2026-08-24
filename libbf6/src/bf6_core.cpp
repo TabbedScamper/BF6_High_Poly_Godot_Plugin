@@ -1255,6 +1255,144 @@ int bf6_variation_live(bf6_ctx* c, const char* res_name,
     return slot;
 }
 
+// ---- the ocean simulation entity ------------------------------------------
+//
+// Ported from highpoly_gamesource.gd water_sim/_sim_in/_sim_row/_sim_curve.
+// The field hashes are the hub's (water-material-resolves-through-the-depot,
+// ocean-sim-winddistribution-is-a-splinecurve-of-direction).
+
+static const char* kSimTypeGuid = "3ad51130-494f-ee8a-45cd-01103be713ee";
+static const uint32_t kSimEnable       = 0x6E8C0B93;
+static const uint32_t kSimWindAngle    = 0x2BD08352;
+static const uint32_t kSimWindSpeed    = 0x8613EBCA;
+static const uint32_t kSimChoppiness   = 0xD488F0CB;
+static const uint32_t kSimWindDist     = 0xA1E59641;
+static const uint32_t kSimFoamEnable   = 0xF0340815;
+static const uint32_t kSimFoamThresh   = 0xFFA1D0E2;
+static const uint32_t kSimFoamMax      = 0xF2C13BDD;
+static const uint32_t kSimTileDim      = 0x54A5216B;
+static const uint32_t kSimMinWavelen   = 0x787474E1;
+static const uint32_t kSimLargeWaveRed = 0xC44A1FAF;
+static const uint32_t kSimWaveThick    = 0xAA2BBED7;
+static const uint32_t kSimCurveType    = 0xEC989148;
+static const uint32_t kSimCurveX[3] = { 0xA3F9DFEE, 0xAB145027, 0x4FBB37BF };
+static const uint32_t kSimCurveY[4] = { 0x57C358C3, 0xE9D446E7, 0xE4DA513E, 0xF324662A };
+// Vec4 component field hashes, IN OFFSET ORDER - the warning in the finding:
+// read x,y,z,w by offset, never by hash order.
+static const uint32_t kSimVec4[4] = { 0x3901DB14, 0x42FC0F5E, 0x32A99B9C, 0x7C8062F2 };
+
+static float BF6_SimF(const bf6::EbxValue& d, uint32_t h, float dflt)
+{
+    const bf6::EbxValue* f = d.field(h);
+    if (!f) return dflt;
+    if (f->kind == bf6::EbxValue::Kind::Real) return (float)f->f;
+    if (f->kind == bf6::EbxValue::Kind::Int)  return (float)f->i;
+    if (f->kind == bf6::EbxValue::Kind::Uint) return (float)f->u;
+    return dflt;
+}
+
+static bool BF6_SimB(const bf6::EbxValue& d, uint32_t h, bool dflt)
+{
+    const bf6::EbxValue* f = d.field(h);
+    if (!f) return dflt;
+    if (f->kind == bf6::EbxValue::Kind::Bool) return f->b;
+    if (f->kind == bf6::EbxValue::Kind::Int)  return f->i != 0;
+    if (f->kind == bf6::EbxValue::Kind::Uint) return f->u != 0;
+    return dflt;
+}
+
+static void BF6_SimRow(const bf6::EbxValue& d, bf6_water_sim& s)
+{
+    s = bf6_water_sim{};
+    s.enabled              = BF6_SimB(d, kSimEnable, false) ? 1 : 0;
+    s.wind_angle           = BF6_SimF(d, kSimWindAngle, 0.f);
+    s.wind_speed           = BF6_SimF(d, kSimWindSpeed, 0.f);
+    s.choppiness           = BF6_SimF(d, kSimChoppiness, 0.f);
+    s.tile_dimension       = BF6_SimF(d, kSimTileDim, 0.f);
+    s.min_wavelength       = BF6_SimF(d, kSimMinWavelen, 0.f);
+    s.large_wave_reduction = BF6_SimF(d, kSimLargeWaveRed, 0.f);
+    s.wave_thickness       = BF6_SimF(d, kSimWaveThick, 1.f);
+    s.foam_enable          = BF6_SimB(d, kSimFoamEnable, true) ? 1 : 0;
+    s.foam_threshold       = BF6_SimF(d, kSimFoamThresh, 0.f);
+    s.foam_max             = BF6_SimF(d, kSimFoamMax, 0.f);
+
+    // WindDistribution: a SplineCurve whose SplineType enum IS the control
+    // point count (5, 9, 13). n-1 stored X (the last is implicitly 1.0), n
+    // stored Y, packed across Vec4 members read by offset.
+    const bf6::EbxValue* c = d.field(kSimWindDist);
+    if (!c || c->kind != bf6::EbxValue::Kind::Struct) return;
+    int n = (int)BF6_SimF(*c, kSimCurveType, 0.f);
+    if (n < 2 || n > 13) return;
+
+    float xs[12] = {0}, ys[16] = {0};
+    int xi = 0, yi = 0;
+    for (uint32_t mh : kSimCurveX) {
+        const bf6::EbxValue* v = c->field(mh);
+        for (uint32_t ch : kSimVec4)
+            xs[xi++] = (v && v->kind == bf6::EbxValue::Kind::Struct)
+                ? BF6_SimF(*v, ch, 0.f) : 0.f;
+    }
+    for (uint32_t mh : kSimCurveY) {
+        const bf6::EbxValue* v = c->field(mh);
+        if (yi + 4 > 16) break;
+        for (uint32_t ch : kSimVec4)
+            ys[yi++] = (v && v->kind == bf6::EbxValue::Kind::Struct)
+                ? BF6_SimF(*v, ch, 0.f) : 0.f;
+    }
+    s.dist_count = n;
+    for (int i = 0; i < n; i++) {
+        s.dist_x[i] = (i < n - 1 && i < 12) ? xs[i] : 1.f;
+        s.dist_y[i] = (i < 16) ? ys[i] : 0.f;
+    }
+}
+
+int bf6_level_water_sim(bf6_ctx* c, const char* level, bf6_water_sim* out)
+{
+    if (!c || !level || !*level || !out || !c->types || !c->walk) return 0;
+    if (c->walked_level != level) return 0;
+
+    std::string lvl = c->walk->root;
+    if (lvl.size() > 4 && lvl.compare(lvl.size() - 4, 4, ".ebx") == 0) lvl.resize(lvl.size() - 4);
+    const size_t slash = lvl.find_last_of('/');
+    lvl = slash == std::string::npos ? std::string() : lvl.substr(0, slash);
+    if (lvl.empty()) return 0;
+
+    // Same order-not-scope idiom as the water partition: schematics whose name
+    // says water first, then default_schematic, then the rest of the level.
+    std::vector<std::string> named, rest;
+    for (const auto& kv : c->src.ebx()) {
+        const std::string& n = kv.first;
+        if (n.compare(0, lvl.size(), lvl) != 0) continue;
+        if (n.find("schematic") == std::string::npos) continue;
+        (n.find("water") != std::string::npos ? named : rest).push_back(n);
+    }
+    std::sort(named.begin(), named.end());
+    std::sort(rest.begin(), rest.end());
+    rest.insert(rest.begin(), lvl + "/default_schematic");
+
+    named.insert(named.end(), rest.begin(), rest.end());
+    for (const std::string& part : named) {
+        std::string err;
+        std::vector<uint8_t> raw = c->src.get_ebx(part, err);
+        if (raw.empty()) continue;
+        bf6::Ebx e(*c->types);
+        if (!e.parse(std::move(raw), err)) continue;
+
+        bf6_water_sim first{};
+        bool have_first = false;
+        for (size_t i = 0; i < e.instance_count(); i++) {
+            if (bf6::TypeDb::guid_str(e.instance_type(i)) != kSimTypeGuid) continue;
+            bf6::EbxValue d = e.read_instance(i);
+            bf6_water_sim row;
+            BF6_SimRow(d, row);
+            if (row.enabled) { *out = row; return 1; }   // the flagged one wins
+            if (!have_first) { first = row; have_first = true; }
+        }
+        if (have_first) { *out = first; return 1; }
+    }
+    return 0;
+}
+
 int bf6_level_water(bf6_ctx* c, const char* level, bf6_water* out, int out_max)
 {
     if (!c || !level || !*level || !c->types || !c->walk) return 0;

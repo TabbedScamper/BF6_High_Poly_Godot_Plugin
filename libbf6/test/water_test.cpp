@@ -32,6 +32,18 @@ int main(int argc, char** argv)
             std::printf("\n");
         }
     }
+    bf6_water_sim sim{};
+    if (bf6_level_water_sim(ctx, argv[2], &sim))
+    {
+        std::printf("sim: %s  angle %.3f  speed %.3f  chop %.3f  tile %.3f  minwl %.3f  lwr %.1f  foam %.1f/%.2f  %d point(s)\n",
+            sim.enabled ? "flagged" : "first", sim.wind_angle, sim.wind_speed,
+            sim.choppiness, sim.tile_dimension, sim.min_wavelength,
+            sim.large_wave_reduction, sim.foam_threshold, sim.foam_max, sim.dist_count);
+        for (int i = 0; i < sim.dist_count; i++)
+            std::printf("  pt %2d  x %.4f  y %.4f\n", i, sim.dist_x[i], sim.dist_y[i]);
+    }
+    else std::printf("sim: none\n");
+
     bf6_close(ctx);
     return 0;
 }
