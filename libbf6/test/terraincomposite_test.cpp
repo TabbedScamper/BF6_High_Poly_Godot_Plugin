@@ -310,7 +310,7 @@ int main(int argc, char** argv)
                 bake.lo[0], bake.hi[0], bake.lo[1], bake.hi[1], bake.hi[0] - bake.lo[0]);
     std::printf("raster : %d x %d, %.3f m/texel\n",
                 bake.size, bake.size, bake.metres_per_texel);
-    std::printf("stochastic %s | colour map %s (%d tiles) | f16 %s | prime %s\n",
+    std::printf("stochastic %s | colour map %s (%d tiles) | f16 %s | prime %s | static %s\n",
                 opt.stochastic ? "on" : "off",
                 bake.colour_map_used ? "on" : "off", bake.colour_tiles,
                 opt.quantise_f16 ? "on" : "off",
