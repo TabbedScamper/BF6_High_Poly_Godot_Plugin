@@ -25,6 +25,8 @@ set(BF6_SOURCES
     src/depot.cpp
     src/destruction.cpp
     src/decals.cpp
+    src/splat.cpp
+    src/terrainlayers.cpp
 )
 
 add_library(bf6_core SHARED ${BF6_SOURCES})
@@ -73,6 +75,14 @@ target_link_libraries(water_test PRIVATE bf6_core_static)
 
 add_executable(whitecards_test test/whitecards_test.cpp)
 target_include_directories(whitecards_test PRIVATE src include)
+
+add_executable(splat_test test/splat_test.cpp)
+target_include_directories(splat_test PRIVATE src include)
+target_link_libraries(splat_test PRIVATE bf6_core_static)
+
+add_executable(terrainlayers_test test/terrainlayers_test.cpp)
+target_include_directories(terrainlayers_test PRIVATE src include)
+target_link_libraries(terrainlayers_test PRIVATE bf6_core_static)
 
 add_executable(bindingset_test test/bindingset_test.cpp)
 target_include_directories(bindingset_test PRIVATE src include)

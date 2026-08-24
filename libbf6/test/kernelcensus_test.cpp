@@ -166,12 +166,18 @@ int main(int argc, char** argv)
         size_t at = 0, len = 0;
         const int st = stage_of(bc, at, len);
         stage_hist[st]++;
-        if (st == 5) {   // COMPUTE
+        // ALL STAGES, not just compute. The first census kept stage 5 only,
+        // which silently excluded 2,192 pixel and 252 vertex shaders - and a
+        // full-screen composite or a render-to-texture generator is a PIXEL
+        // shader. "Not in the compute set" was never "not in the engine".
+        if (st == 5 || st == 0 || st == 1) {
             orphan_cs++;
             if (orphan_cs <= 30) std::printf("  ORPHAN COMPUTE %s  %zu bytes\n", n.c_str(), len);
             if (!outdir.empty() && len) {
                 char fn[512];
-                std::snprintf(fn, sizeof(fn), "%s/orphan_cs_%s.dxbc", outdir.c_str(), g.c_str());
+                static const char* sn[] = { "ps", "vs", "gs", "hs", "ds", "cs" };
+                std::snprintf(fn, sizeof(fn), "%s/orphan_%s_%s.dxbc", outdir.c_str(),
+                    (st >= 0 && st < 6) ? sn[st] : "xx", g.c_str());
                 FILE* f = std::fopen(fn, "wb");
                 if (f) { std::fwrite(bc.data() + at, 1, len, f); std::fclose(f); }
             }
