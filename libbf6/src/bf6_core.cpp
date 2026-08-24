@@ -1120,6 +1120,153 @@ static const char* decal_res_for(bf6_ctx* c, const std::string& level)
     return want.empty() ? nullptr : want.c_str();
 }
 
+// ---- water ----------------------------------------------------------------
+//
+// Ported from highpoly_gamesource.gd (water / _water_partition / _water_look /
+// _water_params), which is the reader the shipped Godot plugin renders from.
+// Round one carries the PLANES and the COLOURS; the ripple textures and the
+// ocean wind simulation stay with the binding that wants them.
+
+static const char* kWaterTypeGuid = "ae0b69fc-2207-d874-8230-fcd467a592cf";
+static const uint32_t kWaterStateKeyField = 0x2E15621F;
+static const uint32_t kWSlotWaterA     = 0x50b54e74;   // linear float3, brighter
+static const uint32_t kWSlotWaterB     = 0xdfcb439c;   // linear float3, darker
+static const uint32_t kWSlotOceanColor = 0xeaca953a;   // the ocean variant's one colour
+static const uint32_t kWSlotFoamNsh    = 0x60181bbf;
+static const uint32_t kWSlotDetailNsh  = 0x635b5631;
+
+static bool BF6_CountsWater(bf6_ctx* c, const std::string& name)
+{
+    std::string err;
+    std::vector<uint8_t> raw = c->src.get_ebx(name, err);
+    if (raw.empty()) return false;
+    bf6::Ebx e(*c->types);
+    if (!e.parse(std::move(raw), err)) return false;
+    for (size_t i = 0; i < e.instance_count(); i++)
+        if (bf6::TypeDb::guid_str(e.instance_type(i)) == kWaterTypeGuid) return true;
+    return false;
+}
+
+int bf6_level_water(bf6_ctx* c, const char* level, bf6_water* out, int out_max)
+{
+    if (!c || !level || !*level || !c->types || !c->walk) return 0;
+    if (c->walked_level != level) return 0;
+
+    // The level directory, off the walk's own root - the narrowest prefix that
+    // reaches both the water entity and the depot that materials it. Aftermath
+    // declares water in _layers_content/water while the record lives in
+    // _layers_content/content, so walking UP from the partition cannot reach
+    // it; the level dir does.
+    std::string lvl = c->walk->root;
+    if (lvl.size() > 4 && lvl.compare(lvl.size() - 4, 4, ".ebx") == 0) lvl.resize(lvl.size() - 4);
+    const size_t slash = lvl.find_last_of('/');
+    lvl = slash == std::string::npos ? std::string() : lvl.substr(0, slash);
+
+    // Find the partition that declares the water: the two authored homes
+    // first, then anything under the level whose name says water, then the
+    // rest of the level. The order is the cost control - the fallback sweep
+    // parses partitions until one answers.
+    std::string part;
+    {
+        const std::string cands[] = { lvl + "/default", lvl + "/_layers_content/water",
+                                      std::string(level) + "/default" };
+        for (const std::string& cand : cands)
+            if (c->src.ebx().count(cand) && BF6_CountsWater(c, cand)) { part = cand; break; }
+        if (part.empty() && !lvl.empty()) {
+            std::vector<std::string> rest;
+            for (const auto& kv : c->src.ebx()) {
+                const std::string& n = kv.first;
+                if (n.compare(0, lvl.size(), lvl) != 0) continue;
+                std::string low = n;
+                for (char& ch : low) ch = (char)tolower((unsigned char)ch);
+                if (low.find("water") != std::string::npos) {
+                    if (BF6_CountsWater(c, n)) { part = n; break; }
+                } else rest.push_back(n);
+            }
+            if (part.empty())
+                for (const std::string& n : rest)
+                    if (BF6_CountsWater(c, n)) { part = n; break; }
+        }
+    }
+    if (part.empty()) return 0;
+
+    std::string err;
+    std::vector<uint8_t> raw = c->src.get_ebx(part, err);
+    if (raw.empty()) return 0;
+    bf6::Ebx e(*c->types);
+    e.set_guid_index(&c->src.partition_index());
+    if (!e.parse(std::move(raw), err)) return 0;
+
+    int total = 0;
+    for (size_t i = 0; i < e.instance_count(); i++) {
+        if (bf6::TypeDb::guid_str(e.instance_type(i)) != kWaterTypeGuid) continue;
+
+        // The transform, at FIXED offsets - see the accessor note in ebx.h.
+        const int64_t base = e.payload() + (int64_t)e.instance_offset(i);
+        const std::vector<uint8_t>& d = e.raw();
+        if (base < 0 || (size_t)base + 0x60 > d.size()) continue;
+        float sx, sz, tx, ty, tz;
+        std::memcpy(&sx, d.data() + base + 0x20, 4);
+        std::memcpy(&sz, d.data() + base + 0x48, 4);
+        std::memcpy(&tx, d.data() + base + 0x50, 4);
+        std::memcpy(&ty, d.data() + base + 0x54, 4);
+        std::memcpy(&tz, d.data() + base + 0x58, 4);
+        if (std::fabs(sx) < 1.f || std::fabs(sz) < 1.f) continue;
+
+        bf6_water w{};
+        w.center[0] = tx; w.center[1] = tz;
+        w.size[0] = std::fabs(sx); w.size[1] = std::fabs(sz);
+        w.height = ty;
+        w.shallow[0] = w.deep[0] = -1.f;
+        w.is_ocean = 0;
+
+        // The look: the state key, resolved in a depot scoped to THIS level.
+        // A StateKey is only unique within a scope, so a global search can
+        // bind a colliding key from a parallel level - confidently wrong.
+        uint64_t key = 0;
+        {
+            const std::vector<uint32_t> want = { kWaterStateKeyField };
+            bf6::EbxValue inst = e.read_instance(i, &want);
+            if (const bf6::EbxValue* f = inst.field(kWaterStateKeyField)) {
+                if (f->kind == bf6::EbxValue::Kind::Uint) key = f->u;
+                else if (f->kind == bf6::EbxValue::Kind::Int) key = (uint64_t)f->i;
+            }
+        }
+        if (key != 0) {
+            for (const auto& kv : c->src.res()) {
+                const std::string& rn = kv.first;
+                if (rn.find("shaderblockdepot") == std::string::npos) continue;
+                if (!lvl.empty() && rn.find(lvl) == std::string::npos) continue;
+                const std::vector<uint8_t>* dbytes = nullptr;
+                bf6::Depot* dep = c->depot_named(rn, &dbytes);
+                if (!dep || !dbytes || !dep->has_key(key)) continue;
+                bf6::MaterialBinding mb = dep->textures_for(key, *dbytes);
+                if (!mb.valid) continue;
+                w.is_ocean = (mb.textures.count(kWSlotDetailNsh) ||
+                              mb.textures.count(kWSlotFoamNsh)) ? 1 : 0;
+                float c3[3];
+                if (w.is_ocean) {
+                    // ONE colour; deep stays absent on purpose - the consumer
+                    // darkens, and duplicating it would flatten the gradient
+                    // while still looking like mined data.
+                    if (const_c3(mb, kWSlotOceanColor, 0, c3))
+                        { w.shallow[0]=c3[0]; w.shallow[1]=c3[1]; w.shallow[2]=c3[2]; }
+                } else {
+                    if (const_c3(mb, kWSlotWaterA, 0, c3))
+                        { w.shallow[0]=c3[0]; w.shallow[1]=c3[1]; w.shallow[2]=c3[2]; }
+                    if (const_c3(mb, kWSlotWaterB, 0, c3))
+                        { w.deep[0]=c3[0]; w.deep[1]=c3[1]; w.deep[2]=c3[2]; }
+                }
+                break;
+            }
+        }
+
+        if (out && total < out_max) out[total] = w;
+        total++;
+    }
+    return total;
+}
+
 int bf6_level_decals(bf6_ctx* c, const char* level, bf6_decal* out, int out_max)
 {
     if (!c || !level || !*level) return 0;

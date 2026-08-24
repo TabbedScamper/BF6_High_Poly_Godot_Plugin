@@ -67,6 +67,9 @@ target_link_libraries(material_test PRIVATE bf6_core_static)
 
 add_executable(vista_test test/vista_test.cpp)
 target_link_libraries(vista_test PRIVATE bf6_core_static)
+
+add_executable(water_test test/water_test.cpp)
+target_link_libraries(water_test PRIVATE bf6_core_static)
 target_include_directories(material_test PRIVATE src include)
 
 # Research: names the depot's texture slots from the data, by resolving what is

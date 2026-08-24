@@ -104,6 +104,15 @@ public:
     // nested work only happens under a field somebody asked for.
     EbxValue read_instance(size_t idx, const std::vector<uint32_t>* want = nullptr);
 
+    // Raw payload access, for the handful of records whose fields are read at
+    // FIXED offsets rather than through the schema. The water entity is the
+    // case in hand: its transform sits at stable offsets while the schema'd
+    // fields around its state key shift between the two shader variants, so
+    // the reference reader takes the transform raw and the key deserialized.
+    const std::vector<uint8_t>& raw() const { return data_; }
+    int64_t  payload() const { return payload_; }
+    uint32_t instance_offset(size_t i) const { return instance_offsets_[i]; }
+
     // A FIELD THE TYPE TABLES CALL AN INTEGER AND THE BYTES CALL A POINTER.
     // For a handful of fields the reflection says int32 where the payload holds
     // an ordinary internal PointerRef. A light entity's spatial component points
