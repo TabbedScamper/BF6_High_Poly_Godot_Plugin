@@ -74,6 +74,10 @@ target_link_libraries(water_test PRIVATE bf6_core_static)
 add_executable(whitecards_test test/whitecards_test.cpp)
 target_include_directories(whitecards_test PRIVATE src include)
 
+add_executable(bindingset_test test/bindingset_test.cpp)
+target_include_directories(bindingset_test PRIVATE src include)
+target_link_libraries(bindingset_test PRIVATE bf6_core_static)
+
 add_executable(kernelcensus_test test/kernelcensus_test.cpp)
 target_include_directories(kernelcensus_test PRIVATE src include)
 target_link_libraries(kernelcensus_test PRIVATE bf6_core_static)
