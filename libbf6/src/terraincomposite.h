@@ -53,8 +53,11 @@
 #define LIBBF6_TERRAINCOMPOSITE_H
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
+
+#include "splat.h"   // Splat and SplatChunkDir, for paint_colour_map
 
 namespace bf6 {
 
@@ -72,6 +75,29 @@ class Source;
 // Rows are top-down, 4 bytes per texel, `w*h*4` bytes out. False with `err` set
 // when the format is unsupported or the block payload is short for w/h.
 // ---------------------------------------------------------------------------
+// THE AERIAL COLOUR MAP, painted into a world window.
+//
+// Block 1 carries what the artists shot from above: one BC-compressed tile per
+// quadtree key, 132 square with a two-texel apron, coarse keys covering the
+// whole map and finer ones refining it. The ground materials are only half the
+// colour - this is what puts a map's actual palette on them, and without it
+// every layer draws at its stock studio colour.
+//
+// Painted coarse-first so a finer tile overwrites a coarser one, exactly as the
+// weight pages composite. Writes size*size*3 sRGB bytes and leaves `rgb` EMPTY
+// when the level ships no colour map, which is a real case and not an error.
+// A per-tile decode failure is appended to `failures` if one is given and does
+// not stop the paint.
+//
+// Lives here rather than in Splat because it needs the block decoder, and it is
+// shared: the flattened bake folds it into each layer, and the per-pixel path
+// hands it to a shader to do the same thing live.
+bool paint_colour_map(const Splat& sp, const SplatChunkDir& dir,
+                      const std::function<std::vector<uint8_t>(const std::string&)>& fetch,
+                      const float lo[2], const float hi[2], int size,
+                      std::vector<uint8_t>& rgb,
+                      std::vector<std::string>* failures);
+
 bool bcn_to_rgba8(const uint8_t* blocks, size_t nbytes, int w, int h, int dxgi,
                   std::vector<uint8_t>& rgba, std::string& err);
 
@@ -111,6 +137,19 @@ struct TerrainBakeOpts {
     // initial value is magenta (1, 0, 1) and that is kept, because a bake with
     // a hole in it should look like a bake with a hole in it.
     float fallback[3] = {1.f, 0.f, 1.f};
+
+    // ...unless this is on and the level ships a colour map, in which case an
+    // untouched texel takes the AERIAL PHOTOGRAPH of that spot instead.
+    //
+    // Magenta is right for a diagnostic and wrong for a viewport: on an urban
+    // map two thirds of the ground can go untextured, because a layer whose
+    // sheets are bound by register is only recoverable as far as the static
+    // table's join reaches. The aerial map is real shipped data covering the
+    // whole map, and where nothing else resolves it is by far the closest
+    // answer available - it is literally a photograph of the ground being
+    // drawn. Off by default so the library keeps telling the truth about its
+    // own holes; a renderer turns it on.
+    bool  fallback_colour_map = false;
 
     // Promote the FIRST layer that has a sheet to full coverage, for the colour
     // accumulator only (the height accumulators keep its real coverage).
@@ -193,6 +232,29 @@ struct TerrainBake {
     double   mean_rgb[3] = {0, 0, 0}; // over the sRGB bytes, 0..255
     bool     colour_map_used = false;
     int      colour_tiles = 0;        // colour-map tiles decoded for the window
+
+    // ---- HOW MIXED THE GROUND IS -------------------------------------------
+    //
+    // The complaint a chroma score cannot see is "the ground looks like several
+    // textures averaged together". These measure that directly.
+    //
+    // `stack_hist[k]` counts texels whose evaluated stack held k textured
+    // layers (k > 8 folded onto 8). `mix_dominant` is the mean, over texels
+    // that drew anything, of the largest EFFECTIVE weight - the share of the
+    // final colour one layer actually owns after the evaluator, which for an
+    // ascending lerp chain is w_k = c_k * prod_{j>k}(1 - c_j). `mask_dominant`
+    // is the same statistic on the RAW normalised mask, so the pair says how
+    // much decisiveness the evaluator adds over a naive weight blend.
+    // From the intermediate SplatCoverage: how many (texel, layer) paints the
+    // four-slot merge rejected, and the average mask lost per coverage texel.
+    uint64_t splat_evictions = 0;
+    double   splat_evicted_mask = 0.0;
+
+    uint64_t stack_hist[9] = {};
+    double   mix_dominant = 0.0;
+    double   mask_dominant = 0.0;
+    double   mix_participation = 0.0;   // mean 1/sum(w^2): effective layer count
+
     std::vector<TerrainBakeLayer> layers;
     std::vector<std::string> failures; // texture decode failures, one line each
 };

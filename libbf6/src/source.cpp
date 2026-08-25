@@ -46,6 +46,17 @@ bool Source::mount_toc(const std::string& toc_path, std::string& err) {
     std::vector<uint8_t> raw = read_file(toc_path);
     if (raw.empty()) { err = "cannot read " + toc_path; return false; }
 
+    // THE PARTITION INDEX IS BUILT FROM THE MOUNT, so a mount that grows after
+    // it was built leaves it answering for a smaller world than exists. It only
+    // ever MISSES - a guid it does not know reads as "no such partition" -
+    // which is the worst shape a staleness bug can take: mounting a second
+    // level and asking for its lighting returned "the level root imports no
+    // outdoor preset" for a preset that is plainly imported. Marked stale here
+    // and rebuilt on the next request, so the cost is only paid by a caller
+    // that actually asks after mounting more.
+    const size_t before = ebx_.size();
+
+
     Toc toc;
     if (!toc.parse(raw.data(), raw.size(), err)) return false;
 
@@ -97,6 +108,7 @@ bool Source::mount_toc(const std::string& toc_path, std::string& err) {
             si++;
         }
     }
+    if (ebx_.size() != before) { pidx_built_ = false; pidx_.clear(); }
     return true;
 }
 
@@ -109,6 +121,12 @@ std::vector<uint8_t> Source::get_chunk(const std::string& guid_hex, std::string&
     if (it2 != chunk_seg_.end()) return read_seg(it2->second, false, err);
     err = "chunk " + g.substr(0, 16) + " is in no chunk map";
     return std::vector<uint8_t>();
+}
+
+bool Source::has_chunk(const std::string& guid_hex) const {
+    std::string g = guid_hex;
+    for (char& ch : g) if (ch >= 'A' && ch <= 'Z') ch += 32;
+    return chunks_.find(g) != chunks_.end() || chunk_seg_.find(g) != chunk_seg_.end();
 }
 
 std::vector<uint8_t> Source::get_res(const std::string& name, std::string& err) {

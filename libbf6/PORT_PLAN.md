@@ -160,6 +160,92 @@ computes. A module isn't done until it matches.
   The plugin's own figures for the same map are 16 s mounting, 19 s indexing and
   53 s walking, so the traversal itself is roughly 20x.
 
+- **`velighting`, 2026-08-24.** `src/velighting.{h,cpp}`, exposed as
+  `bf6_level_lighting` / `bf6_level_lighting_imports`. The level's active
+  VisualEnvironment: sun, sky and atmosphere, two cloud layers, cloud shadows,
+  fog, exposure and bloom, colour grading, white balance, ambient occlusion,
+  global illumination, the shadow cascade distance, and the nine texture
+  references the preset binds. 89 named fields per map plus the whole import
+  list. Mounts and loads the schema on demand, so it does not need the walk.
+  WHICH PRESET: the level ROOT imports the outdoor one. Filter the imports to
+  partitions under a `levels/` directory (this drops the four shared
+  `common/lighting/` presets every root also imports), drop `thermal`, then -
+  where more than one survives, which is every Granite level - keep only
+  candidates that actually carry an OutdoorLight component and take the one
+  with the highest VE-entity `Visibility`. mp_granite's `nolut` preset has 2
+  components, no sun and Visibility 0.15 against the real one's 25 and 1.0.
+  Do NOT restrict to the level's OWN directory: every Portal variant is lit by
+  its base level's preset, from another level's folder entirely.
+  WHICH FIELD: every constant is keyed by (component type_guid, nameHash),
+  because the hash-to-name lookup is many-to-one. Two distinct hashes on the
+  sun component are both named `SunRotationX` (one is the authored 124.8, the
+  other 0.0) and `SunScale` exists on two components at 1.5 and 300000.
+  ORACLE: the 22 rows of the Godot plugin's hand-built `TABLE` in
+  `addons/highpoly_toggle/highpoly_lighting.gd`, checked in `velight_test`.
+  23 levels decode; 21 rows reproduce az, el, lux and SunColor exactly. The two
+  that do not are the TABLE's errors, not the decode's, and both are recorded
+  in the test:
+    - MP_Badlands az 354 and SunColor (1, 0.21, 0) were never derived. The
+      mined sidecar carrying that row says so itself ("carried forward as-is"),
+      354 appears in none of the four VE presets the level ships, and the
+      plugin's own header retracts the claim that this map's sun was
+      photo-verified. Its el (10) and lux (45860 against the authored 45860.16)
+      DO match, which is what a half-hand-filled row looks like.
+    - MP_Plaza SunColor red is authored at 1.06066 and the table carries 1: a
+      clamp on the way in. The tint is not normalised in the data.
+  Two bugs fell out of it, both fixed here:
+    - `Source::partition_index` was built once and never invalidated, so
+      mounting a second level left it answering for the first. It only ever
+      MISSES, which read as "this level imports no lighting preset" for a
+      preset that is plainly imported.
+    - the asset-reference fields on a VE (`PanoramicTexture`,
+      `SkyGradientTexture`, `HdrColorGradingLut`, ...) are declared with a NULL
+      type, so `read_instance` reports them absent while the payload holds an
+      ordinary import pointer. `Ebx::import_ref` reads them by name, the way
+      `Ebx::int_pointer` already handles the mirror-image case.
+  `vedump_test` is the research tool the constants were read off: it emits
+  (component type_guid, hash, value) triples for a join against
+  `BF6_Frostbite_Research/data/sdk_field_names.tsv`, and dumps every preset a
+  level ships, imported or not.
+
+- **`levellights`, 2026-08-25.** `src/levellights.{h,cpp}`, exposed as
+  `bf6_level_lights`. Every lamp, spotlight, ceiling fixture and emissive panel
+  a level places, with its world transform, type, colour, intensity AND ITS
+  UNIT, falloff, cone, emitter shape, shadow flags and IES profile. `velighting`
+  is the sun and the sky; this is the other half, and without it a map is lit at
+  midday whatever its preset says. mp_dumbo 7,878 / aftermath 3,874 / isolated
+  3,695 / subsurface 5,330 / tungsten 1,514 / capstone 553.
+  Mounts and loads the schema on demand, like `velighting`, and does its own
+  light-only traversal rather than riding the placement walk. It never decodes a
+  `StaticModelGroup` - the walk emits a group's members and returns without
+  descending, so for lights a group is a dead end and skipping it is an
+  equivalence, not a heuristic. 40 s cold for mp_dumbo, everything included.
+  WHERE THE PLACEMENT IS: not on the light. A `*LightEntityData` has no
+  `BlueprintTransform` and its own `Transform` is identity on 86.9% of a map's
+  lights; the placement sits on a separate component (`dcac04fc-...`) in the
+  owning object's `Components` array. Read the component's `Transform` and join
+  it to its light through the component's `Light` field.
+  WHICH FIELD IS THE POINTER, and this one is why the MP executable matters:
+  `Light` is `0xE4B6881A`, declared `Class(LocalLightEntityData)`, a plain
+  PointerRef. The GDScript reader and the research write-up both follow
+  `0x11F57ECA` instead, calling it "an int field that holds a pointer". It is a
+  genuine four-byte `Enum(PBRAnalyticLightShape)`. It only ever resolved because
+  those readers load the SP executable, whose schema puts `Light` at +112 and
+  `0x11F57ECA` at +120 - which is where the MP data keeps the pointer. Measured
+  here on 17,479 components across six maps: `Light` resolves all of them and
+  `0x11F57ECA` resolves none. The counter is in `bf6_light_stats` so it stays a
+  measurement.
+  A SPOT EMITS ALONG MINUS FORWARD, and the basis rows carry the holder's scale,
+  so row 2 needs normalising and an area light's world size is its authored size
+  times that scale.
+  `Color` and `Intensity` are in `engine_only_field_names.tsv` and NOT in the
+  SDK table: a reader consulting the SDK table alone gets a full, plausible,
+  correctly-counted set of lights that are all white.
+  ORACLE: `light-fixture-glow-is-its-own-slot` records `CeilingLamp_Rect_01`'s
+  four emitters by hand - spots at 15,625 lm / 6 m / 150 deg and 31,250 lm /
+  15 m / 110 deg, tubes at 1,562.5 lm / 2 m - and the decode reproduces all
+  four. `levellights_test <game> <level> [@fixture]` dumps them.
+
 ## Build
 
 ```

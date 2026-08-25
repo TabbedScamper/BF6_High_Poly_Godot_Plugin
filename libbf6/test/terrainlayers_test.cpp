@@ -149,6 +149,29 @@ bool run_level(const std::string& game, const std::string& level, LevelResult& o
     if (pop_unresolved)
         std::printf("        !! %zu POPULATED layers found no depot record\n", pop_unresolved);
 
+    // THE EVALUATOR CONSTANTS, counted rather than sampled. The height blend is
+    // what turns the splat MASK into coverage, so "how many layers author it"
+    // decides whether the ground can be decisive at all. Absent is not zero-ish:
+    // the depot record simply does not carry the parameter for that layer.
+    size_t hb_set = 0, hb_nonzero = 0, ramp_set = 0, disp_set = 0, pop = 0;
+    double hb_sum = 0;
+    for (const TerrainLayer& l : tl.layers())
+    {
+        if (l.empty) continue;
+        pop++;
+        if (l.material.height_blend_set)
+        {
+            hb_set++;
+            if (l.material.height_blend != 0.f) { hb_nonzero++; hb_sum += l.material.height_blend; }
+        }
+        if (l.material.mask_ramp_exp_set) ramp_set++;
+        if (l.material.displace_range_set) disp_set++;
+    }
+    std::printf("        height_blend authored on %zu of %zu populated (%zu non-zero, "
+                "mean %.2f) | mask_ramp %zu | displace %zu\n",
+                hb_set, pop, hb_nonzero, hb_nonzero ? hb_sum / (double)hb_nonzero : 0.0,
+                ramp_set, disp_set);
+
     // Layers sharing a content hash are the same authored material: the depot
     // is content-deduplicated, so this is the format working.
     std::map<uint64_t, int> by_hash;

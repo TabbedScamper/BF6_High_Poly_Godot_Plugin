@@ -15,6 +15,7 @@ set(BF6_SOURCES
     src/toc.cpp
     src/bundle.cpp
     src/source.cpp
+    src/armory.cpp
     src/meshset.cpp
     src/placeables.cpp
     src/types.cpp
@@ -28,8 +29,13 @@ set(BF6_SOURCES
     src/splat.cpp
     src/terrainlayers.cpp
     src/terrainstatic.cpp
+    src/terrainstaticmap.cpp
+    src/playablebounds.cpp
     src/terraincomposite.cpp
     src/groundsplat.cpp
+    src/velighting.cpp
+    src/levellights.cpp
+    src/fx.cpp
 )
 
 add_library(bf6_core SHARED ${BF6_SOURCES})
@@ -83,6 +89,10 @@ add_executable(splat_test test/splat_test.cpp)
 target_include_directories(splat_test PRIVATE src include)
 target_link_libraries(splat_test PRIVATE bf6_core_static)
 
+add_executable(tilescan_test test/tilescan_test.cpp)
+target_include_directories(tilescan_test PRIVATE src include)
+target_link_libraries(tilescan_test PRIVATE bf6_core_static)
+
 add_executable(terrainlayers_test test/terrainlayers_test.cpp)
 target_include_directories(terrainlayers_test PRIVATE src include)
 target_link_libraries(terrainlayers_test PRIVATE bf6_core_static)
@@ -90,6 +100,10 @@ target_link_libraries(terrainlayers_test PRIVATE bf6_core_static)
 add_executable(groundcov_test test/groundcov_test.cpp)
 target_include_directories(groundcov_test PRIVATE src include)
 target_link_libraries(groundcov_test PRIVATE bf6_core_static)
+
+add_executable(waterdepth_test test/waterdepth_test.cpp)
+target_include_directories(waterdepth_test PRIVATE src include)
+target_link_libraries(waterdepth_test PRIVATE bf6_core_static)
 
 add_executable(terraincomposite_test test/terraincomposite_test.cpp)
 target_include_directories(terraincomposite_test PRIVATE src include)
@@ -208,3 +222,97 @@ target_include_directories(pipeline_test PRIVATE src include)
 add_executable(decals_test test/decals_test.cpp)
 target_link_libraries(decals_test PRIVATE bf6_core_static)
 target_include_directories(decals_test PRIVATE src include)
+
+add_executable(decaltint_test test/decaltint_test.cpp)
+target_link_libraries(decaltint_test PRIVATE bf6_core_static)
+target_include_directories(decaltint_test PRIVATE src include)
+
+add_executable(decalwhite_test test/decalwhite_test.cpp)
+target_link_libraries(decalwhite_test PRIVATE bf6_core_static)
+target_include_directories(decalwhite_test PRIVATE src include)
+
+add_executable(vicinity_test test/vicinity_test.cpp)
+target_link_libraries(vicinity_test PRIVATE bf6_core_static)
+target_include_directories(vicinity_test PRIVATE src include)
+
+add_executable(decaltintmul_test test/decaltintmul_test.cpp)
+target_link_libraries(decaltintmul_test PRIVATE bf6_core_static)
+target_include_directories(decaltintmul_test PRIVATE src include)
+
+# The VisualEnvironment decode through the C ABI, checked against the four rows
+# of the plugin's hand-built lighting table.
+add_executable(velight_test test/velight_test.cpp)
+target_link_libraries(velight_test PRIVATE bf6_core_static)
+target_include_directories(velight_test PRIVATE src include)
+
+# Research: the raw VisualEnvironment dump the lighting constants were read off.
+# Emits (component type_guid, field hash, value) triples for a join against
+# data/sdk_field_names.tsv, because the hash is not reversible.
+# The local light placements: the count, the placement split (which is where
+# the classic bug hides), the distributions and a sample in real units.
+add_executable(levellights_test test/levellights_test.cpp)
+target_link_libraries(levellights_test PRIVATE bf6_core_static)
+target_include_directories(levellights_test PRIVATE src include)
+
+add_executable(vedump_test test/vedump_test.cpp)
+target_link_libraries(vedump_test PRIVATE bf6_core_static)
+target_include_directories(vedump_test PRIVATE src include)
+
+# Research: the authored water constants - the VE ocean component's fields
+# beside the water material's depot record, so the pair can be solved together.
+add_executable(waterconst_test test/waterconst_test.cpp)
+target_link_libraries(waterconst_test PRIVATE bf6_core_static)
+target_include_directories(waterconst_test PRIVATE src include)
+
+add_executable(waterbind_test test/waterbind_test.cpp)
+target_link_libraries(waterbind_test PRIVATE bf6_core_static)
+target_include_directories(waterbind_test PRIVATE src include)
+
+add_executable(bundlecount_test test/bundlecount_test.cpp)
+target_link_libraries(bundlecount_test PRIVATE bf6_core_static)
+target_include_directories(bundlecount_test PRIVATE src include)
+
+add_executable(waterdepthcmp_test test/waterdepthcmp_test.cpp)
+target_link_libraries(waterdepthcmp_test PRIVATE bf6_core_static)
+target_include_directories(waterdepthcmp_test PRIVATE src include)
+
+# Module FX: every placed emitter LAYER on a level, with its sheet, its grid,
+# its lighting model and its merged parameter table. Checked against
+# data/fx_level_inventory.tsv, which is its oracle.
+add_executable(fx_test test/fx_test.cpp)
+target_link_libraries(fx_test PRIVATE bf6_core_static)
+target_include_directories(fx_test PRIVATE src include)
+
+# The same decode over the C ABI, called the way a binding calls it.
+add_executable(fxabi_test test/fxabi_test.cpp)
+target_link_libraries(fxabi_test PRIVATE bf6_core_static)
+target_include_directories(fxabi_test PRIVATE src include)
+
+add_executable(weaponspike_test test/weaponspike_test.cpp)
+target_link_libraries(weaponspike_test PRIVATE bf6_core_static)
+target_include_directories(weaponspike_test PRIVATE src include)
+
+add_executable(armory_test test/armory_test.cpp)
+target_link_libraries(armory_test PRIVATE bf6_core_static)
+target_include_directories(armory_test PRIVATE src include)
+
+add_executable(ebxls_test test/ebxls_test.cpp)
+target_link_libraries(ebxls_test PRIVATE bf6_core_static)
+target_include_directories(ebxls_test PRIVATE src include)
+
+# ---- native viewer: Dear ImGui (Win32 + D3D11) over libbf6 -------------------
+# The shell is upstream's own example backend, unmodified. Only the BF6 half is
+# ours, which is the point: no time spent rewriting a window and a device.
+set(IMGUI third_party/imgui)
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/${IMGUI}/imgui.cpp)
+  add_executable(bf6viewer
+    viewer/bf6viewer.cpp
+    viewer/rime.cpp
+    viewer/armory_ui.cpp
+    ${IMGUI}/imgui.cpp ${IMGUI}/imgui_draw.cpp
+    ${IMGUI}/imgui_tables.cpp ${IMGUI}/imgui_widgets.cpp
+    ${IMGUI}/backends/imgui_impl_win32.cpp
+    ${IMGUI}/backends/imgui_impl_dx11.cpp)
+  target_include_directories(bf6viewer PRIVATE src include ${IMGUI} ${IMGUI}/backends)
+  target_link_libraries(bf6viewer PRIVATE bf6_core_static d3d11 dxgi d3dcompiler)
+endif()

@@ -361,6 +361,37 @@ EbxValue Ebx::pointer_ref(int64_t pos)
     return v;
 }
 
+bool Ebx::import_ref(size_t idx, uint32_t name_hash,
+                     std::string& partition_guid, std::string& path)
+{
+    partition_guid.clear();
+    path.clear();
+    if (idx >= instance_offsets_.size() || inst_type_[idx] < 0) return false;
+    const TypeLayout& lay = layout(type_guids_[(size_t)inst_type_[idx]]);
+    if (!lay.valid) return false;
+    for (const FieldInfo& f : lay.fields)
+    {
+        if (f.name_hash != name_hash) continue;
+        const int64_t pos = payload_ + (int64_t)instance_offsets_[idx] + (int64_t)f.offset;
+        if (!fits(data_, pos, 8)) return false;
+        // Eight bytes, not four. The slot IS eight wide; the low half alone
+        // answers for every index the game ships, and reading the whole thing
+        // costs nothing and does not depend on that staying true.
+        const int64_t v = rd<int64_t>(data_, pos);
+        if (v == 0 || !(v & 1)) return false;
+        const int64_t i = v >> 1;
+        if (i < 0 || (size_t)i >= imports_.size()) return false;
+        partition_guid = imports_[(size_t)i].partition;
+        if (guid_index_)
+        {
+            auto it = guid_index_->find(partition_guid);
+            if (it != guid_index_->end()) path = it->second;
+        }
+        return true;
+    }
+    return false;
+}
+
 int32_t Ebx::int_pointer(size_t idx, uint32_t name_hash)
 {
     if (idx >= instance_offsets_.size() || inst_type_[idx] < 0) return -1;

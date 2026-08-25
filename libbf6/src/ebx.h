@@ -122,6 +122,43 @@ public:
     // ones that really are numbers.
     int32_t int_pointer(size_t idx, uint32_t name_hash);
 
+    // A REFERENCE THE REFLECTION CANNOT DESCRIBE. Sibling to int_pointer, and
+    // the opposite failure: for the asset-reference fields on a
+    // VisualEnvironment - PanoramicTexture, SkyGradientTexture,
+    // CloudShadowTexture, HdrColorGradingLut - the type table hands back a null
+    // type_va, so decode() resolves nothing and read_instance reports the field
+    // as Null. The PAYLOAD is a perfectly ordinary import pointer: an odd i64
+    // whose top bits are the import index, exactly what pointer_ref reads on
+    // every field the reflection DOES describe.
+    //
+    // Left out of read_instance on purpose. A null type_va means the width and
+    // meaning of those bytes are unknown, and reading every such field as a
+    // pointer would invent references on fields that hold something else. Here
+    // the caller names the field and takes responsibility for it.
+    //
+    // Returns false when the field is absent, zero, or out of range. On success
+    // `partition_guid` is the PARTITION half of the import record - the half a
+    // cross-partition lookup keys on - and `path` is that guid resolved through
+    // the guid index, or empty when no index was set or it does not know it.
+    bool import_ref(size_t idx, uint32_t name_hash,
+                    std::string& partition_guid, std::string& path);
+
+    // THE IMPORT TABLE, both halves.
+    //
+    // An EFIX Imports[] record is PartitionGuid(16) + InstanceGuid(16), and a
+    // cross-partition lookup keys on the PARTITION half. Comparing the instance
+    // half instead answers a different question and still appears to work,
+    // because the two are equal on a minority of records (48 of 400 in the
+    // mp_dumbo root); it then fails silently on the other 88%. Both are exposed
+    // so a caller cannot pick one by accident.
+    //
+    // The list is also a SELECTOR, not a dependency dump: a level root imports
+    // only the assets it actually turns on. That is how the active
+    // VisualEnvironment preset is identified - see velighting.cpp.
+    struct Import { std::string partition, instance; };
+    size_t              import_count() const { return imports_.size(); }
+    const Import&       import_at(size_t i) const { return imports_[i]; }
+
     // Counters, so the `want` filter's reach can be judged rather than assumed.
     static uint64_t n_inst, n_top, n_nested, n_arr_elem;
     static void     reset_counts();
@@ -148,7 +185,6 @@ private:
     size_t                 exported_instance_count_ = 0;
     std::vector<uint32_t>  instance_offsets_;
     std::vector<uint64_t>  resource_refs_;
-    struct Import { std::string partition, instance; };
     std::vector<Import>    imports_;
 
     std::map<uint32_t, size_t> inst_map_;    // payload offset -> instance index

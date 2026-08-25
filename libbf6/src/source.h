@@ -87,6 +87,14 @@ public:
     // hold the key binds a material that merely collides - a confidently wrong
     // texture, which is worse than an untextured surface because nothing about
     // it looks broken.
+    // Every bundle that has a depot. Exposed so a caller can find the bundle
+    // that OWNS a part when the part's own resource bundle carries no
+    // material - see bf6_part_bundle. Deliberately a caller's decision:
+    // depot_for_bundle will not widen to a sibling by itself, because a
+    // sibling holding the same key binds a confidently wrong texture.
+    const std::map<std::string, std::string>& depots_by_bundle() const
+    { return depot_by_bundle_; }
+
     std::string depot_for_bundle(const std::string& bundle) const;
     std::string depot_for_res(const std::string& res_name) const;
 
@@ -103,6 +111,17 @@ public:
     size_t ebx_count() const { return ebx_.size(); }
     const std::unordered_map<std::string, ResEntry>& res() const { return res_; }
     const std::unordered_map<std::string, EbxEntry>& ebx() const { return ebx_; }
+    // The chunk tables, for a caller that enumerates rather than asking for one
+    // guid it already knows. Two of them because they ARE two: a loose chunk is
+    // in the TOC's own chunk list, a bundle chunk is a segment of a bundle, and
+    // get_chunk looks in both.
+    const std::map<std::string, CasLoc>& loose_chunks() const { return chunks_; }
+    const std::map<std::string, CasLoc>& bundle_chunks() const { return chunk_seg_; }
+    // Is this guid in either chunk map, WITHOUT reading it. A resource names
+    // its chunk in one of two byte orders and the only way to know which is to
+    // look; doing that with get_chunk would decompress a megabyte to answer a
+    // yes/no question.
+    bool has_chunk(const std::string& guid_hex) const;
 
 private:
     std::string game_;

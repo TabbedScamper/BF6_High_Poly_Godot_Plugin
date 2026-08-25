@@ -29,6 +29,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -110,6 +111,78 @@ int main(int argc, char** argv)
 
     // A couple of records in full, so the numbers can be eyeballed against the
     // spec rather than only trusted in aggregate.
+    // WHICH TEXTURE SLOTS ACTUALLY RESOLVE.
+    //
+    // A decal whose colour slot resolves to nothing draws as a WHITE PLANE,
+    // because the material instance leaves the parameter at the parent's
+    // default. So the interesting number is not how many records parse, it is
+    // how many carry a texture guid that the partition index can turn into an
+    // asset.
+    {
+        const uint64_t SLOT_CV  = 0x399AC0336ACFE03Cull;
+        const uint64_t SLOT_OP  = 0x3810287D4CE70B49ull;
+        const uint64_t SLOT_NHS = 0x567A9BC35CCBB1B2ull;
+        const std::map<std::string, std::string>& gi = src.partition_index();
+        size_t haveCv = 0, haveOp = 0, haveNhs = 0, anyTex = 0, resolvedCv = 0;
+        std::map<std::string, size_t> byName;
+        for (const bf6::DecalRecord& r : dc.records()) {
+            bool cv = false, op = false, nhs = false, any = false;
+            for (const bf6::DecalProp& pr : r.props) {
+                if (pr.kind != bf6::DecalProp::Kind::Texture) continue;
+                any = true;
+                { char nb[32]; std::snprintf(nb, sizeof(nb), "%016llX", (unsigned long long)pr.name); byName[nb]++; }
+                if (pr.name == SLOT_CV) {
+                    cv = true;
+                    if (gi.find(pr.guid) != gi.end()) resolvedCv++;
+                }
+                if (pr.name == SLOT_OP)  op = true;
+                if (pr.name == SLOT_NHS) nhs = true;
+            }
+            if (cv) haveCv++;
+            if (op) haveOp++;
+            if (nhs) haveNhs++;
+            if (any) anyTex++;
+        }
+        const size_t n = dc.records().size();
+        std::printf("\ntexture slots resolve (of %zu records)\n", n);
+        std::printf("  any texture prop at all : %zu\n", anyTex);
+        std::printf("  colour  slot present    : %zu   (guid resolves: %zu)\n", haveCv, resolvedCv);
+        std::printf("  opacity slot present    : %zu\n", haveOp);
+        std::printf("  normal  slot present    : %zu\n", haveNhs);
+        std::printf("  distinct texture slot names seen: %zu\n", byName.size());
+        // WHAT EACH SLOT ACTUALLY IS.
+        //
+        // The asset name suffix names the role, the same convention the
+        // terrain sheets and the prop depot use: _cv colour, _op coverage,
+        // _nhs normal/height/smoothness, _ao, _mxx. A slot used by more
+        // records than the colour slot, and never read, is a slot we are
+        // dropping on the floor.
+        std::printf("  a resolved asset per slot:\n");
+        for (std::map<std::string, size_t>::const_iterator kv = byName.begin();
+             kv != byName.end(); ++kv) {
+            int shownHere = 0;
+            for (size_t ri = 0; ri < dc.records().size() && shownHere < 2; ri++) {
+                const bf6::DecalRecord& r2 = dc.records()[ri];
+                for (size_t pi = 0; pi < r2.props.size() && shownHere < 2; pi++) {
+                    const bf6::DecalProp& pr = r2.props[pi];
+                    if (pr.kind != bf6::DecalProp::Kind::Texture) continue;
+                    char nb[32];
+                    std::snprintf(nb, sizeof(nb), "%016llX", (unsigned long long)pr.name);
+                    if (kv->first != nb) continue;
+                    std::map<std::string, std::string>::const_iterator it = gi.find(pr.guid);
+                    if (it == gi.end()) continue;
+                    std::printf("    %s -> %s\n", nb, it->second.c_str());
+                    shownHere++;
+                }
+            }
+        }
+        size_t shown = 0;
+        for (const auto& kv : byName) {
+            std::printf("    slot %s used by %zu record(s)\n", kv.first.c_str(), kv.second);
+            if (++shown >= 12) break;
+        }
+    }
+
     std::printf("\nfirst records:\n");
     for (size_t i = 0; i < dc.records().size() && i < 4; i++)
     {

@@ -12,7 +12,10 @@
 #include <cmath>
 #include <set>
 #include <cstring>
+#include <exception>
+#include <new>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <memory>
 #include <string>
@@ -29,11 +32,21 @@
 #include "texture.h"
 #include "walk.h"
 #include "placeables.h"
+#include "velighting.h"
+#include "levellights.h"
+#include "fx.h"
 
 namespace fs = std::filesystem;
 
 struct bf6_ctx {
     bf6::Source      src;
+    // Backing store for the slot names bf6_armory_slots hands out as
+    // char*. Owned by the context, like every other string in this ABI.
+    std::vector<std::string> armory_slot_names;
+    std::vector<std::string> armory_category_names;
+    std::vector<std::string> rime_names;
+    std::vector<std::string> icon_names;
+    std::vector<std::string> part_meshes, part_bundles;
     bf6::PlaceableDB pdb;
     int lifted = 0;
 
@@ -43,6 +56,12 @@ struct bf6_ctx {
     std::unique_ptr<bf6::TypeDb> types;
     std::unique_ptr<bf6::Walk>   walk;
     std::string                  walked_level;
+    // The level whose archives are MOUNTED, which is a weaker thing than
+    // walked and the only thing the ground and water readers need. They are
+    // kept apart on purpose: on an EA App install the walk cannot run at all
+    // until the executable is lifted, and the terrain has no business being
+    // unreadable because of that.
+    std::string                  mounted_level;
 
     // WHAT EACH HANDED-OUT POINTER ACTUALLY IS.
     //
@@ -81,8 +100,33 @@ struct bf6_ctx {
     std::vector<std::vector<float> > decal_verts;
     std::vector<bf6_decal>           decal_rows;
 
+    // ---- lighting ---------------------------------------------------------
+    // The last decoded VisualEnvironment, kept only so its import list has
+    // somewhere to live for bf6_level_lighting_imports. The lighting record
+    // itself is copied out by value.
+    bf6::VeLighting          ve;
+    std::string              ve_level;
+    std::vector<const char*> ve_import_ptrs;
+
+    // ---- local lights ------------------------------------------------------
+    // The traversal is tens of seconds on a big map and a caller commonly asks
+    // for a count before it asks for the rows, so both the decoded lights and
+    // the C view of them are kept. The C view holds pointers into the C++
+    // strings, which is why the vector they live in has to be owned here.
+    std::vector<bf6::LevelLight> lights;
+    std::vector<bf6_light>       light_rows;
+    bf6::LightStats              light_stats;
+    std::string                  lights_level;
+
     bf6_progress_fn progress = nullptr;
     void*           progress_user = nullptr;
+
+    // ---- raw asset door ---------------------------------------------------
+    // ONE slot, reused by every bf6_read_raw. See the ABI note: the caller is
+    // copying the bytes straight out, so a handle per read would make it free
+    // a hundred thousand times and a size-then-fill protocol would decompress
+    // everything twice. Owned here so it dies with the context.
+    std::vector<uint8_t> raw_buf;
 
     // ---- materials -------------------------------------------------------
     // Depots are parsed lazily and kept: a level touches a few hundred of the
@@ -102,6 +146,25 @@ struct bf6_ctx {
     };
     std::vector<TexHold>          textures;
     std::map<std::string, int32_t> tex_by_res;
+
+    // FORGET EVERY DECODED TEXTURE, KEEPING THE IDS.
+    //
+    // A texture id is the index of its resource NAME, so ids stay valid across
+    // a level change and callers may hold them. The DECODE does not: it was
+    // produced against the mount that was open at the time, and a level change
+    // remounts. Leaving `tried` set meant the first map's pixels were served
+    // for the second map's resources - one map's scenery appearing on another,
+    // and a decode running against archives that had moved underneath it.
+    //
+    // So the names and their ids survive and only the pixels are dropped.
+    void forget_texture_decodes() {
+        for (TexHold& h : textures) {
+            h.img = bf6::TextureImage();
+            h.abi = bf6_texture{};
+            h.tried = false;
+            h.ok = false;
+        }
+    }
 
     bf6::Depot* depot_named(const std::string& name, const std::vector<uint8_t>** out_bytes) {
         if (name.empty()) return nullptr;
@@ -427,7 +490,18 @@ static bool wrap_is_the_albedo(const bf6::MaterialBinding& mb)
 // also has a real base colour, and promoting an overlay over the sheet beneath
 // it would repaint a correct prop. Taken only where the alternative is drawing
 // untextured, it can only be an improvement on nothing.
-static uint32_t albedo_slot_of(const bf6::MaterialBinding& mb)
+// `usable` answers "does this slot resolve to a sheet that is not a
+// placeholder". THE TEST HAS TO BE INSIDE THE WALK, not applied to its answer.
+// Applied afterwards, the chain has already stopped at the first slot that is
+// PRESENT, and a record whose 0x54BBCD30 holds
+// common/shaders/textures/default/t_base_cs while a real facade sheet sits at
+// 0x21F3F4E1 draws untextured with its own colour one entry further down the
+// list. Measured on four levels: 27 southern-Europe facade sections exactly
+// like that. Passing no predicate keeps the old first-present behaviour, which
+// is what a caller with no resolver in hand can do.
+static uint32_t albedo_slot_of(const bf6::MaterialBinding& mb,
+                               const std::function<bool(uint32_t)>& usable
+                                   = std::function<bool(uint32_t)>())
 {
     static const uint32_t chain[] = {
         0x54BBCD30,   // the ordinary base colour
@@ -446,6 +520,18 @@ static uint32_t albedo_slot_of(const bf6::MaterialBinding& mb)
         0xA17E658F,   // cable / wire steel  159 instances, 100%  "_cs"
         0x365B13EF,   // backdrop terrain     29 instances, 100%  "_cs"
         0x1C5FA3EE,   // backdrop hulls       10 instances, 100%  "_cs"
+        // FROM THE FLEET CENSUS, which dumped the unbound albedo slots rather
+        // than counting them. Of 34,582 sections with no base colour, most are
+        // not misses at all: 17,118 glass and 9,010 car paint carry their
+        // colour as a record CONSTANT, and 3,275 are shader-computed. That
+        // leaves 4,430 genuine misses, and these five slots are two thirds of
+        // them. Sizes here are sections, not instances, so they are far below
+        // the detail layers warned about below and cannot win everywhere.
+        0x87180B38,   // prop decal "_ca"   3,152 sections over 26 levels
+        0x31EBABA9,   // backdrop            ~440 sections
+        0xC8C9370A,   // backdrop            ~440 sections
+        0x62DFB21A,   // backdrop            ~440 sections
+        0xC670A912,   // light fixture "_ca"   258 sections
     };
     // DELIBERATELY NOT IN THE CHAIN, though they census as 97-100% "_cs" on
     // per-asset paths and look exactly like the entries above:
@@ -462,9 +548,10 @@ static uint32_t albedo_slot_of(const bf6::MaterialBinding& mb)
     // and paint the whole map in moss. That has happened before here, which is
     // why is_detail_layer exists.
     for (size_t i = 0; i < sizeof(chain) / sizeof(chain[0]); i++)
-        if (mb.textures.count(chain[i])) return chain[i];
+        if (mb.textures.count(chain[i]) && (!usable || usable(chain[i])))
+            return chain[i];
     // The impostor sheet last, and only under its own guard - see below.
-    if (wrap_is_the_albedo(mb)) return 0x54BBCD22;
+    if (wrap_is_the_albedo(mb) && (!usable || usable(0x54BBCD22))) return 0x54BBCD22;
     return 0;
 }
 
@@ -485,6 +572,9 @@ static bf6_tex_slot slot_for(uint32_t n32, bool& out_known, uint32_t albedo_slot
     case 0xEC35AA69:                                  return BF6_TEX_NORMAL;
     case 0xEC35A742:                                  return BF6_TEX_NORMAL;
     case 0x2A507435: case 0x2C6B47EB:                 return BF6_TEX_NORMAL;
+    // From the same census: an "_nms" sheet on 1,492 sections that was being
+    // dropped as unknown rather than bound as a normal.
+    case 0x6A19658A:                                  return BF6_TEX_NORMAL;
     // Normals: one hash per SHADER FAMILY, not one globally.
     case 0xEC35A74C: case 0xEC35A9E2: case 0xEC35A757:
     case 0xEC35A68C: case 0xEC35A697:                 return BF6_TEX_NORMAL;
@@ -545,6 +635,14 @@ struct MeshHandle {
     std::vector<bf6_material_desc>      materials;
     std::vector<std::vector<bf6_tex_binding>> bindings;   // one array per material
     std::vector<std::vector<float>>     pos, nrm, uv;
+    // TexCoord1, kept alongside the primary. Its own array because the
+    // primary can be REPOINTED later (car paint) and the secondary must not
+    // follow it.
+    std::vector<std::vector<float>>     uv1;
+    // Per-vertex bone/part indices, one array per section. Same story as uv1:
+    // meshset decodes them into MeshGeomSection::parts and the ABI dropped
+    // them one line before any consumer could see them.
+    std::vector<std::vector<uint16_t>>  bones;
     std::vector<std::vector<uint32_t>>  idx;
 };
 
@@ -700,9 +798,19 @@ bf6_mesh* bf6_read_mesh_scoped(bf6_ctx* c, const char* res_name, int lod,
     for (int i = 15; i >= 0; i--) { rev += H[cid[i] >> 4]; rev += H[cid[i] & 0xF]; }
     std::vector<uint8_t> chunk = c->src.get_chunk(fwd, err);
     if (chunk.empty()) chunk = c->src.get_chunk(rev, err);
-    if (chunk.empty()) return nullptr;
 
-    auto secs = bf6::meshset_read_lod(ms, lod, chunk.data(), chunk.size(), err);
+    // NO CHUNK IS NOT ALWAYS A MISSING CHUNK. A LOD whose ChunkId is all zeros
+    // stores its geometry INSIDE the MeshSet, and returning null for those loses
+    // every gadget and projectile that ships that way - 9 of the 10,571 mesh
+    // resources in one level's mount, all under common/hardware. See
+    // meshset_inline_lod for the base recovery and its measurement.
+    const uint8_t* geom = chunk.data();
+    size_t geom_len = chunk.size();
+    if (chunk.empty() &&
+        !bf6::meshset_inline_lod(ms, lod, d.data(), d.size(), &geom, &geom_len))
+        return nullptr;
+
+    auto secs = bf6::meshset_read_lod(ms, lod, geom, geom_len, err);
     if (secs.empty()) return nullptr;
 
     // ---- DROP THE PARTS THE GAME HIDES AT SPAWN ---------------------------
@@ -800,10 +908,17 @@ bf6_mesh* bf6_read_mesh_scoped(bf6_ctx* c, const char* res_name, int lod,
     MeshHandle* mh = new MeshHandle();
     const size_t n = secs.size();
     mh->pos.reserve(n); mh->nrm.reserve(n); mh->uv.reserve(n); mh->idx.reserve(n);
+    mh->uv1.reserve(n);
+    mh->bones.reserve(n);
     for (auto& s : secs) {
         mh->pos.push_back(std::move(s.positions));
         mh->nrm.push_back(std::move(s.normals));
         mh->uv.push_back(std::move(s.uv0));
+        // COPIED, not moved: the car-paint override below still reads
+        // s.uv[ch], and moving channel 1 out would hand it an empty vector
+        // for ch == 1. A weapon mesh's second channel is ~8 bytes a vertex.
+        mh->uv1.push_back(s.uv[1]);
+        mh->bones.push_back(std::move(s.parts));
         mh->idx.push_back(std::move(s.indices));
     }
     mh->sections.resize(n);
@@ -815,6 +930,13 @@ bf6_mesh* bf6_read_mesh_scoped(bf6_ctx* c, const char* res_name, int lod,
         sec.vertex_count = (int32_t)(mh->pos[i].size() / 3);
         sec.normals      = mh->nrm[i].empty() ? nullptr : mh->nrm[i].data();
         sec.uv0          = mh->uv[i].empty()  ? nullptr : mh->uv[i].data();
+        sec.uv1          = mh->uv1[i].empty() ? nullptr : mh->uv1[i].data();
+        sec.bones        = mh->bones[i].empty() ? nullptr : mh->bones[i].data();
+        // The palette is not decoded yet - see meshset.cpp. Reported as absent
+        // rather than as an empty-but-present list, so a consumer can tell the
+        // difference between "no bones" and "bones we cannot resolve".
+        sec.bone_list       = nullptr;
+        sec.bone_list_count = 0;
         sec.indices      = mh->idx[i].data();
         sec.index_count  = (int32_t)mh->idx[i].size();
         sec.material     = (int32_t)i;
@@ -838,9 +960,29 @@ bf6_mesh* bf6_read_mesh_scoped(bf6_ctx* c, const char* res_name, int lod,
     // only, never to a sibling: a key is unique within a scope, so a sibling
     // holding it binds a material that merely COLLIDES, which looks fine and is
     // wrong.
-    const std::string place = placing.empty()
-        ? c->src.depot_for_res(res_name)
-        : c->src.depot_for_bundle(placing);
+    // WITH NO PLACEMENT ABOVE IT, THE MESH'S OWN EBX TWIN NAMES THE SCOPE.
+    //
+    // depot_for_res asks the bundle the mesh RESOURCE shipped in, which is an
+    // art bundle. A weapon part's material does not live there: it lives in a
+    // per-part shader bundle, dpf_<weapon>_<part>_<hash>_bundle_1p. A state
+    // key is unique only within a bundle, so asking the wrong one resolves
+    // nothing and the part draws BLACK - measured on m4a1, where the magazine
+    // and both side panels bound 0 textures this way and bind 2 and 3 when
+    // scoped correctly.
+    //
+    // Every mesh resource ships an .ebx twin under the same name, and
+    // bundle_of_ebx is the documented rule for materials. So try that first
+    // and keep the resource's own bundle as the fallback, which is right for
+    // meshes that genuinely carry their material beside them.
+    std::string place;
+    if (!placing.empty())
+        place = c->src.depot_for_bundle(placing);
+    if (place.empty())
+    {
+        const std::string& twin = c->src.bundle_of_ebx(res_name);
+        if (!twin.empty()) place = c->src.depot_for_bundle(twin);
+    }
+    if (place.empty()) place = c->src.depot_for_res(res_name);
 
     const std::vector<uint8_t>* dbytes = nullptr;
     bf6::Depot* dep = c->depot_named(place, &dbytes);
@@ -952,7 +1094,22 @@ bf6_mesh* bf6_read_mesh_scoped(bf6_ctx* c, const char* res_name, int lod,
         }
 
         resolve_colour(mb, md);
-        const uint32_t albedo_slot = albedo_slot_of(mb);
+        // A PLACEHOLDER IS NOT AN ALBEDO, AND THE CHAIN HAS TO KNOW THAT WHILE
+        // IT IS WALKING. The same guard is applied again in the binding loop
+        // below - that one stops a placeholder reaching the caller, this one
+        // stops the chain giving up on a record that has a real sheet further
+        // down its own fallback list.
+        auto slot_is_usable = [&](uint32_t n32) {
+            auto t = mb.textures.find(n32);
+            if (t == mb.textures.end()) return false;
+            const auto& pidx = c->src.partition_index();
+            auto ait = pidx.find(t->second);
+            if (ait == pidx.end()) return false;
+            const std::string& nm = ait->second;
+            return nm.find("/textures/default/") == std::string::npos &&
+                   nm.find("/textures/debug/") == std::string::npos;
+        };
+        const uint32_t albedo_slot = albedo_slot_of(mb, slot_is_usable);
         const bool wrap_albedo = albedo_slot == 0x54BBCD22;
 
         // AND AN IMPOSTOR IS NOT ALPHA TESTED, however binary its sheet looks.
@@ -1024,13 +1181,23 @@ const bf6_texture* bf6_texture_at(bf6_ctx* c, int texture_id) {
     if (!h.tried) {
         h.tried = true;
         std::string e;
-        std::vector<uint8_t> res = c->src.get_res(h.res, e);
-        if (!res.empty()) {
-            auto fetch = [c](const std::string& g) {
-                std::string e2;
-                return c->src.get_chunk(g, e2);
-            };
-            h.ok = bf6::Texture::decode(res, fetch, h.img, 0, e);
+        // NOTHING MAY THROW ACROSS THIS BOUNDARY. bf6_texture_at is extern "C"
+        // and is called from another module, so an escaping C++ exception does
+        // not unwind into the caller - it ends the host process with a stack
+        // that stops at this dll. A texture decode allocates, and a mount that
+        // has changed underneath a cached entry can produce anything, so this
+        // is a real path rather than a theoretical one.
+        try {
+            std::vector<uint8_t> res = c->src.get_res(h.res, e);
+            if (!res.empty()) {
+                auto fetch = [c](const std::string& g) {
+                    std::string e2;
+                    return c->src.get_chunk(g, e2);
+                };
+                h.ok = bf6::Texture::decode(res, fetch, h.img, 0, e);
+            }
+        } catch (...) {
+            h.ok = false;
         }
         if (h.ok) {
             h.abi.width     = h.img.width;
@@ -1068,6 +1235,8 @@ int bf6_open_level(bf6_ctx* c, const char* level, const char* exe_path,
     c->src.set_progress(tick);
 
     if (!c->src.mount_level(level, all_levels != 0, e)) return fail(e);
+    if (c->mounted_level != level) c->forget_texture_decodes();
+    c->mounted_level = level;
 
     c->types.reset(new bf6::TypeDb());
     if (exe_path && *exe_path) {
@@ -1116,7 +1285,8 @@ int bf6_level_instances(bf6_ctx* c, const char* level,
     }
     return n;
 }
-int bf6_level_lights(bf6_ctx*, const char*, bf6_light*, int) { return 0; }
+/* bf6_level_lights lives beside bf6_level_lighting at the bottom of this file:
+ * it needs ensure_mounted and ensure_types, which are declared down there. */
 bf6_terrain* bf6_read_terrain(bf6_ctx* c, const char* level) {
     if (!c || !level || !*level) return nullptr;
 
@@ -1180,6 +1350,13 @@ bf6_terrain* bf6_read_terrain(bf6_ctx* c, const char* level) {
 static const uint64_t DECAL_SLOT_CV  = 0x399AC0336ACFE03Cull;   // base colour
 static const uint64_t DECAL_SLOT_NHS = 0x567A9BC35CCBB1B2ull;   // normal/height/smooth
 static const uint64_t DECAL_SLOT_AO  = 0x3A411B3E209FC9E2ull;   // ambient occlusion
+// The authored colour a colourless record paints its mask in. Present on
+// 3,365 colourless records and on 0 of 20,308 coloured ones, which is the
+// control that says it is the substitute for the sheet rather than a tint
+// over it.
+static const uint64_t DECAL_TINT     = 0xF6B1A0A50786E60Aull;   // ParamTintColor
+static const uint64_t DECAL_TINT2    = 0x4C6D12933B8C3184ull;   // second colour
+static const uint64_t DECAL_MASKCHAN = 0x70EDD677D2A6A56Dull;   // Int32, 0..3
 static const uint64_t DECAL_SLOT_OP  = 0x3810287D4CE70B49ull;   // coverage / markings
 
 static const char* decal_res_for(bf6_ctx* c, const std::string& level)
@@ -1365,6 +1542,22 @@ static void BF6_SimRow(const bf6::EbxValue& d, bf6_water_sim& s)
 // terraincomposite does the work; this owns the buffers so a caller across the
 // ABI never has to free anything, and so a second bake replaces the first
 // instead of leaking it.
+// Mount on demand for the readers that only need the archives.
+//
+// bf6_open_level does the mount and then goes on to the type schema and the
+// object graph, so a caller that failed there has a MOUNTED context and no way
+// to say so. Rather than make every ground call depend on a walk it does not
+// use, each one asks for the mount it needs.
+static bool ensure_mounted(bf6_ctx* c, const char* level, std::string& err)
+{
+    if (!c || !level || !*level) { err = "no level"; return false; }
+    if (c->mounted_level == level) return true;
+    if (!c->src.mount_level(level, false, err)) return false;
+    c->mounted_level = level;
+    c->forget_texture_decodes();
+    return true;
+}
+
 int bf6_layer_sheet(bf6_ctx* c, const char* res_name, int size,
                     uint8_t* out, char* err, int err_len)
 {
@@ -1450,9 +1643,24 @@ int bf6_ground_coverage_get(bf6_ctx* c, const char* level, int size,
     };
     if (!c || !level || !*level || !out) return fail("bad arguments");
 
-    c->ground.reset(new bf6::GroundCoverage());
     std::string e;
-    if (!bf6::ground_coverage(c->src, level, size, *c->ground, e)) {
+    if (!ensure_mounted(c, level, e)) return fail(e);
+    c->ground.reset(new (std::nothrow) bf6::GroundCoverage());
+    if (!c->ground) return fail("out of memory allocating the coverage");
+    bool ok = false;
+    try {                                  // see bf6_bake_terrain on why
+        ok = bf6::ground_coverage(c->src, level, size, *c->ground, e);
+    } catch (const std::bad_alloc&) {
+        c->ground.reset();
+        return fail("out of memory building the ground coverage - try a smaller size");
+    } catch (const std::exception& ex) {
+        c->ground.reset();
+        return fail(std::string("ground coverage failed: ") + ex.what());
+    } catch (...) {
+        c->ground.reset();
+        return fail("ground coverage failed with an unknown exception");
+    }
+    if (!ok) {
         c->ground.reset();
         return fail(e.empty() ? "coverage failed" : e);
     }
@@ -1469,6 +1677,15 @@ int bf6_ground_coverage_get(bf6_ctx* c, const char* level, int size,
         g.metres_per_repeat = m.metres_per_repeat;
         g.uv_rotation_deg = m.uv_rotation_deg;
         g.tint[0] = m.tint[0]; g.tint[1] = m.tint[1]; g.tint[2] = m.tint[2];
+        g.overlay = m.overlay;
+        g.base_height = m.base_height;
+        g.displace_range = m.displace_range;
+        g.mask_ramp_exp = m.mask_ramp_exp;
+        g.height_blend = m.height_blend;
+        g.coord_scale[0] = m.coord_scale[0];
+        g.coord_scale[1] = m.coord_scale[1];
+        g.uv_offset[0] = m.uv_offset[0];
+        g.uv_offset[1] = m.uv_offset[1];
         c->ground_mats.push_back(g);
     }
 
@@ -1478,6 +1695,7 @@ int bf6_ground_coverage_get(bf6_ctx* c, const char* level, int size,
     out->hi[0] = c->ground->hi[0]; out->hi[1] = c->ground->hi[1];
     out->idx = c->ground->idx.empty() ? nullptr : c->ground->idx.data();
     out->weight = c->ground->w.empty() ? nullptr : c->ground->w.data();
+    out->colour = c->ground->colour.empty() ? nullptr : c->ground->colour.data();
     out->materials = c->ground_mats.empty() ? nullptr : c->ground_mats.data();
     out->material_count = (int32_t)c->ground_mats.size();
     const double total = (double)c->ground->size * (double)c->ground->size;
@@ -1498,6 +1716,10 @@ int bf6_bake_terrain(bf6_ctx* c, const char* level,
         return 0;
     };
     if (!c || !level || !*level || !out) return fail("bad arguments");
+    {
+        std::string me;
+        if (!ensure_mounted(c, level, me)) return fail(me);
+    }
 
     bf6::TerrainBakeOpts o;
     if (opts) {
@@ -1508,11 +1730,37 @@ int bf6_bake_terrain(bf6_ctx* c, const char* level,
         o.want_normal = opts->want_normal != 0;
         o.stochastic  = opts->stochastic != 0;
         o.colour_map  = opts->colour_map != 0;
+        o.fallback_colour_map = opts->fallback_colour_map != 0;
     }
 
-    c->bake.reset(new bf6::TerrainBake());
+    // NOTHING MAY THROW ACROSS THIS BOUNDARY.
+    //
+    // These entry points are extern "C" and are called from another module. A
+    // C++ exception that escapes one does not unwind into the caller, it takes
+    // the whole process down: an editor sees exception 0xe06d7363 and reports
+    // a fatal error with a stack that stops at the dll, which tells nobody
+    // anything.
+    //
+    // A whole-map bake at 4096 allocates two 67 MB rasters plus the colour map
+    // and the sheet decodes, so std::bad_alloc is a REAL outcome here rather
+    // than a theoretical one, and it deserves a message rather than a crash.
+    c->bake.reset(new (std::nothrow) bf6::TerrainBake());
+    if (!c->bake) return fail("out of memory allocating the bake");
     std::string e;
-    if (!bf6::TerrainComposite::bake(c->src, level, o, *c->bake, e)) {
+    bool ok = false;
+    try {
+        ok = bf6::TerrainComposite::bake(c->src, level, o, *c->bake, e);
+    } catch (const std::bad_alloc&) {
+        c->bake.reset();
+        return fail("out of memory during the ground bake - try a smaller size");
+    } catch (const std::exception& ex) {
+        c->bake.reset();
+        return fail(std::string("ground bake failed: ") + ex.what());
+    } catch (...) {
+        c->bake.reset();
+        return fail("ground bake failed with an unknown exception");
+    }
+    if (!ok) {
         c->bake.reset();
         return fail(e.empty() ? "bake failed" : e);
     }
@@ -1798,6 +2046,26 @@ int bf6_level_decals(bf6_ctx* c, const char* level, bf6_decal* out, int out_max)
             d.albedo  = tex_of(r, DECAL_SLOT_CV);
             d.opacity = tex_of(r, DECAL_SLOT_OP);
             d.normal  = tex_of(r, DECAL_SLOT_NHS);
+            d.ao           = tex_of(r, DECAL_SLOT_AO);
+            d.asset_slot   = (int32_t)r.asset_slot;
+            d.mask_channel = -1;
+            d.has_tint = d.has_tint2 = 0;
+            for (int k = 0; k < 3; k++) { d.tint[k] = -1.f; d.tint2[k] = -1.f; }
+            for (const bf6::DecalProp& p : r.props) {
+                if (p.kind == bf6::DecalProp::Kind::Vec3 && p.values.size() >= 3) {
+                    if (p.name == DECAL_TINT) {
+                        for (int k = 0; k < 3; k++) d.tint[k] = p.values[(size_t)k];
+                        d.has_tint = 1;
+                    } else if (p.name == DECAL_TINT2) {
+                        for (int k = 0; k < 3; k++) d.tint2[k] = p.values[(size_t)k];
+                        d.has_tint2 = 1;
+                    }
+                } else if (p.name == DECAL_MASKCHAN
+                           && p.kind == bf6::DecalProp::Kind::Int
+                           && !p.ints.empty()) {
+                    d.mask_channel = p.ints[0];
+                }
+            }
 
             c->decal_verts.push_back(std::move(flat));
             c->decal_rows.push_back(d);
@@ -1818,6 +2086,312 @@ int bf6_level_decals(bf6_ctx* c, const char* level, bf6_decal* out, int out_max)
     return n;
 }
 
+// ---- the level's VisualEnvironment ----------------------------------------
+//
+// Mounts AND loads the type schema on demand, for the same reason the ground
+// calls mount on demand: the lighting does not need the placement walk, and a
+// caller whose walk failed still has a perfectly readable set of archives.
+static bool ensure_types(bf6_ctx* c, std::string& err)
+{
+    if (c->types) return true;
+    std::unique_ptr<bf6::TypeDb> t(new bf6::TypeDb());
+    for (const std::string& cand : bf6::TypeDb::exe_candidates(c->src.game_dir()))
+        if (t->open(cand, err)) {
+            if (t->looks_encrypted()) {
+                err = "this install's type table is encrypted (EA App build)";
+                return false;
+            }
+            c->types = std::move(t);
+            return true;
+        }
+    if (err.empty()) err = "no readable executable for the type schema";
+    return false;
+}
+
+// Copy a std::string into a fixed field, always terminated. Truncation is
+// reported by the caller's own eyes rather than silently: the fields are sized
+// well past the longest name in the game (a VE partition path is about 60).
+static void put_str(char* dst, size_t cap, const std::string& s)
+{
+    if (cap == 0) return;
+    const size_t n = s.size() < cap - 1 ? s.size() : cap - 1;
+    std::memcpy(dst, s.data(), n);
+    dst[n] = 0;
+}
+
+int bf6_level_lighting(bf6_ctx* c, const char* level,
+                       bf6_ve_lighting* out, char* err, int err_len)
+{
+    auto fail = [&](const std::string& m) {
+        if (err && err_len > 0) std::snprintf(err, (size_t)err_len, "%s", m.c_str());
+        return 0;
+    };
+    if (!c || !level || !*level || !out) return fail("bad arguments");
+
+    std::string e;
+    if (!ensure_mounted(c, level, e)) return fail(e);
+    if (!ensure_types(c, e)) return fail(e);
+
+    bf6::VeLighting v;
+    if (!bf6::ve_lighting(c->src, *c->types, level, v, e))
+        return fail(e.empty() ? "no visual environment" : e);
+
+    c->ve = v;
+    c->ve_level = level;
+    c->ve_import_ptrs.clear();
+
+    *out = bf6_ve_lighting{};
+    put_str(out->preset, sizeof(out->preset), v.preset);
+    put_str(out->preset_path, sizeof(out->preset_path), v.preset_path);
+    out->preset_candidates = v.preset_candidates;
+    out->components = v.components;
+    out->visibility = v.visibility;
+    out->component_count = v.component_count;
+
+    out->sun_rotation_x = v.sun_rotation_x;
+    out->sun_rotation_y = v.sun_rotation_y;
+    for (int i = 0; i < 3; i++) out->sun_color[i] = v.sun_color[i];
+    out->sun_intensity = v.sun_intensity;
+    out->sun_angular_radius = v.sun_angular_radius;
+    out->sun_specular_scale = v.sun_specular_scale;
+    out->sun_shadow_view_distance = v.sun_shadow_view_distance;
+    out->cloud_shadow_size = v.cloud_shadow_size;
+    out->cloud_shadow_coverage = v.cloud_shadow_coverage;
+    out->cloud_shadow_exponent = v.cloud_shadow_exponent;
+    for (int i = 0; i < 2; i++) {
+        out->cloud_shadow_speed[i] = v.cloud_shadow_speed[i];
+        out->cloud_shadow_translation[i] = v.cloud_shadow_translation[i];
+    }
+    out->cloud_radiosity = v.cloud_radiosity;
+
+    out->sky_type = v.sky_type;
+    out->sky_luminance_scale = v.sky_luminance_scale;
+    out->sky_panoramic_rotation = v.sky_panoramic_rotation;
+    out->sky_panoramic_tile_factor = v.sky_panoramic_tile_factor;
+    out->sky_draw_sun_disc = v.sky_draw_sun_disc;
+    out->sun_disc_size = v.sun_disc_size;
+    out->sun_disc_scale = v.sun_disc_scale;
+    for (int i = 0; i < 3; i++) out->rayleigh[i] = v.rayleigh[i];
+    out->rayleigh_scale = v.rayleigh_scale;
+    out->mie_coefficient = v.mie_coefficient;
+    out->mie_g = v.mie_g;
+    out->use_aerial_perspective = v.use_aerial_perspective;
+    out->aerial_perspective_scale = v.aerial_perspective_scale;
+    out->aerial_perspective_intensity = v.aerial_perspective_intensity;
+    out->earth_radius = v.earth_radius;
+    out->atmosphere_radius = v.atmosphere_radius;
+    for (int i = 0; i < 3; i++) out->height_fog_color_add[i] = v.height_fog_color_add[i];
+    out->cloud1_altitude = v.cloud1_altitude;
+    out->cloud1_tile_factor = v.cloud1_tile_factor;
+    out->cloud1_rotation = v.cloud1_rotation;
+    out->cloud1_speed = v.cloud1_speed;
+    out->cloud1_alpha_mul = v.cloud1_alpha_mul;
+    for (int i = 0; i < 3; i++) out->cloud1_color[i] = v.cloud1_color[i];
+
+    out->fog_height_enable = v.fog_height_enable;
+    out->fog_color_enable = v.fog_color_enable;
+    out->fog_gradient_enable = v.fog_gradient_enable;
+    for (int i = 0; i < 3; i++) out->fog_color[i] = v.fog_color[i];
+    out->fog_dist_start = v.fog_dist_start;
+    out->fog_dist_end = v.fog_dist_end;
+    out->fog_color_start = v.fog_color_start;
+    out->fog_color_end = v.fog_color_end;
+    out->fog_height_start = v.fog_height_start;
+    out->fog_height_end = v.fog_height_end;
+    out->fog_altitude = v.fog_altitude;
+    out->fog_depth = v.fog_depth;
+    out->fog_visibility_range = v.fog_visibility_range;
+    out->volumetrics_enable = v.volumetrics_enable;
+    out->sun_scatter_intensity = v.sun_scatter_intensity;
+    out->local_light_scatter_intensity = v.local_light_scatter_intensity;
+
+    out->auto_exposure = v.auto_exposure;
+    out->ev = v.ev;
+    out->ev_max = v.ev_max;
+    out->exposure_compensation = v.exposure_compensation;
+    for (int i = 0; i < 3; i++) out->bloom_scale[i] = v.bloom_scale[i];
+    out->bloom_method = v.bloom_method;
+
+    out->grading_enable = v.grading_enable;
+    for (int i = 0; i < 3; i++) {
+        out->grade_brightness[i] = v.grade_brightness[i];
+        out->grade_contrast[i] = v.grade_contrast[i];
+        out->grade_saturation[i] = v.grade_saturation[i];
+    }
+    out->grade_hue = v.grade_hue;
+    out->white_temperature = v.white_temperature;
+    out->white_tint = v.white_tint;
+
+    out->ao_affects_outdoor_light = v.ao_affects_outdoor_light;
+    out->ao_affects_local_light = v.ao_affects_local_light;
+    out->ssao_max_distance_inner = v.ssao_max_distance_inner;
+    out->ssao_max_distance_outer = v.ssao_max_distance_outer;
+    out->hbao_radius = v.hbao_radius;
+    out->hbao_contrast = v.hbao_contrast;
+    out->dynamic_ao_factor = v.dynamic_ao_factor;
+
+    for (int i = 0; i < 3; i++) {
+        out->gi_terrain_color[i] = v.gi_terrain_color[i];
+        out->gi_sky_color[i] = v.gi_sky_color[i];
+        out->gi_ground_color[i] = v.gi_ground_color[i];
+        out->gi_sun_color[i] = v.gi_sun_color[i];
+    }
+    out->gi_backlight_rotation_x = v.gi_backlight_rotation_x;
+    out->gi_backlight_rotation_y = v.gi_backlight_rotation_y;
+    out->gi_bounce_scale = v.gi_bounce_scale;
+    out->gi_sun_scale = v.gi_sun_scale;
+
+    // A texture id is only offered where the mount actually carries a resource
+    // of that name. A VE names an EBX PARTITION, and while the texture resource
+    // shares the name on every case checked, asking for one that is not there
+    // would hand back an id that decodes to nothing.
+    auto tex = [&](const std::string& res) -> int32_t {
+        return (!res.empty() && c->src.res().count(res)) ? c->texture_id(res) : -1;
+    };
+    put_str(out->panorama_res, sizeof(out->panorama_res), v.panorama_res);
+    put_str(out->panorama_alpha_res, sizeof(out->panorama_alpha_res), v.panorama_alpha_res);
+    put_str(out->sky_gradient_res, sizeof(out->sky_gradient_res), v.sky_gradient_res);
+    put_str(out->flow_mask_res, sizeof(out->flow_mask_res), v.flow_mask_res);
+    put_str(out->cloud_layer1_res, sizeof(out->cloud_layer1_res), v.cloud_layer1_res);
+    put_str(out->cloud_shadow_res, sizeof(out->cloud_shadow_res), v.cloud_shadow_res);
+    put_str(out->secondary_cloud_shadow_res, sizeof(out->secondary_cloud_shadow_res),
+            v.secondary_cloud_shadow_res);
+    put_str(out->grading_lut_res, sizeof(out->grading_lut_res), v.grading_lut_res);
+    put_str(out->lens_dirt_res, sizeof(out->lens_dirt_res), v.lens_dirt_res);
+    out->has_panorama = v.panorama_res.empty() ? 0 : 1;
+    out->panorama_texture = tex(v.panorama_res);
+    out->sky_gradient_texture = tex(v.sky_gradient_res);
+    out->cloud_shadow_texture = tex(v.cloud_shadow_res);
+
+    out->fields_found = v.fields_found;
+    out->fields_expected = v.fields_expected;
+    return 1;
+}
+
+int bf6_level_lighting_imports(bf6_ctx* c, const char* level,
+                               const char** out, int out_max)
+{
+    if (!c || !level || !*level) return 0;
+    if (c->ve_level != level) {
+        bf6_ve_lighting tmp;
+        if (!bf6_level_lighting(c, level, &tmp, nullptr, 0)) return 0;
+    }
+    c->ve_import_ptrs.clear();
+    c->ve_import_ptrs.reserve(c->ve.imports.size());
+    for (const std::string& s : c->ve.imports) c->ve_import_ptrs.push_back(s.c_str());
+    const int n = (int)c->ve_import_ptrs.size();
+    if (out && out_max > 0)
+        for (int i = 0; i < n && i < out_max; i++) out[i] = c->ve_import_ptrs[(size_t)i];
+    return n;
+}
+
+// ---- the level's local light placements ------------------------------------
+//
+// Mounts and loads the type schema on demand for the same reason the VE does:
+// the lights need a traversal of their own and not the placement walk, so a
+// caller whose walk failed still has a perfectly readable set of archives.
+//
+// THE EXECUTABLE THIS RESOLVES AGAINST DECIDES WHETHER THE ANSWER IS RIGHT.
+// The SP and MP builds ship different reflection schemas for the same classes,
+// and the placement component's `Light` pointer sits at a different offset in
+// each. Reading MP level data through the SP schema returns wrong values from
+// the right bytes and reports no error. ensure_types prefers the MP build.
+int bf6_level_lights(bf6_ctx* c, const char* level,
+                     bf6_light* out, int out_max,
+                     bf6_light_stats* stats, char* err, int err_len)
+{
+    auto fail = [&](const std::string& m) {
+        if (err && err_len > 0) std::snprintf(err, (size_t)err_len, "%s", m.c_str());
+        return 0;
+    };
+    if (!c || !level || !*level) return fail("bad arguments");
+
+    if (c->lights_level != level) {
+        std::string e;
+        if (!ensure_mounted(c, level, e)) return fail(e);
+        if (!ensure_types(c, e)) return fail(e);
+
+        c->lights.clear();
+        c->light_rows.clear();
+        c->light_stats = bf6::LightStats();
+        if (!bf6::level_lights(c->src, *c->types, level, c->lights, c->light_stats, e))
+            return fail(e.empty() ? "the light traversal found no level root" : e);
+        c->lights_level = level;
+
+        // Built once and kept, because every const char* in it points into the
+        // strings held by c->lights.
+        c->light_rows.resize(c->lights.size());
+        for (size_t i = 0; i < c->lights.size(); i++) {
+            const bf6::LevelLight& L = c->lights[i];
+            bf6_light& r = c->light_rows[i];
+            r = bf6_light{};
+            r.type = L.kind;
+            for (int k = 0; k < 4; k++) {
+                r.xform[k * 3 + 0] = L.xf.m[k].x;
+                r.xform[k * 3 + 1] = L.xf.m[k].y;
+                r.xform[k * 3 + 2] = L.xf.m[k].z;
+            }
+            for (int k = 0; k < 3; k++) r.color[k] = L.color[k];
+            r.intensity = L.intensity;
+            r.unit = L.unit;
+            r.dimmer = L.dimmer;
+            r.attenuation_radius = L.attenuation_radius;
+            r.attenuation_offset = L.attenuation_offset;
+            r.inner_angle = L.inner_angle;
+            r.outer_angle = L.outer_angle;
+            r.shape_radius = L.shape_radius;
+            r.tube_width = L.tube_width;
+            r.is_capsule = L.is_capsule;
+            r.rect_height = L.rect_height;
+            r.rect_aspect = L.rect_aspect;
+            r.rect_shape = L.rect_shape;
+            r.cast_shadows_enable = L.cast_shadows_enable;
+            r.cast_shadows = L.cast_shadows;
+            r.cast_volumetric = L.cast_volumetric;
+            r.volumetric_scattering = L.volumetric_scattering;
+            r.affect_diffuse = L.affect_diffuse;
+            r.affect_specular = L.affect_specular;
+            r.affect_radiosity = L.affect_radiosity;
+            r.emissive_shape_enable = L.emissive_shape_enable;
+            r.ies_profile = L.ies_profile.empty() ? nullptr : L.ies_profile.c_str();
+            r.ies_multiplier = L.ies_multiplier;
+            r.ies_as_mask = L.ies_as_mask;
+            r.texture = L.texture.empty() ? nullptr : L.texture.c_str();
+            r.cull_distance = L.cull_distance;
+            r.fade_distance = L.fade_distance;
+            r.source = L.source.empty() ? nullptr : L.source.c_str();
+            r.flags = L.flags;
+            r.from_component = L.from_component;
+        }
+    }
+
+    if (stats) {
+        const bf6::LightStats& s = c->light_stats;
+        *stats = bf6_light_stats{};
+        stats->total  = (int32_t)c->light_rows.size();
+        stats->sphere = (int32_t)s.by_kind[bf6::kLightSphere];
+        stats->spot   = (int32_t)s.by_kind[bf6::kLightSpot];
+        stats->tube   = (int32_t)s.by_kind[bf6::kLightTube];
+        stats->rect   = (int32_t)s.by_kind[bf6::kLightRect];
+        stats->other  = (int32_t)s.by_kind[bf6::kLightOther];
+        stats->placed_by_component     = (int32_t)s.placed_by_component;
+        stats->placed_by_own_transform = (int32_t)s.placed_by_own_transform;
+        stats->placed_at_holder        = (int32_t)s.placed_at_holder;
+        stats->components     = (int32_t)s.components;
+        stats->comp_unlinked  = (int32_t)s.comp_unlinked;
+        stats->comp_excluded  = (int32_t)s.comp_excluded;
+        stats->partitions     = (int32_t)s.partitions;
+        stats->unresolved_types = (int32_t)s.unresolved_types;
+        stats->comp_legacy_resolved = (int32_t)s.comp_legacy_resolved;
+        stats->comp_legacy_agree    = (int32_t)s.comp_legacy_agree;
+    }
+
+    const int n = (int)c->light_rows.size();
+    if (out && out_max > 0)
+        for (int i = 0; i < n && i < out_max; i++) out[i] = c->light_rows[(size_t)i];
+    return n;
+}
+
 void bf6_free(bf6_ctx* c, void* handle) {
     if (!handle || !c) return;
     auto it = c->handles.find(handle);
@@ -1833,5 +2407,26 @@ void bf6_free(bf6_ctx* c, void* handle) {
     default: break;
     }
 }
+
+
+// The water RENDER description. Its own translation unit so the decode
+// can grow without this file growing with it, and included INSIDE the
+// extern "C" block because it defines part of the C ABI.
+#include "water_ext.inc"
+
+
+// The FX decode over the C ABI. Its own translation unit for the same
+// reason water_ext.inc is, and included INSIDE the extern "C" block
+// because it defines part of the C ABI.
+#include "fx_ext.inc"
+
+
+// The mount's own name tables and raw bytes. Same reason as the two above, and
+// included INSIDE the extern "C" block because it defines part of the C ABI.
+#include "raw_ext.inc"
+#include "ebxdump_ext.inc"
+#include "armory_ext.inc"
+#include "rime_ext.inc"
+#include "bones_ext.inc"
 
 }  // extern "C"

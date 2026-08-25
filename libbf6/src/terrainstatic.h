@@ -148,6 +148,21 @@ private:
     int         prologue_top_ = -1;
 };
 
+// WHICH TABLE ROW A SUBLEVEL USES.
+//
+// terrainstaticmap.h is keyed by the level whose evaluator was disassembled, and
+// several shipped levels are SUBLEVELS that mount somebody else's terrain: all
+// seven mp_granite_<x>_portal levels stream the parent's
+// terrain_mp_granite_8k_512tile_01_copy tree and therefore run the parent's
+// evaluator with the parent's register allocation. Keyed exactly they miss the
+// table and fall back to the ordinal walk.
+//
+// Returns the longest covered name that is a prefix of `level` at an UNDERSCORE
+// boundary, or `level` lowercased when the table covers it directly or not at
+// all. mp_aftermath_portal has a row of its own and keeps it. Lives here rather
+// than in terrainstaticmap.cpp because that file is generated.
+std::string terrain_table_level(const std::string& level);
+
 }  // namespace bf6
 
 #endif

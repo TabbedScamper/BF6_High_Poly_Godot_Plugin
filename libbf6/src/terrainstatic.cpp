@@ -1,6 +1,7 @@
 /* The compositor's statically bound texture table. See terrainstatic.h for the
  * chain, the layer join and how far the join has been measured to hold. */
 #include "terrainstatic.h"
+#include "terrainstaticmap.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -309,18 +310,47 @@ bool TerrainStaticTable::load(Source& src, const std::string& level,
 std::map<int, int> TerrainStaticTable::assign(const std::vector<int>& static_layers) const
 {
     // The k-th layer with no bindless colour takes the k-th group counted down
-    // from the top of the table. Layer 0 is aligned - it consumes slot 0 - but
-    // never mapped: neither decoded evaluator has a `case 0`, layer 0 being the
-    // pass-through that preserves the incoming surface.
+    // from the top of the table.
+    //
+    // EVERY static layer is mapped now, including two that used to be dropped
+    // here, because dropping them was losing real ground:
+    //
+    //  - LAYER 0 was skipped on the belief that it is a pass-through with no
+    //    `case 0` in the evaluator. It has one: case 0 is the switch DEFAULT
+    //    and is a full material body that samples the top group. On
+    //    MP_Aftermath layer 0 is `t_euu_asphaltbase_01`, the block-7 base
+    //    field over 95.3% of the map - the material that should sit under
+    //    everything else. Skipping it is why that map had nothing to draw.
+    //  - MODIFIER groups (no base colour of their own) were skipped, which
+    //    left their layer with no assignment at all rather than with a
+    //    correct "this one is a modifier" answer. A caller cannot tell those
+    //    two apart, and one of them means "fall back to the aerial photo".
+    //
+    // A caller that wants only surfaces checks groups()[slot].base_color >= 0,
+    // which every consumer here already does.
     std::map<int, int> out;
     for (size_t k = 0; k < static_layers.size() && k < groups_.size(); k++)
     {
-        const int layer = static_layers[k];
-        if (layer == 0) continue;
-        if (groups_[k].base_color < 0) continue;   // a modifier's sheet, not a ground
-        out[layer] = (int)k;
+        out[static_layers[k]] = (int)k;
     }
     return out;
+}
+
+// See the header. Implemented against the generated table's own exact-match
+// query, so the generated file stays generated.
+std::string terrain_table_level(const std::string& level)
+{
+    std::string lv = level;
+    for (char& ch : lv) ch = (char)std::tolower((unsigned char)ch);
+    if (static_layer_map_has(lv)) return lv;
+    size_t p = lv.rfind('_');
+    while (p != std::string::npos && p > 0)
+    {
+        const std::string cand = lv.substr(0, p);
+        if (static_layer_map_has(cand)) return cand;
+        p = lv.rfind('_', p - 1);
+    }
+    return lv;
 }
 
 }  // namespace bf6

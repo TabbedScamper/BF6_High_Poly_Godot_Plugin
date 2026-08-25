@@ -1,4 +1,5 @@
 #include "terraincomposite.h"
+#include <functional>
 
 #include <algorithm>
 #include <cmath>
@@ -12,6 +13,8 @@
 #include "splat.h"
 #include "terrainlayers.h"
 #include "terrainstatic.h"
+#include "terrainstaticmap.h"
+#include "playablebounds.h"
 #include "texture.h"
 
 namespace bf6 {
@@ -31,9 +34,15 @@ namespace {
 inline void rgb565(uint16_t v, uint8_t* o)
 {
     const int r = (v >> 11) & 31, g = (v >> 5) & 63, b = v & 31;
+    // BLUE IS FIVE BITS, LIKE RED. It was expanded with the SIX-bit constants,
+    // so a fully saturated blue endpoint decoded to 126 instead of 255 and
+    // every BC1 image came back starved of blue. Layer sheets are all BC7 in
+    // the shipped fleet, so materials never showed it; the victim was the
+    // COLOUR MAP, and the levels whose colour map is BC1 were exactly the
+    // worst-scoring levels against the shipped Portal overlays.
     o[0] = (uint8_t)((r * 527 + 23) >> 6);
     o[1] = (uint8_t)((g * 259 + 33) >> 6);
-    o[2] = (uint8_t)((b * 259 + 33) >> 6);
+    o[2] = (uint8_t)((b * 527 + 23) >> 6);
 }
 
 // `opaque_only` is BC1-in-BC2/BC3: the c0 <= c1 punch-through case does not
@@ -636,6 +645,104 @@ bool load_sheet(Source& src, const std::map<std::string, std::string>& pidx,
 
 // ---------------------------------------------------------------------------
 
+bool paint_colour_map(const Splat& sp, const SplatChunkDir& dir,
+                      const std::function<std::vector<uint8_t>(const std::string&)>& fetch,
+                      const float lo[2], const float hi[2], int size,
+                      std::vector<uint8_t>& rgb,
+                      std::vector<std::string>* failures)
+{
+    rgb.clear();
+    if (size <= 0 || sp.no_colour()) return false;
+
+    const float* rlo = sp.root_min();
+    const float* rhi = sp.root_max();
+    if (rhi[0] <= rlo[0] || rhi[1] <= rlo[1]) return false;
+
+    std::vector<ColorSlice> slices = sp.color_slices(dir, fetch);
+    std::stable_sort(slices.begin(), slices.end(),
+                     [](const ColorSlice& a, const ColorSlice& b)
+                     { return Splat::depth_of(a.key) < Splat::depth_of(b.key); });
+
+    const int side = sp.tile_side();
+    if (side <= 4) return false;
+    const int apron = (side - (side - 4)) / 2;   // 132 -> 2
+    const int use = side - 2 * apron;
+
+    std::map<std::string, std::vector<uint8_t>> chunk_cache;
+    int painted = 0;
+    for (const ColorSlice& cs : slices)
+    {
+        float tlo[2], thi[2];
+        Splat::bounds_of(cs.key, rlo, rhi, tlo, thi);
+        if (thi[0] <= lo[0] || tlo[0] >= hi[0] || thi[1] <= lo[1] || tlo[1] >= hi[1])
+            continue;
+        auto ci = chunk_cache.find(cs.chunk);
+        if (ci == chunk_cache.end())
+            ci = chunk_cache.emplace(cs.chunk, fetch(cs.chunk)).first;
+        const std::vector<uint8_t>& raw = ci->second;
+        if (cs.offset + cs.bytes > raw.size()) continue;
+        std::vector<uint8_t> rgba;
+        std::string e;
+        if (!bcn_to_rgba8(raw.data() + cs.offset, cs.bytes, side, side,
+                          sp.tile_is_bc1() ? 72 : 99, rgba, e))
+        {
+            if (failures) failures->push_back("colour tile: " + e);
+            continue;
+        }
+        // 128, NOT 0. A texel no tile reaches has no authored aerial colour, and
+        // the consumer of this buffer is a Photoshop Overlay: overlay(c, 0.5)
+        // == c, so mid grey is the identity and leaves the ground alone, while a
+        // zero-initialised black multiplies it to nothing. The map's own
+        // authored mean is 127.4 / 127.4 / 127.5 over mp_dumbo, so mid grey is
+        // also what the data itself is centred on.
+        //
+        // This was invisible while the tile discriminator was accepting filler
+        // rasters, because those covered the gaps with something. mp_abbasid's
+        // colour map reaches about a third of its playable window; with the
+        // filler correctly rejected and the rest left black, its bake mean fell
+        // from 129.7 / 123.8 / 117.4 to 74.2 / 68.8 / 61.7 and its chroma score
+        // went from 2.19 to 3.06.
+        if (rgb.empty()) rgb.assign((size_t)size * size * 3, 128);
+        painted++;
+
+        // Bilinear, not nearest. A colour tile is 128 usable texels over
+        // whatever world rect its quadtree key owns, so on a tight window one
+        // tile texel can be twelve metres across - nearest turns the aerial
+        // photograph into a chequerboard of flat squares and the bake reads as
+        // broken when it is not. The apron is what makes the filter safe at the
+        // tile edge: those texels ARE the neighbour's.
+        const float tw = thi[0] - tlo[0], th = thi[1] - tlo[1];
+        if (tw <= 0.f || th <= 0.f) continue;
+        for (int y = 0; y < size; y++)
+        {
+            const float wz = lo[1] + (hi[1] - lo[1]) * ((float)y + 0.5f) / (float)size;
+            if (wz < tlo[1] || wz >= thi[1]) continue;
+            const float fy = (wz - tlo[1]) / th * (float)use + (float)apron - 0.5f;
+            const int y0 = std::max(0, std::min(side - 1, (int)std::floor(fy)));
+            const int y1 = std::max(0, std::min(side - 1, y0 + 1));
+            const float ty = fy - std::floor(fy);
+            for (int x = 0; x < size; x++)
+            {
+                const float wx = lo[0] + (hi[0] - lo[0]) * ((float)x + 0.5f) / (float)size;
+                if (wx < tlo[0] || wx >= thi[0]) continue;
+                const float fx = (wx - tlo[0]) / tw * (float)use + (float)apron - 0.5f;
+                const int x0 = std::max(0, std::min(side - 1, (int)std::floor(fx)));
+                const int x1 = std::max(0, std::min(side - 1, x0 + 1));
+                const float txf = fx - std::floor(fx);
+                const uint8_t* a = &rgba[((size_t)y0 * side + x0) * 4];
+                const uint8_t* b2 = &rgba[((size_t)y0 * side + x1) * 4];
+                const uint8_t* c2 = &rgba[((size_t)y1 * side + x0) * 4];
+                const uint8_t* d2 = &rgba[((size_t)y1 * side + x1) * 4];
+                uint8_t* d = &rgb[((size_t)y * size + x) * 3];
+                for (int k = 0; k < 3; k++)
+                    d[k] = (uint8_t)(lerpf(lerpf(a[k], b2[k], txf),
+                                           lerpf(c2[k], d2[k], txf), ty) + 0.5f);
+            }
+        }
+    }
+    return painted > 0 && !rgb.empty();
+}
+
 bool TerrainComposite::bake(Source& src, const std::string& level,
                             const TerrainBakeOpts& opt, TerrainBake& out,
                             std::string& err)
@@ -675,7 +782,20 @@ bool TerrainComposite::bake(Source& src, const std::string& level,
         lo[0] = opt.rect_min[0]; lo[1] = opt.rect_min[1];
         hi[0] = lo[0] + opt.rect_size; hi[1] = lo[1] + opt.rect_size;
     }
-    else { lo[0] = rlo[0]; lo[1] = rlo[1]; hi[0] = rhi[0]; hi[1] = rhi[1]; }
+    else {
+        // No explicit window: prefer the level's PLAYABLE BOX over the whole
+        // footprint, for the reason in playablebounds.h - most of a level's
+        // terrain is backdrop ring, and baking it wastes the raster on
+        // scenery no one can stand on.
+        float bcx = 0.f, bcz = 0.f, bsx = 0.f, bsz = 0.f;
+        if (playable_box(level, bcx, bcz, bsx, bsz) && bsx > 1.f && bsz > 1.f) {
+            const float side = bsx > bsz ? bsx : bsz;
+            lo[0] = bcx - side * 0.5f; lo[1] = bcz - side * 0.5f;
+            hi[0] = bcx + side * 0.5f; hi[1] = bcz + side * 0.5f;
+        } else {
+            lo[0] = rlo[0]; lo[1] = rlo[1]; hi[0] = rhi[0]; hi[1] = rhi[1];
+        }
+    }
     const int size = opt.size > 0 ? opt.size : 1024;
     const int ssize = opt.splat_size > 0 ? opt.splat_size : size;
     out.size = size;
@@ -755,6 +875,8 @@ bool TerrainComposite::bake(Source& src, const std::string& level,
     // neighbour's sheet.
     TerrainStaticTable stat;
     std::map<int, int> stat_assign;      // layer -> group index
+    // A sublevel runs its parent's evaluator; see terrain_table_level.
+    const std::string table_level = terrain_table_level(level);
     if (opt.static_fallback && have_palette)
     {
         std::string serr;
@@ -794,13 +916,72 @@ bool TerrainComposite::bake(Source& src, const std::string& level,
         // SHEETS move.
         std::string base_guid = M.base_color();
         std::string nrmh_guid = M.normal_height();
+        // THE BYTECODE TABLE FIRST, the ordinal walk only as a fallback.
+        //
+        // Which layer consumes which texture group is decided by the
+        // compositor's compiled bytecode and by nothing in the shipped data,
+        // so the ordinal walk below - the k-th static layer takes the k-th
+        // group - is right on some levels and wrong on others: measured by
+        // ground area it paints the wrong sheet over 98.8% of mp_abbasid,
+        // 45.6% of mp_isolated and 16.8% of mp_badlands while reporting every
+        // layer resolved. terrainstaticmap.h carries the disassembly's own
+        // answer, and the per-pixel path in groundsplat.cpp has been using it;
+        // this path was still on the walk, so the two disagreed about the
+        // material on the same ground.
+        //
+        // A descriptor of -1 is a real answer meaning the case binds no colour
+        // there, which is a MODIFIER layer, and it must not fall through to the
+        // walk and pick up a neighbour's sheet.
+        if (base_guid.empty() && opt.static_fallback)
+        {
+            int tcv = -1, tnh = -1, tthird = -1;
+            if (static_layer_descriptors(table_level, li, tcv, tnh, tthird))
+            {
+                auto by_descriptor = [&stat](int d) -> const TerrainStaticTexture*
+                {
+                    if (d < 0) return nullptr;
+                    for (const TerrainStaticGroup& g : stat.groups())
+                        for (const TerrainStaticTexture& tx : g.tex)
+                            if ((int)tx.descriptor == d) return &tx;
+                    return nullptr;
+                };
+                if (const TerrainStaticTexture* t = by_descriptor(tcv))
+                    base_guid = t->file_guid;
+                if (nrmh_guid.empty())
+                    if (const TerrainStaticTexture* t = by_descriptor(tnh))
+                        nrmh_guid = t->file_guid;
+                // The table covers this layer. Whatever it says stands, an
+                // empty answer included: falling through to the walk here is
+                // what put a road sheet on a modifier.
+                rep.has_sheet = !base_guid.empty();
+                if (!rep.has_sheet)
+                {
+                    rep.failure = "the evaluator bytecode binds no base colour "
+                                  "for this layer (modifier or untextured)";
+                    out.layers.push_back(rep);
+                    continue;
+                }
+            }
+        }
         if (base_guid.empty())
         {
             auto sit = stat_assign.find(li);
             if (sit != stat_assign.end())
             {
                 const TerrainStaticGroup& g = stat.groups()[(size_t)sit->second];
-                base_guid = g.tex[(size_t)g.base_color].file_guid;
+                // GUARD base_color. It is -1 on a MODIFIER group - one whose
+                // evaluator body multiplies the accumulated colour and supplies
+                // none of its own - and `(size_t)-1` here indexes the vector at
+                // SIZE_MAX. That is undefined behaviour inside a library called
+                // across an extern "C" boundary, so it does not fault cleanly:
+                // it surfaces as a fatal 0xe06d7363 in the host with a stack
+                // that stops at the dll.
+                //
+                // Modifier groups only started arriving here when assign() was
+                // corrected to stop dropping them, which turned a silent
+                // omission into a crash on 11 of 30 levels.
+                if (g.base_color >= 0)
+                    base_guid = g.tex[(size_t)g.base_color].file_guid;
                 if (g.normal_height >= 0)
                     nrmh_guid = g.tex[(size_t)g.normal_height].file_guid;
             }
@@ -881,6 +1062,10 @@ bool TerrainComposite::bake(Source& src, const std::string& level,
     }
     out.layers_present = (int)present.size();
 
+    out.splat_evictions = cov.slot_evictions;
+    out.splat_evicted_mask = cov.size > 0
+        ? cov.evicted_weight / ((double)cov.size * (double)cov.size) : 0.0;
+
     // ---- 7. the colour map ---------------------------------------------------
     //
     // The block-1 colour raster is an aerial photograph in 132^2 BC7 tiles with
@@ -888,68 +1073,9 @@ bool TerrainComposite::bake(Source& src, const std::string& level,
     // window-sized buffer so a finer tile overwrites a coarser one, exactly as
     // the weight pages composite.
     std::vector<uint8_t> cmap;    // size*size*3, sRGB bytes as they lie
-    if (opt.colour_map && !sp.no_colour())
+    if (opt.colour_map)
     {
-        std::vector<ColorSlice> slices = sp.color_slices(dir, fetch);
-        std::stable_sort(slices.begin(), slices.end(),
-                         [](const ColorSlice& a, const ColorSlice& b)
-                         { return Splat::depth_of(a.key) < Splat::depth_of(b.key); });
-        const int side = sp.tile_side();
-        const int apron = (side - (side - 4)) / 2;   // 132 -> 2
-        const int use = side - 2 * apron;
-        std::map<std::string, std::vector<uint8_t>> chunk_cache;
-        for (const ColorSlice& cs : slices)
-        {
-            float tlo[2], thi[2];
-            Splat::bounds_of(cs.key, rlo, rhi, tlo, thi);
-            if (thi[0] <= lo[0] || tlo[0] >= hi[0] || thi[1] <= lo[1] || tlo[1] >= hi[1])
-                continue;
-            auto ci = chunk_cache.find(cs.chunk);
-            if (ci == chunk_cache.end())
-                ci = chunk_cache.emplace(cs.chunk, fetch(cs.chunk)).first;
-            const std::vector<uint8_t>& raw = ci->second;
-            if (cs.offset + cs.bytes > raw.size()) continue;
-            std::vector<uint8_t> rgba;
-            std::string e;
-            if (!bcn_to_rgba8(raw.data() + cs.offset, cs.bytes, side, side,
-                              sp.tile_is_bc1() ? 72 : 99, rgba, e))
-            { out.failures.push_back("colour tile: " + e); continue; }
-            if (cmap.empty()) cmap.assign((size_t)size * size * 3, 0);
-            out.colour_tiles++;
-            // Bilinear, not nearest. A colour tile is 128 usable texels over
-            // whatever world rect its quadtree key owns, so on a tight window
-            // one tile texel can be twelve metres across - nearest turns the
-            // aerial photograph into a chequerboard of flat squares and the
-            // bake reads as broken when it is not. The apron is what makes the
-            // filter safe at the tile edge: those texels ARE the neighbour's.
-            const float tw = thi[0] - tlo[0], th = thi[1] - tlo[1];
-            for (int y = 0; y < size; y++)
-            {
-                const float wz = lo[1] + (hi[1] - lo[1]) * ((float)y + 0.5f) / (float)size;
-                if (wz < tlo[1] || wz >= thi[1]) continue;
-                const float fy = (wz - tlo[1]) / th * (float)use + (float)apron - 0.5f;
-                const int y0 = std::max(0, std::min(side - 1, (int)std::floor(fy)));
-                const int y1 = std::max(0, std::min(side - 1, y0 + 1));
-                const float ty = fy - std::floor(fy);
-                for (int x = 0; x < size; x++)
-                {
-                    const float wx = lo[0] + (hi[0] - lo[0]) * ((float)x + 0.5f) / (float)size;
-                    if (wx < tlo[0] || wx >= thi[0]) continue;
-                    const float fx = (wx - tlo[0]) / tw * (float)use + (float)apron - 0.5f;
-                    const int x0 = std::max(0, std::min(side - 1, (int)std::floor(fx)));
-                    const int x1 = std::max(0, std::min(side - 1, x0 + 1));
-                    const float txf = fx - std::floor(fx);
-                    const uint8_t* a = &rgba[((size_t)y0 * side + x0) * 4];
-                    const uint8_t* b2 = &rgba[((size_t)y0 * side + x1) * 4];
-                    const uint8_t* c2 = &rgba[((size_t)y1 * side + x0) * 4];
-                    const uint8_t* d2 = &rgba[((size_t)y1 * side + x1) * 4];
-                    uint8_t* d = &cmap[((size_t)y * size + x) * 3];
-                    for (int k = 0; k < 3; k++)
-                        d[k] = (uint8_t)(lerpf(lerpf(a[k], b2[k], txf),
-                                               lerpf(c2[k], d2[k], txf), ty) + 0.5f);
-                }
-            }
-        }
+        paint_colour_map(sp, dir, fetch, lo, hi, size, cmap, &out.failures);
         out.colour_map_used = !cmap.empty();
     }
 
@@ -961,7 +1087,15 @@ bool TerrainComposite::bake(Source& src, const std::string& level,
     const float sz_step = (hi[1] - lo[1]) / (float)size;
     const int bsz = have_base ? mr.size : 0;
 
-    struct Band { double sum[3] = {0, 0, 0}; uint64_t untouched = 0; };
+    struct Band {
+        double sum[3] = {0, 0, 0};
+        uint64_t untouched = 0;
+        // See TerrainBake's mix block: how many layers the evaluator drew here
+        // and how much of the result the winner actually owns.
+        uint64_t hist[9] = {};
+        double mixdom = 0, maskdom = 0, part = 0;
+        uint64_t mixn = 0;
+    };
     int nthreads = opt.threads > 0 ? opt.threads
                                    : (int)std::max(1u, std::thread::hardware_concurrency());
     nthreads = std::max(1, std::min(nthreads, size));
@@ -973,6 +1107,8 @@ bool TerrainComposite::bake(Source& src, const std::string& level,
         const int y1 = (int)((int64_t)size * (band + 1) / nthreads);
         Band& acc = bands[(size_t)band];
         int order[8];
+        float drawn_cov[8];       // the coverage each drawn layer resolved to
+        float drawn_mask[8];      // and the raw mask it came from
 
         for (int y = y0; y < y1; y++)
         {
@@ -1027,6 +1163,7 @@ bool TerrainComposite::bake(Source& src, const std::string& level,
                 float nx = 0.f, ny = 0.f;
                 float accH = 0.f, accLoMax = 0.f, accHiMax = 0.f;
                 bool touched = false;
+                int drawn = 0;
 
                 for (int k = 0; k < n; k++)
                 {
@@ -1099,7 +1236,14 @@ bool TerrainComposite::bake(Source& src, const std::string& level,
                         const uint8_t* o8 = &cmap[((size_t)y * size + x) * 3];
                         for (int ci = 0; ci < 3; ci++)
                         {
-                            const float ov = srgb_to_linear(o8[ci] / 255.f);
+                            // NOT srgb_to_linear. The colour map ships as
+                            // BC1_UNORM / BC7_UNORM, not the _SRGB variants,
+                            // so the sampler hands the shader the raw byte and
+                            // the Overlay blend is authored against that. De-
+                            // gamma'ing it turns Overlay's 0.500 identity into
+                            // 0.216, which darkens and over-saturates every
+                            // level that has a colour map.
+                            const float ov = o8[ci] / 255.f;
                             const float cc = lc[ci];
                             const float bl = cc < 0.5f ? 2.f * cc * ov
                                                        : 1.f - 2.f * (1.f - cc) * (1.f - ov);
@@ -1110,6 +1254,8 @@ bool TerrainComposite::bake(Source& src, const std::string& level,
                     // See TerrainBakeOpts::prime_first_layer. The colour lerp
                     // alone is promoted; the height chain below keeps `raw`.
                     const float cc2 = (opt.prime_first_layer && !touched) ? 1.f : c;
+                    if (drawn < 8)
+                    { drawn_cov[drawn] = cc2; drawn_mask[drawn] = m; drawn++; }
                     for (int ci = 0; ci < 3; ci++)
                     {
                         col[ci] = lerpf(col[ci], lc[ci], cc2);
@@ -1126,6 +1272,43 @@ bool TerrainComposite::bake(Source& src, const std::string& level,
                     accLoMax = lerpf(accLoMax, h_min, raw);
                     accHiMax = lerpf(accHiMax, h_max, raw);
                     touched = true;
+                }
+
+                // ---- the mix statistics, see TerrainBake's mix block --------
+                acc.hist[drawn > 8 ? 8 : drawn]++;
+                if (drawn > 0)
+                {
+                    float eff[8];
+                    float tail = 1.f;
+                    for (int k = drawn - 1; k >= 0; k--)
+                    { eff[k] = drawn_cov[k] * tail; tail *= 1.f - drawn_cov[k]; }
+                    float s = 0.f, mx = 0.f, sq = 0.f;
+                    for (int k = 0; k < drawn; k++) s += eff[k];
+                    if (s > 1e-6f)
+                        for (int k = 0; k < drawn; k++)
+                        {
+                            const float e = eff[k] / s;
+                            if (e > mx) mx = e;
+                            sq += e * e;
+                        }
+                    float ms = 0.f, mmx = 0.f;
+                    for (int k = 0; k < drawn; k++) ms += drawn_mask[k];
+                    if (ms > 1e-6f)
+                        for (int k = 0; k < drawn; k++)
+                        { const float e = drawn_mask[k] / ms; if (e > mmx) mmx = e; }
+                    acc.mixdom  += mx;
+                    acc.maskdom += mmx;
+                    acc.part    += sq > 1e-6f ? 1.0 / sq : 1.0;
+                    acc.mixn++;
+                }
+
+                // A texel no textured layer reached. See
+                // TerrainBakeOpts::fallback_colour_map.
+                if (!touched && opt.fallback_colour_map && !cmap.empty())
+                {
+                    const uint8_t* o8 = &cmap[((size_t)y * size + x) * 3];
+                    for (int ci = 0; ci < 3; ci++)
+                        col[ci] = o8[ci] / 255.f;   // linear, see the Overlay above
                 }
 
                 uint8_t* d = &out.albedo[((size_t)y * size + x) * 4];
@@ -1160,8 +1343,21 @@ bool TerrainComposite::bake(Source& src, const std::string& level,
     }
 
     double s[3] = {0, 0, 0};
+    double mixd = 0, maskd = 0, part = 0;
+    uint64_t mixn = 0;
     for (const Band& b : bands)
-    { for (int i = 0; i < 3; i++) s[i] += b.sum[i]; out.texels_untouched += b.untouched; }
+    {
+        for (int i = 0; i < 3; i++) s[i] += b.sum[i];
+        out.texels_untouched += b.untouched;
+        for (int i = 0; i < 9; i++) out.stack_hist[i] += b.hist[i];
+        mixd += b.mixdom; maskd += b.maskdom; part += b.part; mixn += b.mixn;
+    }
+    if (mixn)
+    {
+        out.mix_dominant      = mixd / (double)mixn;
+        out.mask_dominant     = maskd / (double)mixn;
+        out.mix_participation = part / (double)mixn;
+    }
     const double n = (double)size * (double)size;
     for (int i = 0; i < 3; i++) out.mean_rgb[i] = s[i] / n;
     return true;

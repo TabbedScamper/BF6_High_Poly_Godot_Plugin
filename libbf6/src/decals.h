@@ -53,9 +53,13 @@ struct DecalVertex {
 
 struct DecalProp {
     uint64_t name = 0;
-    enum class Kind : uint8_t { Texture, Float, Vec3 } kind = Kind::Texture;
+    enum class Kind : uint8_t { Texture, Float, Vec3, Vec2, Int, Bool }
+                 kind = Kind::Texture;
     std::string  guid;               // Texture: the 16 raw bytes, dashed
-    std::vector<float> values;       // Float / Vec3, flat
+    std::vector<float> values;       // Float / Vec3 / Vec2, flat
+    // INTS ARE NOT FLOATS HERE. A stored 2 read as a float prints 2.8e-45,
+    // which looks like a rounding problem rather than a type error.
+    std::vector<int32_t> ints;       // Int / Bool
 };
 
 struct DecalRecord {

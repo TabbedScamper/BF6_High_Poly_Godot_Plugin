@@ -264,6 +264,7 @@ int main(int argc, char** argv)
     opt.size = 1024;
     float scan_span = 0.f;
     int   scan_grid = 1024;
+    bool  colourmap_only = false;
 
     for (int i = 3; i < argc; i++)
     {
@@ -280,6 +281,11 @@ int main(int argc, char** argv)
         else if (a == "--no-prime") opt.prime_first_layer = false;
         // The before/after switch for the statically bound half of the palette.
         else if (a == "--no-static") opt.static_fallback = false;
+        else if (a == "--aerial-fallback") opt.fallback_colour_map = true;
+        // Write the block-1 aerial photograph for the window and nothing else.
+        // A level whose colour map lands in the wrong place is invisible in a
+        // finished bake and obvious here.
+        else if (a == "--colourmap-only") colourmap_only = true;
         else if (a.rfind("--scan=", 0) == 0) scan_span = (float)std::atof(a.c_str() + 7);
         else if (a.rfind("--scangrid=", 0) == 0) scan_grid = std::atoi(a.c_str() + 11);
         else if (a.rfind("--window=", 0) == 0)
@@ -299,6 +305,53 @@ int main(int argc, char** argv)
     { std::fprintf(stderr, "mount: %s\n", err.c_str()); return 1; }
 
     if (scan_span > 0.f) return scan_windows(src, level, scan_span, scan_grid);
+
+    if (colourmap_only)
+    {
+        std::string tree;
+        std::string lvl = level;
+        for (char& c : lvl) c = (char)tolower((unsigned char)c);
+        for (const auto& kv : src.res())
+        {
+            std::string nm = kv.first;
+            for (char& c : nm) c = (char)tolower((unsigned char)c);
+            if (nm.find("streamingtree") != std::string::npos &&
+                nm.find(lvl) != std::string::npos) { tree = kv.first; break; }
+        }
+        std::vector<uint8_t> res = src.get_res(tree, err), b1;
+        Splat sp;
+        SplatChunkDir dir;
+        if (tree.empty() || res.empty() || !Splat::find_block(res, 1, b1, err) ||
+            !sp.parse(b1, err) || !Splat::read_chunk_dir(res, dir, err) ||
+            !sp.detect_layout(dir, err))
+        { std::fprintf(stderr, "colourmap: %s\n", err.c_str()); return 1; }
+
+        float clo[2] = {sp.root_min()[0], sp.root_min()[1]};
+        float chi[2] = {sp.root_max()[0], sp.root_max()[1]};
+        if (opt.rect_size > 0.f)
+        {
+            clo[0] = opt.rect_min[0];              clo[1] = opt.rect_min[1];
+            chi[0] = clo[0] + opt.rect_size;       chi[1] = clo[1] + opt.rect_size;
+        }
+        auto fetch = [&src](const std::string& g)
+        { std::string e; return src.get_chunk(g, e); };
+        std::vector<uint8_t> rgb;
+        std::vector<std::string> fails;
+        paint_colour_map(sp, dir, fetch, clo, chi, opt.size, rgb, &fails);
+        if (rgb.empty()) { std::fprintf(stderr, "colourmap: nothing painted\n"); return 1; }
+        std::vector<uint8_t> rgba((size_t)opt.size * opt.size * 4, 255);
+        for (size_t i = 0; i < (size_t)opt.size * opt.size; i++)
+            for (int c = 0; c < 3; c++) rgba[i * 4 + c] = rgb[i * 3 + c];
+        std::string p = outdir + "/" + level + (tag.empty() ? "" : "_" + tag) +
+                        "_colourmap.png";
+        std::printf("colour map window x %.1f..%.1f z %.1f..%.1f, %zu slices\n",
+                    clo[0], chi[0], clo[1], chi[1],
+                    sp.color_slices(dir, fetch).size());
+        if (!write_png(p, rgba.data(), opt.size, opt.size))
+        { std::fprintf(stderr, "could not write %s\n", p.c_str()); return 1; }
+        std::printf("wrote %s\n", p.c_str());
+        return 0;
+    }
 
     TerrainBake bake;
     if (!TerrainComposite::bake(src, level, opt, bake, err))
@@ -344,6 +397,18 @@ int main(int argc, char** argv)
     std::printf("  zero-coverage texels (no textured layer): %llu (%.2f%%)\n",
                 (unsigned long long)bake.texels_untouched,
                 100.0 * (double)bake.texels_untouched / texels);
+    // HOW MIXED THE GROUND IS. A chroma score cannot see "several textures
+    // averaged together"; this is the number that can.
+    std::printf("  splat slots evicted: %llu paints, %.4f mask lost per texel\n",
+                (unsigned long long)bake.splat_evictions, bake.splat_evicted_mask);
+    std::printf("  stack size (textured layers per texel):");
+    for (int i = 0; i <= 8; i++)
+        if (bake.stack_hist[i])
+            std::printf(" %d=%.1f%%", i, 100.0 * (double)bake.stack_hist[i] / texels);
+    std::printf("\n  dominant share: evaluator %.1f%%, raw mask %.1f%% | "
+                "effective layers %.2f\n",
+                100.0 * bake.mix_dominant, 100.0 * bake.mask_dominant,
+                bake.mix_participation);
     describe("albedo", bake.albedo, bake.size);
     if (!bake.normal.empty()) describe("normal", bake.normal, bake.size);
 

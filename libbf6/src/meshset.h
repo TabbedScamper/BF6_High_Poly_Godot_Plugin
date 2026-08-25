@@ -96,5 +96,30 @@ std::vector<MeshGeomSection> meshset_read_lod(const MeshSet& ms, int lod,
                                               const uint8_t* chunk, size_t chunk_len,
                                               std::string& err);
 
+// A LOD WITH NO CHUNK IS NOT A LOD WITH NO GEOMETRY.
+//
+// When MeshSetLod.ChunkId is all zeros the geometry is stored INLINE in the
+// MeshSet resource, laid out [vertex][index] exactly as a chunk would be.
+// `inline_offset` (LOD+0x84) addresses it relative to a data base at the TAIL
+// of the resource, not to its start, and the base is recoverable as
+//
+//   base = len - max over lods of (inline_offset + vertex_size + index_size)
+//
+// Measured on smokegrenade_projectile_mesh (215,536 bytes, 4 LODs): the maximum
+// end is 210,400, giving base 5,136, and 5,136 + 194,432 + 13,568 + 2,400 lands
+// exactly on the end of the file. The per-LOD offsets are the running sum of the
+// preceding buffers rounded up to 8, so they are ascending but not contiguous
+// to the byte - which is why the base is taken from the MAXIMUM end rather than
+// from a running total.
+//
+// Only gadget, projectile and weapon meshes ship this way (9 of 10,571 mesh
+// resources in one level's mount, every one under common/hardware), so a reader
+// that skips it loses those and nothing else.
+//
+// Returns false when the LOD has a real chunk id, when the sizes are absent, or
+// when the span would leave the resource. `out` points INTO `d`.
+bool meshset_inline_lod(const MeshSet& ms, int lod, const uint8_t* d, size_t len,
+                        const uint8_t** out, size_t* out_len);
+
 }  // namespace bf6
 #endif

@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <set>
 #include <thread>
 
 namespace bf6 {
@@ -155,6 +156,36 @@ double bc1_ordered_frac(const std::vector<uint8_t>& d, size_t start)
         if (c0 > c1) ordered++;
     }
     return n ? (double)ordered / (double)n : 0.0;
+}
+
+// HOW MANY OF THE SAMPLED BLOCKS ARE DISTINCT, and why neither format test can
+// stand without it.
+//
+// Both tests above ask a question about ONE block and average the answer, so a
+// raster made of a single repeated block answers it perfectly. mp_granite ships
+// exactly that: its node trailers are [colour tile][filler][filler], where each
+// filler is 1,089 copies of one BC1 block whose two endpoints happen to be
+// ordered. bc1_ordered_frac scores the filler 1.000 and the real photograph
+// 0.994, so the best-window scan picked the filler on every node with a
+// multi-tile trailer, and the level's colour map came back as fields of flat
+// navy over the whole playable centre of the map.
+//
+// A photograph never repeats a block: measured, real tiles return 0.98-1.00
+// here on both codecs and every filler window returns 0.004 (one or two
+// distinct blocks in 256 samples). Multiplied into the format test it separates
+// the three populations completely - real tile 0.98+, weight page under 0.50,
+// filler under 0.01 - with no new threshold to choose.
+double block_variety(const std::vector<uint8_t>& d, size_t start, int block_bytes)
+{
+    std::set<uint64_t> seen;
+    int n = 0;
+    for (size_t b = start; b + 8 <= d.size() && n < 256; b += (size_t)block_bytes * 4, n++)
+    {
+        uint64_t v;
+        std::memcpy(&v, d.data() + b, 8);
+        seen.insert(v);
+    }
+    return n ? (double)seen.size() / (double)n : 0.0;
 }
 
 }  // namespace
@@ -431,18 +462,32 @@ int fwd_of(int prefix) { return prefix == 298594 ? 149297 : prefix; }
 
 // [k tiles, chosen prefix], or k < 0 when no prefix decomposes the residual.
 // k == 0 is legal: planes plus pages and no colour tile.
-void decomp(int residual, int tb, int& best_k, int& best_p)
+//
+// `slack` allows a TRAILING remainder smaller than one tile. Some chunks carry
+// a short variable payload after the tile - mp_subsurface has eight, of 1,077
+// to 1,124 bytes, against twenty-one that decompose exactly - and with slack 0
+// those eight drag the map's fit to 72% and veto a model that is right for the
+// other twenty-one. The remainder is kept INSIDE the reported trailer, which is
+// what keeps the slice correct: the trailer is measured backward from the end
+// of the chunk, so `prefix + pages + tile + tail` still puts window 0 of the
+// scan exactly on the tile.
+void decomp(int residual, int tb, int& best_k, int& best_p, bool slack = false)
 {
     best_k = -1; best_p = 0;
+    int best_rem = 0;
     for (int p : kPrefixes)
     {
         const int rem = residual - p;
-        if (rem < 0 || rem % tb != 0) continue;
+        if (rem < 0) continue;
+        const int tail = rem % tb;
+        if (tail != 0 && !slack) continue;
         const int k = rem / tb;
         if (k > 8) continue;
+        if (slack && tail != 0 && k < 1) continue;   // a bare remainder is not a tile
         // Fewest tiles wins: a residual readable as either "big prefix + 1 tile"
         // or "no prefix + many tiles" is plane data plus one tile, not a stack.
-        if (best_k < 0 || k < best_k) { best_k = k; best_p = p; }
+        if (best_k < 0 || k < best_k || (k == best_k && tail < best_rem))
+        { best_k = k; best_p = p; best_rem = tail; }
     }
 }
 
@@ -495,21 +540,33 @@ bool Splat::detect_layout(const SplatChunkDir& dir, std::string& err)
     // Tried before model B because a constant can partially fit a tile map. A
     // 90% node fit accepts, so a handful of irregular chunks lose their own tile
     // and pages without vetoing the whole map.
-    int best_fit = 0;
+    int best_fit = 0, best_exact = -1;
+    // Pass 0 is the exact model. Pass 1 repeats it allowing a sub-tile trailing
+    // remainder, and only runs when the exact one accepted nothing, so no map
+    // that already decomposes exactly can change answer.
+    //
+    // In pass 1 the tie-break is the count of nodes that decompose EXACTLY, not
+    // the count that decompose at all. Slack makes every tile size fit almost
+    // everything - on mp_subsurface a residual of 166,721 reads as 2 x 67,600
+    // plus 31,521 of slop as happily as it reads as 149,297 + 1 x 17,424 exactly
+    // - and kTileOrder tries the largest first, so without this the slack model
+    // hands back 260-square tiles sliced out of the middle of a plane.
+    for (int pass = 0; pass < 2 && best_fit == 0; pass++)
     for (int tb : kTileOrder)
     {
         std::map<int, int> t_of, t_mip, t_pf;
-        int okn = 0;
+        int okn = 0, exact = 0;
         for (const auto& kv : best_resid)
         {
             const int r = kv.first;
             int k, pfx;
-            decomp(r, tb, k, pfx);
+            decomp(r, tb, k, pfx, pass == 1);
             if (k >= 0)
             {
-                t_of[r] = k * tb;
+                t_of[r] = r - pfx;                  // the remainder rides along
                 t_pf[r] = fwd_of(pfx);
                 okn += kv.second;
+                if ((r - pfx) % tb == 0) exact += kv.second;
             }
             else if (tb == 17424 || tb == 67600)
             {
@@ -527,9 +584,13 @@ bool Splat::detect_layout(const SplatChunkDir& dir, std::string& err)
                 }
             }
         }
-        if (okn * 10 >= total * 9 && okn > best_fit)
+        const bool better = pass == 0 ? okn > best_fit
+                                      : (exact > best_exact ||
+                                         (exact == best_exact && okn > best_fit));
+        if (okn * 10 >= total * 9 && better)
         {
             best_fit    = okn;
+            best_exact  = exact;
             tile_bytes_ = tb;
             tile_side_  = tile_side_of(tb);
             trailer_ = t_of; mip_ = t_mip; pfx_ = t_pf;
@@ -843,8 +904,17 @@ bool Splat::composite(const SplatChunkDir& dir, const FetchChunk& fetch, int siz
     uint8_t* pidx = out.idx.data();
     uint8_t* pw   = out.w.data();
 
+    // WHAT THE FOUR-SLOT MERGE THREW AWAY. The game keeps a mask per layer and
+    // evaluates every layer in the tile's work list; this keeps the four
+    // strongest. Counting the rejects is the only way to know whether that is a
+    // simplification or a loss, so it is counted rather than assumed.
+    std::vector<uint64_t> band_evict((size_t)nthread, 0);
+    std::vector<double>   band_evict_w((size_t)nthread, 0.0);
+
     auto band = [&](int b)
     {
+        uint64_t evicted = 0;
+        double   evicted_w = 0.0;
         const int zlo = b * band_h;
         const int zhi = std::min(size, zlo + band_h);
         for (const PaintJob& j : jobs)
@@ -918,7 +988,11 @@ bool Splat::composite(const SplatChunkDir& dir, const FetchChunk& fetch, int siz
                         if (freeslot >= 0)
                         { pidx[o + freeslot] = (uint8_t)layer; pw[o + freeslot] = (uint8_t)w; put = freeslot; }
                         else if (w > pw[o + 3])
-                        { pidx[o + 3] = (uint8_t)layer; pw[o + 3] = (uint8_t)w; put = 3; }
+                        {
+                            evicted++; evicted_w += (double)pw[o + 3] / 255.0;
+                            pidx[o + 3] = (uint8_t)layer; pw[o + 3] = (uint8_t)w; put = 3;
+                        }
+                        else { evicted++; evicted_w += (double)w / 255.0; }
                     }
                     for (int k = put; k > 0 && pw[o + k] > pw[o + k - 1]; k--)
                     {
@@ -928,6 +1002,8 @@ bool Splat::composite(const SplatChunkDir& dir, const FetchChunk& fetch, int siz
                 }
             }
         }
+        band_evict[(size_t)b] = evicted;
+        band_evict_w[(size_t)b] = evicted_w;
     };
 
     if (nthread > 1)
@@ -940,6 +1016,10 @@ bool Splat::composite(const SplatChunkDir& dir, const FetchChunk& fetch, int siz
     else band(0);
 
     // ---- tally --------------------------------------------------------------
+    out.slot_evictions = 0;
+    out.evicted_weight = 0.0;
+    for (int b = 0; b < nthread; b++)
+    { out.slot_evictions += band_evict[(size_t)b]; out.evicted_weight += band_evict_w[(size_t)b]; }
     std::memset(out.layer_texels, 0, sizeof(out.layer_texels));
     out.empty_texels = 0;
     for (size_t i = 0; i < (size_t)size * (size_t)size; i++)
@@ -985,7 +1065,14 @@ std::vector<ColorSlice> Splat::color_slices(const SplatChunkDir& dir,
     cache.fetch = &fetch;
     const bool bc1 = tile_is_bc1();
     auto score = [&](const std::vector<uint8_t>& d, size_t at)
-    { return bc1 ? bc1_ordered_frac(d, at) : mode47_frac(d, at); };
+    {
+        // The format test times block variety - see block_variety above. Without
+        // the second factor a single-block filler raster beats the photograph it
+        // is stacked next to, which is how mp_granite's colour map came back as
+        // flat navy over the whole centre of the map.
+        const double f = bc1 ? bc1_ordered_frac(d, at) : mode47_frac(d, at);
+        return f * block_variety(d, at, bc1 ? 8 : 16);
+    };
     // Thresholds sit in the wide gap between measured populations: real tiles
     // read >= 0.64 (BC7, on the mode-1-heavy maps) to ~1.0, page bytes <= 0.14
     // in both codecs. A tile that fails is weight-page data wearing a tile-sized

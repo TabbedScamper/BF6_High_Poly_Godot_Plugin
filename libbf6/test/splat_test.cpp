@@ -122,7 +122,7 @@ int main(int argc, char** argv)
     // Which typed planes this map ships. 4k maps carry {0,1,4,7,8}; 8k maps add
     // 2 (Density / DetailDisplacement) and 5.
     std::printf("blocks: ");
-    for (int t = 0; t < 10; t++)
+    for (int t = 0; t < 16; t++)   // 10+ exists: mp_isolated ships a type 10
     {
         std::vector<uint8_t> tmp;
         std::string e2;

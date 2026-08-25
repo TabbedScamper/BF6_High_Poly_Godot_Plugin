@@ -217,6 +217,34 @@ static std::vector<uint32_t> read_indices(
     return out;
 }
 
+bool meshset_inline_lod(const MeshSet& ms, int lod, const uint8_t* d, size_t len,
+                        const uint8_t** out, size_t* out_len) {
+    if (!d || !out || !out_len) return false;
+    if (lod < 0 || lod >= (int)ms.lods.size()) return false;
+    const MeshLod& L = ms.lods[(size_t)lod];
+    for (int i = 0; i < 16; i++) if (L.chunk_id[i]) return false;   // it has a chunk
+    if (L.vertex_size <= 0 || L.index_size < 0) return false;
+
+    // The base is at the TAIL, so it comes from the furthest end over ALL the
+    // LODs and not from this one. Taking this LOD's own end would put LOD 0 -
+    // whose offset is 0 - at the very end of the file.
+    int64_t hi = 0;
+    for (const MeshLod& o : ms.lods) {
+        const int64_t end = (int64_t)o.inline_offset + o.vertex_size + o.index_size;
+        if (end > hi) hi = end;
+    }
+    const int64_t base = (int64_t)len - hi;
+    if (base < 0) return false;
+
+    const int64_t start = base + (int64_t)L.inline_offset;
+    const int64_t need  = (int64_t)L.vertex_size + L.index_size;
+    if (start < 0 || start + need > (int64_t)len) return false;
+
+    *out     = d + start;
+    *out_len = (size_t)need;
+    return true;
+}
+
 std::vector<MeshGeomSection> meshset_read_lod(const MeshSet& ms, int lod,
                                               const uint8_t* chunk, size_t clen,
                                               std::string& err) {

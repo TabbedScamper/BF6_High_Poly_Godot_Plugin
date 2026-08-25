@@ -128,6 +128,15 @@ struct SplatCoverage {
     uint64_t layer_texels[256] = {};       // texels where the layer holds ANY slot
     int      layer_count = 0;              // layers with a nonzero count
 
+    // WHAT THE FOUR-SLOT MERGE THREW AWAY, so the simplification can be priced
+    // rather than assumed. `slot_evictions` counts (texel, layer) paints that
+    // found all four slots already held; `evicted_weight` sums the masks that
+    // lost, in 0..1, so dividing by the texel count gives the average mask
+    // dropped per texel. The game keeps a mask per layer and walks the whole
+    // work list, so anything large here is a real divergence from it.
+    uint64_t slot_evictions = 0;
+    double   evicted_weight = 0.0;
+
     // COUNTED ACROSS ALL FOUR SLOTS, not just the winner. "which layer wins
     // here" and "which layers appear at all" are different questions and the
     // consumer wants the second: it decides which layers get a texture slice.

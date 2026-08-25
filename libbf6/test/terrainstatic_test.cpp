@@ -88,7 +88,8 @@ int main(int argc, char** argv)
         if (it == a.end()) { std::printf("  L%-3zu  -\n", i); continue; }
         const TerrainStaticGroup& G = st.groups()[(size_t)it->second];
         std::printf("  L%-3zu  g%-3d %s\n", i, it->second,
-                    G.tex[(size_t)G.base_color].stem.c_str());
+                    G.base_color >= 0 ? G.tex[(size_t)G.base_color].stem.c_str()
+                                      : "(modifier, no colour)");
         painted++;
     }
     std::printf("\n%d of %zu statically bound layer(s) receive a colour sheet\n",

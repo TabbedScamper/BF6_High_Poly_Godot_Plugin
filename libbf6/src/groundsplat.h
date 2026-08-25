@@ -44,6 +44,30 @@ struct GroundMaterial {
     float       metres_per_repeat = 4.f;
     float       uv_rotation_deg = 0.f;
     float       tint[3] = {1.f, 1.f, 1.f};
+    // How strongly this layer takes the aerial colour map, as a Photoshop
+    // Overlay. Defaults to FULL: the authored field is optional and its
+    // absence means "yes", which a default of zero silently turns into a map
+    // painted in stock studio colours.
+    float       overlay = 1.f;
+
+    // THE EVALUATOR CONSTANTS. The weights in the raster are the game's raw
+    // MASK, not coverage: the ComputeLayer kernel turns one into the other per
+    // pixel, using each layer's own height. Skipping that step and normalising
+    // the masks is what turns ground into a four-way average of everything
+    // near it - measured on MP_Dumbo, the dominant layer carries only 33% of
+    // the mask, so nothing ever wins outright and no material reads.
+    //
+    //   coverage = saturate(mask + (hiRef - loRef) * height_blend)
+    //
+    // with the two height references pulled toward the running composite by
+    // pow(maskRamp, mask_ramp_exp), evaluated in ASCENDING layer order. A
+    // consumer that samples the height sheet can run exactly this.
+    float       base_height = 0.f;
+    float       displace_range = 0.f;
+    float       mask_ramp_exp = 1.f;
+    float       height_blend = 0.f;
+    float       coord_scale[2] = {1.f, 1.f};
+    float       uv_offset[2] = {0.f, 0.f};
 };
 
 struct GroundCoverage {
@@ -59,6 +83,13 @@ struct GroundCoverage {
     std::vector<uint8_t> w;
 
     std::vector<GroundMaterial> materials;
+
+    // THE AERIAL COLOUR MAP over the same rectangle, size*size*3 sRGB bytes,
+    // or empty when the level ships none. Each layer Overlay-blends this by
+    // its own `overlay` strength, which is what carries a map's real palette;
+    // the sheets alone are studio colour and land grey or wrongly tinted.
+    std::vector<uint8_t> colour;
+
     uint64_t empty_texels = 0;
 };
 

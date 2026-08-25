@@ -1,0 +1,238 @@
+partition	depth	element_type	element_name	name_hash	h_anchor_start	h_anchor_end	h_offset_start	h_offset_end	h_pivot	h_weight	v_anchor_start	v_anchor_end	v_offset_start	v_offset_end	v_pivot	v_weight	stack_orientation	item_spacing	pad_l	pad_t	pad_r	pad_b	references_widget
+common/ui/weapons/screens/menuweaponscreen	0	RimeLayerEntityData	Default																				
+common/ui/weapons/screens/menuweaponscreen	1	RimeWidgetReference?	CL_ReadabilityFadeBackgroundVisual	184326201	0	1	0	0	0.5	0	0	1	0	0	0.5	0							common/ui/componentlibrary/shared/visual/cl_readabilityfadebackgroundvisual.ebx
+common/ui/weapons/screens/menuweaponscreen	1	RimeWidgetReference?	MetaCustomization_AbilityStatsView	3025473044	0	1	0	0	0.5	0	0	1	0	0	0.5	0							common/ui/metacore/metacustomization/views/metacustomization_abilitystatsview.ebx
+common/ui/weapons/screens/menuweaponscreen	1	RimeWidgetReference?	MetaCustomization_InfoView	3141042201	0	1	0	0	0.5	0	1	1	-20	20	1	1							common/ui/metacore/metacustomization/views/metacustomization_infoview.ebx
+common/ui/weapons/screens/menuweaponscreen	1	RimeContainerElementData	ScreenContainer	3791800302	1	1	0	0	1	1	0.5	0.5	0	0	0.5	1			0	0	0	0	
+common/ui/weapons/screens/menuweaponscreen	2	RimeWidgetReference?	MetaCustomization_GridView	2300164911	0	1	0	0	0.5	0	0	1	0	0	0.5	0							common/ui/metacore/metacustomization/views/metacustomization_gridview.ebx
+common/ui/weapons/screens/menuweaponscreen	2	RimeWidgetReference?	BP_GreebleLine	3697701624	0	0	16	-16	0	1	0	1	88	398	0.5	0							common/ui/componentlibrary/components/decorators/sectioning/cl_greebleline.ebx
+common/ui/weapons/screens/menuweaponscreen	2	RimeWidgetReference?	MetaCustomization_FilterTabsView	1015321939	0	1	0	0	0.5	0	0	1	0	0	0.5	0							common/ui/metacore/metacustomization/metacustomization_filtertabsview.ebx
+common/ui/weapons/screens/weaponattachmentselectionscreen	0	RimeLayerEntityData	Default																				
+common/ui/weapons/screens/weaponattachmentselectionscreen	1	RimeWidgetReference?	CL_ReadabilityFadeBackgroundVisual	1787797369	0	1	0	0	0.5	0	0	1	0	0	0.5	0							common/ui/componentlibrary/shared/visual/cl_readabilityfadebackgroundvisual.ebx
+common/ui/weapons/screens/weaponattachmentselectionscreen	1	RimeContainerElementData	Grid and Stats Container	3130157648	0	1	0	0	0.5	0	0.5	0.5	0	0	0.5	1			0	0	0	0	
+common/ui/weapons/screens/weaponattachmentselectionscreen	2	RimeContainerElementData	Centre Screen Container	185685413	1	1	-60	60	1	1	0	1	0	0	0.5	0			0	0	0	0	
+common/ui/weapons/screens/weaponattachmentselectionscreen	3	RimeContainerElementData	Selection Tab and Grid	834001921	0	1	142	0	0.5	0	0	0	48	-48	0	1			0	0	0	0	
+common/ui/weapons/screens/weaponattachmentselectionscreen	4	RimeContainerElementData	Grid Container	4259681466	0	1	70	0	0.5	0	0	1	0	0	0.5	0			0	0	0	0	
+common/ui/weapons/screens/weaponattachmentselectionscreen	5	unk_6cc27f98-68ca-c25c-4e3d-fef09567419b																					
+common/ui/weapons/screens/weaponattachmentselectionscreen	5	RimeWidgetReference?	Scrollbar FadeOuts	1620702210	0	1	0	0	0.5	0	0	1	0	0	0.5	0							common/ui/componentlibrary/temp/interactable/scrollbar/cl_defaultscrollbarverticalfadeouts_legacy.ebx
+common/ui/weapons/screens/weaponattachmentselectionscreen	5	RimeWidgetReference?	Scrollbar Vertical - Always on top	1806801405	0	1	0	25	0.5	0	0	1	0	2	0.5	0							common/ui/componentlibrary/components/scrolling/widgets/cl_scrollbarvertical.ebx
+common/ui/weapons/screens/weaponattachmentselectionscreen	5	RimeWidgetReference?	[BP_GreebleLine] Left	599209029	0	0	-16	16	0	1	0	1	0	-12	0.5	0							common/ui/componentlibrary/components/decorators/sectioning/cl_greebleline.ebx
+common/ui/weapons/screens/weaponattachmentselectionscreen	2	RimeWidgetReference?	Weapon Attachment Info	3951666672	0	0	66	-66	0	1	1	1	-498	498	1	1							common/ui/weapons/widgets/weaponinfoheader.ebx
+common/ui/weapons/screens/weaponattachmentselectionscreen	2	RimeWidgetReference?	Point Cost  Header Version	1251306503	0	0	64	-64	0	1	0	0	128	-128	0	1							common/ui/weapons/widgets/weaponpointcost_header.ebx
+common/ui/weapons/screens/weaponattachmentselectionscreen	2	RimeWidgetReference?	BP_GreebleLine	2412711160	0	0	32	-32	0	1	0	1	88	410	0.5	0							common/ui/componentlibrary/components/decorators/sectioning/cl_greebleline.ebx
+common/ui/weapons/screens/weaponattachmentselectionscreen	1	RimeWidgetReference?	MetaCustomization_AbilityStatsView	1056362676	0.5	0.5	0	0	0.5	1	1	1	0	0	1	1							common/ui/metacore/metacustomization/views/metacustomization_abilitystatsview.ebx
+common/ui/weapons/screens/menuweaponpackagesscreen	0	RimeLayerEntityData	Default																				
+common/ui/weapons/screens/menuweaponpackagesscreen	1	RimeWidgetReference?	CL_ReadabilityFadeBackgroundVisual	184326201	0	1	0	0	0.5	0	0	1	0	0	0.5	0							common/ui/componentlibrary/shared/visual/cl_readabilityfadebackgroundvisual.ebx
+common/ui/weapons/screens/menuweaponpackagesscreen	1	RimeContainerElementData	ScreenContainer	3791800302	1	1	0	0	1	1	0.5	0.5	0	0	0.5	1			0	0	0	0	
+common/ui/weapons/screens/menuweaponpackagesscreen	2	RimeWidgetReference?	MetaCustomization_GridView	2300164911	0	1	0	0	0.5	0	0	1	0	0	0.5	0							common/ui/metacore/metacustomization/views/metacustomization_gridview.ebx
+common/ui/weapons/screens/menuweaponpackagesscreen	2	RimeWidgetReference?	BP_GreebleLine	762804184	0	0	16	-16	0	1	0	1	88	398	0.5	0							common/ui/componentlibrary/components/decorators/sectioning/cl_greebleline.ebx
+common/ui/weapons/screens/menuweaponpackagesscreen	1	RimeWidgetReference?	MetaCustomization_AbilityStatsView	3025473044	0	1	0	0	0.5	0	0	1	0	0	0.5	0							common/ui/metacore/metacustomization/views/metacustomization_abilitystatsview.ebx
+common/ui/weaponcustomization/screens/weaponattachmentcategoryscreen	0	RimeLayerEntityData	Default																				
+common/ui/weaponcustomization/screens/weaponattachmentcategoryscreen	1	RimeWidgetReference?	MetaCustomization_AbilityStatsView	3025473044	0.5	0.5	0	0	0.5	1	1	1	0	0	1	1							common/ui/metacore/metacustomization/views/metacustomization_abilitystatsview.ebx
+common/ui/weaponcustomization/screens/weaponattachmentcategoryscreen	1	RimeContainerElementData	Centre Screen Container	3881022501	0	1	0	0	0.5	0	0.5	0.5	0	0	0.5	1			0	0	0	0	
+common/ui/weaponcustomization/screens/weaponattachmentcategoryscreen	2	RimeStackContainerElementData	WeaponAttachment Stack	2719532080	1	1	-96	96	1	1	0	1	32	624	0.5	0	0	16.0	0	0	0	0	
+common/ui/weaponcustomization/screens/weaponattachmentcategoryscreen	3	RimeWidgetReference?	CB_DotsVisual_Right	1502915420	0.5	0.5	232	-232	0.5	1	0	1	0	0	0.5	0							common/ui/componentlibrary/shared/visual/cb_dotsvisual.ebx
+common/ui/weaponcustomization/screens/weaponattachmentcategoryscreen	3	RimeWidgetReference?	WeaponAttachmentFooter	1908558875	0	1	0	0	0.5	0	0	1	0	0	0.5	0							common/ui/weaponcustomization/widgets/weaponattachmentfooter.ebx
+common/ui/weaponcustomization/screens/weaponattachmentcategoryscreen	3	RimeWidgetReference?	[BP_GreebleLine] Left	599209029	0	0	-32	32	0	1	1	1	0	0	1	1							common/ui/componentlibrary/components/decorators/sectioning/cl_greebleline.ebx
+common/ui/weaponcustomization/screens/weaponattachmentcategoryscreen	2	RimeWidgetReference?	MetaCustomization_FooterInputActionView	438545786	0.5	0.5	0	0	0.5	1	1	1	0	0	1	1							common/ui/metacore/metacustomization/views/metacustomization_footerinputactionview.ebx
+common/ui/weaponcustomization/screens/weaponattachmentcategoryscreen	2	RimeWidgetReference?	WeaponAttachmentHeader	111854401	0	0	64	-64	0	1	0	0	112	-112	0	1							common/ui/weaponcustomization/widgets/weaponattachmentheader.ebx
+common/ui/weaponcustomization/screens/weaponattachmentcategoryscreen	2	RimeWidgetReference?	MenuWeaponProficiencyWidget	4134654273	0	0	52	-52	0	1	1	1	-280	280	1	1							common/ui/weapons/widgets/menuweaponproficiencywidget.ebx
+common/ui/weaponcustomization/screens/weaponattachmentcategoryscreen	2	RimeWidgetReference?	BP_GreebleLine	1169703896	0	0	32	-32	0	1	0	1	88	268	0.5	0							common/ui/componentlibrary/components/decorators/sectioning/cl_greebleline.ebx
+common/ui/metacore/metacustomization/views/metacustomization_abilitystatsview	0	RimeLayerEntityData	Default																				
+common/ui/metacore/metacustomization/views/metacustomization_abilitystatsview	1	RimeContainerElementData	Container	1873118818	1	1	0	0	1	1	0.5	0.5	0	0	0.5	1			0	0	0	0	
+common/ui/metacore/metacustomization/views/metacustomization_abilitystatsview	2	RimeWidgetReference?	AbilityAttributes	3105789480	1	1	-108	108	1	1	1	1	-72	72	1	1							common/ui/weaponcustomization/widgets/weaponattributes.ebx
+common/ui/metacore/metacustomization/views/metacustomization_abilitystatsview	2	RimeStackContainerElementData	PromptContainer	1097263846	1	1	-8	8	1	1	0.5	0.5	646	-646	0.5	1	0	8.0	0	0	0	0	
+common/ui/metacore/metacustomization/views/metacustomization_abilitystatsview	3	RimeWidgetReference?	ExpandAttributes Button	3545765626	0	1	0	0	0.5	0	0.5	0.5	0	0	0.5	1							common/ui/componentlibrary/components/buttons/cl_inputactionpromptbutton.ebx
+common/ui/metacore/metacustomization/views/metacustomization_infoview	0	RimeLayerEntityData	New Layer																				
+common/ui/metacore/metacustomization/views/metacustomization_infoview	0	RimeLayerEntityData	Default																				
+common/ui/metacore/metacustomization/views/metacustomization_infoview	1	RimeContainerElementData	RimeContainer	1514484081	0	0	0	0	0	1	0.5	0.5	0	0	0.5	1			0	0	0	0	
+common/ui/metacore/metacustomization/views/metacustomization_infoview	2	RimeStackContainerElementData	RimeStackContainer	2114051007	1	1	-50	50	1	1	1	1	-54	54	1	1	1	16.0	0	0	0	0	
+common/ui/metacore/metacustomization/views/metacustomization_infoview	3	RimeContainerElementData	MovieContainer	2795472250	1	1	-50	50	1	1	1	1	0	0	1	1			0	0	0	0	
+common/ui/metacore/metacustomization/views/metacustomization_infoview	4	RimeMovieElementData	RimeMovie	929123534	0	1	0	0	0.5	0	0	1	0	0	0.5	0			0	0	0	0	
+common/ui/metacore/metacustomization/views/metacustomization_infoview	3	RimeContainerElementData	Info Panel	957990461	0	0	0	0	0	1	1	1	0	0	1	1			0	0	0	0	
+common/ui/metacore/metacustomization/views/metacustomization_infoview	4	RimeFillElementData	BG Gradient	287253318	0	1	0	0	0.5	0	0	1	0	0	0.5	0			-20	-20	-54	-20	
+common/ui/metacore/metacustomization/views/metacustomization_infoview	4	RimeStackContainerElementData	Stack	195030443	1	1	0	0	1	1	1	1	0	0	1	1	1	10.0	0	0	0	0	
+common/ui/metacore/metacustomization/views/metacustomization_infoview	5	RimeContainerElementData	Image and Text	1930027732	0	0	0	0	0	1	0	1	0	0	0.5	0			0	0	0	0	
+common/ui/metacore/metacustomization/views/metacustomization_infoview	6	RimeStackContainerElementData	Text Stack	3605592950	0	0	0	0	0	1	0	1	0	0	0.5	0	1	10.0	0	0	0	0	
+common/ui/metacore/metacustomization/views/metacustomization_infoview	7	RimeContainerElementData	FlowDirectionBodyContainer	1931180165	0	0	0	0	0	1	0	1	0	0	0.5	0			0	0	0	0	
+common/ui/metacore/metacustomization/views/metacustomization_infoview	8	RimeLabelElementData	Body	2087730517	0	0	0	0	0	1	0	1	116	0	0.5	0			0	0	0	0	
+common/ui/metacore/metacustomization/views/metacustomization_infoview	7	RimeContainerElementData	FlowDirectionSubtitleContainer	2059569553	0	0	0	0	0	1	0	1	0	0	0.5	0			0	0	0	0	
+common/ui/metacore/metacustomization/views/metacustomization_infoview	8	RimeLabelElementData	Subtitle	2338012353	0	0	0	0	0	1	0	1	116	0	0.5	0			0	0	0	0	
+common/ui/metacore/metacustomization/views/metacustomization_infoview	6	RimeSvgElementData	Image	178823234	0	0	0	0	0	1	0	0	0	0	0	1			0	0	0	0	
+common/ui/metacore/metacustomization/views/metacustomization_infoview	5	RimeLabelElementData	Title	183222373	0	0	0	0	0	1	0	1	0	0	0.5	0			0	0	0	0	
+common/ui/metacore/metacustomization/views/metacustomization_infoview	3	unk_2420ee41-1c4d-38bd-4203-777f31cf9c9a																					
+common/ui/metacore/metacustomization/views/metacustomization_gridview	0	RimeLayerEntityData	Default																				
+common/ui/metacore/metacustomization/views/metacustomization_gridview	1	RimeContainerElementData	ScreenContainer	3791800302	1	1	0	0	1	1	0.5	0.5	0	0	0.5	1			0	0	0	0	
+common/ui/metacore/metacustomization/views/metacustomization_gridview	2	RimeContainerElementData	Grid Container	3130534874	1	1	-30	30	1	1	0	0	48	-48	0	1			0	0	0	0	
+common/ui/metacore/metacustomization/views/metacustomization_gridview	3	unk_6cc27f98-68ca-c25c-4e3d-fef09567419b																					
+common/ui/metacore/metacustomization/views/metacustomization_gridview	3	RimeWidgetReference?	Scrollbar FadeOuts	1620702210	0	1	0	0	0.5	0	0	1	-10	0	0.5	0							common/ui/componentlibrary/temp/interactable/scrollbar/cl_defaultscrollbarverticalfadeouts_legacy.ebx
+common/ui/metacore/metacustomization/views/metacustomization_gridview	3	RimeWidgetReference?	Scrollbar Vertical - Always on top	1806801405	0	1	0	25	0.5	0	0	1	1	1	0.5	0							common/ui/componentlibrary/components/scrolling/widgets/cl_scrollbarvertical.ebx
+common/ui/metacore/metacustomization/views/metacustomization_gridview	3	RimeWidgetReference?	EmptyState	1572933831	0	1	16	16	0.5	0	0	1	0	16	0.5	0							common/ui/weapons/widgets/weaponlabelbacked.ebx
+common/ui/metacore/metacustomization/views/metacustomization_gridview	3	RimeWidgetReference?	[BP_GreebleLine] Left	2881469381	0	0	-32	32	0	1	0	1	-16	0	0.5	0							common/ui/componentlibrary/components/decorators/sectioning/cl_greebleline.ebx
+common/ui/metacore/metacustomization/views/metacustomization_gridview	2	RimeStackContainerElementData	VStack	1947302845	1	1	-384.335	384.335	1	1	0	0	64	-64	0	1	1	28.0	0	0	0	0	
+common/ui/metacore/metacustomization/views/metacustomization_gridview	3	RimeWidgetReference?	MetaCustomization_GridInfoView	3185151169	0.5	0.5	0	0	0.5	1	0	0	0	0	0	1							common/ui/metacore/metacustomization/widgets/metacustomization_gridinfo.ebx
+common/ui/metacore/metacustomization/views/metacustomization_gridview	3	RimeContainerElementData	Proficency FlowDirectionContainer	1731491013	0	0	0	0	0	1	0	1	0	0	0.5	0			0	0	0	0	
+common/ui/metacore/metacustomization/views/metacustomization_gridview	4	RimeWidgetReference?	MenuWeaponProficiencyWidget	2676967745	0	0	0	0	0	1	0	0	0	0	0	1							common/ui/weapons/widgets/menuweaponproficiencywidget.ebx
+common/ui/metacore/metacustomization/views/metacustomization_gridview	1	RimeWidgetReference?	BP_GreebleLine	1765069272	0	0	16	-16	0	1	0	1	88	398	0.5	0							common/ui/componentlibrary/components/decorators/sectioning/cl_greebleline.ebx
+common/ui/metacore/metacustomization/views/metacustomization_footerinputactionview	0	RimeLayerEntityData	Default																				
+common/ui/metacore/metacustomization/views/metacustomization_footerinputactionview	1	RimeContainerElementData	RimeContainer	1087097649	1	1	0	0	1	1	0.5	0.5	0	0	0.5	1			0	0	0	0	
+common/ui/metacore/metacustomization/views/metacustomization_footerinputactionview	2	RimeWidgetReference?	Button Footer Right	1057286806	1	1	-64	64	1	1	1	1	-10	10	1	1							common/ui/weapons/widgets/buttonfooter.ebx
+common/ui/metacore/metacustomization/views/metacustomization_footerinputactionview	2	RimeWidgetReference?	Button Footer	1253328150	0	0	64	-64	0	1	1	1	-10	10	1	1							common/ui/weapons/widgets/buttonfooter.ebx
+common/ui/metacore/metacustomization/views/metacustomization_footerinputactionview	2	unk_295b0545-d165-e962-3ebe-e871ce63aa88																					
+common/ui/metacore/metacustomization/views/metacustomization_footerinputactionview	2	unk_26a4798a-af71-7b75-23ae-8cd04884e94b																					
+common/ui/weaponcustomization/widgets/weaponattachmentheader	0	RimeLayerEntityData	Default																				
+common/ui/weaponcustomization/widgets/weaponattachmentheader	1	RimeStackContainerElementData	Vertical Stack	208968953	0	0	0	0	0	1	0	1	0	0	0.5	0	1	8.0	0	0	0	0	
+common/ui/weaponcustomization/widgets/weaponattachmentheader	2	RimeContainerElementData	FlowDirectionLabelListContainer	3238634321	0.5	0.5	0	0	0.5	1	0	1	0	0	0.5	0			0	0	0	0	
+common/ui/weaponcustomization/widgets/weaponattachmentheader	3	unk_2420ee41-1c4d-38bd-4203-777f31cf9c9a																					
+common/ui/weaponcustomization/widgets/weaponattachmentheader	2	RimeContainerElementData	RimeContainer	1087097649	0	0	144	-144	0	1	0	1	0	0	0.5	0			0	0	0	0	
+common/ui/weaponcustomization/widgets/weaponattachmentheader	3	RimeContainerElementData	Equip Button	2384880235	0	0	0	0	0	1	0	0	0	0	0	1			0	0	0	0	
+common/ui/weaponcustomization/widgets/weaponattachmentheader	4	RimeWidgetReference?	CL_Button Equip	708668507	0	0	0	0	0	1	0	1	14	0	0.5	0							common/ui/componentlibrary/components/buttons/cl_labelbutton.ebx
+common/ui/weaponcustomization/widgets/weaponattachmentheader	4	RimeWidgetReference?	CB_BorderThinSubtle	2144861461	0	1	0	0	0.5	0	0	1	14	0	0.5	0							common/ui/componentlibrary/shared/visual/cb_borderthinsubtle.ebx
+common/ui/weaponcustomization/widgets/weaponattachmentheader	2	RimeContainerElementData	FlowDirectionWeightStackContainer	914461019	0.5	0.5	0	0	0.5	1	0	1	0	0	0.5	0			0	0	0	0	
+common/ui/weaponcustomization/widgets/weaponattachmentheader	3	RimeStackContainerElementData	Weight Stack	2624789675	0	0	0	0	0	1	0	0	0	0	0	1	0	16.0	0	0	0	0	
+common/ui/weaponcustomization/widgets/weaponattachmentheader	4	RimeWidgetReference?	PointsCost	710334641	0	0	130	-130	0	1	0	0	0	0	0	1							common/ui/weapons/widgets/weaponpointcost.ebx
+common/ui/weaponcustomization/widgets/weaponattachmentheader	2	RimeStackContainerElementData	Name and Labels	424065692	0	0	0	0	0	1	0	1	0	0	0.5	0	0	10.0	0	0	0	0	
+common/ui/weaponcustomization/widgets/weaponattachmentheader	3	RimeLabelElementData	IsModified	2292517694	0.5	0.5	0	0	0.5	1	0	0	0	0	0	1			0	0	0	0	
+common/ui/weaponcustomization/widgets/weaponattachmentheader	3	RimeLabelElementData	Title	183222373	0.5	0.5	0	0	0.5	1	0	0	0	0	0	1			0	0	0	0	
+common/ui/weaponcustomization/widgets/weaponattachmentfooter	0	RimeLayerEntityData	Default																				
+common/ui/weaponcustomization/widgets/weaponattachmentfooter	1	RimeStackContainerElementData	Footer	1712275744	1	1	0	0	1	1	0	0	0	0	0	1	0	12.0	0	0	0	0	
+common/ui/weaponcustomization/widgets/weaponattachmentfooter	2	RimeWidgetReference?	Stickers	4029987751	0.5	0.5	0	0	0.5	1	0.5	0.5	0	0	0.5	1							common/ui/componentlibrary/components/gridslists/cl_textimagegriditem.ebx
+common/ui/weaponcustomization/widgets/weaponattachmentfooter	2	RimeWidgetReference?	WeaponCharm	2462399538	0.5	0.5	0	0	0.5	1	0.5	0.5	0	0	0.5	1							common/ui/componentlibrary/components/gridslists/cl_textimagegriditem.ebx
+common/ui/weaponcustomization/widgets/weaponattachmentfooter	2	RimeWidgetReference?	WeaponSkin	2027447480	0.5	0.5	0	0	0.5	1	0.5	0.5	0	0	0.5	1							common/ui/componentlibrary/components/gridslists/cl_textimagegriditem.ebx
+common/ui/weaponcustomization/widgets/weaponattributes	0	RimeLayerEntityData	Default																				
+common/ui/weaponcustomization/widgets/weaponattributes	1	RimeContainerElementData	Weapon Stats Main Container	172035498	1	1	0	0	1	1	1	1	0	0	1	1			0	0	0	0	
+common/ui/weaponcustomization/widgets/weaponattributes	2	RimeStackContainerElementData	Vertical Stack Container	831050718	1	1	0	0	1	1	0	1	0	0	0.5	0	1	26.0	0	0	0	0	
+common/ui/weaponcustomization/widgets/weaponattributes	3	RimeContainerElementData	FlowDirectionMasteryProgressBadgeContainer	950021576	0	0	0	0	0	1	0	1	0	0	0.5	0			0	0	0	0	
+common/ui/weaponcustomization/widgets/weaponattributes	4	RimeWidgetReference?	CL_MasteryProgressBadge	3219164104	1	1	6	-6	1	1	0	0	0	0	0	1							common/ui/componentlibrary/components/gridslists/cl_masteryprogressbadge.ebx
+common/ui/weaponcustomization/widgets/weaponattributes	3	RimeContainerElementData	BorderContainer	1119120142	0	0	0	0	0	1	0	1	0	0	0.5	0			0	0	0	0	
+common/ui/weaponcustomization/widgets/weaponattributes	4	RimeWidgetReference?	PP_FrontendBase	538388961	0	1	-4	-4	0.5	0	0	1	5	-13	0.5	0							common/ui/playerprofile/visuals/pp_frontendbase.ebx
+common/ui/weaponcustomization/widgets/weaponattributes	4	RimeStackContainerElementData	InfoContainer	1573049676	0.5	0.5	0	0	0.5	1	0.5	0.5	0	0	0.5	1	1	0.0	0	0	0	0	
+common/ui/weaponcustomization/widgets/weaponattributes	5	RimeWidgetReference?	Extended List	4061406016	0	1	0	0	0.5	0	0	0	90	-90	0	1							common/ui/weaponcustomization/widgets/weaponattributes_extendedlist.ebx
+common/ui/weaponcustomization/widgets/weaponattributes	5	RimeWidgetReference?	CB_DashedLineHorizontal	1038834356	0	1	0	0	0.5	0	0	0	0	0	0	1							common/ui/componentlibrary/shared/visual/cb_dashedlinehorizontal.ebx
+common/ui/weaponcustomization/widgets/weaponattributes	5	RimeContainerElementData	FlowDirectionIconizedAttributesListContainer	1930445153	0	0	0	0	0	1	0	1	0	0	0.5	0			0	0	0	0	
+common/ui/weaponcustomization/widgets/weaponattributes	6	unk_2420ee41-1c4d-38bd-4203-777f31cf9c9a																					
+common/ui/weaponcustomization/widgets/weaponattributes	5	RimeContainerElementData	MainInfoContainer	3887490663	0	0	27	-27	0	1	0.5	0.5	0	0	0.5	1			0	0	0	0	
+common/ui/weaponcustomization/widgets/weaponattributes	6	unk_2420ee41-1c4d-38bd-4203-777f31cf9c9a																					
+common/ui/weaponcustomization/widgets/weaponattributes	6	unk_2420ee41-1c4d-38bd-4203-777f31cf9c9a																					
+common/ui/weaponcustomization/widgets/weaponattributes	4	RimeWidgetReference?	CB_ButtonBase	957408472	0	1	0	0	0.5	0	0	1	0	0	0.5	0							common/ui/componentlibrary/components/buttons/cb_buttonbase.ebx
+common/ui/weaponcustomization/widgets/weaponattributes	4	RimeWidgetReference?	CB_HoverVisual	3745492649	0	1	-4	-4	0.5	0	0	1	5	-12	0.5	0							common/ui/componentlibrary/components/indicators/cb_hovervisual.ebx
+common/ui/weaponcustomization/widgets/weaponattributes	4	RimeVectorShapeElementData	MouseKeyboardBrackets	3595013362	0	1	0	0	0.5	0	0	1	0	-2	0.5	0			-4	4	-4	-14	
+common/ui/weaponcustomization/widgets/weaponattributes	4	RimeVectorShapeElementData	ControllerLeftBracket	3188465674	0	1	4	-14	0.5	0	0	0	-4	4	0	1			0	0	0	0	
+common/ui/weaponcustomization/widgets/weaponattributes	4	RimeStackContainerElementData	RightBracketContainer	1263814730	0	1	0	-16	0.5	0	1	1	8	-8	1	1	1	6.0	0	0	0	0	
+common/ui/weaponcustomization/widgets/weaponattributes	5	RimeVectorShapeElementData	RightLowerBracket	4004402830	0	0	0	0	0	1	1	1	-2	2	1	1			0	0	0	2	
+common/ui/weaponcustomization/widgets/weaponattributes	5	RimeContainerElementData	FlowDirectionExpandAttributesButtonContainer	2120638122	0	0	0	0	0	1	0	1	0	0	0.5	0			0	0	0	0	
+common/ui/weaponcustomization/widgets/weaponattributes	6	RimeWidgetReference?	ExpandAttributes Button	1046148634	0.5	0.5	6	-6	0.5	1	0.5	0.5	0	0	0.5	1							common/ui/componentlibrary/components/buttons/cl_inputactionpromptbutton.ebx
+common/ui/weaponcustomization/widgets/weaponattributes	5	RimeVectorShapeElementData	RightUpperBracket	3559468431	0	0	0	0	0	1	1	1	-2	2	1	1			0	4	0	0	
+common/ui/weaponcustomization/widgets/weaponattributescell	0	RimeLayerEntityData	Default																				
+common/ui/weaponcustomization/widgets/weaponattributescell	1	RimeWidgetReference?	Bar	193415156	0	1	0	0	0.5	0	0	1	0	0	0.5	0							common/ui/weaponcustomization/widgets/weaponattributeprogressbar.ebx
+common/ui/weaponcustomization/widgets/weaponattributeprogressbar	0	RimeLayerEntityData	Default																				
+common/ui/weaponcustomization/widgets/weaponattributeprogressbar	1	RimeContainerElementData	Main	2087696334	0	1	0	0	0.5	0	0	1	0	0	0.5	0			0	0	0	0	
+common/ui/weaponcustomization/widgets/weaponattributeprogressbar	2	RimeWidgetReference?	WeaponAttributesBar	3595838393	0	1	0	0	0.5	0	0	1	0	0	0.5	0							common/ui/componentlibrary/components/indicators/cl_statsbar_weaponstats.ebx
+common/ui/weaponcustomization/widgets/weaponattributes_extendedlist	0	RimeLayerEntityData	Default																				
+common/ui/weaponcustomization/widgets/weaponattributes_extendedlist	1	RimeStackContainerElementData	Vertical Stack Container	831050718	0	0	0	0	0	1	0	1	0	0	0.5	0	1	12.0	0	0	0	0	
+common/ui/weaponcustomization/widgets/weaponattributes_extendedlist	2	unk_2420ee41-1c4d-38bd-4203-777f31cf9c9a																					
+common/ui/weaponcustomization/widgets/weaponattributes_extendedlist	2	RimeWidgetReference?	List Divider	1169668102	0	1	0	0	0.5	0	0	0	2	-2	0	1							common/ui/componentlibrary/components/borders/cl_dividerhorizontalcell.ebx
+common/ui/weaponcustomization/widgets/weaponattributes_extendedlist	2	unk_2420ee41-1c4d-38bd-4203-777f31cf9c9a																					
+common/ui/weaponcustomization/widgets/weaponattachmentselectioncell	0	RimeLayerEntityData	Default																				
+common/ui/weaponcustomization/widgets/weaponattachmentselectioncell	1	RimeContainerElementData	FlowDirectionContainer	2311496277	0	1	0	0	0.5	0	0	1	0	0	0.5	0			0	0	0	0	
+common/ui/weaponcustomization/widgets/weaponattachmentselectioncell	2	RimeWidgetReference?	CL Grid Item	2376114087	0.5	0.5	0	0	0.5	1	0.5	0.5	0	0	0.5	1							common/ui/metacore/metacustomization/widgets/metacustomization_griditem.ebx
+common/ui/weaponcustomization/widgets/weaponattachmentselectioncell	2	RimeStackContainerElementData	Weight Container	327082370	0	0	0	0	0	1	0	0	-6	6	0	1	0	4.0	0	0	0	0	
+common/ui/weaponcustomization/widgets/weaponattachmentselectioncell	3	RimeWidgetReference?	Weapon Point Cost	1748623264	0	0	10	-10	0	1	0.5	0.5	0	0	0.5	1							common/ui/weapons/widgets/weaponpointcost.ebx
+common/ui/weaponcustomization/widgets/weaponattachmentselectioncell	2	RimeWidgetReference?	MC_HardwareTypeIcon	354935929	0	0	20	-20	0	1	0	0	32	-32	0	1							common/ui/metacore/metacustomization/widgets/mc_hardwaretypeicon.ebx
+common/ui/weaponcustomization/widgets/weaponattachmentselectioncell	2	RimeWidgetReference?	CL_Icon	3086315550	1	1	-6	6	1	1	0	0	4	-4	0	1							common/ui/componentlibrary/components/labels/cl_icon.ebx
+common/ui/weaponcustomization/widgets/weaponattachmentslotitemwidget	0	RimeLayerEntityData	Default																				
+common/ui/weaponcustomization/widgets/weaponattachmentslotitemwidget	1	RimeWidgetReference?	MC_WorldIconCommonWidget	1539803292	0.5	0.5	0	0	0.5	1	0.5	0.5	0	0	0.5	1							common/ui/metacore/metacustomization/widgets/mc_worldiconcommonwidget.ebx
+common/ui/weaponcustomization/widgets/weaponattachmentslotitemwidget	1	RimeFillElementData	RimeFill	4108845497	0	0	0	0	0	1	0	0	0	0	0	1			0	0	0	0	
+common/ui/weapons/widgets/weaponpointcost	0	RimeLayerEntityData	Default																				
+common/ui/weapons/widgets/weaponpointcost	1	RimeStackContainerElementData	RimeStackContainer	2114051007	0	0	0	0	0	1	0	0	0	0	0	1	1	8.0	0	0	0	0	
+common/ui/weapons/widgets/weaponpointcost	2	RimeLabelElementData	CostNumLabel	2351875262	0	0	0	0	0	1	0	1	0	0	0.5	0			0	0	0	0	
+common/ui/weapons/widgets/weaponpointcost	2	RimeStackContainerElementData	RimeStackContainer	2114051007	0	0	40	-40	0	1	0	1	0	0	0.5	0	0	8.0	0	0	0	0	
+common/ui/weapons/widgets/weaponpointcost	3	RimeLabelElementData	NoPointAvailable	3537474481	0	0	0	0	0	1	0.5	0.5	0	0	0.5	1			0	0	0	0	
+common/ui/weapons/widgets/weaponpointcost	3	RimeLabelElementData	CostLabel	2193294184	0	0	0	0	0	1	0.5	0.5	0	0	0.5	1			0	0	0	0	
+common/ui/weapons/widgets/weaponpointcost	2	RimeContainerElementData	Stack FlowDirectionContainer	3083708923	0	0	0	0	0	1	0	1	0	0	0.5	0			0	0	0	0	
+common/ui/weapons/widgets/weaponpointcost	3	RimeStackContainerElementData	Horizontal Stack	2123990997	0.5	0.5	0	0	0.5	1	0	0	0	0	0	1	0	0.0	0	0	0	0	
+common/ui/weapons/widgets/weaponpointcost	4	RimeContainerElementData	Progress Shapes	2832161700	0.5	0.5	0	0	0.5	1	0	0	0	0	0	1			0	0	0	0	
+common/ui/weapons/widgets/weaponpointcost	5	RimeContainerElementData	BGFillContainer	952500264	0	1	0	0	0.5	0	0	0	0	0	0	1			0	0	0	0	
+common/ui/weapons/widgets/weaponpointcost	6	RimeRepeatShapeElementData	BGFillBottomShape	4039030415	0	1	0	0	0.5	0	0	0	0	0	0	1			0	0	0	0	
+common/ui/weapons/widgets/weaponpointcost	6	RimeRepeatShapeElementData	BGFillTopShape	2841857803	0	1	0	0	0.5	0	0	0	0	0	0	1			0	0	0	0	
+common/ui/weapons/widgets/weaponpointcost	5	RimeContainerElementData	DeltaContainer	2949537178	0	1	0	0	0.5	0	0	0	0	0	0	1			0	0	0	0	
+common/ui/weapons/widgets/weaponpointcost	6	RimeRepeatShapeElementData	DeltaBottomShape	737350653	0	1	0	0	0.5	0	0	0	0	0	0	1			0	0	0	0	
+common/ui/weapons/widgets/weaponpointcost	6	RimeRepeatShapeElementData	DeltaTopShape	3949789305	0	1	0	0	0.5	0	0	0	0	0	0	1			0	0	0	0	
+common/ui/weapons/widgets/weaponpointcost	5	RimeContainerElementData	CurrentProgressContainer	278586518	0	1	0	0	0.5	0	0	0	0	0	0	1			0	0	0	0	
+common/ui/weapons/widgets/weaponpointcost	6	RimeRepeatShapeElementData	CurrentProgressBottomShape	379391985	0	1	0	0	0.5	0	0	0	0	0	0	1			0	0	0	0	
+common/ui/weapons/widgets/weaponpointcost	6	RimeRepeatShapeElementData	CurrentProgressTopShape	1658025717	0	1	0	0	0.5	0	0	0	0	0	0	1			0	0	0	0	
+common/ui/weapons/widgets/weaponpointcost	4	RimeContainerElementData	IconShape	2285420449	0.5	0.5	1	-1	0.5	1	0	0	-1	1	0	1			0	0	0	0	
+common/ui/weapons/widgets/weaponpointcost	5	RimeVectorShapeElementData	BottomShape	3256751557	0	1	0	0	0.5	0	0	1	0	0	0.5	0			0	0	0	0	
+common/ui/weapons/widgets/weaponpointcost	5	RimeVectorShapeElementData	TopShape	2889639297	0	1	0	0	0.5	0	0	1	0	0	0.5	0			0	0	0	0	
+common/ui/weapons/widgets/weaponpointcost	4	RimeLabelElementData	Point Cost With Weight	3788373504	0	0	0	0	0	1	1	1	0	0	1	1			4	6	4	6	
+common/ui/weapons/widgets/weaponpointcost_header	0	RimeLayerEntityData	Default																				
+common/ui/weapons/widgets/weaponpointcost_header	1	RimeStackContainerElementData	RimeStackContainer	2114051007	0	0	0	0	0	1	0	0	0	0	0	1	1	8.0	0	0	0	0	
+common/ui/weapons/widgets/weaponpointcost_header	2	RimeContainerElementData	Stack FlowDirectionContainer	3083708923	0	0	0	0	0	1	0	1	0	0	0.5	0			0	0	0	0	
+common/ui/weapons/widgets/weaponpointcost_header	3	RimeStackContainerElementData	Horizontal Stack	2123990997	0.5	0.5	0	0	0.5	1	0	0	0	0	0	1	0	8.0	4	0	4	0	
+common/ui/weapons/widgets/weaponpointcost_header	4	RimeContainerElementData	Progress Shapes	2832161700	0.5	0.5	0	0	0.5	1	0	0	0	0	0	1			0	0	0	0	
+common/ui/weapons/widgets/weaponpointcost_header	5	RimeContainerElementData	BGFillContainer	952500264	0	1	0	0	0.5	0	0	1	0	0	0.5	0			0	0	0	0	
+common/ui/weapons/widgets/weaponpointcost_header	6	RimeRepeatShapeElementData	BGFillBottomShape	4039030415	0	1	0	0	0.5	0	0	0	0	0	0	1			0	0	0	0	
+common/ui/weapons/widgets/weaponpointcost_header	6	RimeRepeatShapeElementData	BGFillTopShape	2841857803	0	1	0	0	0.5	0	0	0	0	0	0	1			0	0	0	0	
+common/ui/weapons/widgets/weaponpointcost_header	5	RimeContainerElementData	CurrentCapContainer	3630418361	0	1	0	0	0.5	0	0	1	0	0	0.5	0			0	0	0	0	
+common/ui/weapons/widgets/weaponpointcost_header	6	RimeRepeatShapeElementData	CurrentCapBottomShape	35384670	0	1	0	0	0.5	0	0	0	0	0	0	1			0	0	0	0	
+common/ui/weapons/widgets/weaponpointcost_header	6	RimeRepeatShapeElementData	CurrentCapTopShape	2065792506	0	1	0	0	0.5	0	0	0	0	0	0	1			0	0	0	0	
+common/ui/weapons/widgets/weaponpointcost_header	5	RimeContainerElementData	DeltaContainer	2949537178	0	1	0	0	0.5	0	0	1	0	0	0.5	0			0	0	0	0	
+common/ui/weapons/widgets/weaponpointcost_header	6	RimeRepeatShapeElementData	DeltaBottomShape	737350653	0	1	0	0	0.5	0	0	0	0	0	0	1			0	0	0	0	
+common/ui/weapons/widgets/weaponpointcost_header	6	RimeRepeatShapeElementData	DeltaTopShape	3949789305	0	1	0	0	0.5	0	0	0	0	0	0	1			0	0	0	0	
+common/ui/weapons/widgets/weaponpointcost_header	5	RimeContainerElementData	CurrentProgressContainer	278586518	0	1	0	0	0.5	0	0	1	0	0	0.5	0			0	0	0	0	
+common/ui/weapons/widgets/weaponpointcost_header	6	RimeRepeatShapeElementData	CurrentProgressBottomShape	379391985	0	1	0	0	0.5	0	0	0	0	0	0	1			0	0	0	0	
+common/ui/weapons/widgets/weaponpointcost_header	6	RimeRepeatShapeElementData	CurrentProgressTopShape	1658025717	0	1	0	0	0.5	0	0	0	0	0	0	1			0	0	0	0	
+common/ui/weapons/widgets/weaponpointcost_header	5	RimeContainerElementData	FlowDirectionProgressIndicatorContainer	442703593	0	1	0	0	0.5	0	0	0	0	0	0	1			0	0	0	0	
+common/ui/weapons/widgets/weaponpointcost_header	6	RimeVectorShapeElementData	ProgressIndicator	3697270873	1	1	14	-14	1	1	0	0	0	0	0	1			0	0	0	0	
+common/ui/weapons/widgets/weaponpointcost_header	4	RimeContainerElementData	IconShape	2285420449	0.5	0.5	1	-1	0.5	1	0	0	-1	1	0	1			0	0	0	0	
+common/ui/weapons/widgets/weaponpointcost_header	5	RimeVectorShapeElementData	BottomShape	3256751557	0	1	0	0	0.5	0	0	1	0	0	0.5	0			0	0	0	0	
+common/ui/weapons/widgets/weaponpointcost_header	5	RimeVectorShapeElementData	TopShape	2889639297	0	1	0	0	0.5	0	0	1	0	0	0.5	0			0	0	0	0	
+common/ui/weapons/widgets/weaponpointcost_header	4	RimeStackContainerElementData	Horizontal Stack Inner	4275540267	0	0	0	0	0	1	0	0	0	0	0	1	0	0.0	0	0	0	0	
+common/ui/weapons/widgets/weaponpointcost_header	5	RimeLabelElementData	Max Capacity	2871779173	0	0	0	0	0	1	1	1	0	0	1	1			0	6	0	6	
+common/ui/weapons/widgets/weaponpointcost_header	5	RimeLabelElementData	Slash	195892384	0	0	0	0	0	1	1	1	0	0	1	1			0	6	0	6	
+common/ui/weapons/widgets/weaponpointcost_header	5	RimeStackContainerElementData	PointCost StackContainer	2676401035	0	0	0	0	0	1	0	0	0	0	0	1	0	0.0	0	0	0	0	
+common/ui/weapons/widgets/weaponpointcost_header	6	RimeLabelElementData	Point Cost	612048098	0	0	0	0	0	1	1	1	0	0	1	1			0	6	0	6	
+common/ui/weapons/widgets/weaponpointcost_header	6	RimeLabelElementData	Point Cost Leading Zero	402834604	0	0	0	0	0	1	1	1	0	0	1	1			0	6	0	6	
+common/ui/weapons/widgets/weaponpointcost_header	2	RimeLabelElementData	OverCapacityLabel	2817504985	0	0	0	0	0	1	0	1	0	0	0.5	0			6	0	6	0	
+common/ui/weapons/widgets/weaponinfoheader	0	RimeLayerEntityData	Default																				
+common/ui/weapons/widgets/weaponinfoheader	1	RimeContainerElementData	HighlightScalarContainer	3384799324	0	1	0	0	0.5	0	0	1	0	0	0.5	0			0	0	0	0	
+common/ui/weapons/widgets/weaponinfoheader	2	RimeStackContainerElementData	Vertical Stack	208968953	0	0	12	-12	0	1	0	1	24	0	0.5	0	1	0.0	0	0	0	0	
+common/ui/weapons/widgets/weaponinfoheader	3	RimeContainerElementData	Lists FlowDirectionContainer	126792228	0	0	0	0	0	1	0	1	0	0	0.5	0			0	24	0	0	
+common/ui/weapons/widgets/weaponinfoheader	4	RimeStackContainerElementData	RimeStackContainer	2114051007	0	0	0	0	0	1	0	0	0	0	0	1	0	0.0	0	0	0	0	
+common/ui/weapons/widgets/weaponinfoheader	5	unk_2420ee41-1c4d-38bd-4203-777f31cf9c9a																					
+common/ui/weapons/widgets/weaponinfoheader	5	unk_2420ee41-1c4d-38bd-4203-777f31cf9c9a																					
+common/ui/weapons/widgets/weaponinfoheader	3	RimeContainerElementData	LockInfo FlowDirectionContainer	981176464	0	0	0	0	0	1	0	1	0	0	0.5	0			0	16	0	0	
+common/ui/weapons/widgets/weaponinfoheader	4	RimeWidgetReference?	Lock Info	3526089568	0	0	0	0	0	1	0	0	0	0	0	1							common/ui/componentlibrary/components/indicators/cl_lockreason.ebx
+common/ui/weapons/widgets/weaponinfoheader	4	RimeWidgetReference?	RestrictedReason	2442689212	0	0	0	0	0	1	0	0	0	0	0	1							common/ui/componentlibrary/components/labels/cl_tag.ebx
+common/ui/weapons/widgets/weaponinfoheader	3	RimeStackContainerElementData	RecoStack	761055472	0	0	443	-443	0	1	0	1	0	0	0.5	0	1	16.0	0	16	0	0	
+common/ui/weapons/widgets/weaponinfoheader	4	RimeWidgetReference?	MC_MasteryXP	3249957017	0	0	0	0	0	1	0.5	0.5	0	0	0.5	1							common/ui/weapons/widgets/mc_masteryxp.ebx
+common/ui/weapons/widgets/weaponinfoheader	4	RimeWidgetReference?	RecommendationTag	3401172958	0	0	0	0	0	1	0.5	0.5	0	0	0.5	1							common/ui/componentlibrary/components/labels/cl_tag.ebx
+common/ui/weapons/widgets/weaponinfoheader	3	RimeContainerElementData	Description Container	508517668	0	0	256	-256	0	1	0	1	0	0	0.5	0			0	16	0	0	
+common/ui/weapons/widgets/weaponinfoheader	4	RimeLabelElementData	Description	864525827	0	0	0	0	0	1	0	1	0	0	0.5	0			0	0	0	0	
+common/ui/weapons/widgets/weaponinfoheader	3	RimeContainerElementData	Tags FlowDirectionContainer	1036878196	0	0	0	0	0	1	0	1	0	0	0.5	0			0	16	0	0	
+common/ui/weapons/widgets/weaponinfoheader	4	unk_2420ee41-1c4d-38bd-4203-777f31cf9c9a																					
+common/ui/weapons/widgets/weaponinfoheader	3	RimeWidgetReference?	Point Cost	3017718018	0	0	0	0	0	1	0	0	102	-102	0	1							common/ui/weapons/widgets/weaponpointcost.ebx
+common/ui/weapons/widgets/weaponinfoheader	3	RimeContainerElementData	Headers FlowDirectionContainer	2287060345	0	0	0	0	0	1	0	1	0	0	0.5	0			0	0	0	0	
+common/ui/weapons/widgets/weaponinfoheader	4	RimeStackContainerElementData	Horizontal Icon Container	3576645719	0	0	0	0	0	1	0	0	0	0	0	1	0	0.0	0	0	0	0	
+common/ui/weapons/widgets/weaponinfoheader	5	RimeStackContainerElementData	Headers	643017641	0	0	0	0	0	1	0	0	0	0	0	1	1	16.0	0	0	0	0	
+common/ui/weapons/widgets/weaponinfoheader	6	RimeLabelElementData	Subtitle	2338012353	0.5	0.5	69	-69	0.5	1	0	1	0	0	0.5	0			0	0	0	0	
+common/ui/weapons/widgets/weaponinfoheader	6	RimeStackContainerElementData	Name and Labels	3787215676	0	0	0	0	0	1	0	1	0	0	0.5	0	0	16.0	0	0	0	0	
+common/ui/weapons/widgets/weaponinfoheader	7	RimeLabelElementData	IsModified	2292517694	0.5	0.5	0	0	0.5	1	0	0	0	0	0	1			0	0	0	0	
+common/ui/weapons/widgets/weaponinfoheader	7	RimeLabelElementData	Format_Slash	1542686620	0.5	0.5	0	0	0.5	1	0.5	0.5	0	0	0.5	1			-10	0	0	0	
+common/ui/weapons/widgets/weaponinfoheader	7	RimeLabelElementData	Title	183222373	0.5	0.5	0	0	0.5	1	0	0	0	0	0	1			0	0	0	0	
+common/ui/weapons/widgets/weaponinfoheader	6	RimeLabelElementData	Subheader_Top	3240720522	0.5	0.5	69	-69	0.5	1	0	1	0	0	0.5	0			0	0	0	0	
+common/ui/weapons/widgets/weaponinfoheader	5	RimeContainerElementData	RimeContainer	1514484081	0	0	0	0	0	1	0	0	0	0	0	1			0	-2	20	0	
+common/ui/weapons/widgets/weaponinfoheader	6	RimeSvgElementData	LeftIcon	2637122261	0.5	0.5	0	0	0.5	1	0.5	0.5	0	0	0.5	1			0	0	0	0	
+common/ui/weapons/widgets/weaponinfoheader	6	RimeWidgetReference?	CB_BorderThinSubtle	3622761877	0.5	0.5	0	0	0.5	1	0.5	0.5	0	0	0.5	1							common/ui/componentlibrary/shared/visual/cb_borderthinsubtle.ebx
+common/ui/weapons/widgets/weaponinfoheader	6	RimeFillElementData	OverlayTop	4203024148	0	1	0	0	0.5	0	0	1	0	0	0.5	0			0	0	0	0	
+common/ui/weapons/widgets/weaponinfoheader	2	RimeWidgetReference?	CL_SectionHighlighter	3577772155	0	0	0	0	0	1	0	1	0	0	0.5	0							common/ui/componentlibrary/components/decorators/sectioning/cl_sectionhighlighter_vertical.ebx
+common/ui/weapons/widgets/menuweaponproficiencywidget	0	RimeLayerEntityData	Default																				
+common/ui/weapons/widgets/menuweaponproficiencywidget	1	RimeContainerElementData	RimeContainer	1087097649	0	0	0	0	0	1	0	0	0	0	0	1			0	0	0	0	
+common/ui/weapons/widgets/menuweaponproficiencywidget	2	RimeFillElementData	BGDarkFill	2015207379	0	1	0	0	0.5	0	0	1	2	0	0.5	0			0	0	0	0	
+common/ui/weapons/widgets/menuweaponproficiencywidget	2	RimeFillElementData	BgFill	1491274895	0	1	0	0	0.5	0	0	1	0	0	0.5	0			0	0	0	0	
+common/ui/weapons/widgets/menuweaponproficiencywidget	2	RimeStackContainerElementData	VStack	1947302845	0	0	0	0	0	1	0	0	0	0	0	1	0	16.0	0	0	0	0	
+common/ui/weapons/widgets/menuweaponproficiencywidget	3	RimeStackContainerElementData	HStack	1601808867	0.5	0.5	0	0	0.5	1	0	0	0	0	0	1	1	8.0	0	16	56	16	
+common/ui/weapons/widgets/menuweaponproficiencywidget	4	RimeLabelElementData	Description	1848305091	0	0	0	0	0	1	0	1	0	0	0.5	0			0	0	0	0	
+common/ui/weapons/widgets/menuweaponproficiencywidget	4	RimeLabelElementData	Title	183222373	0	0	0	0	0	1	0	0	0	0	0	1			0	0	0	0	
+common/ui/weapons/widgets/menuweaponproficiencywidget	3	RimeWidgetReference?	MenuWeaponProficiencyIcon	3302294246	0	0	0	0	0	1	0.5	0.5	0	0	0.5	1							common/ui/weapons/widgets/menuweaponproficiencyicon.ebx
+common/ui/weapons/widgets/menuweaponproficiencywidget	3	RimeWidgetReference?	Divider	1150157924	0.5	0.5	253	-253	0.5	1	0	1	0	0	0.5	0							common/ui/componentlibrary/components/borders/cl_dividervertical.ebx

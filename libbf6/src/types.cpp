@@ -32,7 +32,22 @@ bool all_zero(const TypeGuid& g)
 
 std::vector<std::string> TypeDb::exe_candidates(const std::string& game_dir)
 {
-    return { game_dir + "/SP/bf6.exe", game_dir + "/bf6.exe" };
+    // THE MULTIPLAYER EXECUTABLE FIRST, and the order is not cosmetic.
+    //
+    // The two builds ship DIFFERENT reflection schemas for the same classes.
+    // WaterOceanSimulationEntityData is 21 fields and 368 bytes in the MP
+    // build, and 19 fields and 352 bytes, in a different order, in SP. Reading
+    // MP level data through the SP schema therefore returns wrong values from
+    // the RIGHT bytes, which is the worst kind of wrong: every field parses,
+    // nothing errors, and the numbers are quietly from neighbouring fields.
+    //
+    // Proved by instance stride: 384 on all 14 MP levels, 352 or 368 on SP
+    // levels, with a clean double dissociation on how often each layout lands
+    // on a field's default (26.6% vs 2.5% for MP levels, 5.0% vs 52.1% for SP).
+    //
+    // Portal levels are MP levels, so MP is the right default. SP remains a
+    // fallback for an install that has no MP build.
+    return { game_dir + "/bf6.exe", game_dir + "/SP/bf6.exe" };
 }
 
 std::string TypeDb::guid_str(const TypeGuid& g)
