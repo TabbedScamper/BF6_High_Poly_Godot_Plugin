@@ -3122,6 +3122,39 @@ typedef struct {
 
 BF6_API bf6_ecs_system* bf6_ecs_system_read(bf6_ctx*, const char* ebx_name);
 
+/* DEBRIS. Overwhelmingly a MATERIAL PROPERTY, not placed content: 2 clusters
+ * exist across all 28 shipped levels and StaticDebrisArea* has none, while
+ * MaterialRelationDebrisData ships 11 per level on 27 of 28 inside
+ * materialgrid_win32.
+ *
+ * `direction` IS NOT A VELOCITY despite the field being named LinearVelocity:
+ * it is unit length on 5 of 5 parts measured, so it carries a direction only
+ * and the speed comes from elsewhere. Multiply it by your own impulse.
+ *
+ * `material_relation_markers` is a COUNT and nothing more. Every
+ * MaterialRelation*Data in the grid decodes to zero fields - 7,737 of 7,833
+ * instances over 52 types - with the reflection table placing their fields at
+ * offset 0xFFFF. The payload is not absent; this view does not decode it, and
+ * MaterialGridData's InteractionGrid is where to look. */
+typedef struct {
+    int32_t part_index;
+    float   direction[3];   /* UNIT length - a direction, not a speed */
+    float   angular[3];     /* zero on every part measured            */
+    float   delay;
+    int32_t delay_mode;
+} bf6_debris_part;
+
+typedef struct {
+    int32_t clusters;
+    int32_t max_active_parts;          /* 50 on both shipped clusters   */
+    float   height_limit;              /* 50 on both                    */
+    int32_t part_count;
+    const bf6_debris_part* parts;
+    int32_t material_relation_markers; /* a COUNT; values are not decoded */
+} bf6_debris;
+
+BF6_API bf6_debris* bf6_debris_read(bf6_ctx*, const char* ebx_name);
+
 /* TELEMETRY SCORING ENUMS: the metrics a game mode reports.
  * `<mode>_scoringtelemetryenum` members name them - Conquest ships
  * current_tickets, kill_tickets, majority_bleed.
