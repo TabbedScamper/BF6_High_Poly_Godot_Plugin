@@ -2185,9 +2185,15 @@ typedef struct {
     float         attach_x, attach_y;
 
     /* Runtime-populated list metadata, read from the shipped DiceUI element.
-     * item_template is the authored cell widget; the remaining fields are the
-     * uniform-grid repetition law. Empty / -1 means this is not a list. */
+     * UniformGrid owns one ItemTemplate. DataList owns an ordered
+     * ItemTemplates class-reference ARRAY: weaponinfoheader, for example,
+     * selects two different cell families for LabelList and three for
+     * ButtonList. item_template remains the first entry for source
+     * compatibility; item_templates preserves the authored selector order.
+     * Empty / -1 means this is not a list. */
     char          item_template[256];
+    int32_t       item_template_count;
+    char          item_templates[8][256];
     int32_t       grid_static_segment_item_count;
     float         grid_column_size;
     float         grid_row_size;
@@ -3335,6 +3341,36 @@ typedef struct {
 } bf6_gem;
 
 BF6_API bf6_gem* bf6_gem_read(bf6_ctx*, const char* ebx_name);
+
+/* SCHEMATICS - the entity graph. A blueprint root carries Objects[] plus three
+ * connection arrays, and the three edge kinds are NOT interchangeable:
+ *   PROPERTY - data flow, names a pin on BOTH ends
+ *   EVENT    - control flow, carries NO field ids
+ *   LINK     - object reference, node level, no pins
+ * Pin hash 0 means "no pin"; do not mint a slot for it. 0xFFFFFFFF is a
+ * second no-pin sentinel. */
+typedef enum { BF6_SCHEM_PROPERTY = 0, BF6_SCHEM_EVENT, BF6_SCHEM_LINK } bf6_schem_kind;
+
+typedef struct {
+    int32_t  kind;         /* bf6_schem_kind                    */
+    int32_t  source;       /* source instance index, -1 if none */
+    int32_t  target;       /* target instance index, -1 if none */
+    uint32_t source_pin;   /* SourceFieldId, 0 = no pin         */
+    uint32_t target_pin;   /* TargetFieldId, 0 = no pin         */
+} bf6_schem_edge;
+
+typedef struct {
+    int32_t root_index;
+    int32_t instances;      /* instances in the partition      */
+    int32_t objects;        /* Objects[] length on the root    */
+    int32_t property_edges;
+    int32_t event_edges;
+    int32_t link_edges;
+    int32_t count;          /* edges returned = the three sums */
+    const bf6_schem_edge* edges;
+} bf6_schematic;
+
+BF6_API bf6_schematic* bf6_schematic_read(bf6_ctx*, const char* ebx_name);
 
 /* TELEMETRY SCORING ENUMS: the metrics a game mode reports.
  * `<mode>_scoringtelemetryenum` members name them - Conquest ships

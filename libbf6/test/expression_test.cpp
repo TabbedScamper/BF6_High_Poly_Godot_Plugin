@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <cstdlib>
 #include <map>
 #include <set>
 #include <string>
@@ -139,7 +140,16 @@ int main(int argc, char** argv)
     std::printf("  wrong-RES-type control rejected: %zu / %zu\n",
                 wrong_type_rejected, wrong_type_controls);
 
-    const std::string exe = std::string(game) + "\\bf6.exe";
+    /* HONOUR BF6_EXE, for the same reason TypeDb::exe_candidates does. The
+     * shipping build's `typeinfo` section is ENCRYPTED, and this scan walks
+     * that section looking for Function descriptors: against the install it
+     * finds zero and reports "no reflected Function descriptors found", which
+     * reads as the decode being broken rather than as the section being
+     * ciphertext. Hardcoding the install path made this test unrunnable on any
+     * EA build. See encrypted-typeinfo-selected-over-a-readable-build. */
+    const char* exe_env = std::getenv("BF6_EXE");
+    const std::string exe = (exe_env && *exe_env) ? std::string(exe_env)
+                                                  : std::string(game) + "\\bf6.exe";
     std::vector<bf6::expression::DescriptorOperator> descriptor_rows;
     std::string registry_error;
     std::set<uint32_t> descriptor_keys;

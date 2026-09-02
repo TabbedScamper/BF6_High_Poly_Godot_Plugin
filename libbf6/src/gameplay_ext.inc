@@ -348,3 +348,88 @@ bf6_gem* bf6_gem_read(bf6_ctx* c, const char* name)
 }
 
 void bf6__gem_delete(void* p) { delete (GemHandle*)p; }
+
+/* ---- schematics: the entity graph ---------------------------------------- */
+/* A blueprint partition's root carries Objects[] plus THREE connection arrays.
+ * The three edge kinds are not interchangeable:
+ *   Property - data flow, names a pin on BOTH ends
+ *   Event    - control flow, carries NO field ids
+ *   Link     - object reference, node level, no pins
+ * Pin hash 0 means "no pin", and a reader must not mint a slot for it: that
+ * invents pins that do not exist. 0xFFFFFFFF is a second no-pin sentinel.
+ *
+ * THE ROOT IS FOUND BY ITS FIELDS, NOT BY A TYPE GUID. Blueprint roots are of
+ * several types, and matching a GUID would silently read zero edges on the
+ * ones not listed - the exact failure mode a hand-typed GUID already caused
+ * once here. An instance that carries the connection arrays IS the root. */
+
+static const uint32_t kFldPropConn   = 0xc78408a3u;  /* PropertyConnections */
+static const uint32_t kFldEventConn  = 0xf5dfcfc5u;  /* EventConnections    */
+static const uint32_t kFldLinkConn   = 0xf7791e41u;  /* LinkConnections     */
+static const uint32_t kFldSource     = 0x4676ba2cu;  /* Source PointerRef   */
+static const uint32_t kFldTarget     = 0x645b319cu;  /* Target PointerRef   */
+static const uint32_t kFldSourceField= 0xc41fb636u;  /* SourceFieldId (pin) */
+static const uint32_t kFldTargetField= 0x2d7314c9u;  /* TargetFieldId (pin) */
+/* Objects[] is the SAME hash the network registry uses - 0x5A6115B2. Field
+ * hashes are global, not per type, so one name has one hash everywhere. */
+static const uint32_t kFldObjectsArr = 0x5a6115b2u;  /* Objects[]           */
+
+struct SchemHandle {
+    bf6_schematic            s{};
+    std::vector<bf6_schem_edge> edges;
+};
+
+static void bf6__schem_edges(const bf6::EbxValue* arr, int kind,
+                             std::vector<bf6_schem_edge>& out)
+{
+    if (!arr) return;
+    for (const bf6::EbxValue& e : arr->items) {
+        bf6_schem_edge d{};
+        d.kind = kind;
+        d.source = d.target = -1;
+        if (const bf6::EbxValue* s = e.field(kFldSource))
+            if (s->kind == bf6::EbxValue::Kind::InstanceRef) d.source = s->instance;
+        if (const bf6::EbxValue* t = e.field(kFldTarget))
+            if (t->kind == bf6::EbxValue::Kind::InstanceRef) d.target = t->instance;
+        /* Pin ids are HASHES. Never through a float. */
+        if (const bf6::EbxValue* f = e.field(kFldSourceField)) d.source_pin = bf6__ws_u32(f);
+        if (const bf6::EbxValue* f = e.field(kFldTargetField)) d.target_pin = bf6__ws_u32(f);
+        out.push_back(d);
+    }
+}
+
+bf6_schematic* bf6_schematic_read(bf6_ctx* c, const char* name)
+{
+    if (!c || !name) return nullptr;
+    std::string terr;
+    if (!ensure_types(c, terr)) return nullptr;
+    bf6::Ebx x(*c->types);
+    if (!bf6__gl_open(c, name, x)) return nullptr;
+
+    SchemHandle* h = new SchemHandle();
+    h->s.root_index = -1;
+    for (size_t i = 0; i < x.instance_count(); i++) {
+        bf6::EbxValue v = x.read_instance(i);
+        const bf6::EbxValue* pc = v.field(kFldPropConn);
+        const bf6::EbxValue* ec = v.field(kFldEventConn);
+        const bf6::EbxValue* lc = v.field(kFldLinkConn);
+        if (!pc && !ec && !lc) continue;
+        h->s.root_index = (int32_t)i;
+        if (const bf6::EbxValue* o = v.field(kFldObjectsArr)) h->s.objects = (int32_t)o->items.size();
+        h->s.property_edges = pc ? (int32_t)pc->items.size() : 0;
+        h->s.event_edges    = ec ? (int32_t)ec->items.size() : 0;
+        h->s.link_edges     = lc ? (int32_t)lc->items.size() : 0;
+        bf6__schem_edges(pc, BF6_SCHEM_PROPERTY, h->edges);
+        bf6__schem_edges(ec, BF6_SCHEM_EVENT,    h->edges);
+        bf6__schem_edges(lc, BF6_SCHEM_LINK,     h->edges);
+        break;
+    }
+    if (h->s.root_index < 0) { delete h; return nullptr; }
+    h->s.instances = (int32_t)x.instance_count();
+    h->s.count = (int32_t)h->edges.size();
+    h->s.edges = h->edges.empty() ? nullptr : h->edges.data();
+    c->handles[&h->s] = bf6_ctx::HK_SCHEMATIC;
+    return &h->s;
+}
+
+void bf6__schematic_delete(void* p) { delete (SchemHandle*)p; }

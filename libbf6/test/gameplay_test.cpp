@@ -180,15 +180,77 @@ int main(int argc, char** argv)
     }
     if (total_binds < 50)    { std::printf("      EXPECTED a substantial bind table\n"); fails++; }
 
-    /* ---- 5. negative controls -------------------------------------------- */
+    /* ---- 5. schematics: the three edge kinds ------------------------------ */
+    /* THE EDGE KINDS ARE STRUCTURALLY DIFFERENT, and that is the control.
+     * systems/SCHEMATICS.md states that Property edges name a pin on both ends
+     * while Event and Link edges carry none. If the reader were reading the
+     * wrong offsets, or the three arrays were interchangeable, the pin-presence
+     * pattern would not split cleanly by array. It is asserted here rather
+     * than assumed, over several blueprints. */
+    static const char* kSchems[] = {
+        "game/glaciermp/gamemodes/_shared/gems/capture/logic/gmo_capturepoint",
+        "game/glaciermp/gamemodes/_shared/gems/vehiclespawner/logic/gmo_vehiclespawner_modbuilder",
+        "game/glaciermp/gamemodes/_shared/gems/capture/logic/gmo_capturepoint_communication",
+        "game/glaciermp/gamemodes/_shared/gems/vehiclespawner/logic/gmo_vehiclespawner",
+        "game/glaciermp/gamemodes/_shared/gems/capture/logic/gmo_capturepoint_telemetry",
+    };
+    int sch_read = 0, prop_total = 0, evt_total = 0, link_total = 0;
+    int prop_both_pins = 0, evt_with_pins = 0, link_with_pins = 0, link_src_pins = 0, bad_ref = 0;
+    for (const char* s : kSchems) {
+        bf6_schematic* g = bf6_schematic_read(c, s);
+        if (!g) continue;
+        sch_read++;
+        std::printf("  %-58s obj %3d  prop %3d  evt %3d  link %3d\n",
+                    std::strrchr(s, '/') + 1, g->objects,
+                    g->property_edges, g->event_edges, g->link_edges);
+        for (int i = 0; i < g->count; i++) {
+            const bf6_schem_edge& e = g->edges[i];
+            const bool has = e.source_pin && e.target_pin &&
+                             e.source_pin != 0xFFFFFFFFu && e.target_pin != 0xFFFFFFFFu;
+            if (e.kind == BF6_SCHEM_PROPERTY) { prop_total++; if (has) prop_both_pins++; }
+            else if (e.kind == BF6_SCHEM_EVENT) { evt_total++; if (e.source_pin || e.target_pin) evt_with_pins++; }
+            else { link_total++; if (e.source_pin || e.target_pin) link_with_pins++;
+                   if (e.source_pin) link_src_pins++; }
+            /* Every endpoint must be a real instance in this partition. */
+            if (e.source >= g->instances || e.target >= g->instances) bad_ref++;
+        }
+        bf6_free(c, g);
+    }
+    std::printf("  schematics read %d of %zu   property %d (both pins %d)  event %d (with pins %d)  link %d (with pins %d, src pin %d)\n",
+                sch_read, sizeof(kSchems) / sizeof(kSchems[0]),
+                prop_total, prop_both_pins, evt_total, evt_with_pins, link_total, link_with_pins, link_src_pins);
+    if (sch_read < 3)  { std::printf("      EXPECTED at least 3 blueprints to read\n"); fails++; }
+    if (prop_total < 20) { std::printf("      EXPECTED a substantial property graph\n"); fails++; }
+    /* The dissociation: property edges carry pins, event/link edges do not. */
+    if (prop_both_pins * 10 < prop_total * 9) {
+        std::printf("      EXPECTED >=90%% of PROPERTY edges to name both pins\n"); fails++;
+    }
+    if (evt_with_pins) {
+        std::printf("      EXPECTED event edges to carry NO pins\n"); fails++;
+    }
+    /* CORRECTION TO systems/SCHEMATICS.md. That document says pin hash 0
+     * is "normal for Event and Link edges". It holds for EVENT edges - 0 of
+     * 122 carry any pin - and it does NOT hold for LINK edges: every link
+     * edge measured names a SOURCE pin, and only the TARGET side is
+     * sometimes 0. The pins are real rather than noise: 8 of 8 distinct
+     * link pin hashes appear in data/engine_pin_universe.tsv. Asserted in
+     * the CORRECTED direction, so a regression back to "links carry no
+     * pins" fails here rather than passing quietly.  */
+    if (link_total && link_src_pins != link_total) {
+        std::printf("      EXPECTED every LINK edge to name a source pin\n"); fails++;
+    }
+    if (bad_ref) { std::printf("      %d edge endpoints out of instance range\n", bad_ref); fails++; }
+
+    /* ---- 6. negative controls -------------------------------------------- */
     int fake = 0;
     if (bf6_behavior_tree_read(c, "diceai/behavior/behaviortrees/root/behaviortree_nope")) fake++;
     if (bf6_net_registry_read(c, "game/glaciermp/levels/mp_dumbo/not_a_networkregistry")) fake++;
     if (bf6_unlocks_read(c, "game/glaciermp/levels/mp_nowhere/mp_nowhere")) fake++;
+    if (bf6_schematic_read(c, "game/glaciermp/gamemodes/_shared/gems/capture/logic/gmo_nope")) fake++;
     /* A REAL partition that is not of the asked-for type must also return null:
      * the level root exists and carries no NetworkRegistryAsset. */
     if (bf6_net_registry_read(c, "game/glaciermp/levels/mp_dumbo/mp_dumbo")) fake++;
-    std::printf("  fabricated / wrong-type reads that returned data: %d of 4 (must be 0)\n", fake);
+    std::printf("  fabricated / wrong-type reads that returned data: %d of 5 (must be 0)\n", fake);
     if (fake) fails++;
 
     std::printf("\n%s\n", fails == 0 ? "PASS" : "FAIL");
