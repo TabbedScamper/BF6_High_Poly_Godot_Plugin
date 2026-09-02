@@ -49,7 +49,8 @@ int main(int argc, char** argv)
     Source src;
     std::string err;
     if (!src.open(argv[1], err)) { std::printf("open: %s\n", err.c_str()); return 1; }
-    if (!src.mount_level("mp_subsurface", false, err))
+    const char* LEVEL = (argc > 2) ? argv[2] : "mp_subsurface";
+    if (!src.mount_level(LEVEL, false, err))
     { std::printf("mount: %s\n", err.c_str()); return 1; }
 
     TypeDb types;
@@ -58,7 +59,10 @@ int main(int argc, char** argv)
         if (types.open(cand, err) && !types.looks_encrypted()) { got = true; break; }
     if (!got) { std::printf("types: %s\n", err.c_str()); return 1; }
 
-    const char* name = "game/glaciermp/levels/mp_subsurface/mp_subsurface/materialgrid_win32";
+    char namebuf[512];
+    std::snprintf(namebuf, sizeof(namebuf),
+                  "game/glaciermp/levels/%s/%s/materialgrid_win32", LEVEL, LEVEL);
+    const char* name = namebuf;
     std::vector<uint8_t> bytes = src.get_ebx(std::string(name) + ".ebx", err);
     if (bytes.empty()) bytes = src.get_ebx(name, err);
     if (bytes.empty()) { std::printf("get_ebx: %s\n", err.c_str()); return 1; }
@@ -70,8 +74,12 @@ int main(int argc, char** argv)
     const Want wants[] = {
         { "MaterialRelationDebrisData",
           {0x23,0x1a,0xff,0x78,0x6d,0x21,0x58,0x58,0x1e,0xbd,0xad,0x73,0x38,0x1a,0x08,0xb2}, 0x18 },
-        { "MaterialRelationPenetrationData",
-          {0x00,0x00,0x00,0x00}, 0 },   /* filled below if we learn it; skipped when size 0 */
+        /* An AUDIO type with the same shape: one field, ReflectionCoefficient,
+         * at an unresolved 0xFFFF offset. If the +0x18 payload boundary is a
+         * property of the format rather than of the debris type, its acoustic
+         * value reads there too. It ships one per level on 27 levels. */
+        { "DiceShooterMaterialPropertySoundData",
+          {0x9a,0x92,0xfa,0x56,0xf5,0xdd,0x38,0x18,0xba,0xf8,0x72,0x6e,0x5f,0x24,0xd4,0x4f}, 0x18 },
     };
 
     const std::vector<uint8_t>& raw = ebx.raw();

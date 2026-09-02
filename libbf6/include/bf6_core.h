@@ -3231,6 +3231,25 @@ typedef struct {
 
 BF6_API bf6_weather* bf6_weather_read(bf6_ctx*, const char* ebx_name);
 
+/* WAVE SELECTION: how a sound picks its next variation.
+ * The authored values split by ROLE, 9 of 9 measured: impact FX markers are
+ * Random with history 3 and randomise TRUE; area ambiences are Rank with
+ * history 100 and randomise FALSE. Only mp_contaminated ships this family
+ * (12 instances on 1 of 28 levels), so the rule is observed, not universal. */
+typedef struct {
+    int32_t  behavior;              /* 0 = Random, 1 = Rank, -1 = none found */
+    uint32_t history_entry_count;   /* 3 on FX, 100 on ambiences            */
+    int32_t  scoring_mode;          /* 0 on every instance measured         */
+    uint8_t  randomize_candidates;
+} bf6_wave_selector;
+
+typedef struct {
+    int32_t                  count;
+    const bf6_wave_selector* selectors;
+} bf6_wave_selection;
+
+BF6_API bf6_wave_selection* bf6_wave_selection_read(bf6_ctx*, const char* ebx_name);
+
 /* TELEMETRY SCORING ENUMS: the metrics a game mode reports.
  * `<mode>_scoringtelemetryenum` members name them - Conquest ships
  * current_tickets, kill_tickets, majority_bleed.
