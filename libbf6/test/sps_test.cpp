@@ -59,7 +59,9 @@ int main(int argc, char** argv)
     int scanned = 0, valid = 0; double secs = 0;
     std::vector<std::string> examples;
 
-    for (const auto& kv : src.bundle_chunks()) {
+    const bool loose = (argc > 3);
+    const auto& pool = loose ? src.loose_chunks() : src.bundle_chunks();
+    for (const auto& kv : pool) {
         if (scanned >= 4000) break;
         scanned++;
         std::string e;

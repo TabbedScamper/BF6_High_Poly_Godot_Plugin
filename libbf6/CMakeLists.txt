@@ -705,6 +705,18 @@ target_include_directories(sps_test PRIVATE src include)
 add_executable(spsdec_test test/spsdec_test.cpp)
 target_link_libraries(spsdec_test PRIVATE bf6_core_static)
 target_include_directories(spsdec_test PRIVATE src include)
+
+add_executable(eal3_test test/eal3_test.cpp)
+target_link_libraries(eal3_test PRIVATE bf6_core_static)
+target_include_directories(eal3_test PRIVATE src include)
+
+add_executable(eal3find_test test/eal3find_test.cpp)
+target_link_libraries(eal3find_test PRIVATE bf6_core_static)
+target_include_directories(eal3find_test PRIVATE src include)
+
+add_executable(eal3walk_test test/eal3walk_test.cpp)
+target_link_libraries(eal3walk_test PRIVATE bf6_core_static)
+target_include_directories(eal3walk_test PRIVATE src include)
 add_executable(typescan_test test/typescan_test.cpp)
 target_link_libraries(typescan_test PRIVATE bf6_core_static)
 target_include_directories(typescan_test PRIVATE src include)

@@ -126,3 +126,52 @@ static bool sps_decode_xas(const uint8_t* b, size_t n, const SpsInfo& s,
     }
     return true;
 }
+
+/* ---------------------------------------------------------------------------
+ * EA LAYER3 (0x16) CONTAINER FRAMING.
+ *
+ * DERIVED FROM THE DATA, not from a spec. A search over (bit offset, width,
+ * unit, addend) for any fixed-position size field accepted only candidates that
+ * make frames TILE THE PAYLOAD EXACTLY across many independent blocks. One
+ * family passed, on 25 of 25 and then 200 of 200:
+ *
+ *     frame := [u8 tag][u8][u16 big-endian SIZE][payload]
+ *     SIZE is inclusive of the 4-byte header; pos += SIZE walks to the next.
+ *
+ *     tag 0x44  data frame     (2,503 of 2,703 measured)
+ *     tag 0x45  terminator     (exactly one per block, ALWAYS LAST, 200 of 200)
+ *
+ * Frame sizes run 4..9,759 bytes and average about 6,783 SAMPLES per frame,
+ * i.e. roughly six MPEG Layer III frames' worth - so a 0x44 frame is a
+ * container of several granules, not a single MPEG frame.
+ *
+ * WHAT THIS IS NOT: the MPEG Layer III bitstream inside a 0x44 frame is NOT
+ * decoded. Huffman decode, requantisation, stereo processing, alias reduction,
+ * IMDCT and the synthesis filterbank are all untouched. This reader returns the
+ * container structure only, and deliberately produces no samples - the same
+ * refusal as the XAS group interior, for the same reason. */
+
+struct Eal3Frame { uint8_t tag; uint8_t b1; uint32_t size; size_t offset; };
+
+/* Walks the container. Returns false unless the frames tile the payload
+ * EXACTLY, which is the property the framing was accepted on. */
+static bool sps_eal3_frames(const uint8_t* b, size_t n, const SpsInfo& s,
+                            std::vector<Eal3Frame>& out)
+{
+    out.clear();
+    if (s.codec != 0x16 || s.header >= n) return false;
+    size_t pos = s.header;
+    while (pos < n) {
+        if (pos + 4 > n) return false;
+        Eal3Frame f;
+        f.tag = b[pos]; f.b1 = b[pos + 1];
+        f.size = ((uint32_t)b[pos + 2] << 8) | b[pos + 3];
+        f.offset = pos;
+        if (f.size < 4 || pos + f.size > n) return false;
+        out.push_back(f);
+        pos += f.size;
+        if (out.size() > 100000) return false;
+    }
+    if (pos != n || out.empty()) return false;
+    return out.back().tag == 0x45;   /* the terminator law, 200 of 200 */
+}
