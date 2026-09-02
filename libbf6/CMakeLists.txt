@@ -573,6 +573,17 @@ add_executable(rime_list_provider_test
 target_link_libraries(rime_list_provider_test PRIVATE bf6_core_static)
 target_include_directories(rime_list_provider_test PRIVATE src include viewer)
 
+# Explicit, typed stand-in for online account/profile services.  The provider
+# validates the mounted DBD and the live graph route before adding a value;
+# fake-route and changed-signature controls are part of its executable test.
+add_executable(offline_profile_provider_test
+  test/offline_profile_provider_test.cpp
+  viewer/offline_profile_provider.cpp
+  viewer/rime_list_provider.cpp
+  viewer/rime.cpp)
+target_link_libraries(offline_profile_provider_test PRIVATE bf6_core_static)
+target_include_directories(offline_profile_provider_test PRIVATE src include viewer)
+
 # Runtime-only proof for DataLists whose authored ItemTemplate is empty.  The
 # test resolves the unique visual cell from the installed DBD partition GUID
 # and the candidate cell's EFIX Imports[]; it never consumes the research GUID
@@ -606,6 +617,7 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/${IMGUI}/imgui.cpp)
     viewer/bf6viewer.cpp
     viewer/rime.cpp
     viewer/rime_list_provider.cpp
+    viewer/offline_profile_provider.cpp
     viewer/armory_ui.cpp
     viewer/armory_camera_composition.cpp
     ${IMGUI}/imgui.cpp ${IMGUI}/imgui_draw.cpp
@@ -725,6 +737,10 @@ target_include_directories(eal3mp3_test PRIVATE src include)
 add_executable(eal3v2_test test/eal3v2_test.cpp)
 target_link_libraries(eal3v2_test PRIVATE bf6_core_static)
 target_include_directories(eal3v2_test PRIVATE src include)
+
+add_executable(eal3rebuild_test test/eal3rebuild_test.cpp)
+target_link_libraries(eal3rebuild_test PRIVATE bf6_core_static)
+target_include_directories(eal3rebuild_test PRIVATE src include)
 add_executable(typescan_test test/typescan_test.cpp)
 target_link_libraries(typescan_test PRIVATE bf6_core_static)
 target_include_directories(typescan_test PRIVATE src include)

@@ -261,3 +261,5 @@ static bool sps_eal3_block_frames(const uint8_t* b, const Eal3Frame& blk,
     }
     return pos == end;
 }
+
+#include "eal3_rebuild.inc"
