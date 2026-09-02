@@ -9,15 +9,15 @@
 #include "terrainlayers.h"
 #include "terrainstatic.h"
 #include "terraincomposite.h"   // paint_colour_map
-#include "terrainstaticmap.h"
-#include "playablebounds.h"
 
 namespace bf6 {
 
-bool ground_coverage(Source& src, const std::string& level, int size,
+bool ground_coverage(Source& src, const std::string& level,
+                     const GroundCoverageOpts& request,
                      GroundCoverage& out, std::string& err)
 {
     out = GroundCoverage();
+    int size = request.size;
     if (size <= 0) size = 2048;
 
     // ---- the streaming tree, and block 1 out of it -------------------------
@@ -52,26 +52,19 @@ bool ground_coverage(Source& src, const std::string& level, int size,
 
     SplatCoverage cov;
     SplatCompositeOpts opt;
-    // RASTERISE THE PLAYABLE BOX, NOT THE WHOLE FOOTPRINT.
-    //
-    // A level's terrain reaches far past where a player can go: MP_Isolated
-    // builds 8,192 m of ground of which 2,555 m is playable and the rest is
-    // BACKDROP RING, authored with distance sheets that tile every hundred
-    // metres because they are only ever seen from kilometres away. Spending
-    // the raster on the ring costs twice over - the ring reads as a smear of
-    // object textures where it is walked on, and the playable ground gets a
-    // quarter of the resolution it could have had.
-    //
-    // Same raster over the box instead: on MP_Isolated that is 0.62 m a texel
-    // rather than 2.00.
-    float bcx = 0.f, bcz = 0.f, bsx = 0.f, bsz = 0.f;
-    if (playable_box(level, bcx, bcz, bsx, bsz) && bsx > 1.f && bsz > 1.f) {
-        // Square, because the raster is: take the larger side so nothing
-        // playable falls outside it.
-        const float side = bsx > bsz ? bsx : bsz;
-        opt.rect_min[0] = bcx - side * 0.5f;
-        opt.rect_min[1] = bcz - side * 0.5f;
-        opt.rect_size   = side;
+    // MP_Isolated saturates four slots on every land texel and discards 9.06
+    // units of authored mask per texel. Eight retains the practical evaluator
+    // stack while staying compact enough for a live 4096-square texture set.
+    opt.max_slots = std::clamp(request.max_slots, 1, 16);
+    // An explicit window is the camera-relative fast path. With no window,
+    // Splat::composite uses the root bounds read from the mounted game's block
+    // 1. Do not substitute the Portal editor overlay box here: that box comes
+    // from an SDK JSON file, is not a game-runtime read path, and is known not
+    // to equal the playable/combat volume on every level.
+    if (request.rect_size > 0.f) {
+        opt.rect_min[0] = request.rect_min[0];
+        opt.rect_min[1] = request.rect_min[1];
+        opt.rect_size = request.rect_size;
     }
     if (!sp.composite(dir, fetch, size, cov, err, opt)) return false;
 
@@ -83,6 +76,34 @@ bool ground_coverage(Source& src, const std::string& level, int size,
         // Not fatal: coverage without materials still tells a renderer the
         // shape of the ground, and saying so beats failing the whole call.
         err = "layers: " + le;
+    }
+
+    // THE MATERIAL UNDER THE PAINT. Block 1 contains the painted masks, but
+    // IgnoreMask/base records do not carry pages and therefore can never
+    // arrive through `cov`. Block 7 is the TerrainMaterialTree that names the
+    // full-coverage surface those masks are evaluated over. This matters most
+    // on MP_Isolated: its base is absent from all four block-1 slots on 93.65%
+    // of land texels.
+    //
+    // Keep this non-fatal. A map with no readable block 7 still has the same
+    // useful painted coverage this API returned before this read path existed.
+    MaterialRaster base;
+    bool have_base = false;
+    {
+        std::vector<uint8_t> b7;
+        std::string be;
+        if (Splat::find_block(res, 7, b7, be)) {
+            MaterialTree mt;
+            if (mt.parse(b7, be)) {
+                have_base = mt.rasterize(
+                    size,
+                    [&](float cx, float cz, float w)
+                    { return sp.base_list_at(cx, cz, w); },
+                    sp.full_list(),
+                    have_layers ? tl.linked_list() : std::vector<int>(),
+                    sp.global_base_list(), base, be);
+            }
+        }
     }
 
     // The static table hands back an asset LEAF name; the resource wants the
@@ -116,25 +137,13 @@ bool ground_coverage(Source& src, const std::string& level, int size,
     // from the bindless path alone hands a renderer thirty materials of
     // which four have textures. Same join the bake uses.
     TerrainStaticTable stab;
-    std::map<int, int> static_slot;
+    bool have_static = false;
     {
         std::string se;
-        if (stab.load(src, level, se)) {
-            // OVER THE WHOLE PALETTE, not over the layers this raster
-            // happens to reach. The join is ORDINAL - the nth static layer
-            // takes the nth group - so dropping a layer that is off-window
-            // slides every later layer onto its neighbour's sheet, which
-            // looks plausible and is wrong. Same list the flattened bake
-            // builds, deliberately, so the two paths cannot disagree.
-            std::vector<int> need;
-            for (size_t i = 0; i < tl.layers().size() && have_layers; i++) {
-                const TerrainLayer& lay = tl.layers()[i];
-                if (lay.empty) continue;
-                if (!lay.material.base_color().empty()) continue;   // bindless already
-                need.push_back((int)i);
-            }
-            static_slot = stab.assign(need);
-        }
+        have_static = stab.load(src, level, se) && stab.join_exact();
+        if (getenv("BF6_GS_DEBUG"))
+            fprintf(stderr, "  [gs] have_static=%d resolved=%d declared=%d err='%s'\n",
+                    (int)have_static, stab.resolved(), stab.declared(), se.c_str());
     }
 
     // WHICH LAYERS ARE MODIFIERS, not surfaces.
@@ -155,24 +164,16 @@ bool ground_coverage(Source& src, const std::string& level, int size,
     // rendered as a tint yet, which is a real loss of grunge, but drawing the
     // ground and losing its dirt beats drawing a photograph of the ground.
     std::set<int> modifier_layers;
-    // The table names modifiers directly: a case with cv -1 supplies no colour.
-    // That is a better answer than inferring it from whichever group the
-    // ordinal walk happened to land on.
-    // A sublevel runs its parent's evaluator; see terrain_table_level.
-    const std::string table_level = terrain_table_level(level);
-    if (have_layers && static_layer_map_has(table_level)) {
+    // The live evaluator names modifiers directly: an attributed case with no
+    // sampled base-colour descriptor supplies no colour.
+    if (have_layers && have_static && stab.resolved() == stab.declared()) {
         for (size_t i = 0; i < tl.layers().size(); i++) {
             if (tl.layers()[i].empty) continue;
             if (!tl.layers()[i].material.base_color().empty()) continue;
             int tcv = -1, tnh = -1, tthird = -1;
-            if (static_layer_descriptors(table_level, (int)i, tcv, tnh, tthird) && tcv < 0)
+            if (stab.layer_descriptors((int)i, tcv, tnh, tthird) && tcv < 0)
                 modifier_layers.insert((int)i);
         }
-    }
-    for (const auto& kv : static_slot) {
-        if (kv.second < 0 || kv.second >= (int)stab.groups().size()) continue;
-        if (stab.groups()[(size_t)kv.second].base_color < 0)
-            modifier_layers.insert(kv.first);
     }
 
     // COMPACT THE LAYER SPACE. The coverage carries raw layer indices, which
@@ -180,9 +181,13 @@ bool ground_coverage(Source& src, const std::string& level, int size,
     // sheet per material, so handing it 47 slots to fill with 13 textures
     // wastes most of an array; the indices are remapped to the layers that
     // actually reach the raster, in ascending order.
+    bool base_layers[256] = {};
+    if (have_base)
+        for (uint8_t bl : base.layer) if (bl != 255) base_layers[bl] = true;
+
     std::map<int, int> layer_to_slot;
     for (int L = 0; L < 256; L++) {
-        if (cov.layer_texels[L] == 0) continue;
+        if (cov.layer_texels[L] == 0 && !base_layers[L]) continue;
         if (modifier_layers.count(L)) continue;      // see modifier_layers above
         // AN EMPTY PALETTE SLOT IS NOT A SURFACE EITHER.
         //
@@ -213,23 +218,34 @@ bool ground_coverage(Source& src, const std::string& level, int size,
             // and looks like an unbound layer.
             m.albedo_res = res_for_guid(lay.material.base_color());
             m.normal_res = res_for_guid(lay.material.normal_height());
-            // THE BYTECODE TABLE FIRST, the ordinal walk only as a fallback.
+            // The single-material auxiliary slot is overloaded between the
+            // flat default AO placeholder and authored coverage maps. Preserve
+            // only the latter here: the generated evaluator multiplies masks
+            // by these `_op` sheets (MP_Isolated L29/L30 are the visible case),
+            // while treating default AO as coverage would erase ordinary
+            // surfaces. This is read from the mounted depot record at runtime.
+            auto op = lay.material.other_textures.find(tl::kTexDefault);
+            if (op != lay.material.other_textures.end()) {
+                std::string candidate = res_for_guid(op->second);
+                std::string low = candidate;
+                for (char& c : low) c = (char)tolower((unsigned char)c);
+                const size_t slash = low.find_last_of('/');
+                const std::string leaf = slash == std::string::npos ? low : low.substr(slash + 1);
+                if (leaf.size() >= 3 && leaf.compare(leaf.size() - 3, 3, "_op") == 0)
+                    m.coverage_res = std::move(candidate);
+            }
+            // The current install's evaluator bytecode is the only static join.
             //
             // Which layer consumes which texture group is decided by the
             // compositor's compiled bytecode and by nothing in the shipped
-            // data, so the ordinal walk that stood in for it - the k-th static
-            // layer takes the k-th group - is right on some levels and wrong on
-            // others. Measured against the bytecode by ground area it paints
-            // the WRONG sheet over 98.8% of mp_abbasid, 45.6% of mp_isolated
-            // and 16.8% of mp_badlands, while reporting every layer resolved.
+            // data. The former ordinal walk painted the wrong sheet over 98.8%
+            // of mp_abbasid, 45.6% of mp_isolated and 16.8% of mp_badlands.
             //
-            // The table is the disassembly's own answer: descriptor index d is
-            // SRV register t(d + 21), and evaluator case N is layer N. A
-            // descriptor of -1 is a real answer meaning this case binds no
-            // colour, which is a MODIFIER and must not become a surface.
+            // The live CFG is the answer: evaluator case N is layer N and the
+            // descriptor-register base is derived from this shader's metadata.
             if (m.albedo_res.empty()) {
                 int tcv = -1, tnh = -1, tthird = -1;
-                if (static_layer_descriptors(table_level, L, tcv, tnh, tthird)) {
+                if (have_static && stab.layer_descriptors(L, tcv, tnh, tthird)) {
                     auto by_descriptor = [&stab](int d) -> std::string {
                         if (d < 0) return std::string();
                         for (const TerrainStaticGroup& g : stab.groups())
@@ -239,21 +255,13 @@ bool ground_coverage(Source& src, const std::string& level, int size,
                     };
                     const std::string cv_asset = by_descriptor(tcv);
                     if (!cv_asset.empty()) m.albedo_res = res_for_name(cv_asset);
+                    if (getenv("BF6_GS_DEBUG"))
+                        fprintf(stderr, "  [gs] L%-3d tcv=%-4d asset='%s' res='%s'\n",
+                                L, tcv, cv_asset.c_str(), m.albedo_res.c_str());
                     if (m.normal_res.empty()) {
                         const std::string nh_asset = by_descriptor(tnh);
                         if (!nh_asset.empty()) m.normal_res = res_for_name(nh_asset);
                     }
-                }
-            }
-            if (m.albedo_res.empty()) {
-                auto sit = static_slot.find(L);
-                if (sit != static_slot.end() &&
-                    sit->second >= 0 && sit->second < (int)stab.groups().size()) {
-                    const TerrainStaticGroup& g = stab.groups()[(size_t)sit->second];
-                    if (g.base_color >= 0)
-                        m.albedo_res = res_for_name(g.tex[(size_t)g.base_color].asset);
-                    if (m.normal_res.empty() && g.normal_height >= 0)
-                        m.normal_res = res_for_name(g.tex[(size_t)g.normal_height].asset);
                 }
             }
             m.metres_per_repeat = lay.material.metres_per_repeat(4.f);
@@ -288,6 +296,7 @@ bool ground_coverage(Source& src, const std::string& level, int size,
     }
 
     out.size = cov.size;
+    out.slots = cov.slots;
     out.lo[0] = cov.lo[0]; out.lo[1] = cov.lo[1];
     out.hi[0] = cov.hi[0]; out.hi[1] = cov.hi[1];
     // Counted BELOW, not carried over. A texel can be non-empty in the raster
@@ -299,27 +308,74 @@ bool ground_coverage(Source& src, const std::string& level, int size,
     // The aerial photograph over the same window. Not fatal when absent: some
     // levels ship no colour map, and the sheets still draw.
     paint_colour_map(sp, dir, fetch, cov.lo, cov.hi, cov.size, out.colour, nullptr);
-    out.idx.assign((size_t)cov.size * cov.size * 4, 255);
-    out.w.assign((size_t)cov.size * cov.size * 4, 0);
+    out.idx.assign((size_t)cov.size * cov.size * (size_t)out.slots, 255);
+    out.w.assign((size_t)cov.size * cov.size * (size_t)out.slots, 0);
 
     for (size_t i = 0; i < (size_t)cov.size * cov.size; i++) {
-        // COMPACTED, not copied slot for slot. The list is weight-sorted and a
-        // consumer stops at the first zero, so a dropped layer must close the
-        // gap behind it rather than leave a hole - otherwise dropping the
-        // modifier in slot 0 would end the list before it began.
+        // THE EVALUATION STACK, compacted into the existing four-channel ABI:
+        // block-7 base first at full mask, followed by the three strongest
+        // nonduplicate block-1 layers in ascending evaluator order. With no
+        // base, all four block-1 layers remain available.
+        //
+        // The base must stay first even when its raw layer index is higher
+        // than a paint layer: the game's evaluator establishes the substrate
+        // first, then walks the paint list in ascending layer order. Sorting
+        // all four together is a convincing but wrong approximation.
         int w_out = 0;
-        for (int s = 0; s < 4; s++) {
-            const uint8_t weight = cov.w[i * 4 + s];
+        int base_slot = -1;
+        if (have_base && base.size > 0) {
+            const int x = (int)(i % (size_t)cov.size);
+            const int z = (int)(i / (size_t)cov.size);
+            const float wx = cov.lo[0] + ((float)x + 0.5f) / (float)cov.size
+                           * (cov.hi[0] - cov.lo[0]);
+            const float wz = cov.lo[1] + ((float)z + 0.5f) / (float)cov.size
+                           * (cov.hi[1] - cov.lo[1]);
+            const float base_span_x = base.hi[0] - base.lo[0];
+            const float base_span_z = base.hi[1] - base.lo[1];
+            if (base_span_x > 0.f && base_span_z > 0.f) {
+                const int bx = std::clamp((int)((wx - base.lo[0]) / base_span_x * base.size),
+                                          0, base.size - 1);
+                const int bz = std::clamp((int)((wz - base.lo[1]) / base_span_z * base.size),
+                                          0, base.size - 1);
+                const uint8_t raw = base.layer[(size_t)bz * base.size + bx];
+                auto bit = layer_to_slot.find(raw);
+                if (raw != 255 && bit != layer_to_slot.end()) {
+                    base_slot = bit->second;
+                    out.idx[i * out.slots] = (uint8_t)base_slot;
+                    out.w[i * out.slots] = 255;
+                    w_out = 1;
+                }
+            }
+        }
+
+        std::pair<int, uint8_t> detail[16];
+        int detail_n = 0;
+        for (int s = 0; s < cov.slots; s++) {
+            const uint8_t weight = cov.w[i * cov.slots + s];
             if (weight == 0) break;                 // weight-sorted, first zero ends it
-            auto it = layer_to_slot.find(cov.idx[i * 4 + s]);
+            auto it = layer_to_slot.find(cov.idx[i * cov.slots + s]);
             if (it == layer_to_slot.end()) continue;
-            out.idx[i * 4 + w_out] = (uint8_t)it->second;
-            out.w[i * 4 + w_out]   = weight;
-            w_out++;
+            if (it->second == base_slot) continue;  // base already owns full coverage
+            detail[detail_n++] = {it->second, weight};
+        }
+        std::sort(detail, detail + detail_n,
+                  [](const std::pair<int, uint8_t>& a,
+                     const std::pair<int, uint8_t>& b) { return a.first < b.first; });
+        for (int d = 0; d < detail_n && w_out < out.slots; d++, w_out++) {
+            out.idx[i * out.slots + w_out] = (uint8_t)detail[d].first;
+            out.w[i * out.slots + w_out] = detail[d].second;
         }
         if (w_out == 0) out.empty_texels++;
     }
     return true;
+}
+
+bool ground_coverage(Source& src, const std::string& level, int size,
+                     GroundCoverage& out, std::string& err)
+{
+    GroundCoverageOpts opts;
+    opts.size = size;
+    return ground_coverage(src, level, opts, out, err);
 }
 
 }  // namespace bf6

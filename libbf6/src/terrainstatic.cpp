@@ -1,15 +1,17 @@
 /* The compositor's statically bound texture table. See terrainstatic.h for the
  * chain, the layer join and how far the join has been measured to hold. */
 #include "terrainstatic.h"
-#include "terrainstaticmap.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <cstring>
 #include <set>
 
 #include "depot.h"
 #include "source.h"
+#include "terrainjoin.h"
+#include "terrainshader.h"
 
 namespace bf6 {
 
@@ -113,6 +115,14 @@ bool TerrainStaticTable::load(Source& src, const std::string& level,
 {
     tex_.clear();
     groups_.clear();
+    layer_join_.clear();
+    join_exact_ = false;
+    register_base_ = -1;
+    register_base_hits_ = 0;
+    register_base_runner_up_hits_ = 0;
+    attributed_samples_ = 0;
+    unattributed_samples_ = 0;
+    bytecode_guid_.clear();
     const std::string lvl = lower(level);
 
     // ---- 1. the compositor program's common BindingSet ---------------------
@@ -195,6 +205,11 @@ bool TerrainStaticTable::load(Source& src, const std::string& level,
     // comes close (76 of 76 on dumbo, 61 of 61 on aftermath).
     std::set<uint32_t> want;
     for (const auto& kv : desc_to_name) want.insert(kv.second);
+    if (getenv("BF6_TS_DEBUG")) {
+        std::string w; int n=0;
+        for (uint32_t v : want) { char b[16]; snprintf(b,sizeof b,"%08x ",v); w+=b; if(++n>=6) break; }
+        fprintf(stderr, "  [ts] want(%zu) first6: %s\n", want.size(), w.c_str());
+    }
 
     size_t best_hits = 0;
     std::vector<uint8_t> best_data;
@@ -208,23 +223,48 @@ bool TerrainStaticTable::load(Source& src, const std::string& level,
         if (d.empty()) continue;
         Depot dep;
         if (!dep.parse(d, e)) continue;
+        if (getenv("BF6_TS_DEBUG")) {
+            uint64_t h = 1469598103934665603ull;
+            for (uint8_t b : d) { h ^= b; h *= 1099511628211ull; }
+            fprintf(stderr, "  [ts] candidate res=%s bytes=%zu records=%zu fnv=%016llx\n",
+                    kv.first.c_str(), d.size(), dep.record_count(), (unsigned long long)h);
+        }
+        size_t dbg_ok = 0, dbg_fail = 0, dbg_params = 0;
         for (size_t r = 0; r < dep.record_count(); r++)
         {
             std::vector<DepotParam> ps;
             std::string pe;
-            if (!dep.params(r, d, ps, pe)) continue;
+            if (!dep.params(r, d, ps, pe)) { dbg_fail++; continue; }
+            dbg_ok++; dbg_params += ps.size();
             size_t hits = 0;
             for (const DepotParam& q : ps) if (want.count(q.name32)) hits++;
             if (hits > best_hits)
-            { best_hits = hits; depot_res_ = kv.first; depot_rec_ = r; best_data.swap(d); }
+            { best_hits = hits; depot_res_ = kv.first; depot_rec_ = r; }
+            // DO NOT take `d` here. This used to be `best_data.swap(d)`, which
+            // emptied the very buffer the loop below still reads from: the
+            // FIRST record that improved the best killed the scan for the rest
+            // of that depot, every later params() failing with "blob outside
+            // the file". The winner then depended on the order src.res()
+            // happened to enumerate candidates, which changes with what is
+            // mounted - mp_tungsten scored 57/57 through a bare level mount and
+            // 1/57 through the C API, off byte-identical input. Re-fetch the
+            // winner after the scan instead.
         }
+        if (getenv("BF6_TS_DEBUG") && dep.record_count() > 1000)
+            fprintf(stderr, "  [ts] BIG depot recs=%zu parsed_ok=%zu failed=%zu params=%zu\n",
+                    dep.record_count(), dbg_ok, dbg_fail, dbg_params);
     }
+    if (getenv("BF6_TS_DEBUG"))
+        fprintf(stderr, "  [ts] lvl=%s depots_scanned_best_hits=%zu depot=%s rec=%zu want=%zu\n",
+                lvl.c_str(), best_hits, depot_res_.c_str(), depot_rec_, want.size());
     if (best_hits == 0) { err = "no depot record carries the compositor's names"; return false; }
 
     std::map<uint32_t, std::string> name_to_guid;
     {
         Depot dep;
         std::string e;
+        std::string fe;
+        best_data = src.get_res(depot_res_, fe);
         dep.parse(best_data, e);
         std::vector<DepotParam> ps;
         dep.params(depot_rec_, best_data, ps, e);
@@ -304,53 +344,100 @@ bool TerrainStaticTable::load(Source& src, const std::string& level,
             if (!g.utility) groups_.push_back(g);
         }
     }
+    // ---- 6. the layer join, recovered from this install's live DXIL --------
+    TerrainShaderProgram shader;
+    TerrainDxilJoin dxil;
+    if (!load_terrain_shader(src, level, shader, err, ubershader)) return false;
+    if (!recover_terrain_dxil_join(src.game_dir(), shader.bytecode, dxil, err)) return false;
+    bytecode_guid_ = shader.bytecode_guid;
+    attributed_samples_ = dxil.attributed_samples;
+    unattributed_samples_ = dxil.unattributed_samples;
+
+    // Derive the common BindingSet's register base. Every declared descriptor
+    // must land on a statically declared Texture2D SRV. A unique candidate is
+    // required: ambiguity is an unresolved read, never permission to assume 21.
+    std::vector<int> candidates;
+    int base_best_hits = -1;
+    for (int base = 0; base <= 255; ++base) {
+        int hits = 0;
+        for (const auto& kv : desc_to_name)
+            if (dxil.static_texture_registers.count(base + (int)kv.first)) hits++;
+        if (hits > base_best_hits) {
+            register_base_runner_up_hits_ = base_best_hits;
+            base_best_hits = hits;
+            candidates.assign(1, base);
+        } else if (hits == base_best_hits) {
+            candidates.push_back(base);
+        } else if (hits > register_base_runner_up_hits_) {
+            register_base_runner_up_hits_ = hits;
+        }
+    }
+    register_base_hits_ = base_best_hits;
+    if (base_best_hits <= 0 || candidates.size() != 1 ||
+        base_best_hits <= register_base_runner_up_hits_) {
+        int dlo = 0, dhi = -1, rlo = 0, rhi = -1;
+        if (!desc_to_name.empty()) {
+            dlo = (int)desc_to_name.begin()->first;
+            dhi = (int)desc_to_name.rbegin()->first;
+        }
+        if (!dxil.static_texture_registers.empty()) {
+            rlo = *dxil.static_texture_registers.begin();
+            rhi = *dxil.static_texture_registers.rbegin();
+        }
+        std::string regs;
+        for (int r : dxil.static_texture_registers) {
+            if (!regs.empty()) regs += ',';
+            regs += std::to_string(r);
+        }
+        err = "live terrain register-base control is " +
+              std::string(candidates.empty() ? "empty" : "ambiguous") +
+              " (" + std::to_string(candidates.size()) +
+              " candidates, best/runner " + std::to_string(base_best_hits) + "/" +
+              std::to_string(register_base_runner_up_hits_) + "; " +
+              std::to_string(desc_to_name.size()) + " descriptors " +
+              std::to_string(dlo) + ".." + std::to_string(dhi) + ", " +
+              std::to_string(dxil.static_texture_registers.size()) +
+              " Texture2D registers " + std::to_string(rlo) + ".." +
+              std::to_string(rhi) + " [" + regs + "])";
+        return false;
+    }
+    register_base_ = candidates.front();
+
+    for (const auto& layer : dxil.registers_by_layer) {
+        Triple t;
+        bool has_common_descriptor = false;
+        for (int reg : layer.second) {
+            const int d = reg - register_base_;
+            if (d < 0 || !desc_to_name.count((uint32_t)d)) continue;
+            has_common_descriptor = true;
+            auto tx = tex_.find((uint32_t)d);
+            if (tx == tex_.end()) continue; // descriptor is exact; asset name unresolved
+            switch (tx->second.role) {
+            case TerrainTexRole::BaseColor:        if (t.cv < 0) t.cv = d; break;
+            case TerrainTexRole::NormalHeight:     if (t.nh < 0) t.nh = d; break;
+            case TerrainTexRole::AmbientOcclusion:
+            case TerrainTexRole::Opacity:
+            case TerrainTexRole::Smoothness:       if (t.third < 0) t.third = d; break;
+            default: break;
+            }
+        }
+        if (has_common_descriptor) layer_join_[layer.first] = t;
+    }
+    if (layer_join_.empty()) {
+        err = "live terrain evaluator sampled no common BindingSet descriptors";
+        return false;
+    }
+    join_exact_ = true;
     return true;
 }
 
-std::map<int, int> TerrainStaticTable::assign(const std::vector<int>& static_layers) const
+bool TerrainStaticTable::layer_descriptors(int layer, int& cv, int& nh, int& third) const
 {
-    // The k-th layer with no bindless colour takes the k-th group counted down
-    // from the top of the table.
-    //
-    // EVERY static layer is mapped now, including two that used to be dropped
-    // here, because dropping them was losing real ground:
-    //
-    //  - LAYER 0 was skipped on the belief that it is a pass-through with no
-    //    `case 0` in the evaluator. It has one: case 0 is the switch DEFAULT
-    //    and is a full material body that samples the top group. On
-    //    MP_Aftermath layer 0 is `t_euu_asphaltbase_01`, the block-7 base
-    //    field over 95.3% of the map - the material that should sit under
-    //    everything else. Skipping it is why that map had nothing to draw.
-    //  - MODIFIER groups (no base colour of their own) were skipped, which
-    //    left their layer with no assignment at all rather than with a
-    //    correct "this one is a modifier" answer. A caller cannot tell those
-    //    two apart, and one of them means "fall back to the aerial photo".
-    //
-    // A caller that wants only surfaces checks groups()[slot].base_color >= 0,
-    // which every consumer here already does.
-    std::map<int, int> out;
-    for (size_t k = 0; k < static_layers.size() && k < groups_.size(); k++)
-    {
-        out[static_layers[k]] = (int)k;
-    }
-    return out;
-}
-
-// See the header. Implemented against the generated table's own exact-match
-// query, so the generated file stays generated.
-std::string terrain_table_level(const std::string& level)
-{
-    std::string lv = level;
-    for (char& ch : lv) ch = (char)std::tolower((unsigned char)ch);
-    if (static_layer_map_has(lv)) return lv;
-    size_t p = lv.rfind('_');
-    while (p != std::string::npos && p > 0)
-    {
-        const std::string cand = lv.substr(0, p);
-        if (static_layer_map_has(cand)) return cand;
-        p = lv.rfind('_', p - 1);
-    }
-    return lv;
+    cv = nh = third = -1;
+    const auto it = layer_join_.find(layer);
+    if (it == layer_join_.end()) return false;
+    cv = it->second.cv; nh = it->second.nh; third = it->second.third;
+    return true;
 }
 
 }  // namespace bf6
