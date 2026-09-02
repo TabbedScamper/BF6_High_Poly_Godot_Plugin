@@ -3077,6 +3077,51 @@ BF6_API bf6_footprints* bf6_footprints_read(bf6_ctx*, const char* ebx_name);
  * A stored NameHash of 0 means "not baked" - hash the name instead. */
 BF6_API uint32_t bf6_name_hash(const char* s);
 
+/* AUTOPAINT: per-level authored paint content. Authored as ordinary
+ * SpatialPrefabBlueprints under <level>/autopaint/{nature,pois,presets,shapes},
+ * so anything that reads a spatial prefab reads autopaint.
+ *
+ * IDENTITY IS POSITIONAL. Leaves ship an EMPTY name - 27 of 27 capture presets
+ * and 2 of 2 outputs across the granite tree - while the containers in the same
+ * partitions ARE named. The *_named counters are returned so a caller can see
+ * that for itself rather than take it on trust: expect outputs_named == 0 and
+ * presets_named == 0 with groups_named and blueprints_named non-zero. Address a
+ * slot BY INDEX within its named container; there is no name to match on. */
+typedef struct {
+    int32_t capture_presets;      /* AutopaintCapturePreset instances        */
+    int32_t presets_named;        /* expected 0 - leaves are anonymous       */
+    int32_t outputs;              /* AutopaintOutput instances               */
+    int32_t outputs_named;        /* expected 0                              */
+    int32_t outputs_groups;       /* AutopaintOutputs containers             */
+    int32_t groups_named;         /* expected == outputs_groups              */
+    int32_t outputs_in_last_group;/* array size; NOT fixed (2 and 3 seen)    */
+    int32_t blueprints;           /* SpatialPrefabBlueprint roots            */
+    int32_t blueprints_named;
+    int32_t named_count;
+    const char* const* named;     /* the names that DO ship                  */
+} bf6_autopaint;
+
+BF6_API bf6_autopaint* bf6_autopaint_read(bf6_ctx*, const char* ebx_name);
+
+/* ECS SYSTEM ASSET: how a runtime-only system ships when nothing authored
+ * backs it - `systems/ecssystems/<name>/ecssystemasset`. EcsWorldAnchorSystem
+ * is the worked example: onArchetypeMatched, onArchetypeUnmatched and
+ * onComponentDataChangeWorldAnchorTags, i.e. anchors are acquired through ECS
+ * composition at runtime and are never placed by a level designer.
+ *
+ * `system_hash` and `schedule_hashes` are NOT djb2-XOR of any name tried
+ * (11 candidates, 0 matches), so bf6_name_hash does NOT decode them. */
+typedef struct {
+    const char*     name;
+    uint32_t        system_hash;      /* 0x258E57C4                          */
+    int32_t         schedulables;
+    const uint32_t* schedule_hashes;  /* 0x8A0D8E03, in step with imports    */
+    int32_t         import_count;
+    const char* const* imports;       /* 0xCC9ADA59 execution descriptors    */
+} bf6_ecs_system;
+
+BF6_API bf6_ecs_system* bf6_ecs_system_read(bf6_ctx*, const char* ebx_name);
+
 /* TELEMETRY SCORING ENUMS: the metrics a game mode reports.
  * `<mode>_scoringtelemetryenum` members name them - Conquest ships
  * current_tickets, kill_tickets, majority_bleed.
