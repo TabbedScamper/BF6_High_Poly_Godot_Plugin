@@ -511,6 +511,18 @@ bool Splat::detect_layout(const SplatChunkDir& dir, std::string& err)
     // nodes: one map was found with 8 of 107 chunks carrying a variable extra
     // payload no algebra fits, and a fit test over distinct values alone would
     // let those 8 veto the model for the other 99.
+    // A level can legitimately store NO pages: mp_portal_lobby ships one node,
+    // four records, zero stored pages and a single base layer with nothing
+    // painted on it. That is an empty terrain, not a layout we failed to fit,
+    // and saying "no page size fits" sent an earlier fleet audit looking for a
+    // parser bug that was not there. Separate the two answers.
+    int paged_nodes = 0;
+    for (const SplatNode& n : nodes_) if (n.pages > 0) paged_nodes++;
+    if (paged_nodes == 0) {
+        err = "the level stores no splat pages: nothing is painted on this terrain";
+        return false;
+    }
+
     std::map<int, int> best_resid;
     int best_ps = 0;
     for (int ps : kPageSizes)
@@ -885,10 +897,12 @@ bool Splat::composite(const SplatChunkDir& dir, const FetchChunk& fetch, int siz
         }
     }
 
-    const size_t cells = (size_t)size * (size_t)size * 4;
+    const int slots = std::clamp(opt.max_slots, 1, 16);
+    const size_t cells = (size_t)size * (size_t)size * (size_t)slots;
     const bool seeded = opt.seeded && out.idx.size() == cells && out.w.size() == cells;
     if (!seeded) { out.idx.assign(cells, 0); out.w.assign(cells, 0); }
     out.size = size;
+    out.slots = slots;
     out.lo[0] = org[0]; out.lo[1] = org[1];
     out.hi[0] = org[0] + span[0]; out.hi[1] = org[1] + span[1];
     out.pages_painted = decoded;
@@ -904,10 +918,9 @@ bool Splat::composite(const SplatChunkDir& dir, const FetchChunk& fetch, int siz
     uint8_t* pidx = out.idx.data();
     uint8_t* pw   = out.w.data();
 
-    // WHAT THE FOUR-SLOT MERGE THREW AWAY. The game keeps a mask per layer and
-    // evaluates every layer in the tile's work list; this keeps the four
-    // strongest. Counting the rejects is the only way to know whether that is a
-    // simplification or a loss, so it is counted rather than assumed.
+    // WHAT THE FIXED-WIDTH MERGE THREW AWAY. The game keeps a mask per layer and
+    // evaluates every layer in the tile's work list. Counting the rejects is
+    // the only way to know whether the requested width is sufficient.
     std::vector<uint64_t> band_evict((size_t)nthread, 0);
     std::vector<double>   band_evict_w((size_t)nthread, 0.0);
 
@@ -960,44 +973,78 @@ bool Splat::composite(const SplatChunkDir& dir, const FetchChunk& fetch, int siz
                     {
                         w = page[nrow + 1 + std::clamp((int)(fx * inner), 0, kPageSide - 3)];
                     }
-                    if (w <= 0) continue;
-
-                    // ---- the top-4 merge, inlined ----
-                    // A layer already present is UPDATED rather than added again:
-                    // the same layer is painted by several nodes and would
-                    // otherwise fill all four slots with itself, leaving no room
-                    // for what it blends against.
-                    const size_t o = (drow + (size_t)gx) * 4;
+                    // ---- the strongest-N merge, inlined ----
+                    // The same layer is redeclared down the quadtree. Records are
+                    // ordered coarse-to-fine, so the later/finer sample REPLACES
+                    // the ancestor sample. Zero is load-bearing: it retracts the
+                    // coarse layer inside the fine record's rectangle. Skipping
+                    // zero here left ancestor maxima alive and produced the map-
+                    // scale "quilt" on MP_Isolated (at -778.962,412.790, L22's
+                    // coarse max is 1.0 while its finest sample is 0.0).
+                    const size_t o = (drow + (size_t)gx) * (size_t)slots;
                     int at = -1;
-                    if      (pw[o]     > 0 && pidx[o]     == layer) at = 0;
-                    else if (pw[o + 1] > 0 && pidx[o + 1] == layer) at = 1;
-                    else if (pw[o + 2] > 0 && pidx[o + 2] == layer) at = 2;
-                    else if (pw[o + 3] > 0 && pidx[o + 3] == layer) at = 3;
+                    for (int s = 0; s < slots; s++)
+                        if (pw[o + s] > 0 && pidx[o + s] == layer) { at = s; break; }
                     int put = -1;
                     if (at >= 0)
                     {
-                        if (w > pw[o + at]) { pw[o + at] = (uint8_t)w; put = at; }
+                        if (w <= 0)
+                        {
+                            for (int s = at; s + 1 < slots; s++)
+                            {
+                                pidx[o + s] = pidx[o + s + 1];
+                                pw[o + s] = pw[o + s + 1];
+                            }
+                            pidx[o + slots - 1] = 0;
+                            pw[o + slots - 1] = 0;
+                            continue;
+                        }
+                        pw[o + at] = (uint8_t)w;
+                        put = at;
                     }
                     else
                     {
+                        if (w <= 0) continue;
                         int freeslot = -1;
-                        if      (pw[o]     == 0) freeslot = 0;
-                        else if (pw[o + 1] == 0) freeslot = 1;
-                        else if (pw[o + 2] == 0) freeslot = 2;
-                        else if (pw[o + 3] == 0) freeslot = 3;
+                        for (int s = 0; s < slots; s++)
+                            if (pw[o + s] == 0) { freeslot = s; break; }
                         if (freeslot >= 0)
-                        { pidx[o + freeslot] = (uint8_t)layer; pw[o + freeslot] = (uint8_t)w; put = freeslot; }
-                        else if (w > pw[o + 3])
                         {
-                            evicted++; evicted_w += (double)pw[o + 3] / 255.0;
-                            pidx[o + 3] = (uint8_t)layer; pw[o + 3] = (uint8_t)w; put = 3;
+                            pidx[o + freeslot] = (uint8_t)layer;
+                            pw[o + freeslot] = (uint8_t)w;
+                            put = freeslot;
                         }
-                        else { evicted++; evicted_w += (double)w / 255.0; }
+                        else if (w > pw[o + slots - 1])
+                        {
+                            evicted++; evicted_w += (double)pw[o + slots - 1] / 255.0;
+                            pidx[o + slots - 1] = (uint8_t)layer;
+                            pw[o + slots - 1] = (uint8_t)w;
+                            put = slots - 1;
+                        }
+                        else {
+                            evicted++;
+                            evicted_w += (double)w / 255.0;
+                            // The candidate lost and was not inserted, so
+                            // `put` deliberately remains -1.  Falling through
+                            // to the insertion-sort loops below indexes slot
+                            // -1: dense Tsuru windows then corrupt the vector
+                            // beside the raster and fail later during cleanup.
+                            // A sparse control never fills all slots and hides
+                            // the bug, which is why whole-map runs appeared
+                            // healthy while the camera-relative probe died.
+                            continue;
+                        }
                     }
                     for (int k = put; k > 0 && pw[o + k] > pw[o + k - 1]; k--)
                     {
                         std::swap(pw[o + k], pw[o + k - 1]);
                         std::swap(pidx[o + k], pidx[o + k - 1]);
+                        put = k - 1;
+                    }
+                    for (int k = put; k + 1 < slots && pw[o + k + 1] > pw[o + k]; k++)
+                    {
+                        std::swap(pw[o + k], pw[o + k + 1]);
+                        std::swap(pidx[o + k], pidx[o + k + 1]);
                     }
                 }
             }
@@ -1024,9 +1071,9 @@ bool Splat::composite(const SplatChunkDir& dir, const FetchChunk& fetch, int siz
     out.empty_texels = 0;
     for (size_t i = 0; i < (size_t)size * (size_t)size; i++)
     {
-        const size_t o = i * 4;
+        const size_t o = i * (size_t)slots;
         if (pw[o] == 0) { out.empty_texels++; continue; }
-        for (int s = 0; s < 4; s++)
+        for (int s = 0; s < slots; s++)
         {
             if (pw[o + s] == 0) break;
             out.layer_texels[pidx[o + s]]++;
