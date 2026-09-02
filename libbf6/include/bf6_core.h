@@ -3008,6 +3008,35 @@ typedef struct {
 
 BF6_API bf6_spawns* bf6_spawns_read(bf6_ctx*, const char* ebx_name);
 
+/* VECTOR SHAPES AND SPLINES: authored control-point geometry.
+ * `VolumeVectorShapeData` and `CustomSplineData` share a 6-field head but are
+ * used for disjoint things: a volume is a CLOSED, exactly PLANAR polygon
+ * extruded by `height` (52 of 52 measured have a Y span of 0.000), while a
+ * custom spline is an OPEN 3D path (8 of 9 non-planar) and is where non-zero
+ * `tension` actually appears.
+ *
+ * TWO TRAPS. Closure is IMPLICIT - the first point is never repeated as the
+ * last (0 of 61) - and winding is NOT normalised (32 CW vs 20 CCW in XZ), so
+ * anything needing an orientation must compute the signed area. */
+typedef struct {
+    int32_t      point_count;
+    const float* points;      /* 3 floats per control point, world space   */
+    float        tension;     /* 0 on every volume; 0 or 0.5 on splines    */
+    float        height;      /* extrusion, volumes only; 0 on splines     */
+    uint32_t     flags;       /* 0x5645E663; 0x06000000 on all measured    */
+    int32_t      realm;       /* 0xDFD68748; 0 on all measured             */
+    uint8_t      is_closed;   /* true on all volumes, false on all splines */
+    uint8_t      allow_roll;  /* false on all 61 measured                  */
+    uint8_t      is_volume;   /* 1 = VolumeVectorShapeData, 0 = CustomSpline */
+} bf6_vector_shape;
+
+typedef struct {
+    int32_t                 count;
+    const bf6_vector_shape* shapes;
+} bf6_vector_shapes;
+
+BF6_API bf6_vector_shapes* bf6_vector_shapes_read(bf6_ctx*, const char* ebx_name);
+
 /* TELEMETRY SCORING ENUMS: the metrics a game mode reports.
  * `<mode>_scoringtelemetryenum` members name them - Conquest ships
  * current_tickets, kill_tickets, majority_bleed.
