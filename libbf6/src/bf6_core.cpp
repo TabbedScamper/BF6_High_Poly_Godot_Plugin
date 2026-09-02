@@ -129,7 +129,7 @@ struct bf6_ctx {
     // remembered here. Registered on the way out, looked up on the way back.
     enum HandleKind { HK_MESH = 1, HK_TERRAIN = 2, HK_SKELETON = 3,
                       HK_ADJACENCY = 4, HK_HAIRBIND = 5,
-                      HK_RENDERBONES = 6, HK_ANIMRELOC = 7, HK_ANIMCLIP = 8, HK_PSD = 9, HK_PSDMAP = 10, HK_SWARM = 11, HK_TELEMETRY = 12, HK_SPAWNS = 13, HK_VSHAPES = 14, HK_FOOTPRINTS = 15, HK_AUTOPAINT = 16, HK_ECSSYSTEM = 17, HK_DEBRIS = 18, HK_WIND = 19, HK_WEATHER = 20, HK_WAVESEL = 21 };
+                      HK_RENDERBONES = 6, HK_ANIMRELOC = 7, HK_ANIMCLIP = 8, HK_PSD = 9, HK_PSDMAP = 10, HK_SWARM = 11, HK_TELEMETRY = 12, HK_SPAWNS = 13, HK_VSHAPES = 14, HK_FOOTPRINTS = 15, HK_AUTOPAINT = 16, HK_ECSSYSTEM = 17, HK_DEBRIS = 18, HK_WIND = 19, HK_WEATHER = 20, HK_WAVESEL = 21, HK_BEHAVIORTREE = 22, HK_NETREGISTRY = 23, HK_UNLOCKS = 24, HK_GEM = 25 };
     std::map<void*, int> handles;
 
     // The last coverage, and the C view of its material list. Same lifetime
@@ -732,6 +732,10 @@ void bf6__debris_delete(void*);
 void bf6__wind_delete(void*);
 void bf6__weather_delete(void*);
 void bf6__wavesel_delete(void*);
+void bf6__behaviortree_delete(void*);
+void bf6__netregistry_delete(void*);
+void bf6__unlocks_delete(void*);
+void bf6__gem_delete(void*);
 void bf6__renderbones_delete(void*);
 void bf6__animreloc_delete(void*);
 void bf6__animclip_delete(void*);
@@ -3135,6 +3139,10 @@ void bf6_free(bf6_ctx* c, void* handle) {
     case bf6_ctx::HK_WIND: bf6__wind_delete(handle); break;
     case bf6_ctx::HK_WEATHER: bf6__weather_delete(handle); break;
     case bf6_ctx::HK_WAVESEL: bf6__wavesel_delete(handle); break;
+    case bf6_ctx::HK_BEHAVIORTREE: bf6__behaviortree_delete(handle); break;
+    case bf6_ctx::HK_NETREGISTRY: bf6__netregistry_delete(handle); break;
+    case bf6_ctx::HK_UNLOCKS: bf6__unlocks_delete(handle); break;
+    case bf6_ctx::HK_GEM: bf6__gem_delete(handle); break;
     default: break;
     }
 }
@@ -3176,3 +3184,4 @@ void bf6_free(bf6_ctx* c, void* handle) {
 #include "wind_ext.inc"
 #include "weather_ext.inc"
 #include "wavesel_ext.inc"
+#include "gameplay_ext.inc"

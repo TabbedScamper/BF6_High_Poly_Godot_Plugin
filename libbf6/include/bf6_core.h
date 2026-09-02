@@ -3250,6 +3250,92 @@ typedef struct {
 
 BF6_API bf6_wave_selection* bf6_wave_selection_read(bf6_ctx*, const char* ebx_name);
 
+/* GAMEPLAY LOGIC: behaviour trees, the network registry, unlock manifests.
+ *
+ * BEHAVIOUR TREES are authored data and they LABEL THEMSELVES. Every node in
+ * `behaviortree_soldier` carries an authored `Title` ("BEHAVIOR SELECTOR",
+ * "CheckTacticalObjective - Attack"), so a tree stays readable even though 10
+ * of its 25 instance types are unnamed in the SDK table. Composition is by
+ * BTTreeLink, whose `Tree` field imports another partition - 36 on the soldier
+ * root, which is that bot's entire behaviour repertoire. */
+typedef enum {
+    BF6_BT_OTHER = 0, BF6_BT_ROOT, BF6_BT_SELECTOR, BF6_BT_SEQUENCE,
+    BF6_BT_RUNNING, BF6_BT_FAIL, BF6_BT_SUCCEEDED, BF6_BT_TREELINK
+} bf6_bt_kind;
+
+typedef struct {
+    int32_t index;            /* instance index inside the partition       */
+    int32_t kind;             /* bf6_bt_kind                               */
+    int32_t node_type;        /* BTTreeLink.NodeType, 0 otherwise          */
+    uint8_t visual_enabled;
+    char    title[128];       /* authored label; may be empty              */
+    char    subtree[256];     /* BTTreeLink.Tree import, else empty        */
+} bf6_bt_node;
+
+typedef struct {
+    int32_t            count;          /* nodes returned (excludes the asset) */
+    int32_t            declared_nodes; /* BehaviorTreeData.Nodes array length */
+    int32_t            root_index;     /* BehaviorTreeData.Root, -1 if absent */
+    const bf6_bt_node* nodes;
+} bf6_behavior_tree;
+
+BF6_API bf6_behavior_tree* bf6_behavior_tree_read(bf6_ctx*, const char* ebx_name);
+
+/* NETWORK REGISTRY: one per LAYER partition, 1,092 over 27 levels.
+ * ORDER IS IDENTITY - the Objects array carries repeated imports, so the slot
+ * index is the network id. A consumer must not deduplicate or sort it. */
+typedef struct {
+    int32_t slot;
+    char    object[256];
+} bf6_net_object;
+
+typedef struct {
+    char                  name[256];  /* the asset's own path, self-describing */
+    uint32_t              checksum;   /* 0x258E57C4, shared with unlocks       */
+    int32_t               count;
+    const bf6_net_object* objects;
+} bf6_net_registry;
+
+BF6_API bf6_net_registry* bf6_net_registry_read(bf6_ctx*, const char* ebx_name);
+
+/* UNLOCK MANIFEST: UnlockLevelData sits in the LEVEL ROOT partition, exactly
+ * one per level on 27, and points at a <level>_unlocks_win32 partition holding
+ * about 20,800 imports. Sizes DIFFER per level, so these are per-level
+ * manifests and not one global list replicated 27 times. */
+typedef struct { char asset[256]; } bf6_unlock;
+
+typedef struct {
+    char              manifest[256];  /* the resolved manifest partition */
+    uint32_t          root_checksum;  /* UnlockLevelData.Checksum        */
+    int32_t           count;
+    const bf6_unlock* items;
+} bf6_unlock_manifest;
+
+/* Takes the LEVEL ROOT partition, e.g.
+ * "game/glaciermp/levels/mp_dumbo/mp_dumbo", and follows the reference. */
+BF6_API bf6_unlock_manifest* bf6_unlocks_read(bf6_ctx*, const char* level_root_ebx);
+
+/* GEM MODULES. A gem is a parameterised gameplay MODULE - capture point, MCOM,
+ * payload, HQ - that a game mode is assembled from, not an entity. It carries
+ * a typed interface (mi_*) and its _view twin, plus FieldHashes: the binding
+ * between SCHEMATIC GRAPH PINS and that interface. On gem_capturepoint 42 of
+ * 44 pin_hash values are in the engine pin universe and 0 of 44
+ * field_info_hash values are, so the two are distinct hash namespaces. */
+typedef struct {
+    uint32_t pin_hash;         /* a schematic graph pin  */
+    uint32_t field_info_hash;  /* an interface field     */
+} bf6_gem_bind;
+
+typedef struct {
+    char                interface_ebx[256];  /* the mi_* module interface  */
+    char                view_ebx[256];       /* its mi_*_view twin         */
+    uint32_t            number;              /* u32 field, identity unknown */
+    int32_t             count;
+    const bf6_gem_bind* binds;
+} bf6_gem;
+
+BF6_API bf6_gem* bf6_gem_read(bf6_ctx*, const char* ebx_name);
+
 /* TELEMETRY SCORING ENUMS: the metrics a game mode reports.
  * `<mode>_scoringtelemetryenum` members name them - Conquest ships
  * current_tickets, kill_tickets, majority_bleed.
