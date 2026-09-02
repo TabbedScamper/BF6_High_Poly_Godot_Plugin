@@ -539,6 +539,15 @@ add_executable(expression_weapon_runtime_test
 target_link_libraries(expression_weapon_runtime_test PRIVATE bf6_core_static)
 target_include_directories(expression_weapon_runtime_test PRIVATE src include)
 
+# Direct-install proof for MenuWeapon's expression-authored header actions.
+# The test follows localize-call slot producers and reports a fabricated SID
+# control, so an adjacent favorites description cannot become a fourth button.
+add_executable(armory_header_actions_test
+  test/armory_header_actions_test.cpp
+  viewer/armory_header_actions.cpp)
+target_link_libraries(armory_header_actions_test PRIVATE bf6_core_static)
+target_include_directories(armory_header_actions_test PRIVATE src include viewer)
+
 add_executable(expression_attribute_runtime_test
   test/expression_attribute_runtime_test.cpp)
 target_link_libraries(expression_attribute_runtime_test PRIVATE bf6_core_static)
@@ -623,6 +632,7 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/${IMGUI}/imgui.cpp)
     viewer/rime.cpp
     viewer/rime_list_provider.cpp
     viewer/offline_profile_provider.cpp
+    viewer/armory_header_actions.cpp
     viewer/armory_ui.cpp
     viewer/armory_camera_composition.cpp
     ${IMGUI}/imgui.cpp ${IMGUI}/imgui_draw.cpp
@@ -761,3 +771,9 @@ target_include_directories(gameplay_test PRIVATE src include)
 add_executable(mbprobe_test test/mbprobe_test.cpp)
 target_link_libraries(mbprobe_test PRIVATE bf6_core_static)
 target_include_directories(mbprobe_test PRIVATE src include)
+add_executable(physics_test test/physics_test.cpp)
+target_link_libraries(physics_test PRIVATE bf6_core_static)
+target_include_directories(physics_test PRIVATE src include)
+add_executable(placereach_test test/placereach_test.cpp)
+target_link_libraries(placereach_test PRIVATE bf6_core_static)
+target_include_directories(placereach_test PRIVATE src include)

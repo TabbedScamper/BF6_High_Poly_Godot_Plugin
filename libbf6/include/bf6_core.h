@@ -3372,6 +3372,57 @@ typedef struct {
 
 BF6_API bf6_schematic* bf6_schematic_read(bf6_ctx*, const char* ebx_name);
 
+/* PHYSICS / COLLISION - PhysicsResource (RES type 0x41759364), 669,966 in the
+ * game, the second largest resource type. Spec: formats/PHYSICS_COLLISION.md.
+ *
+ * Offsets inside the payload are SELF-RELATIVE (fieldAddress + storedValue).
+ * The container is self-checking: five monotonic bounds and four exact
+ * span == count * stride equations, all enforced by the reader. */
+typedef struct {
+    uint16_t vertex_count;
+    uint16_t index_count;      /* total face-vertex indices, NOT triangles */
+    uint16_t face_count;       /* LOW u16 of +0x1C; the high half is below  */
+    uint16_t midphase_nodes;   /* nonzero on meshes, zero on hulls          */
+    uint8_t  plane_ptr;        /* +0x40 present: this shape is a HULL       */
+    uint8_t  mesh_ptr;         /* +0x44 present: this shape is a MESH       */
+    int32_t  vertex_first;     /* index into bf6_physics.vertices (xyz), -1 */
+    int32_t  index_first;      /* index into bf6_physics.indices, -1        */
+    int32_t  face_start_first; /* index into bf6_physics.face_starts, -1    */
+} bf6_phys_shape;
+
+typedef struct {
+    float    quat[4];             /* x, y, z, w                             */
+    float    pos[3];
+    float    scale_or_halfheight; /* UNION: uniform scale, or capsule half-H */
+    float    radius;              /* primitive radius; 0 on hull/mesh        */
+    uint32_t shape_type;          /* 0 Sphere 1 Capsule 2 Box 3 ConvexHull
+                                     4 Cylinder 5 Heightfield 6 Mesh 7 Aggregate */
+    uint32_t preset_a, preset_b, preset_c;  /* djb2 PhysicsShapePreset_* hashes */
+    uint32_t object_id;           /* owning-object handle; shared by siblings */
+    int32_t  shape_index;         /* +0x38 into region B, -1 (0xFFFFFFFF) none */
+    uint32_t body_index;          /* 0x7FFFFFFF = the world static body       */
+    uint32_t material_packed;     /* surface material, NOT a collision mask   */
+    uint32_t trap_0x24;           /* exposed ONLY so a test can prove it is
+                                     not the shape index - see the .inc       */
+} bf6_phys_inst;
+
+typedef struct {
+    uint32_t flags;
+    int32_t  body_count;      /* region A */
+    int32_t  region_c;        /* region C */
+    int32_t  shape_count;
+    int32_t  inst_count;
+    int64_t  geometry_at;
+    int64_t  payload_size;
+    const bf6_phys_shape* shapes;
+    const bf6_phys_inst*  instances;
+    int32_t  vertex_total;    const float*    vertices;    /* xyz triples */
+    int32_t  index_total;     const uint16_t* indices;
+    int32_t  face_start_total; const uint16_t* face_starts;
+} bf6_physics;
+
+BF6_API bf6_physics* bf6_physics_read(bf6_ctx*, const char* res_name);
+
 /* TELEMETRY SCORING ENUMS: the metrics a game mode reports.
  * `<mode>_scoringtelemetryenum` members name them - Conquest ships
  * current_tickets, kill_tickets, majority_bleed.
