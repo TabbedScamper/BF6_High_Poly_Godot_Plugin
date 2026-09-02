@@ -502,6 +502,14 @@ add_executable(portal_armory_codegen tools/portal_armory_codegen.cpp)
 target_link_libraries(portal_armory_codegen PRIVATE bf6_core_static)
 target_include_directories(portal_armory_codegen PRIVATE src include)
 
+# One-mount UI runtime coverage harness.  It composes the current-install Rime
+# readers with the renderer's data-flow interpreter, but never consumes a
+# generated TSV/JSON as runtime input.  JSON and SVG are outputs for humans and
+# CI; they are not inputs to the viewer.
+add_executable(ui_runtime_audit tools/ui_runtime_audit.cpp viewer/rime.cpp)
+target_link_libraries(ui_runtime_audit PRIVATE bf6_core_static)
+target_include_directories(ui_runtime_audit PRIVATE src include viewer)
+
 add_executable(ebxls_test test/ebxls_test.cpp)
 target_link_libraries(ebxls_test PRIVATE bf6_core_static)
 target_include_directories(ebxls_test PRIVATE src include)
@@ -673,6 +681,10 @@ target_include_directories(autopaint_test PRIVATE src include)
 add_executable(debris_test test/debris_test.cpp)
 target_link_libraries(debris_test PRIVATE bf6_core_static)
 target_include_directories(debris_test PRIVATE src include)
+
+add_executable(matrel_raw_test test/matrel_raw_test.cpp)
+target_link_libraries(matrel_raw_test PRIVATE bf6_core_static)
+target_include_directories(matrel_raw_test PRIVATE src include)
 add_executable(typescan_test test/typescan_test.cpp)
 target_link_libraries(typescan_test PRIVATE bf6_core_static)
 target_include_directories(typescan_test PRIVATE src include)
