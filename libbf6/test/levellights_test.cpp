@@ -25,7 +25,7 @@
  *    LuminousPower, so the number is LUMENS: a median in the thousands is a
  *    real fixture, a median of 1 or of 1e8 is not.
  *
- *   levellights_test <game_dir> <level> [level...]
+ *   levellights_test <game_dir> [--asset] <level-or-asset> [...] [@fixture]
  */
 #include <algorithm>
 #include <cstdio>
@@ -81,12 +81,19 @@ static const char* leaf(const char* s)
 int main(int argc, char** argv)
 {
     if (argc < 3) {
-        std::fprintf(stderr, "usage: levellights_test <game_dir> <level> [level...]\n");
+        std::fprintf(stderr, "usage: levellights_test <game_dir> [--asset] <level-or-asset> [...]\n");
         return 2;
     }
     char err[512] = {0};
     bf6_ctx* c = bf6_open(argv[1], err, (int)sizeof(err));
     if (!c) { std::fprintf(stderr, "open: %s\n", err); return 1; }
+    const bool asset_mode = argc >= 4 && std::strcmp(argv[2], "--asset") == 0;
+    const int first_input = asset_mode ? 3 : 2;
+    if (asset_mode && !bf6_mount_all(c, 1, err, (int)sizeof(err))) {
+        std::fprintf(stderr, "mount all: %s\n", err);
+        bf6_close(c);
+        return 1;
+    }
 
     // An argument beginning with '@' names a fixture to dump in full, e.g.
     // "@ceilinglamp_rect_01". That is how a decode is checked against a known
@@ -94,23 +101,36 @@ int main(int argc, char** argv)
     // CeilingLamp_Rect_01's four emitters by hand, so its numbers are an
     // oracle this reader never saw.
     std::string fixture;
-    for (int a = 2; a < argc; a++)
-        if (argv[a][0] == '@') fixture = argv[a] + 1;
+    bool have_near = false;
+    float near_x = 0.f, near_z = 0.f, near_radius = 0.f;
+    for (int a = first_input; a < argc; a++) {
+        if (std::strncmp(argv[a], "@near=", 6) == 0) {
+            have_near = std::sscanf(argv[a] + 6, "%f,%f,%f",
+                                    &near_x, &near_z, &near_radius) == 3;
+        } else if (argv[a][0] == '@') {
+            fixture = argv[a] + 1;
+        }
+    }
 
     int bad = 0;
-    for (int a = 2; a < argc; a++) {
+    for (int a = first_input; a < argc; a++) {
         if (argv[a][0] == '@') continue;
         const char* level = argv[a];
         bf6_light_stats st;
         err[0] = 0;
-        const int n = bf6_level_lights(c, level, nullptr, 0, &st, err, (int)sizeof(err));
+        const int n = asset_mode
+            ? bf6_asset_lights(c, level, nullptr, 0, &st, err, (int)sizeof(err))
+            : bf6_level_lights(c, level, nullptr, 0, &st, err, (int)sizeof(err));
         if (n <= 0) {
             std::printf("FAIL %s: %s\n", level, err[0] ? err : "no lights");
             bad++;
             continue;
         }
         std::vector<bf6_light> L((size_t)n);
-        bf6_level_lights(c, level, L.data(), n, nullptr, err, (int)sizeof(err));
+        if (asset_mode)
+            bf6_asset_lights(c, level, L.data(), n, nullptr, err, (int)sizeof(err));
+        else
+            bf6_level_lights(c, level, L.data(), n, nullptr, err, (int)sizeof(err));
 
         std::printf("=== %s\n", level);
         std::printf("  lights                 %d   (%d sphere, %d spot, %d tube, %d rect, %d other)\n",
@@ -266,6 +286,32 @@ int main(int argc, char** argv)
                      const std::pair<std::string, int>& y) { return x.second > y.second; });
         for (size_t i = 0; i < by_src.size() && i < 8; i++)
             std::printf("  %-46s %d\n", by_src[i].first.c_str(), by_src[i].second);
+
+        if (have_near) {
+            struct Near { float d; const bf6_light* l; };
+            std::vector<Near> near;
+            for (const bf6_light& l : L) {
+                const float dx = l.xform[9] - near_x;
+                const float dz = l.xform[11] - near_z;
+                const float d = std::sqrt(dx*dx + dz*dz);
+                if (d <= near_radius) near.push_back({d, &l});
+            }
+            std::sort(near.begin(), near.end(),
+                      [](const Near& a, const Near& b) { return a.d < b.d; });
+            std::printf("-- %zu lights within %.1f m of game XZ (%.1f, %.1f)\n",
+                        near.size(), near_radius, near_x, near_z);
+            for (size_t i = 0; i < near.size() && i < 250; i++) {
+                const bf6_light& l = *near[i].l;
+                std::printf("  d%6.2f  (%8.2f,%7.2f,%8.2f) %-6s %10.6g lm  "
+                            "reach %5.1f  rgb(%5.2f,%5.2f,%5.2f)  emissive-shape %d  flags %08x  %s",
+                            near[i].d, l.xform[9], l.xform[10], l.xform[11],
+                            kind_name(l.type), l.intensity * l.dimmer,
+                            l.attenuation_radius, l.color[0], l.color[1], l.color[2],
+                            l.emissive_shape_enable, l.flags, leaf(l.source));
+                if (l.ies_profile) std::printf("  IES=%s x%.3g", leaf(l.ies_profile), l.ies_multiplier);
+                std::printf("\n");
+            }
+        }
 
         if (!fixture.empty()) {
             std::printf("-- fixture matching \"%s\"\n", fixture.c_str());

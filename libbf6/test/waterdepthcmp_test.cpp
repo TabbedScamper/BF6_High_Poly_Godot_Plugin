@@ -1,8 +1,8 @@
 // How deep can you actually see, according to the level's own data?
 //
-// The Unreal add-on currently derives its extinction from a HEURISTIC: it
-// takes the authored colour as a hue plus a brightness and pushes those
-// through two hardcoded per-metre constants. The decode says the authored
+// The Unreal add-on formerly derived its extinction from a HEURISTIC: it took
+// the authored colour as a hue plus a brightness and pushed those through two
+// hardcoded per-metre constants. The decode says the authored
 // colour is not a colour at all - on the ocean family it is a per-metre
 // TRANSMISSION, what the water reaches after absorption_distance_m metres -
 // and it hands back the extinction directly.
@@ -19,8 +19,8 @@ static float half_depth(float ext_per_m)
     return ext_per_m > 1e-9f ? 0.6931472f / ext_per_m : 1e9f;
 }
 
-// The add-on's current heuristic, transcribed so the two can be compared on
-// the same level without rebuilding the editor.
+// The discarded add-on heuristic, retained as a negative control so the two
+// can be compared on the same level without rebuilding the editor.
 static void heuristic(const float c[3], float out_ext_per_m[3])
 {
     float mx = c[0] > c[1] ? c[0] : c[1];
@@ -28,7 +28,7 @@ static void heuristic(const float c[3], float out_ext_per_m[3])
     const float bright = mx > 1e-6f ? mx : 1e-6f;
     float hue[3] = { c[0] / bright, c[1] / bright, c[2] / bright };
     const float sat[3] = { hue[0] * hue[0], hue[1] * hue[1], hue[2] * hue[2] };
-    // ScatterPerM and AbsorbPerM as they stand in BF6HighPoly.cpp.
+    // The historical constants from the heuristic being controlled.
     const float ScatterPerM = 0.22f, AbsorbPerM = 0.20f;
     for (int k = 0; k < 3; k++)
     {
@@ -64,6 +64,20 @@ int main(int argc, char** argv)
         std::printf("  authored base colour   (%.4f %.4f %.4f)\n",
                     s.base_colour[0], s.base_colour[1], s.base_colour[2]);
         std::printf("  absorption distance    %.3f m\n", s.absorption_distance_m);
+        std::printf("  shore                   valid %d enable %d depth %.3f m "
+                    "blend (%.3f %.3f %.3f %.3f) suppress %.3f\n",
+                    s.shore_fade_valid, s.shore_enable, s.shore_depth_m,
+                    s.shore_blend[0], s.shore_blend[1],
+                    s.shore_blend[2], s.shore_blend[3],
+                    s.shore_foam_suppression);
+        std::printf("  foam/detail             threshold %.3f contrast %.3f "
+                    "cascade (%.3f %.3f %.3f %.3f), detail %.1f..%.1f m\n",
+                    s.foam_threshold, s.foam_contrast_divisor,
+                    s.cascade_foam_weight[0], s.cascade_foam_weight[1],
+                    s.cascade_foam_weight[2], s.cascade_foam_weight[3],
+                    s.detail_fade_start_m, s.detail_fade_end_m);
+        std::printf("  reflectance             low %.4f high %.4f bias %.3f\n",
+                    s.reflectance_low, s.reflectance_high, s.reflectance_bias);
         std::printf("  DERIVED surface colour (%.4f %.4f %.4f)\n",
                     s.surface_colour[0], s.surface_colour[1], s.surface_colour[2]);
 
@@ -87,7 +101,7 @@ int main(int argc, char** argv)
 
         float h[3];
         heuristic(s.base_colour, h);
-        std::printf("  the add-on's HEURISTIC (%.5f %.5f %.5f)\n", h[0], h[1], h[2]);
+        std::printf("  discarded HEURISTIC    (%.5f %.5f %.5f)\n", h[0], h[1], h[2]);
         std::printf("    -> half-transmittance depth  R %.2f m  G %.2f m  B %.2f m\n",
                     half_depth(h[0]), half_depth(h[1]), half_depth(h[2]));
         if (have && s.extinction[1] > 1e-9f)

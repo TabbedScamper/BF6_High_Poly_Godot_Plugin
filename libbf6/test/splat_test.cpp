@@ -21,6 +21,7 @@
  * pair histogram) are what the task asks for and are printed alongside.
  *
  *   splat_test <game_dir> <level> [--size=N] [--linked=a,b,c] [--threads=N]
+ *                                 [--point=x,z]
  *                                 [--textured=a,b,c] [--unionlists]
  *
  * --linked is the palette's TerrainLayerType.Linked layer list, which lives in
@@ -82,6 +83,8 @@ int main(int argc, char** argv)
     }
     const std::string game = argv[1], level = argv[2];
     int want_size = 0, threads = 0;
+    float point_x = 0.f, point_z = 0.f;
+    bool have_point = false, brief_point = false;
     bool union_lists = false;
     std::vector<int> linked, textured;
     for (int i = 3; i < argc; i++)
@@ -91,6 +94,9 @@ int main(int argc, char** argv)
         else if (a.rfind("--linked=", 0) == 0) linked = parse_list(a.c_str() + 9);
         else if (a.rfind("--threads=", 0) == 0) threads = std::atoi(a.c_str() + 10);
         else if (a.rfind("--textured=", 0) == 0) textured = parse_list(a.c_str() + 11);
+        else if (a.rfind("--point=", 0) == 0)
+            have_point = std::sscanf(a.c_str() + 8, "%f,%f", &point_x, &point_z) == 2;
+        else if (a == "--brief-point") brief_point = true;
         else if (a == "--unionlists") union_lists = true;
     }
 
@@ -171,6 +177,113 @@ int main(int argc, char** argv)
                 sp.no_colour() ? " [no colour raster]" : "", dir.size());
 
     auto fetch = [&](const std::string& g) { std::string e; return src.get_chunk(g, e); };
+
+    // A point probe has to look BEFORE the fixed-width coverage merge. Several
+    // quadtree records for one layer can touch a point, and inspecting only the
+    // final top-N slots cannot distinguish max-mask from fine-page overwrite.
+    // Report both interpretations, including zero-valued fine samples, then do
+    // the same at a deterministic half-map-shift control point.
+    if (have_point)
+    {
+        struct Agg { int hits = 0, max_w = 0, last_w = 0, deep = -1, deep_w = 0; };
+        std::map<std::string, std::vector<uint8_t>> chunk_cache;
+        std::map<uint64_t, const SplatNode*> by_key;
+        std::vector<const SplatNode*> order;
+        for (const SplatNode& n : sp.nodes()) { by_key[n.key] = &n; order.push_back(&n); }
+        std::stable_sort(order.begin(), order.end(), [](const SplatNode* a, const SplatNode* b)
+        { return a->depth < b->depth; });
+        auto cached = [&](const std::string& guid) -> const std::vector<uint8_t>&
+        {
+            auto it = chunk_cache.find(guid);
+            if (it != chunk_cache.end()) return it->second;
+            return chunk_cache.emplace(guid, fetch(guid)).first->second;
+        };
+        auto probe = [&](const char* label, float px, float pz)
+        {
+            std::map<int, Agg> agg;
+            int page_hits = 0, resolve_fail = 0;
+            std::printf("\nPOINT-PAGE PROBE %s (%.3f, %.3f)\n", label, px, pz);
+            std::printf(" depth key                layer page span(m)    sample  bounds\n");
+            for (const SplatNode* np : order)
+            {
+                const SplatNode& n = *np;
+                bool touches = false;
+                for (const SplatRecord& r : n.records)
+                    if (r.page >= 0 && px >= r.lo[0] && px < r.hi[0] &&
+                        pz >= r.lo[1] && pz < r.hi[1]) { touches = true; break; }
+                if (!touches || n.pages <= 0) continue;
+
+                const uint8_t* base = nullptr;
+                size_t avail = 0;
+                auto de = dir.find(n.key);
+                if (de != dir.end() && !de->second.primary.empty())
+                {
+                    const int off = sp.pages_offset(de->second.primary_size, n.pages);
+                    if (off >= 0)
+                    {
+                        const std::vector<uint8_t>& d = cached(de->second.primary);
+                        const size_t need = (size_t)off + (size_t)n.pages * (size_t)sp.page_size();
+                        if (d.size() >= need) { base = d.data() + off; avail = d.size() - (size_t)off; }
+                    }
+                }
+                if (!base)
+                {
+                    auto pe = dir.find(n.key >> 4);
+                    if (pe != dir.end() && !pe->second.paired.empty())
+                    {
+                        const std::vector<uint8_t>& d = cached(pe->second.paired);
+                        const uint64_t child = n.key & 0xF;
+                        size_t off = 0;
+                        for (int j = 3; j >= 0; j--)
+                        {
+                            if ((uint64_t)j == child) break;
+                            auto si = by_key.find((n.key & ~(uint64_t)0xF) | (uint64_t)j);
+                            if (si != by_key.end())
+                                off += (size_t)si->second->pages * (size_t)sp.page_size();
+                        }
+                        const size_t need = off + (size_t)n.pages * (size_t)sp.page_size();
+                        if (d.size() >= need) { base = d.data() + off; avail = d.size() - off; }
+                    }
+                }
+                if (!base || avail < (size_t)n.pages * (size_t)sp.page_size())
+                { resolve_fail++; continue; }
+
+                for (const SplatRecord& r : n.records)
+                {
+                    if (r.page < 0 || r.page >= n.pages ||
+                        px < r.lo[0] || px >= r.hi[0] || pz < r.lo[1] || pz >= r.hi[1]) continue;
+                    std::vector<uint8_t> page((size_t)sp.page_side() * (size_t)sp.page_side());
+                    if (!Splat::decode_page(base + (size_t)r.page * (size_t)sp.page_size(),
+                                            sp.page_size(), page.data())) continue;
+                    const float fx = std::clamp((px - r.lo[0]) / (r.hi[0] - r.lo[0]), 0.f, 1.f);
+                    const float fz = std::clamp((pz - r.lo[1]) / (r.hi[1] - r.lo[1]), 0.f, 1.f);
+                    const int ix = 1 + std::clamp((int)(fx * 64.f), 0, 63);
+                    const int iz = 1 + std::clamp((int)(fz * 64.f), 0, 63);
+                    const int w = page[(size_t)iz * 66u + (size_t)ix];
+                    Agg& a = agg[(int)(r.layer & 0xFF)];
+                    a.hits++; a.max_w = std::max(a.max_w, w); a.last_w = w;
+                    if (n.depth >= a.deep) { a.deep = n.depth; a.deep_w = w; }
+                    page_hits++;
+                    if (!brief_point)
+                        std::printf(" %5d 0x%016llX L%-4d %4d %8.2f %7.3f  %.1f,%.1f..%.1f,%.1f\n",
+                                    n.depth, (unsigned long long)n.key, (int)(r.layer & 0xFF), r.page,
+                                    r.hi[0] - r.lo[0], w / 255.0,
+                                    r.lo[0], r.lo[1], r.hi[0], r.hi[1]);
+                }
+            }
+            std::printf(" summary: %d page record(s), %d unresolved node(s)\n", page_hits, resolve_fail);
+            std::printf(" layer hits  max-mask  coarse-to-fine overwrite  deepest-record\n");
+            for (const auto& kv : agg)
+                std::printf(" L%-4d %4d    %7.3f           %7.3f          %7.3f (d%d)\n",
+                            kv.first, kv.second.hits, kv.second.max_w / 255.0,
+                            kv.second.last_w / 255.0, kv.second.deep_w / 255.0, kv.second.deep);
+        };
+        probe("camera", point_x, point_z);
+        const float sx = sp.root_max()[0] - sp.root_min()[0];
+        float control_x = point_x + sx * 0.5f;
+        if (control_x >= sp.root_max()[0]) control_x -= sx;
+        probe("half-map-x control", control_x, point_z);
+    }
 
     const auto t2 = clk::now();
     const std::vector<ColorSlice> tiles = sp.color_slices(dir, fetch);

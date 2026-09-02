@@ -32,7 +32,7 @@ static const char* slot_name(bf6_tex_slot s)
     {
     case BF6_TEX_ALBEDO:    return "albedo";
     case BF6_TEX_NORMAL:    return "normal";
-    case BF6_TEX_MRO:       return "mro";
+    case BF6_TEX_WO:        return "wo";
     case BF6_TEX_EMISSIVE:  return "emissive";
     case BF6_TEX_MASK:      return "mask";
     default:                return "other";
@@ -235,9 +235,10 @@ int main(int argc, char** argv)
             decoded++;
             bytes += t->data_len;
             if (decoded <= 6)
-                std::printf("  %-7s %5d x %-5d fmt %-3d srgb %d  %8d bytes\n",
+                std::printf("  %-7s %5d x %-5d fmt %-3d srgb %d  %8d bytes  %s\n",
                             slot_name(tb.slot), t->width, t->height,
-                            (int)t->format, t->srgb, t->data_len);
+                            (int)t->format, t->srgb, t->data_len,
+                            bf6_texture_name_at(c, tb.texture));
         }
     }
     std::printf("  bound %d, decoded %d, %.2f MB of compressed texels\n",
@@ -468,16 +469,62 @@ int main(int argc, char** argv)
                     if (alb) textured++;
                     bf6_free(c, pm);
                 }
-                if (i < 14)
+                const bool iron = std::strstr(pv[(size_t)i].mesh, "ironsight") != nullptr;
+                if (i < 14 || iron)
                 {
                     const char* leaf = strrchr(pv[(size_t)i].mesh, '/');
-                    std::printf("   %-52s %s%s\n", leaf ? leaf + 1 : pv[(size_t)i].mesh,
-                                pm ? "ok" : "UNRESOLVED", alb ? " +albedo" : " (no albedo)");
+                    std::printf("   %-52s %s%s%s%s\n", leaf ? leaf + 1 : pv[(size_t)i].mesh,
+                                pm ? "ok" : "UNRESOLVED", alb ? " +albedo" : " (no albedo)",
+                                iron ? "  bundle=" : "", iron ? pv[(size_t)i].bundle : "");
                 }
             }
             std::printf("  resolved %d/%d, with albedo %d\n", resolved, gp, textured);
         }
+
+        const int nd = mdp.empty() ? 0 : bf6_weapon_default_parts(c, mdp.c_str(), nullptr, 0);
+        std::printf("\nmodel-definition defaults\n  authored meshes: %d\n", nd);
+        if (nd > 0)
+        {
+            std::vector<bf6_weapon_part> dv((size_t)nd);
+            const int gd = bf6_weapon_default_parts(c, mdp.c_str(), dv.data(), nd);
+            int resolved = 0, sections = 0, albedo = 0;
+            for (int i = 0; i < gd; i++)
+            {
+                bf6_mesh* pm = bf6_read_mesh_scoped(c, dv[(size_t)i].mesh, 0,
+                                                    dv[(size_t)i].bundle, nullptr);
+                if (!pm) continue;
+                resolved++;
+                for (int s = 0; s < pm->section_count; s++)
+                {
+                    sections++;
+                    bool has = false;
+                    const int mi = pm->sections[s].material;
+                    if (mi >= 0 && mi < pm->material_count)
+                        for (int b = 0; b < pm->materials[mi].texture_count; b++)
+                            if (pm->materials[mi].textures[b].slot == BF6_TEX_ALBEDO &&
+                                pm->materials[mi].textures[b].texture >= 0) { has = true; break; }
+                    if (has) albedo++;
+                    else
+                    {
+                        const char* leaf = strrchr(dv[(size_t)i].mesh, '/');
+                        std::printf("    NO ALBEDO section %d: %s [%s]\n", s,
+                                    leaf ? leaf + 1 : dv[(size_t)i].mesh,
+                                    dv[(size_t)i].bundle);
+                    }
+                }
+                std::printf("  default %-52s [%s]\n", dv[(size_t)i].mesh,
+                            dv[(size_t)i].bundle);
+                bf6_free(c, pm);
+            }
+            std::printf("  resolved %d/%d, albedo sections %d/%d\n",
+                        resolved, gd, albedo, sections);
+        }
     }
+
+    bf6_weapon_base_stats baseStats{};
+    const int haveStats = bf6_base_weapon_stats(c, "carbine", want, &baseStats);
+    std::printf("\nbase stats\n  resolved %d  DMG %d  ROF %d  MAG %d\n",
+                haveStats, baseStats.damage, baseStats.rate_of_fire, baseStats.magazine);
 
     const bool ok = (verts > 0 && tris > 0 && decoded > 0);
     std::printf("\n%s\n", ok

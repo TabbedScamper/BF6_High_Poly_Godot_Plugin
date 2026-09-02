@@ -1,8 +1,9 @@
 /* groundcov_test - the per-pixel ground path: coverage plus a material list.
  *
- *   groundcov_test <game_dir> <level> [size]
+ *   groundcov_test <game_dir> <level> [size] [ubershader] [--point=x,z]
  */
 #include <cstdio>
+#include <cstring>
 #include <vector>
 #include <utility>
 #include <algorithm>
@@ -10,14 +11,29 @@
 
 int main(int argc, char** argv)
 {
-    if (argc < 3) { std::printf("usage: groundcov_test <game_dir> <level> [size]\n"); return 2; }
+    if (argc < 3) { std::printf("usage: groundcov_test <game_dir> <level> [size] [ubershader] [--point=x,z]\n"); return 2; }
     const int size = argc > 3 ? std::atoi(argv[3]) : 2048;
+    float point_x = 0.f, point_z = 0.f;
+    bool have_point = false;
+    int dump_layer = -1;
+    bool dump_colour = false;
+    for (int ai = 4; ai < argc; ai++) {
+        if (std::strncmp(argv[ai], "--point=", 8) == 0) {
+            have_point = std::sscanf(argv[ai] + 8, "%f,%f", &point_x, &point_z) == 2;
+        }
+        if (std::strncmp(argv[ai], "--dump-layer=", 13) == 0)
+            dump_layer = std::atoi(argv[ai] + 13);
+        if (std::strcmp(argv[ai], "--dump-colour") == 0)
+            dump_colour = true;
+    }
+    const char* ubershader = (argc > 4 && std::strncmp(argv[4], "--point=", 8) != 0)
+                           ? argv[4] : nullptr;
     char err[512] = {0};
     bf6_ctx* ctx = bf6_open(argv[1], err, sizeof(err));
     if (!ctx) { std::printf("open: %s\n", err); return 1; }
     // Non-fatal: the ground only needs the archives mounted, and on an EA App
     // install the walk stops at the encrypted type table.
-    if (bf6_open_level(ctx, argv[2], argc > 4 ? argv[4] : nullptr, 0, err, sizeof(err)) != 0)
+    if (bf6_open_level(ctx, argv[2], ubershader, 0, err, sizeof(err)) != 0)
         std::printf("note: open_level said %s; continuing on the mount alone\n", err);
 
     bf6_ground_coverage g{};
@@ -30,17 +46,33 @@ int main(int argc, char** argv)
     std::printf("%d material(s), %.2f%% of texels empty\n",
         g.material_count, g.empty_fraction * 100.f);
     std::printf("aerial colour map: %s\n", g.colour ? "PRESENT" : "absent");
+    if (dump_colour && g.colour) {
+        if (FILE* f = std::fopen("ground_colour.ppm", "wb")) {
+            std::fprintf(f, "P6\n%d %d\n255\n", g.size, g.size);
+            std::fwrite(g.colour, 1, (size_t)g.size * g.size * 3, f);
+            std::fclose(f);
+            std::printf("dumped ground_colour.ppm\n");
+        }
+    }
+    const int slots = g.slot_count > 0 ? g.slot_count : 4;
+    std::printf("evaluator slots retained: %d\n", slots);
 
     // how many slots a texel actually uses, which is what a shader must blend
-    long long hist[5] = {0, 0, 0, 0, 0};
+    std::vector<long long> hist((size_t)slots + 1, 0);
     for (long long i = 0; i < (long long)g.size * g.size; i++) {
         int n = 0;
-        for (int s = 0; s < 4; s++) if (g.weight[i * 4 + s]) n++;
+        for (int s = 0; s < slots; s++) if (g.weight[i * slots + s]) n++;
         hist[n]++;
     }
     const double tot = (double)g.size * g.size;
     std::printf("layers per texel: ");
-    for (int n = 0; n < 5; n++) std::printf("%d=%.1f%% ", n, 100.0 * hist[n] / tot);
+    for (int n = 0; n <= slots; n++) std::printf("%d=%.1f%% ", n, 100.0 * hist[(size_t)n] / tot);
+    {
+        long long full_first = 0;
+        for (long long i2 = 0; i2 < (long long)g.size * g.size; i2++)
+            if (g.weight[i2 * slots] == 255) full_first++;
+        std::printf("full-mask first slot: %.2f%%\n", 100.0 * full_first / tot);
+    }
     {
         // How LOPSIDED the mix is. Four active slots on every texel would be
         // alarming if the tail were heavy; what matters to a four-tap blend is
@@ -48,8 +80,8 @@ int main(int argc, char** argv)
         double dom = 0.0;
         for (long long i2 = 0; i2 < (long long)g.size * g.size; i2++) {
             int mx = 0, tot = 0;
-            for (int s = 0; s < 4; s++) {
-                const int w = g.weight[i2 * 4 + s];
+            for (int s = 0; s < slots; s++) {
+                const int w = g.weight[i2 * slots + s];
                 tot += w;
                 if (w > mx) mx = w;
             }
@@ -59,13 +91,15 @@ int main(int argc, char** argv)
         std::printf("dominant slot carries %.1f%% of the weight on average\n",
                     100.0 * dom / n2);
     }
-    std::printf("\n\n%-4s %-6s %-9s %s\n", "slot", "layer", "m/repeat", "albedo");
+    std::printf("\n\n%-4s %-6s %-9s %-7s %s\n", "slot", "layer", "m/repeat", "mask", "albedo");
     for (int i = 0; i < g.material_count; i++) {
         const bf6_ground_material& m = g.materials[i];
         const char* a = m.albedo_res && *m.albedo_res ? m.albedo_res : "(none)";
         const char* sl = a;
         for (const char* p = a; *p; p++) if (*p == '/') sl = p + 1;
-        std::printf("%-4d %-6d %-9.2f %s\n", i, m.layer, m.metres_per_repeat, sl);
+        const bool gated = m.coverage_res && *m.coverage_res;
+        std::printf("%-4d %-6d %-9.2f %-7s %s\n", i, m.layer, m.metres_per_repeat,
+                    gated ? "_op" : "identity", sl);
     }
     // decode every bound sheet, which is what a texture array would need
     std::vector<unsigned char> buf(512 * 512 * 4);
@@ -87,6 +121,45 @@ int main(int argc, char** argv)
         if (bf6_layer_sheet(ctx, nr, 512, buf.data(), e3, sizeof(e3))) hok++;
     }
     std::printf("height sheets: %d bound, %d decoded\n", hn, hok);
+    int mn = 0, mok = 0;
+    for (int i = 0; i < g.material_count; i++) {
+        const char* mr = g.materials[i].coverage_res;
+        if (!mr || !*mr) continue;
+        mn++;
+        char e4[256] = {0};
+        if (bf6_layer_sheet(ctx, mr, 512, buf.data(), e4, sizeof(e4))) {
+            mok++;
+            unsigned char lo = 255, hi = 0;
+            double sum = 0.0;
+            for (size_t p = 0; p < 512u * 512u; p++) {
+                const unsigned char v = buf[p * 4];
+                lo = std::min(lo, v); hi = std::max(hi, v); sum += v;
+            }
+            const char* leaf = mr;
+            for (const char* q = mr; *q; q++) if (*q == '/') leaf = q + 1;
+            std::printf("  L%-3d coverage mean %.3f range %.3f..%.3f  %s\n",
+                        g.materials[i].layer, sum / (512.0 * 512.0 * 255.0),
+                        lo / 255.0, hi / 255.0, leaf);
+        }
+    }
+    std::printf("coverage sheets: %d bound, %d decoded\n", mn, mok);
+    if (dump_layer >= 0) {
+        for (int i = 0; i < g.material_count; i++) {
+            if (g.materials[i].layer != dump_layer) continue;
+            char e5[256] = {0};
+            if (!bf6_layer_sheet(ctx, g.materials[i].albedo_res, 512,
+                                 buf.data(), e5, sizeof(e5))) break;
+            char fn[80]; std::snprintf(fn, sizeof(fn), "layer_%d.ppm", dump_layer);
+            if (FILE* f = std::fopen(fn, "wb")) {
+                std::fprintf(f, "P6\n512 512\n255\n");
+                for (size_t p = 0; p < 512u * 512u; p++)
+                    std::fwrite(&buf[p * 4], 1, 3, f);
+                std::fclose(f);
+                std::printf("dumped %s\n", fn);
+            }
+            break;
+        }
+    }
     {
         // WHICH materials actually own the ground, and what each one costs in
         // texels per metre once resampled. A layer that tiles every hundred
@@ -95,7 +168,7 @@ int main(int argc, char** argv)
         std::vector<double> share((size_t)g.material_count, 0.0);
         long long tot = 0;
         for (long long i2 = 0; i2 < (long long)g.size * g.size; i2++) {
-            const int id = g.idx[i2 * 4 + 0];
+            const int id = g.idx[i2 * slots];
             if (id < 0 || id >= g.material_count) continue;
             share[(size_t)id] += 1.0;
             tot++;
@@ -133,7 +206,7 @@ int main(int argc, char** argv)
             const int q0 = g.size / 4, q1 = g.size - g.size / 4;
             for (int y = 0; y < g.size; y++) {
                 for (int x = 0; x < g.size; x++) {
-                    if (g.idx[((long long)y * g.size + x) * 4] != id) continue;
+                    if (g.idx[((long long)y * g.size + x) * slots] != id) continue;
                     total++;
                     if (x >= q0 && x < q1 && y >= q0 && y < q1) inner++;
                 }
@@ -159,6 +232,24 @@ int main(int argc, char** argv)
                     g.materials[i].height_blend, g.materials[i].displace_range,
                     g.materials[i].mask_ramp_exp);
     std::printf("\n");
+
+    if (have_point) {
+        const float sx = g.hi[0] - g.lo[0], sz = g.hi[1] - g.lo[1];
+        const int px = std::clamp((int)((point_x - g.lo[0]) / sx * g.size), 0, g.size - 1);
+        const int pz = std::clamp((int)((point_z - g.lo[1]) / sz * g.size), 0, g.size - 1);
+        const long long po = ((long long)pz * g.size + px) * slots;
+        std::printf("\npoint world (%.2f, %.2f) -> texel (%d, %d):\n", point_x, point_z, px, pz);
+        for (int s = 0; s < slots; s++) {
+            const int id = g.idx[po + s], w = g.weight[po + s];
+            if (w == 0 || id < 0 || id >= g.material_count) continue;
+            const bf6_ground_material& m = g.materials[id];
+            const char* a = m.albedo_res && *m.albedo_res ? m.albedo_res : "(none)";
+            const char* sl = a;
+            for (const char* q = a; *q; q++) if (*q == '/') sl = q + 1;
+            std::printf("  eval %d: slot %d raw L%d mask %.3f  %s\n",
+                        s, id, m.layer, (double)w / 255.0, sl);
+        }
+    }
 
     bf6_close(ctx);
     return 0;

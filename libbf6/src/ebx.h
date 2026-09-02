@@ -50,6 +50,7 @@ struct EbxValue {
 
     int32_t     instance = -1; // InstanceRef: the target index, -1 if unresolved
     std::string import_path;   // ImportRef: resolved through the guid index
+    std::string import_instance; // ImportRef: instance half of the EFIX import
 
     std::vector<EbxValue> items;                              // Array
     std::vector<std::pair<uint32_t, EbxValue>> fields;        // Struct, in layout order
@@ -94,6 +95,11 @@ public:
     // a placement matchable against it.
     std::string instance_guid(size_t i) const;
     TypeGuid    instance_type(size_t i) const;
+    /* The layout signature written into this partition for instance i's
+     * concrete type.  This is not the executable reflection signature.  Rime
+     * needs the distinction because its shipped records deliberately use an
+     * older schema and a wrong offset still decodes as plausible data. */
+    uint32_t    instance_signature(size_t i) const;
 
     // Decode instance i. With `want` non-empty, only those TOP-LEVEL field name
     // hashes are decoded and everything else on the instance is skipped.
@@ -143,6 +149,14 @@ public:
     bool import_ref(size_t idx, uint32_t name_hash,
                     std::string& partition_guid, std::string& path);
 
+    // Decode one PointerRef at a caller-proven absolute payload position.
+    // This is intentionally narrower than making the reflection reader guess
+    // about null-typed fields.  Rime's shipped armory config uses its older
+    // 16-byte row layout, so its category reference is only trustworthy at the
+    // raw row offset established from the partition itself.
+    bool import_ref_at(int64_t absolute_pos,
+                       std::string& partition_guid, std::string& path);
+
     // THE IMPORT TABLE, both halves.
     //
     // An EFIX Imports[] record is PartitionGuid(16) + InstanceGuid(16), and a
@@ -164,11 +178,22 @@ public:
     static void     reset_counts();
 
 private:
+    struct ExtendedDescriptor {
+        uint32_t offset = 0;
+        uint32_t count = 0;
+        uint32_t hash = 0;
+        uint16_t flags = 0;
+        uint16_t class_ref = 0xFFFF;
+    };
+
     const TypeLayout& layout(const TypeGuid& g);
     EbxValue  read_struct(const TypeGuid& g, int64_t base, int depth);
     EbxValue  read_struct_only(const TypeGuid& g, int64_t base, int depth,
                                const std::vector<uint32_t>& want);
     EbxValue  decode(int64_t pos, uint64_t type_va, int depth);
+    EbxValue  decode_boxed(int64_t pos, int depth);
+    EbxValue  decode_extended(int64_t pos, const ExtendedDescriptor& desc,
+                              int depth);
     EbxValue  pointer_ref(int64_t pos);
     EbxValue  read_array(int64_t pos, uint64_t elem_va, int depth);
     EbxValue  scalar(int64_t p, uint8_t te) const;
@@ -186,6 +211,8 @@ private:
     std::vector<uint32_t>  instance_offsets_;
     std::vector<uint64_t>  resource_refs_;
     std::vector<Import>    imports_;
+    std::map<uint32_t, ExtendedDescriptor> array_descriptors_;
+    std::map<uint32_t, ExtendedDescriptor> boxed_descriptors_;
 
     std::map<uint32_t, size_t> inst_map_;    // payload offset -> instance index
     std::vector<int32_t>       inst_type_;   // instance index -> type_guids_ slot, -1 none

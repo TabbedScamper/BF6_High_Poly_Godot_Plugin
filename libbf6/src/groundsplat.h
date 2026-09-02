@@ -21,7 +21,7 @@
  * mixing weights are baked.
  *
  * So this hands a binding two things:
- *   - a coverage raster: per texel, up to four layer indices and weights
+ *   - a coverage raster: per texel, a compact ordered layer stack
  *   - the material list those indices refer to, with each layer's sheet and
  *     the tiling it is authored at
  */
@@ -41,6 +41,10 @@ struct GroundMaterial {
     int32_t     layer = 0;             // the layer index this came from
     std::string albedo_res;            // texture resource, empty when unbound
     std::string normal_res;
+    // Authored auxiliary opacity/coverage sheet. The generated evaluator may
+    // multiply the stored terrain mask by this texture before height blending;
+    // omitting it turns sparse rock/debris breakup into an opaque paint tile.
+    std::string coverage_res;
     float       metres_per_repeat = 4.f;
     float       uv_rotation_deg = 0.f;
     float       tint[3] = {1.f, 1.f, 1.f};
@@ -72,13 +76,15 @@ struct GroundMaterial {
 
 struct GroundCoverage {
     int   size = 0;
+    int   slots = 8;
     float lo[2] = {0, 0};              // world XZ of the low corner, metres
     float hi[2] = {0, 0};
 
-    // size*size*4 each. idx[i*4+s] indexes MATERIALS (not raw layer ids), so a
+    // size*size*slots each. idx[i*slots+s] indexes MATERIALS (not raw layer ids), so a
     // consumer can bind exactly the sheets it needs; 255 means "no layer".
-    // w[i*4+s] is that slot's weight, 0..255, weight-sorted with the first
-    // zero ending the list.
+    // w[i*slots+s] is that slot's mask, 0..255, in EVALUATION order: the block-7
+    // base at full mask first when one resolves, then the retained block-1
+    // paint layers in ascending raw-layer order. The first zero ends the list.
     std::vector<uint8_t> idx;
     std::vector<uint8_t> w;
 
@@ -92,6 +98,21 @@ struct GroundCoverage {
 
     uint64_t empty_texels = 0;
 };
+
+// Window controls used by camera-relative consumers. A non-positive rect_size
+// uses the live splat root read from the mounted game. There is deliberately no
+// built-in Portal SDK overlay box: it is not a game-runtime source and it is
+// not the combat volume on every map.
+struct GroundCoverageOpts {
+    int   size = 2048;
+    int   max_slots = 8;
+    float rect_min[2] = {0.f, 0.f};
+    float rect_size = 0.f;             // <= 0: the live level splat footprint
+};
+
+bool ground_coverage(Source& src, const std::string& level,
+                     const GroundCoverageOpts& opts,
+                     GroundCoverage& out, std::string& err);
 
 // Builds the coverage and the material list for a level. `src` must already
 // have the level mounted.

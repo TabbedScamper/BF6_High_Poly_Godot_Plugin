@@ -21,7 +21,37 @@
  * a typed entry point instead of parsing this back.
  */
 
+#include <cstdlib>
+
 namespace {
+/* A 64-entry cap silently truncates the arrays that matter most: a soldier
+ * skeleton carries 291 bones per array, and a truncated dump is
+ * indistinguishable from a short one. This knob lets a caller ask for all of
+ * it; the default stays 64 so ordinary dumps stay readable. */
+size_t bf6__dump_limit_value()
+{
+    static size_t n = []() -> size_t {
+        std::string value;
+#ifdef _MSC_VER
+        char* raw = nullptr;
+        size_t count = 0;
+        if (_dupenv_s(&raw, &count, "BF6_DUMP_LIMIT") == 0 && raw)
+        {
+            value.assign(raw);
+            std::free(raw);
+        }
+#else
+        const char* raw = std::getenv("BF6_DUMP_LIMIT");
+        if (raw) value.assign(raw);
+#endif
+        if (value.empty()) return 64;
+        long v = std::strtol(value.c_str(), nullptr, 10);
+        return v > 0 ? (size_t)v : (size_t)-1;   /* 0 or negative means no cap */
+    }();
+    return n;
+}
+#define bf6__dump_limit bf6__dump_limit_value()
+
 
 void bf6__dump_val(const bf6::EbxValue& v, int depth, int max_depth,
                    std::string& out)
@@ -53,14 +83,14 @@ void bf6__dump_val(const bf6::EbxValue& v, int depth, int max_depth,
         std::snprintf(buf, sizeof(buf), "[%d]", (int)v.items.size());
         out += buf;
         if (depth >= max_depth) break;
-        for (size_t i = 0; i < v.items.size() && i < 64; i++)
+        for (size_t i = 0; i < v.items.size() && i < bf6__dump_limit; i++)
         {
             out += "\n" + pad;
             std::snprintf(buf, sizeof(buf), "%2d: ", (int)i);
             out += buf;
             bf6__dump_val(v.items[i], depth + 1, max_depth, out);
         }
-        if (v.items.size() > 64) out += "\n" + pad + "...";
+        if (v.items.size() > bf6__dump_limit) out += "\n" + pad + "...";
         break;
     case K::Struct:
         std::snprintf(buf, sizeof(buf), "{%d}", (int)v.fields.size());
@@ -90,76 +120,26 @@ void bf6__dump_val(const bf6::EbxValue& v, int depth, int max_depth,
 }  // namespace
 
 
-/* ---------------------------------------------------- field-name dictionary
+/* ------------------------------------------------------- field-name boundary
  *
  * BF6 strips type and field NAMES from its reflection and keys everything by
  * an opaque u32. It also CHANGED THE HASH FUNCTION, so the names cannot be
  * recovered by hashing candidates: djb2, fnv1, fnv1a, crc32, murmur, xxhash
  * and city all fail over every basis, prime, case and encoding.
  *
- * They are recoverable the other way round. Frostbite type GUIDs are stable
- * across titles, so BF6's baked reflection joins against older games' named
- * dumps by GUID for types and by (matched GUID, field OFFSET) for fields.
- * That is what data/fieldname_dict.json holds: 20,614 nameHash -> Name pairs,
- * with nothing hardcoded and nothing guessed.
- *
- * Loading it turns a dump full of magic numbers into one a person can read,
- * and it catches mislabelling: 0xB77123CC is IsPlayerFacing, not the
- * "cosmetic flag" it was first called from looking at which slots set it.
+ * The research corpus recovers names by joining stable Frostbite type GUIDs
+ * and field offsets against named older-title dumps. That dictionary is an
+ * evidence oracle, not data the runtime core may silently consume. Functional
+ * readers carry the proven hashes they need; generic dumps expose raw hashes.
  */
-static std::map<uint32_t, std::string> g_fieldNames;
-static bool g_fieldNamesTried = false;
-
-static void bf6__load_field_names()
-{
-    if (g_fieldNamesTried) return;
-    g_fieldNamesTried = true;
-
-    /* Beside the exe, then the previewer's data dir. Absent is not an error:
-     * the dump falls back to raw hashes, which is what it did before. */
-    const char* cands[] = {
-        "assets/fieldname_dict.json",
-        "fieldname_dict.json",
-        "C:/PortalSDK_1.4.2.0/GodotProject/User_Created/tools/bf6-weapon-previewer/data/fieldname_dict.json",
-    };
-    for (const char* c : cands)
-    {
-        FILE* f = fopen(c, "rb");
-        if (!f) continue;
-        std::string j;
-        char buf[8192];
-        size_t n;
-        while ((n = fread(buf, 1, sizeof(buf), f)) > 0) j.append(buf, n);
-        fclose(f);
-
-        /* Flat {"<decimal hash>": "Name", ...}; scanned rather than parsed to
-         * avoid dragging a JSON dependency into the core for one file. */
-        size_t i = 0;
-        while (true)
-        {
-            const size_t k0 = j.find('"', i);
-            if (k0 == std::string::npos) break;
-            const size_t k1 = j.find('"', k0 + 1);
-            if (k1 == std::string::npos) break;
-            const size_t c0 = j.find('"', k1 + 1);
-            if (c0 == std::string::npos) break;
-            const size_t c1 = j.find('"', c0 + 1);
-            if (c1 == std::string::npos) break;
-            const std::string key = j.substr(k0 + 1, k1 - k0 - 1);
-            const std::string val = j.substr(c0 + 1, c1 - c0 - 1);
-            if (!key.empty() && key.find_first_not_of("0123456789") == std::string::npos)
-                g_fieldNames[(uint32_t)strtoul(key.c_str(), nullptr, 10)] = val;
-            i = c1 + 1;
-        }
-        if (!g_fieldNames.empty()) return;
-    }
-}
-
 const char* bf6_field_name(uint32_t name_hash)
 {
-    bf6__load_field_names();
-    auto it = g_fieldNames.find(name_hash);
-    return it == g_fieldNames.end() ? nullptr : it->second.c_str();
+    (void)name_hash;
+    /* The installed reflection carries hashes, not names. The former lookup
+     * loaded a research-derived JSON file beside the executable, making core
+     * behavior depend on a staged oracle. Keep this ABI for compatibility and
+     * report the live truth. fieldnames.py remains the evidence-side join. */
+    return nullptr;
 }
 
 int64_t bf6_ebx_dump(bf6_ctx* c, const char* name, int max_depth,
@@ -189,6 +169,25 @@ int64_t bf6_ebx_dump(bf6_ctx* c, const char* name, int max_depth,
     }
 
     bf6::Ebx e(*c->types);
+    /* WITHOUT THIS EVERY CROSS-PARTITION REFERENCE PRINTS AS "<not indexed>".
+     *
+     * The dump is the tool anyone reaches for when working out how one record
+     * finds another, and an unresolved import is exactly the thing that cannot
+     * answer that. Building the index costs a scan, but it is cached on the
+     * context, and a dump that hides the references is worth less than the
+     * seconds it saves. */
+    /* THE FULL INDEX, not the armory one.
+     *
+     * The armory index is bounded to authored hardware, gameplay and UI, which
+     * is the right trade for the armory readers. It is the wrong trade here: a
+     * character partition's imports are outside that name space, so every
+     * reference in a CharacterDefinition printed "<not indexed>" - which reads
+     * as "this record has no references" rather than as "this tool cannot see
+     * them", and that is exactly the question a dump is opened to answer.
+     * The full index costs one pass over every partition's EFIX header, cached
+     * on the Source, against a dump that would otherwise hide what it was
+     * asked to show. */
+    e.set_guid_index(&c->src.partition_index());
     if (!e.parse(std::move(raw), err))
     {
         std::snprintf(out, (size_t)out_len, "parse failed: %s", err.c_str());

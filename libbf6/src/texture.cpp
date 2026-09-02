@@ -40,7 +40,7 @@ T rd(const std::vector<uint8_t>& d, size_t off)
 // 65 stays on 96: nothing measured uses it, and if a signed BC6H exists in this
 // game that is its code.
 const std::map<int, int> kFmtToDxgi = {
-    {6, 61}, {18, 28}, {29, 28}, {40, 10}, {54, 71}, {55, 72}, {56, 74},
+    {6, 61}, {18, 28}, {27, 24}, {29, 28}, {31, 56}, {40, 10}, {54, 71}, {55, 72}, {56, 74},
     {57, 75}, {58, 75}, {59, 77}, {60, 77}, {61, 78}, {62, 80}, {63, 83},
     {64, 95}, {65, 96}, {66, 98}, {67, 99},
 };
@@ -65,6 +65,22 @@ bool Texture::is_srgb(int dxgi)
 
 int Texture::level_size(int w, int h, int dxgi)
 {
+    // The RenderFormat enum and DXGI join are already recovered in
+    // formats/TEXTURES.md. These are ordinary texels, not BC blocks. Treating
+    // them as 4x4 blocks happened to give R8 the right byte count by accident
+    // (16 bytes per fake block), but under-counted RGBA8/RGBA16 and the R16
+    // crater utility needed by the terrain evaluator.
+    int bytes_per_pixel = 0;
+    switch (dxgi)
+    {
+    case 61: bytes_per_pixel = 1; break;  // R8_UNORM
+    case 56: bytes_per_pixel = 2; break;  // R16_UNORM
+    case 28: bytes_per_pixel = 4; break;  // R8G8B8A8_UNORM
+    case 24: bytes_per_pixel = 4; break;  // R10G10B10A2_UNORM
+    case 10: bytes_per_pixel = 8; break;  // R16G16B16A16_FLOAT
+    default: break;
+    }
+    if (bytes_per_pixel) return std::max(1, w) * std::max(1, h) * bytes_per_pixel;
     return std::max(1, (w + 3) / 4) * std::max(1, (h + 3) / 4) * block_bytes(dxgi);
 }
 
@@ -192,15 +208,18 @@ bool Texture::dims_for(const TextureHeader& h, const std::vector<uint8_t>& pix,
     const int cw[4] = { w, w / 2, w / 4, w * 2 };
     const int chh[4] = { ht, ht / 2, ht / 4, ht * 2 };
     for (int i = 0; i < 4; i++)
-        if (cw[i] > 0 && chh[i] > 0 && (size_t)chain_size(cw[i], chh[i], dxgi) == pix.size())
+        if (cw[i] > 0 && chh[i] > 0 &&
+            (size_t)chain_size(cw[i], chh[i], dxgi) * (size_t)slices == pix.size())
         { out.width = cw[i]; out.height = chh[i]; out.blocks = pix; return true; }
     for (int i = 0; i < 4; i++)
-        if (cw[i] > 0 && chh[i] > 0 && (size_t)level_size(cw[i], chh[i], dxgi) == pix.size())
+        if (cw[i] > 0 && chh[i] > 0 &&
+            (size_t)level_size(cw[i], chh[i], dxgi) * (size_t)slices == pix.size())
         { out.width = cw[i]; out.height = chh[i]; out.blocks = pix; return true; }
 
     int bw = 0, bh = 0;
     for (int i = 0; i < 4; i++)
-        if (cw[i] > 0 && chh[i] > 0 && (size_t)level_size(cw[i], chh[i], dxgi) <= pix.size())
+        if (cw[i] > 0 && chh[i] > 0 &&
+            (size_t)level_size(cw[i], chh[i], dxgi) * (size_t)slices <= pix.size())
             if (cw[i] * chh[i] > bw * bh) { bw = cw[i]; bh = chh[i]; }
     if (bw > 0) { out.width = bw; out.height = bh; out.blocks = pix; return true; }
 
@@ -250,6 +269,35 @@ bool Texture::decode(const std::vector<uint8_t>& res, const FetchChunk& fetch,
         err = m;
         return false;
     }
+    return true;
+}
+
+bool Texture::decode_capped(const std::vector<uint8_t>& res, const FetchChunk& fetch,
+                            TextureImage& out, int max_dim, std::string& err)
+{
+    err.clear();
+    TextureHeader h;
+    if (!read_header(res, h)) { err = "too short to be a TextureResource"; return false; }
+    if (h.dxgi == 0)
+    {
+        char m[96];
+        std::snprintf(m, sizeof(m), "texture format %d has no DXGI mapping", h.format);
+        err = m;
+        return false;
+    }
+
+    const bool streamedMip0 = (h.streamflag & 0x10) != 0 && !h.streamed.empty();
+    const bool wantsTail = max_dim > 0 && streamedMip0 && !h.embedded.empty() &&
+                           (h.width > max_dim || h.height > max_dim);
+    const std::string want = wantsTail ? h.embedded :
+        (std::strcmp(which_chunk(h), "streamed") == 0 ? h.streamed : h.embedded);
+    if (want.empty()) { err = "no chunk guid in the header"; return false; }
+    std::vector<uint8_t> pix = fetch(want);
+    if (pix.empty() && want != h.embedded) pix = fetch(h.embedded);
+    if (pix.empty()) { err = "neither chunk could be read"; return false; }
+    if (!dims_for(h, pix, max_dim, out)) { err = "could not size the texture"; return false; }
+    const size_t need = (size_t)level_size(out.width, out.height, out.dxgi) * (size_t)out.slices;
+    if (out.blocks.size() < need) { err = "chosen mip payload is short"; return false; }
     return true;
 }
 

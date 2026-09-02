@@ -102,12 +102,12 @@ struct SplatNode {
 // 47 layers and rasterises at 4096, so per-layer rasters are 47 x 16.7 M =
 // 786 MB for data that is zero almost everywhere. A texel is covered by a
 // handful of layers at most (it is a blend of ground materials, not a mixture
-// of forty-seven), so the four strongest per texel is 8 bytes/texel - 134 MB at
-// 4096 - and loses nothing a renderer can see. It is also exactly the layout
-// the shipping terrain shader's splat path already consumes.
+// of forty-seven), so the strongest few can be stored densely. Four is the
+// historical/default width; callers that reproduce a saturated map's complete
+// evaluator stack can request more through SplatCompositeOpts::max_slots.
 //
-//   idx[i*4+s]  layer index of slot s at texel i
-//   w  [i*4+s]  its weight, 0..255. A ZERO WEIGHT MEANS THE SLOT IS EMPTY, and
+//   idx[i*slots+s]  layer index of slot s at texel i
+//   w  [i*slots+s]  its weight, 0..255. A ZERO WEIGHT MEANS THE SLOT IS EMPTY, and
 //               slots fill from 0 upward, so the first zero ends the list.
 // Slots are kept sorted by descending weight, so slot 0 is the winner.
 //
@@ -118,26 +118,27 @@ struct SplatNode {
 // ---------------------------------------------------------------------------
 struct SplatCoverage {
     int      size = 0;                     // texels per side
+    int      slots = 4;                    // stored layers per texel
     float    lo[2] = {0, 0};               // world XZ the raster spans
     float    hi[2] = {0, 0};
-    std::vector<uint8_t> idx;              // size*size*4
-    std::vector<uint8_t> w;                // size*size*4
+    std::vector<uint8_t> idx;              // size*size*slots
+    std::vector<uint8_t> w;                // size*size*slots
 
     int      pages_painted = 0;            // decoded pages that landed in the raster
     uint64_t empty_texels  = 0;            // texels with no layer at all
     uint64_t layer_texels[256] = {};       // texels where the layer holds ANY slot
     int      layer_count = 0;              // layers with a nonzero count
 
-    // WHAT THE FOUR-SLOT MERGE THREW AWAY, so the simplification can be priced
+    // WHAT THE FIXED-WIDTH MERGE THREW AWAY, so the simplification can be priced
     // rather than assumed. `slot_evictions` counts (texel, layer) paints that
-    // found all four slots already held; `evicted_weight` sums the masks that
+    // found all requested slots already held; `evicted_weight` sums the masks that
     // lost, in 0..1, so dividing by the texel count gives the average mask
     // dropped per texel. The game keeps a mask per layer and walks the whole
     // work list, so anything large here is a real divergence from it.
     uint64_t slot_evictions = 0;
     double   evicted_weight = 0.0;
 
-    // COUNTED ACROSS ALL FOUR SLOTS, not just the winner. "which layer wins
+    // COUNTED ACROSS ALL STORED SLOTS, not just the winner. "which layer wins
     // here" and "which layers appear at all" are different questions and the
     // consumer wants the second: it decides which layers get a texture slice.
     // On mp_dumbo the difference was 2 slices against 12 - grass, sand and
@@ -166,6 +167,10 @@ struct SplatCompositeOpts {
     // caller supplies the seed (typically an upsample of the far raster) - there
     // is nothing this module can do with it that the caller cannot.
     bool  seeded      = false;
+    // Strongest layer masks retained per texel. Four preserves the historical
+    // ABI and memory cost. MP_Isolated saturates four on every land texel and
+    // loses 9.06 mask units/texel, so its live evaluator requests eight.
+    int   max_slots   = 4;
     // 0 = hardware concurrency. 1 = serial. Bands are horizontal strips and each
     // band owns its bytes outright, so nothing is shared and the answer is
     // identical to the serial one: every band walks the same record list in the

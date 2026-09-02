@@ -140,6 +140,14 @@ struct TerrainLayerMaterial {
 
     TerrainMaterialSet set_a, set_b, set_c;
 
+    // Lossless BindingSet source values.  The friendly fields below collapse
+    // graph-template aliases into roles, which is useful to a conventional
+    // renderer but insufficient for replaying the shipped evaluator: its row
+    // is keyed by the original name32.  Keep both views of the same live depot
+    // record so the exact path never has to reverse the normalization.
+    std::map<uint32_t, std::string> raw_textures;
+    std::map<uint32_t, std::vector<uint8_t>> raw_constants;
+
     // Everything else the record binds, by name32. Includes the auxiliary maps
     // above and any slot this table has not named - AN UNKNOWN SLOT IS NOT AN
     // ABSENT TEXTURE, and dropping it is how a layer that binds real sheets

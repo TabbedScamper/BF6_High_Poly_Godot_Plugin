@@ -23,6 +23,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <cstring>
 #include <map>
 #include <string>
 #include <vector>
@@ -46,6 +47,10 @@ int main(int argc, char** argv)
     // so three thousand meshes can be entirely characters while the thing being
     // rendered is level props.
     const std::string filter = argc > 4 ? argv[4] : std::string();
+    // Optional exact placement bundle for a local control point. A material
+    // key is bundle-scoped, so a nearest-instance diagnosis must not silently
+    // substitute another placement of the same mesh from a sibling bundle.
+    const std::string forced_bundle = argc > 6 ? argv[6] : std::string();
 
     Source src;
     std::string err;
@@ -113,8 +118,10 @@ int main(int argc, char** argv)
         // THE TWO RULES, side by side on the same mesh.
         const std::string res_rule = src.depot_for_res(mname);
         std::string place_rule;
+        if (!forced_bundle.empty())
+            place_rule = src.depot_for_bundle(forced_bundle);
         auto pit = placing.find(mname);
-        if (pit != placing.end())
+        if (place_rule.empty() && pit != placing.end())
         {
             placing_known++;
             place_rule = src.depot_for_bundle(pit->second);
@@ -180,6 +187,31 @@ int main(int argc, char** argv)
             MaterialBinding mb = dep.textures_for(s.state_key, db);
             if (!mb.valid) continue;
             joined++;
+
+            if (!filter.empty())
+            {
+                std::printf("\nDIAG mesh=%s\n  material=%s state=0x%016llx\n  bundle=%s\n",
+                            mname.c_str(), s.material.c_str(),
+                            (unsigned long long)s.state_key,
+                            forced_bundle.empty() ? place_rule.c_str() : forced_bundle.c_str());
+                for (const auto& kv : mb.textures)
+                {
+                    auto named = gi.find(kv.second);
+                    std::printf("  TEX %08x -> %s\n", kv.first,
+                                named == gi.end() ? kv.second.c_str() : named->second.c_str());
+                }
+                for (const auto& kv : mb.constants)
+                {
+                    std::printf("  VAL %08x bytes=%zu", kv.first, kv.second.size());
+                    if (kv.second.size() >= 4)
+                    {
+                        float f = 0.f;
+                        std::memcpy(&f, kv.second.data(), 4);
+                        std::printf(" f0=%.9g", f);
+                    }
+                    std::printf("\n");
+                }
+            }
 
             for (const auto& kv : mb.textures) slot_hits[MaterialBinding::display_name(kv.first)]++;
 

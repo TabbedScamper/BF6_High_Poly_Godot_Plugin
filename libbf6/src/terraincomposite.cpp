@@ -13,8 +13,6 @@
 #include "splat.h"
 #include "terrainlayers.h"
 #include "terrainstatic.h"
-#include "terrainstaticmap.h"
-#include "playablebounds.h"
 #include "texture.h"
 
 namespace bf6 {
@@ -783,18 +781,10 @@ bool TerrainComposite::bake(Source& src, const std::string& level,
         hi[0] = lo[0] + opt.rect_size; hi[1] = lo[1] + opt.rect_size;
     }
     else {
-        // No explicit window: prefer the level's PLAYABLE BOX over the whole
-        // footprint, for the reason in playablebounds.h - most of a level's
-        // terrain is backdrop ring, and baking it wastes the raster on
-        // scenery no one can stand on.
-        float bcx = 0.f, bcz = 0.f, bsx = 0.f, bsz = 0.f;
-        if (playable_box(level, bcx, bcz, bsx, bsz) && bsx > 1.f && bsz > 1.f) {
-            const float side = bsx > bsz ? bsx : bsz;
-            lo[0] = bcx - side * 0.5f; lo[1] = bcz - side * 0.5f;
-            hi[0] = bcx + side * 0.5f; hi[1] = bcz + side * 0.5f;
-        } else {
-            lo[0] = rlo[0]; lo[1] = rlo[1]; hi[0] = rhi[0]; hi[1] = rhi[1];
-        }
+        // No explicit window means the footprint authored in the mounted
+        // game's splat root. The former Portal overlay-box shortcut was an SDK
+        // intermediate and can disagree with the actual gameplay volume.
+        lo[0] = rlo[0]; lo[1] = rlo[1]; hi[0] = rhi[0]; hi[1] = rhi[1];
     }
     const int size = opt.size > 0 ? opt.size : 1024;
     const int ssize = opt.splat_size > 0 ? opt.splat_size : size;
@@ -808,6 +798,7 @@ bool TerrainComposite::bake(Source& src, const std::string& level,
     SplatCompositeOpts sopt;
     sopt.threads = opt.threads;
     sopt.smooth  = true;
+    sopt.max_slots = 8;
     if (opt.rect_size > 0.f)
     { sopt.rect_min[0] = lo[0]; sopt.rect_min[1] = lo[1]; sopt.rect_size = opt.rect_size; }
     if (!sp.composite(dir, fetch, ssize, cov, err, sopt))
@@ -874,20 +865,12 @@ bool TerrainComposite::bake(Source& src, const std::string& level,
     // layer that is off-window would slide every later layer onto its
     // neighbour's sheet.
     TerrainStaticTable stat;
-    std::map<int, int> stat_assign;      // layer -> group index
-    // A sublevel runs its parent's evaluator; see terrain_table_level.
-    const std::string table_level = terrain_table_level(level);
+    bool have_static = false;
     if (opt.static_fallback && have_palette)
     {
         std::string serr;
         if (stat.load(src, level, serr))
-        {
-            std::vector<int> static_layers;
-            for (size_t i = 0; i < tl.layers().size(); i++)
-                if (!tl.layers()[i].empty && tl.layers()[i].material.base_color().empty())
-                    static_layers.push_back((int)i);
-            stat_assign = stat.assign(static_layers);
-        }
+            have_static = stat.join_exact();
         else out.failures.push_back("static texture table: " + serr);
     }
 
@@ -916,26 +899,13 @@ bool TerrainComposite::bake(Source& src, const std::string& level,
         // SHEETS move.
         std::string base_guid = M.base_color();
         std::string nrmh_guid = M.normal_height();
-        // THE BYTECODE TABLE FIRST, the ordinal walk only as a fallback.
-        //
-        // Which layer consumes which texture group is decided by the
-        // compositor's compiled bytecode and by nothing in the shipped data,
-        // so the ordinal walk below - the k-th static layer takes the k-th
-        // group - is right on some levels and wrong on others: measured by
-        // ground area it paints the wrong sheet over 98.8% of mp_abbasid,
-        // 45.6% of mp_isolated and 16.8% of mp_badlands while reporting every
-        // layer resolved. terrainstaticmap.h carries the disassembly's own
-        // answer, and the per-pixel path in groundsplat.cpp has been using it;
-        // this path was still on the walk, so the two disagreed about the
-        // material on the same ground.
-        //
-        // A descriptor of -1 is a real answer meaning the case binds no colour
-        // there, which is a MODIFIER layer, and it must not fall through to the
-        // walk and pick up a neighbour's sheet.
+        // The mounted evaluator bytecode is the join. A descriptor of -1 is a
+        // real answer meaning the case binds no colour there; it must not pick
+        // up a neighbouring sheet.
         if (base_guid.empty() && opt.static_fallback)
         {
             int tcv = -1, tnh = -1, tthird = -1;
-            if (static_layer_descriptors(table_level, li, tcv, tnh, tthird))
+            if (have_static && stat.layer_descriptors(li, tcv, tnh, tthird))
             {
                 auto by_descriptor = [&stat](int d) -> const TerrainStaticTexture*
                 {
@@ -961,29 +931,6 @@ bool TerrainComposite::bake(Source& src, const std::string& level,
                     out.layers.push_back(rep);
                     continue;
                 }
-            }
-        }
-        if (base_guid.empty())
-        {
-            auto sit = stat_assign.find(li);
-            if (sit != stat_assign.end())
-            {
-                const TerrainStaticGroup& g = stat.groups()[(size_t)sit->second];
-                // GUARD base_color. It is -1 on a MODIFIER group - one whose
-                // evaluator body multiplies the accumulated colour and supplies
-                // none of its own - and `(size_t)-1` here indexes the vector at
-                // SIZE_MAX. That is undefined behaviour inside a library called
-                // across an extern "C" boundary, so it does not fault cleanly:
-                // it surfaces as a fatal 0xe06d7363 in the host with a stack
-                // that stops at the dll.
-                //
-                // Modifier groups only started arriving here when assign() was
-                // corrected to stop dropping them, which turned a silent
-                // omission into a crash on 11 of 30 levels.
-                if (g.base_color >= 0)
-                    base_guid = g.tex[(size_t)g.base_color].file_guid;
-                if (g.normal_height >= 0)
-                    nrmh_guid = g.tex[(size_t)g.normal_height].file_guid;
             }
         }
         rep.has_sheet = !base_guid.empty();
@@ -1106,7 +1053,7 @@ bool TerrainComposite::bake(Source& src, const std::string& level,
         const int y0 = (int)((int64_t)size * band / nthreads);
         const int y1 = (int)((int64_t)size * (band + 1) / nthreads);
         Band& acc = bands[(size_t)band];
-        int order[8];
+        int order[16];
         float drawn_cov[8];       // the coverage each drawn layer resolved to
         float drawn_mask[8];      // and the raw mask it came from
 
@@ -1121,7 +1068,7 @@ bool TerrainComposite::bake(Source& src, const std::string& level,
                 // the splat's top four in ASCENDING layer order, which is the
                 // order the kernel's work list is walked in.
                 int n = 0;
-                float mask[8];
+                float mask[16];
                 int base_layer = -1;
                 if (have_base)
                 {
@@ -1140,9 +1087,9 @@ bool TerrainComposite::bake(Source& src, const std::string& level,
                     (int)((wz - cov.lo[1]) / (cov.hi[1] - cov.lo[1]) * (float)cov.size));
                 if (sxi >= 0 && szi >= 0)
                 {
-                    const size_t o = ((size_t)szi * cov.size + sxi) * 4;
-                    int tmp[4]; float tw[4]; int tn = 0;
-                    for (int s = 0; s < 4; s++)
+                    const size_t o = ((size_t)szi * cov.size + sxi) * (size_t)cov.slots;
+                    int tmp[16]; float tw[16]; int tn = 0;
+                    for (int s = 0; s < cov.slots; s++)
                     {
                         if (cov.w[o + s] == 0) break;
                         tmp[tn] = cov.idx[o + s];
@@ -1153,7 +1100,7 @@ bool TerrainComposite::bake(Source& src, const std::string& level,
                     for (int i = 1; i < tn; i++)
                         for (int j = i; j > 0 && tmp[j] < tmp[j - 1]; j--)
                         { std::swap(tmp[j], tmp[j - 1]); std::swap(tw[j], tw[j - 1]); }
-                    for (int i = 0; i < tn && n < 8; i++)
+                    for (int i = 0; i < tn && n < 16; i++)
                     { order[n] = tmp[i]; mask[n] = tw[i]; n++; }
                 }
 

@@ -28,6 +28,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdio>
 #include <map>
 #include <string>
@@ -74,6 +75,12 @@ int main(int argc, char** argv)
     std::printf("framing %s, records %zu of %u declared, %llu triangle(s), %zu slot(s)\n",
                 dc.framing(), dc.records().size(), dc.declared(),
                 (unsigned long long)dc.triangles(), dc.slots().size());
+    std::map<uint32_t, size_t> asset_slot_uses;
+    for (const DecalRecord& r : dc.records()) asset_slot_uses[r.asset_slot]++;
+    std::printf("  asset slots used:");
+    for (const auto& kv : asset_slot_uses)
+        std::printf(" %u(%zu)", kv.first, kv.second);
+    std::printf("\n");
     std::printf("  chain %s, vb at 0x%zx (%s), span %zu, end landmark %s",
                 dc.chain_ok() ? "HOLDS" : "BROKEN", dc.vb_start(),
                 dc.vb_from_anchor() ? "from the landmark" : "from the page rule",
@@ -191,6 +198,85 @@ int main(int argc, char** argv)
                     i, r.first_index, r.tri_count, r.tiling0, r.tiling1,
                     r.aabb_min[0], r.aabb_max[0], r.aabb_min[1], r.aabb_max[1],
                     r.aabb_min[2], r.aabb_max[2], r.asset_slot, r.props.size());
+    }
+
+    // Point/radius diagnosis: identify what the user is actually looking at
+    // from the compiled runtime records, rather than guessing from a screenshot.
+    if (argc >= 6)
+    {
+        const float qx = (float)std::atof(argv[3]);
+        const float qz = (float)std::atof(argv[4]);
+        const float qr = (float)std::atof(argv[5]);
+        struct Hit { float d; size_t i; };
+        std::vector<Hit> hits;
+        for (size_t i = 0; i < dc.records().size(); i++)
+        {
+            const DecalRecord& r = dc.records()[i];
+            const float dx = qx < r.aabb_min[0] ? r.aabb_min[0] - qx
+                           : qx > r.aabb_max[0] ? qx - r.aabb_max[0] : 0.f;
+            const float dz = qz < r.aabb_min[2] ? r.aabb_min[2] - qz
+                           : qz > r.aabb_max[2] ? qz - r.aabb_max[2] : 0.f;
+            const float d = std::sqrt(dx * dx + dz * dz);
+            if (d <= qr) hits.push_back({ d, i });
+        }
+        std::sort(hits.begin(), hits.end(), [](const Hit& a, const Hit& b)
+                  { return a.d < b.d; });
+        std::printf("\n%zu decal record(s) whose AABB is within %.1f m of (%.1f, %.1f):\n",
+                    hits.size(), qr, qx, qz);
+        const uint64_t slots[] = { 0x399AC0336ACFE03Cull, 0x3810287D4CE70B49ull,
+                                   0x567A9BC35CCBB1B2ull };
+        const char* labels[] = { "cv", "op", "nhs" };
+        for (size_t hi = 0; hi < hits.size(); hi++)
+        {
+            const DecalRecord& r = dc.records()[hits[hi].i];
+            std::vector<DecalVertex> vs = dc.vertices(r);
+            float u0 = 1e30f, u1 = -1e30f, v0 = 1e30f, v1 = -1e30f;
+            float a0 = 1e30f, a1 = -1e30f;
+            for (const DecalVertex& v : vs)
+            {
+                u0 = std::min(u0, v.u); u1 = std::max(u1, v.u);
+                v0 = std::min(v0, v.v); v1 = std::max(v1, v.v);
+                a0 = std::min(a0, v.a); a1 = std::max(a1, v.a);
+            }
+            std::string cls;
+            if (r.asset_slot < dc.slots().size())
+            {
+                const std::string& guid = dc.slots()[r.asset_slot];
+                const auto it = src.partition_index().find(guid);
+                cls = it == src.partition_index().end() ? guid : it->second;
+            }
+            std::printf("  #%zu d %.1f tris %u %s aabb x %.1f..%.1f y %.1f..%.1f z %.1f..%.1f class %s",
+                        hits[hi].i, hits[hi].d, r.tri_count,
+                        Decals::is_planar(vs) ? "PLANAR" : "uv",
+                        r.aabb_min[0], r.aabb_max[0], r.aabb_min[1], r.aabb_max[1],
+                        r.aabb_min[2], r.aabb_max[2], cls.c_str());
+            for (int si = 0; si < 3; si++)
+                for (const DecalProp& p : r.props)
+                    if (p.kind == DecalProp::Kind::Texture && p.name == slots[si])
+                    {
+                        const auto it = src.partition_index().find(p.guid);
+                        std::printf(" %s=%s", labels[si],
+                                    it == src.partition_index().end() ? p.guid.c_str() : it->second.c_str());
+                    }
+            std::printf(" uv %.2f..%.2f/%.2f..%.2f alpha %.3f..%.3f",
+                        u0, u1, v0, v1, a0, a1);
+            for (const DecalProp& p : r.props)
+            {
+                if (p.kind == DecalProp::Kind::Vec3 && p.values.size() >= 3)
+                    std::printf(" vec3[%016llX]=(%.4f,%.4f,%.4f)",
+                        (unsigned long long)p.name, p.values[0], p.values[1], p.values[2]);
+                else if (p.kind == DecalProp::Kind::Float && !p.values.empty())
+                    std::printf(" float[%016llX]=%.4f",
+                        (unsigned long long)p.name, p.values[0]);
+                else if (p.kind == DecalProp::Kind::Vec2 && p.values.size() >= 2)
+                    std::printf(" vec2[%016llX]=(%.4f,%.4f)",
+                        (unsigned long long)p.name, p.values[0], p.values[1]);
+                else if (p.kind == DecalProp::Kind::Int && !p.ints.empty())
+                    std::printf(" int[%016llX]=%d",
+                        (unsigned long long)p.name, p.ints[0]);
+            }
+            std::printf("\n");
+        }
     }
     return (dc.chain_ok() && bad_count == 0) ? 0 : 1;
 }

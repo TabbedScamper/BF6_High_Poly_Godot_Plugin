@@ -72,7 +72,8 @@ bool Ebx::parse(std::vector<uint8_t> bytes, std::string& err)
     if (d.size() < 12 || std::memcmp(d.data(), "RIFF", 4) != 0)
     { err = "not a RIFF file"; return false; }
 
-    int64_t ebxd_off = -1, ebxd_size = 0, efix_off = -1;
+    int64_t ebxd_off = -1, ebxd_size = 0, efix_off = -1, ebxx_off = -1;
+    int64_t ebxx_size = 0;
     for (int64_t o = 12; o + 8 <= (int64_t)d.size();)
     {
         char cid[5] = {0};
@@ -80,6 +81,7 @@ bool Ebx::parse(std::vector<uint8_t> bytes, std::string& err)
         const uint32_t sz = rd<uint32_t>(d, o + 4);
         if (std::strcmp(cid, "EBXD") == 0) { ebxd_off = o + 8; ebxd_size = sz; }
         else if (std::strcmp(cid, "EFIX") == 0) { efix_off = o + 8; }
+        else if (std::strcmp(cid, "EBXX") == 0) { ebxx_off = o + 8; ebxx_size = sz; }
         o += 8 + (int64_t)sz;
         if (o % 2 == 1) o++;
     }
@@ -159,7 +161,62 @@ bool Ebx::parse(std::vector<uint8_t> bytes, std::string& err)
         imports_.push_back(std::move(im));
         s += 32;
     }
-    // The remaining EFIX tables are not needed; EBXD is what matters.
+    // Import offsets and TypeRef offsets are fixup worklists.  Their contents
+    // are not needed for value decoding, but the three region offsets after
+    // them must be consumed in order; stopping after Imports used to leave the
+    // C++ reader unable to decode any BoxedValueRef.
+    if (!read_u32(n) || !need((int64_t)n * 4))
+    { err = "truncated import-offset table"; return false; }
+    s += (int64_t)n * 4;
+    if (!read_u32(n) || !need((int64_t)n * 4))
+    { err = "truncated typeinfo-offset table"; return false; }
+    s += (int64_t)n * 4;
+    uint32_t array_region = 0, boxed_region = 0, string_region = 0;
+    if (!read_u32(array_region) || !read_u32(boxed_region) ||
+        !read_u32(string_region))
+    { err = "truncated EFIX region offsets"; return false; }
+    (void)array_region;
+    (void)boxed_region;
+    (void)string_region;
+
+    // EBXX is the partition's authoritative type/count table for arrays and
+    // boxed values.  Each 16-byte row is keyed by a payload-relative offset.
+    // Treat malformed/duplicate rows as a partition error: binding the wrong
+    // default is worse than leaving a UI property unresolved.
+    array_descriptors_.clear();
+    boxed_descriptors_.clear();
+    if (ebxx_off >= 0)
+    {
+        if (ebxx_size < 8 || !fits(d, ebxx_off, ebxx_size))
+        { err = "truncated EBXX"; return false; }
+        const uint32_t na = rd<uint32_t>(d, ebxx_off);
+        const uint32_t nb = rd<uint32_t>(d, ebxx_off + 4);
+        const uint64_t rows = (uint64_t)na + (uint64_t)nb;
+        if (rows > ((uint64_t)ebxx_size - 8u) / 16u)
+        { err = "invalid EBXX descriptor counts"; return false; }
+        auto read_desc = [&](int64_t p) {
+            ExtendedDescriptor x;
+            x.offset = rd<uint32_t>(d, p);
+            x.count = rd<uint32_t>(d, p + 4);
+            x.hash = rd<uint32_t>(d, p + 8);
+            x.flags = rd<uint16_t>(d, p + 12);
+            x.class_ref = rd<uint16_t>(d, p + 14);
+            return x;
+        };
+        int64_t p = ebxx_off + 8;
+        for (uint32_t i = 0; i < na; ++i, p += 16)
+        {
+            const ExtendedDescriptor x = read_desc(p);
+            if (!array_descriptors_.emplace(x.offset, x).second)
+            { err = "duplicate EBXX array descriptor"; return false; }
+        }
+        for (uint32_t i = 0; i < nb; ++i, p += 16)
+        {
+            const ExtendedDescriptor x = read_desc(p);
+            if (!boxed_descriptors_.emplace(x.offset, x).second)
+            { err = "duplicate EBXX boxed descriptor"; return false; }
+        }
+    }
 
     resource_refs_.clear();
     for (uint32_t off : res_off)
@@ -196,6 +253,13 @@ TypeGuid Ebx::instance_type(size_t i) const
     if (i < inst_type_.size() && inst_type_[i] >= 0)
         g = type_guids_[(size_t)inst_type_[i]];
     return g;
+}
+
+uint32_t Ebx::instance_signature(size_t i) const
+{
+    if (i >= inst_type_.size() || inst_type_[i] < 0) return 0;
+    const size_t ti = (size_t)inst_type_[i];
+    return ti < type_signatures_.size() ? type_signatures_[ti] : 0;
 }
 
 const TypeLayout& Ebx::layout(const TypeGuid& g)
@@ -289,6 +353,8 @@ EbxValue Ebx::decode(int64_t pos, uint64_t type_va, int depth)
         v.kind = EbxValue::Kind::Guid;
         if (fits(data_, pos, 16)) std::memcpy(v.guid.data(), data_.data() + pos, 16);
         return v;
+    case 0x1A:
+        return decode_boxed(pos, depth);
     default:
         break;
     }
@@ -311,6 +377,114 @@ EbxValue Ebx::decode(int64_t pos, uint64_t type_va, int depth)
     v.te   = rt.te;
     v.u    = fits(data_, pos, 4) ? rd<uint32_t>(data_, pos) : 0;
     return v;
+}
+
+EbxValue Ebx::decode_boxed(int64_t pos, int depth)
+{
+    EbxValue unresolved;
+    unresolved.kind = EbxValue::Kind::Unknown;
+    unresolved.te = 0x1A;
+    if (!fits(data_, pos, 16)) return unresolved;
+
+    const uint32_t type_word = rd<uint32_t>(data_, pos);
+    unresolved.u = type_word;
+    if (type_word == 0) return EbxValue{};
+
+    const int64_t relative = rd<int64_t>(data_, pos + 8);
+    const int64_t value_abs = pos + 8 + relative;
+    const int64_t value_rel = value_abs - payload_;
+    if (value_rel < 0 || value_rel > 0xFFFFFFFFll) return unresolved;
+    const auto it = boxed_descriptors_.find((uint32_t)value_rel);
+    if (it == boxed_descriptors_.end()) return unresolved;
+    return decode_extended(value_abs, it->second, depth);
+}
+
+EbxValue Ebx::decode_extended(int64_t pos, const ExtendedDescriptor& desc,
+                             int depth)
+{
+    EbxValue unresolved;
+    unresolved.kind = EbxValue::Kind::Unknown;
+    unresolved.te = (uint8_t)((desc.flags >> 5) & 0x1F);
+    const uint8_t category = (uint8_t)((desc.flags >> 1) & 0x0F);
+    const uint8_t te = unresolved.te;
+
+    if (category == 4) // boxed array
+    {
+        EbxValue out;
+        out.kind = EbxValue::Kind::Array;
+        if (!fits(data_, pos, 4)) return unresolved;
+        const int32_t relative = rd<int32_t>(data_, pos);
+        const int64_t count_abs = pos + relative - 4;
+        if (!fits(data_, count_abs, 4)) return unresolved;
+        const uint32_t count = rd<uint32_t>(data_, count_abs);
+        if (count > kEbxMaxArray) return unresolved;
+        const int64_t first = count_abs + 4;
+        n_arr_elem += count;
+
+        if ((te == 0x02 || te == 0x03 || te == 0x01) &&
+            desc.class_ref != 0xFFFF && desc.class_ref < type_guids_.size())
+        {
+            const TypeGuid& g = type_guids_[desc.class_ref];
+            if (te == 0x02)
+            {
+                const TypeLayout& lay = layout(g);
+                if (!lay.valid) return unresolved;
+                const int64_t stride = align_up(lay.size,
+                    std::max<int64_t>(1, lay.align));
+                for (uint32_t i = 0; i < count; ++i)
+                    out.items.push_back(read_struct(g, first + i * stride,
+                                                    depth + 1));
+            }
+            else
+                for (uint32_t i = 0; i < count; ++i)
+                    out.items.push_back(pointer_ref(first + (int64_t)i * 8));
+            return out;
+        }
+        if (te == 0x07)
+        {
+            for (uint32_t i = 0; i < count; ++i)
+            {
+                EbxValue v; v.kind = EbxValue::Kind::Str;
+                v.s = cstring(first + (int64_t)i * 8);
+                out.items.push_back(std::move(v));
+            }
+            return out;
+        }
+        const int64_t stride = ebx_elem_size(te);
+        for (uint32_t i = 0; i < count; ++i)
+            out.items.push_back(scalar(first + i * stride, te));
+        return out;
+    }
+
+    if ((te == 0x02 || te == 0x03 || te == 0x01) &&
+        desc.class_ref != 0xFFFF && desc.class_ref < type_guids_.size())
+    {
+        if (te == 0x02) return read_struct(type_guids_[desc.class_ref], pos,
+                                           depth + 1);
+        return pointer_ref(pos);
+    }
+    if (te == 0x07)
+    {
+        EbxValue v; v.kind = EbxValue::Kind::Str; v.s = cstring(pos); return v;
+    }
+    if (te == 0x06)
+    {
+        EbxValue v; v.kind = EbxValue::Kind::Str;
+        v.s = bounded_str(data_, pos, pos + 32); return v;
+    }
+    if (te == 0x15)
+    {
+        EbxValue v; v.kind = EbxValue::Kind::Guid;
+        if (fits(data_, pos, 16))
+            std::memcpy(v.guid.data(), data_.data() + pos, 16);
+        return v;
+    }
+    if (te == 0x17)
+    {
+        EbxValue v; v.kind = EbxValue::Kind::ResRef;
+        v.u = fits(data_, pos, 8) ? rd<uint64_t>(data_, pos) : 0; return v;
+    }
+    return scalar(pos, te);
 }
 
 EbxValue Ebx::pointer_ref(int64_t pos)
@@ -342,6 +516,7 @@ EbxValue Ebx::pointer_ref(int64_t pos)
         if (i < 0 || (size_t)i >= imports_.size()) return v;
         v.kind = EbxValue::Kind::ImportRef;
         v.s    = imports_[(size_t)i].partition;
+        v.import_instance = imports_[(size_t)i].instance;
         v.import_path = "<not indexed>";
         if (guid_index_)
         {
@@ -390,6 +565,18 @@ bool Ebx::import_ref(size_t idx, uint32_t name_hash,
         return true;
     }
     return false;
+}
+
+bool Ebx::import_ref_at(int64_t absolute_pos,
+                        std::string& partition_guid, std::string& path)
+{
+    partition_guid.clear();
+    path.clear();
+    const EbxValue ref = pointer_ref(absolute_pos);
+    if (ref.kind != EbxValue::Kind::ImportRef) return false;
+    partition_guid = ref.s;
+    path = ref.import_path;
+    return true;
 }
 
 int32_t Ebx::int_pointer(size_t idx, uint32_t name_hash)

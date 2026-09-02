@@ -44,6 +44,42 @@ int bf6_mount_all(bf6_ctx* c, int include_levels, char* err, int err_len)
     return 1;
 }
 
+int bf6_mount_frontend(bf6_ctx* c, char* err, int err_len)
+{
+    if (!c) return 0;
+    std::string e;
+    if (!c->src.mount_frontend(e)) {
+        if (err && err_len > 0) std::snprintf(err, (size_t)err_len, "%s", e.c_str());
+        return 0;
+    }
+    return 1;
+}
+
+int bf6_mount_level_archives(bf6_ctx* c, const char* level,
+                             char* err, int err_len)
+{
+    if (!c || !level || !*level) return 0;
+    std::string e;
+    if (!c->src.mount_level(level, false, e)) {
+        if (err && err_len > 0) std::snprintf(err, (size_t)err_len, "%s", e.c_str());
+        return 0;
+    }
+    return 1;
+}
+
+int bf6_mount_ebx_owner(bf6_ctx* c, const char* toc_path,
+                        const char* bundle_name, const char* ebx_name,
+                        char* err, int err_len)
+{
+    if (!c || !toc_path || !bundle_name || !ebx_name) return 0;
+    std::string e;
+    if (!c->src.mount_ebx_owner(toc_path, bundle_name, ebx_name, e)) {
+        if (err && err_len > 0) std::snprintf(err, (size_t)err_len, "%s", e.c_str());
+        return 0;
+    }
+    return 1;
+}
+
 /* ------------------------------------------------------------- name tables */
 
 static int bf6__list_map_ebx(bf6_ctx* c, const char* search,
@@ -118,6 +154,21 @@ int bf6_partition_index(bf6_ctx* c, bf6_partition* out, int out_max)
      * of EVERY mounted partition, which is the whole cost, and a caller that
      * sizes then fills would otherwise pay it twice. */
     const std::map<std::string, std::string>& idx = c->src.partition_index();
+    int written = 0;
+    for (const auto& kv : idx) {
+        if (out && written < out_max) {
+            out[written].guid = kv.first.c_str();
+            out[written].name = kv.second.c_str();
+            written++;
+        }
+    }
+    return (int)idx.size();
+}
+
+int bf6_armory_partition_index(bf6_ctx* c, bf6_partition* out, int out_max)
+{
+    if (!c) return 0;
+    const std::map<std::string, std::string>& idx = c->src.armory_partition_index();
     int written = 0;
     for (const auto& kv : idx) {
         if (out && written < out_max) {
@@ -272,7 +323,7 @@ int bf6_typeinfo_readable(const char* exe_path, double* bits_out)
     /* Read only the header plus enough of the file to cover the section we
      * want. The executable is ~190 MB and this runs on a first-run check, so
      * it seeks rather than slurps. */
-    FILE* f = std::fopen(exe_path, "rb");
+    FILE* f = bf6::fopen_binary_read(exe_path);
     if (!f) return -1;
 
     unsigned char hdr[4096];
@@ -331,4 +382,26 @@ int bf6_typeinfo_readable(const char* exe_path, double* bits_out)
      * typeinfo section is 3.77 bits/byte and a DRM-wrapped one is 8.00, so the
      * gap this sits in is not a close call. */
     return bits > 7.0 ? 0 : 1;
+}
+
+/* Resolve a ResourceRef id to the RES it names.
+ *
+ * An EBX ResourceRef is a 64-bit rid, NOT a name, and a reader that only looks
+ * assets up by name simply stops at one - which is how a reference can look
+ * like a dead end when the resource is present and streamable. The res index
+ * already carries the rid on every entry, so this is a lookup rather than a
+ * search; it is exposed because "the reference does not resolve" and "this
+ * reader cannot resolve references" are very different conclusions and were
+ * being confused. */
+int bf6_res_by_rid(bf6_ctx* c, uint64_t rid, char* out, int out_len)
+{
+    if (!c || !out || out_len <= 0) return 0;
+    out[0] = 0;
+    if (!rid) return 0;
+    for (const auto& kv : c->src.res())
+        if (kv.second.rid == rid) {
+            std::snprintf(out, (size_t)out_len, "%s", kv.first.c_str());
+            return 1;
+        }
+    return 0;
 }

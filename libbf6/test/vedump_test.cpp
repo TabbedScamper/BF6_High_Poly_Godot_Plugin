@@ -13,19 +13,29 @@
  *   VE   <level> <ve partition>                     a candidate preset
  *   INST <ve> <idx> <type_guid> <nfields>
  *   F    <type_guid> <hash> <kind> <value...>
+ *   R    <type_guid> <hash> <import_idx> <guid> <path>
  *
  *   vedump_test <game_dir> <exe> <level> [level...]
+ *
+ * Field names are joined afterwards by the research-side `fieldnames.py`.
+ * The runtime library deliberately carries no exported name dictionary.
  */
 #include <cstdio>
 #include <cstring>
 #include <string>
 #include <vector>
 
+#include "bf6_core.h"
 #include "ebx.h"
 #include "source.h"
 #include "types.h"
 
 using namespace bf6;
+
+static uint64_t g_total_fields = 0;
+static uint64_t g_ref_candidates = 0;
+static uint64_t g_ref_resolved = 0;
+static uint64_t g_ref_control_hits = 0;
 
 static void print_val(const EbxValue& v)
 {
@@ -72,6 +82,7 @@ static void dump_partition(Source& src, TypeDb& types, const std::string& name)
         std::printf("INST %s %zu %s %zu\n", name.c_str(), i, tg.c_str(), d.fields.size());
         const TypeLayout& lay = types.layout_full(e.instance_type(i));
         for (const auto& kv : d.fields) {
+            ++g_total_fields;
             std::printf("F %s %08x ", tg.c_str(), kv.first);
             print_val(kv.second);
             // A Null field gets its RAW slot printed beside it. That is how the
@@ -80,20 +91,41 @@ static void dump_partition(Source& src, TypeDb& types, const std::string& name)
             // absent, while the eight bytes at their offset hold an ordinary
             // odd import pointer (raw=f -> import 7). Without this the preset
             // looks like it binds no sky at all.
+            uint64_t raw64 = 0;
+            bool has_raw_import_candidate = false;
             if (kv.second.kind == EbxValue::Kind::Null) {
                 for (const FieldInfo& fi : lay.fields) {
                     if (fi.name_hash != kv.first) continue;
                     const int64_t p = e.payload() + (int64_t)e.instance_offset(i) + (int64_t)fi.offset;
-                    uint64_t raw64 = 0;
                     if (p >= 0 && p + 8 <= (int64_t)e.raw().size())
                         std::memcpy(&raw64, e.raw().data() + p, 8);
                     std::printf(" [off=%u te=%u va=%llx raw=%llx]", fi.offset,
                                 (unsigned)fi.ftype_enum, (unsigned long long)fi.type_va,
                                 (unsigned long long)raw64);
+                    has_raw_import_candidate = (raw64 & 1ull) != 0;
                     break;
                 }
             }
             std::printf("\n");
+            if (has_raw_import_candidate) {
+                ++g_ref_candidates;
+                std::string partition_guid, path;
+                if (e.import_ref(i, kv.first, partition_guid, path)) {
+                    ++g_ref_resolved;
+                    std::printf("R %s %08x %llu %s %s\n", tg.c_str(), kv.first,
+                                (unsigned long long)(raw64 >> 1),
+                                partition_guid.c_str(), path.empty() ? "-" : path.c_str());
+                }
+
+                // Null control: flip the high bit of the declaration hash and
+                // ask the same instance for that field. A positional or
+                // "nearest field" resolver can still return a convincing
+                // import for this query; the declaration-keyed path must not.
+                std::string control_guid, control_path;
+                if (e.import_ref(i, kv.first ^ 0x80000000u,
+                                 control_guid, control_path))
+                    ++g_ref_control_hits;
+            }
         }
     }
 }
@@ -104,6 +136,7 @@ int main(int argc, char** argv)
         std::fprintf(stderr, "usage: vedump_test <game_dir> <exe> <level> [level...]\n");
         return 2;
     }
+
     TypeDb types;
     std::string err;
     if (!types.open(argv[2], err)) { std::fprintf(stderr, "types: %s\n", err.c_str()); return 1; }
@@ -174,5 +207,11 @@ int main(int argc, char** argv)
         std::printf("END %s\n", level.c_str());
         std::fflush(stdout);
     }
+    std::printf("FIELD_STATS %llu raw hashed fields\n",
+                (unsigned long long)g_total_fields);
+    std::printf("REF_STATS %llu/%llu control_hits=%llu\n",
+                (unsigned long long)g_ref_resolved,
+                (unsigned long long)g_ref_candidates,
+                (unsigned long long)g_ref_control_hits);
     return 0;
 }

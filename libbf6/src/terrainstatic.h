@@ -27,42 +27,12 @@
  *
  * THE HARD PART: WHICH LAYER OWNS WHICH TRIPLE.
  *
- * The descriptor table names textures, not layers. The join was derived by
- * disassembling the shipped evaluator (dxc -dumpbin over the compositor's
- * CompiledBytecode) on mp_aftermath, mp_dumbo and mp_isolated and reading, per
- * top-level switch case, which texture registers that case samples. Evaluator
- * case N is layer N (`terrain-computelayer-case-is-layer-index`), so that
- * disassembly IS the ground truth. What it shows:
- *
- *   - Textures arrive in consecutive ao / nhs / cv triples, and the triples are
- *     consumed in DESCENDING descriptor order as the layer index RISES.
- *   - The layers that consume them are exactly the layers with no bindless
- *     base colour, taken in ascending index order. The k-th such layer gets the
- *     k-th group counted down from the top of the table.
- *   - The TOP group is allocated to layer 0 and never sampled: neither decoded
- *     evaluator has a `case 0` at all, layer 0 being a pass-through that
- *     preserves the incoming surface. So layer 0 is aligned but never painted.
- *   - Groups made only of the compositor's own utility sheets (perlin noise,
- *     the granite gradient, break-up masks, tiling noise, scatter noise, the
- *     interior/crater sheets) occupy NO slot: they are shared by many bodies.
- *     The bottom of every table is a prologue of exactly those, and nothing at
- *     or below the prologue is ever handed to a layer.
- *
- * HOW WELL IT HOLDS, measured against the disassembly rather than asserted:
- *
- *   mp_aftermath  15 of 16 layer/group pairs exact, 0 wrong, 1 missed
- *   mp_dumbo      19 of 20 layer/group pairs exact, 0 wrong, 1 missed
- *   mp_isolated    5 of 20 exact - correct for layers 0-5, then it DRIFTS
- *
- * The drift on isolated is honest and its cause is known: that map has static
- * layers (L9, L13) whose bodies sample nothing, and consuming layers (L25, L28)
- * this library reads as bindless, so the ordinal walk slips by one and then
- * paints every later layer with its neighbour's sheet. Nothing in the shipped
- * DATA distinguishes a static layer that consumes a group from one that does
- * not - only the bytecode does, and a bitcode parser is not in this library.
- * A caller that cannot tolerate a plausible-but-wrong ground should turn
- * TerrainBakeOpts::static_fallback off; the missing sheets then read as the
- * magenta hole they actually are.
+ * The descriptor table names textures, not layers. The join therefore comes
+ * from the mounted level's evaluator bytecode on every run: BF6's own
+ * dxcompiler.dll disassembles the in-memory DXIL, a CFG walk attributes each
+ * Texture2D sample to the top-level switch case, and case N is layer N. The
+ * common BindingSet register base is derived from the live resource metadata;
+ * no per-level table, exported disassembly or ordinal guess is consumed.
  */
 #ifndef LIBBF6_TERRAINSTATIC_H
 #define LIBBF6_TERRAINSTATIC_H
@@ -125,11 +95,17 @@ public:
     // this is the allocation list a layer walk consumes.
     const std::vector<TerrainStaticGroup>& groups() const { return groups_; }
 
-    // ---- the layer join ----------------------------------------------------
-    // `static_layers`: the palette's layer indices, ASCENDING, that have no
-    // bindless base colour and are not empty slots. Returns layer -> index into
-    // groups(). Layer 0 is aligned but never mapped - see the header note.
-    std::map<int, int> assign(const std::vector<int>& static_layers) const;
+    // ---- the exact live layer join -----------------------------------------
+    // Returns true when the mounted evaluator has an attributed case for this
+    // layer. -1 is a real answer for a role the case does not sample.
+    bool layer_descriptors(int layer, int& cv, int& nh, int& third) const;
+    bool join_exact() const { return join_exact_; }
+    int register_base() const { return register_base_; }
+    int register_base_hits() const { return register_base_hits_; }
+    int register_base_runner_up_hits() const { return register_base_runner_up_hits_; }
+    int attributed_samples() const { return attributed_samples_; }
+    int unattributed_samples() const { return unattributed_samples_; }
+    const std::string& bytecode_guid() const { return bytecode_guid_; }
 
     // ---- provenance, so a wrong table shows up as a named resource ---------
     uint64_t     binding_set() const { return binding_set_; }
@@ -146,22 +122,16 @@ private:
     std::string depot_res_;
     size_t      depot_rec_ = 0, declared_ = 0;
     int         prologue_top_ = -1;
+    struct Triple { int cv = -1, nh = -1, third = -1; };
+    std::map<int, Triple> layer_join_;
+    bool        join_exact_ = false;
+    int         register_base_ = -1;
+    int         register_base_hits_ = 0;
+    int         register_base_runner_up_hits_ = 0;
+    int         attributed_samples_ = 0;
+    int         unattributed_samples_ = 0;
+    std::string bytecode_guid_;
 };
-
-// WHICH TABLE ROW A SUBLEVEL USES.
-//
-// terrainstaticmap.h is keyed by the level whose evaluator was disassembled, and
-// several shipped levels are SUBLEVELS that mount somebody else's terrain: all
-// seven mp_granite_<x>_portal levels stream the parent's
-// terrain_mp_granite_8k_512tile_01_copy tree and therefore run the parent's
-// evaluator with the parent's register allocation. Keyed exactly they miss the
-// table and fall back to the ordinal walk.
-//
-// Returns the longest covered name that is a prefix of `level` at an UNDERSCORE
-// boundary, or `level` lowercased when the table covers it directly or not at
-// all. mp_aftermath_portal has a row of its own and keeps it. Lives here rather
-// than in terrainstaticmap.cpp because that file is generated.
-std::string terrain_table_level(const std::string& level);
 
 }  // namespace bf6
 

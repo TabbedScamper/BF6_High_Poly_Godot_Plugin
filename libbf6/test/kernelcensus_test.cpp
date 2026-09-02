@@ -135,6 +135,65 @@ int main(int argc, char** argv)
                 }
             }
         }
+
+        // The fixed program table is also the authoritative way to find the
+        // generated compositor culling/list kernels.  Do not identify them by
+        // a remembered GUID: enumerate every program whose permutation run
+        // resolves to the 36-byte compute-permutation record class in this
+        // mounted level, then report its live bytecode resource and stage.
+        std::printf("\nCOMPUTE PROGRAM CENSUS\n");
+        uint32_t compute_programs = 0, compute_permutations = 0;
+        for (uint32_t s = 0; s < programCount; s++) {
+            const size_t rec = (size_t)programPointer + (size_t)s * 0xA8;
+            if (rec + 0xA8 > db.size()) break;
+            const uint32_t pcount = rd32(db, rec + 0x60);
+            const uint32_t poff = rd32(db, rec + 0x64);
+            if (!pcount || pcount > 64 || (size_t)poff + 8ull * pcount > db.size())
+                continue;
+            std::vector<std::pair<uint64_t, std::string>> compute;
+            for (uint32_t i = 0; i < pcount; i++) {
+                const uint64_t pid = rd64(db, poff + 8ull * i);
+                const auto it = perm_res.find(pid);
+                if (it == perm_res.end()) continue;
+                std::vector<uint8_t> pr = src.get_res(it->second, err);
+                if (pr.size() == 36) compute.emplace_back(pid, guid_net(pr, 0x10));
+            }
+            if (compute.empty()) continue;
+            compute_programs++;
+            compute_permutations += (uint32_t)compute.size();
+            std::printf("  program slot %u: %u total, %zu compute\n",
+                s, pcount, compute.size());
+            for (size_t i = 0; i < compute.size(); i++) {
+                const uint64_t pid = compute[i].first;
+                const std::string& g = compute[i].second;
+                std::string bres;
+                for (const auto& kv : src.res())
+                    if (kv.first.compare(0, 17, "shaders/bytecode/") == 0 &&
+                        kv.first.find(g, 17) != std::string::npos) {
+                        bres = kv.first; break;
+                    }
+                size_t at = 0, len = 0;
+                int st = -1;
+                if (!bres.empty()) {
+                    std::vector<uint8_t> bc = src.get_res(bres, err);
+                    st = stage_of(bc, at, len);
+                    if (!outdir.empty() && len) {
+                        char fn[512];
+                        std::snprintf(fn, sizeof(fn), "%s/compute_program%u_run%zu_%s.dxbc",
+                            outdir.c_str(), s, i, g.c_str());
+                        FILE* f = std::fopen(fn, "wb");
+                        if (f) {
+                            std::fwrite(bc.data() + at, 1, len, f);
+                            std::fclose(f);
+                        }
+                    }
+                }
+                std::printf("    run %zu permutation %llu bytecode %s stage %d %zu bytes\n",
+                    i, (unsigned long long)pid, g.c_str(), st, len);
+            }
+        }
+        std::printf("compute census total: %u program(s), %u permutation(s)\n",
+            compute_programs, compute_permutations);
     }
 
     // every bytecode guid any permutation reaches

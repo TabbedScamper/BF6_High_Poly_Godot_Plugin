@@ -9,7 +9,7 @@
 // unstaged.
 //
 //   ebxls_test <game_dir> <substring> [--res] [--max N] [--nolevels]
-//              [--dump <name> <out.bin>]
+//              [--dump <name> <out.bin>] [--peek <name>]
 #include "bf6_core.h"
 #include <cstdio>
 #include <cstring>
@@ -23,7 +23,7 @@ int main(int argc, char** argv)
     if (argc < 3)
     {
         std::printf("usage: ebxls_test <game_dir> <substring> [--res] [--max N]"
-                    " [--nolevels] [--dump <name> <out.bin>]\n");
+                    " [--nolevels] [--dump <name> <out.bin>] [--peek <name>]\n");
         return 2;
     }
     const char* game = argv[1];
@@ -31,6 +31,7 @@ int main(int argc, char** argv)
     bool res = false;
     int  maxrows = 40, levels = 1;
     const char* dumpName = nullptr;
+    const char* peekName = nullptr;
     const char* showName = nullptr;
     const char* rimeName = nullptr;
     const char* iconName = nullptr;
@@ -45,6 +46,7 @@ int main(int argc, char** argv)
         else if (!std::strcmp(argv[i], "--rime") && i + 1 < argc) rimeName = argv[++i];
         else if (!std::strcmp(argv[i], "--icons") && i + 1 < argc) iconName = argv[++i];
         else if (!std::strcmp(argv[i], "--depth") && i + 1 < argc) showDepth = atoi(argv[++i]);
+        else if (!std::strcmp(argv[i], "--peek") && i + 1 < argc) peekName = argv[++i];
         else if (!std::strcmp(argv[i], "--dump") && i + 2 < argc)
         { dumpName = argv[++i]; dumpOut = argv[++i]; }
     }
@@ -54,6 +56,39 @@ int main(int argc, char** argv)
     if (!c) { std::printf("open failed: %s\n", err); return 1; }
     if (!bf6_mount_all(c, levels, err, (int)sizeof(err)))
     { std::printf("mount failed: %s\n", err); bf6_close(c); return 1; }
+
+    if (peekName)
+    {
+        const uint8_t* p = nullptr;
+        const int64_t n = bf6_read_raw(c, res ? BF6_RAW_RES : BF6_RAW_EBX, peekName, &p);
+        if (n < 0 || !p)
+        {
+            std::printf("could not read %s\n", peekName);
+            bf6_close(c);
+            return 1;
+        }
+        std::printf("%s: %lld bytes\n", peekName, (long long)n);
+        for (int64_t base = 0; base < n; base += 16)
+        {
+            std::printf("%08llx  ", (long long)base);
+            for (int col = 0; col < 16; ++col)
+            {
+                const int64_t at = base + col;
+                if (at < n) std::printf("%02x ", (unsigned)p[at]);
+                else        std::printf("   ");
+                if (col == 7) std::printf(" ");
+            }
+            std::printf(" |");
+            for (int col = 0; col < 16 && base + col < n; ++col)
+            {
+                const unsigned char ch = p[base + col];
+                std::putchar(ch >= 32 && ch < 127 ? ch : '.');
+            }
+            std::printf("|\n");
+        }
+        bf6_close(c);
+        return 0;
+    }
 
     if (showName)
     {

@@ -33,6 +33,7 @@ struct MeshSection {
     uint32_t    vertex_offset = 0;
     uint32_t    vertex_count = 0;
     uint8_t     bones_per_vertex = 0;
+    uint8_t     category_flags = 0;  // MeshSubsetCategoryFlags bits 0..4
     MeshDecl    decl;      // the declaration describing positions
     MeshDecl    decl0, decl1;
 };
@@ -57,6 +58,16 @@ struct MeshSet {
     int          section_count = 0;
     int          lod_stride = 0;
     std::vector<MeshLod> lods;
+    // THE BONE PALETTE, from the header's bone/part block at 0xAC.
+    //
+    // Present only when mesh_type != 0 (Rigid skips the block entirely), so an
+    // empty palette here means "this mesh declares none", not "we failed".
+    // `bone_parts` holds bone_part_count skeleton bone ids; the array on disk is
+    // padded up to a 16-byte boundary and the padding is NOT part of the
+    // palette - reading the padded length appends zeros, which are a legal bone
+    // id and would silently bind stray vertices to the root.
+    std::vector<uint16_t> bone_parts;
+    int          bone_count = 0;
     size_t       size = 0;
 };
 
@@ -69,6 +80,7 @@ struct MeshGeomSection {
     std::string           material;
     uint64_t              state_key = 0;
     uint16_t              material_id = 0;
+    uint8_t               category_flags = 0;
     std::vector<float>    positions;   // xyz * vertex_count
     std::vector<float>    normals;     // xyz * vertex_count, or empty
     // THE PRIMARY UV, already chosen. Which channel that is depends on the
@@ -89,6 +101,29 @@ struct MeshGeomSection {
     // index space, so a caller must know which kind of mesh it has before
     // using this for anything.
     std::vector<uint16_t> parts;
+
+    // PER-VERTEX SKIN BINDING, or empty when the section is not skinned.
+    //
+    // `influences` is 0, 4 or 8 - the count is decided by whether the section
+    // declares the SECOND pair of elements (BoneIndices2 / BoneWeights2), not
+    // by a field. Both arrays are influences * vertex_count, lane-aligned:
+    // skin_weights[v * influences + k] is the weight for skin_bones[v * influences + k].
+    //
+    // WEIGHTS SUM ACROSS BOTH ELEMENTS, NOT WITHIN ONE. BoneWeights is UByte4N
+    // and reads back as 0..1, but on an 8-influence section the four lanes of
+    // BoneWeights alone do NOT sum to 1 - the remaining weight is in
+    // BoneWeights2. Reading only the first element silently under-weights every
+    // 8-influence vertex, which looks like a subtly collapsed mesh rather than
+    // like an error. Here they are concatenated, so the sum is over all
+    // `influences` lanes.
+    //
+    // `skin_bones` are SKELETON BONE IDS, not palette slots. The bone/part list
+    // in the header is not a skinning palette - it holds 1 to 7 entries on a
+    // character while these indices reach 210 - so remapping through it is
+    // wrong and would run off the end.
+    std::vector<uint16_t> skin_bones;
+    std::vector<float>    skin_weights;
+    int                   influences = 0;
 };
 
 // Decode one LOD's sections. `chunk` is the LOD's [vertex buffer][index buffer].

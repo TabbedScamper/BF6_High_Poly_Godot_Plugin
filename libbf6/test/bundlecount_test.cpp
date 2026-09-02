@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <cstring>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -28,15 +29,25 @@ int main(int argc, char** argv)
     const int got = bf6_level_instances(c, argv[2], v.data(), n);
 
     std::map<std::string, int> byBundle;
+    std::set<std::string> meshes, meshBundles;
     int empty = 0;
     for (int i = 0; i < got; i++)
     {
         const char* b = v[(size_t)i].placing_bundle;
+        const char* m = v[(size_t)i].res_name;
+        if (m && *m)
+        {
+            meshes.insert(m);
+            meshBundles.insert(std::string(m) + "|" + (b ? b : ""));
+        }
         if (!b || !*b) { empty++; continue; }
         byBundle[b]++;
     }
     std::printf("%s: %d placements, %d distinct bundles, %d with none\n",
                 argv[2], got, (int)byBundle.size(), empty);
+    std::printf("  distinct meshes %d; exact mesh+bundle scopes %d (x%.2f)\n",
+                (int)meshes.size(), (int)meshBundles.size(),
+                meshes.empty() ? 0.0 : (double)meshBundles.size() / meshes.size());
 
     std::vector<std::pair<int, std::string>> rows;
     for (const auto& kv : byBundle) rows.push_back({ kv.second, kv.first });

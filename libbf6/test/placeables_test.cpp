@@ -4,8 +4,9 @@
 //   MP_Dumbo -> 3015 (1499 restricted + 1516 universal),
 //   MP_Abbasid -> 2862, MP_Capstone -> 2126.
 //
-// Uses PlaceableDB directly (no game install needed). Pass the FbExportData dir
-// as argv[1], else the extracted scratch copy.
+// Uses PlaceableDB directly (no game install needed). Pass the Portal SDK's
+// FbExportData directory as argv[1]. This is a verification oracle, never a
+// runtime input to the viewer or engine bindings.
 
 #include "placeables.h"
 #include <cstdio>
@@ -19,9 +20,11 @@ static int count_for(const bf6::PlaceableDB& db, const std::string& level) {
 }
 
 int main(int argc, char** argv) {
-    std::string dir = argc > 1 ? argv[1]
-        : "C:/Users/mwalt/AppData/Local/Temp/claude/C--Users-mwalt/"
-          "9b036b50-aae1-4310-8139-063d65d55375/scratchpad/sdk_plugins/fbexport";
+    if (argc != 2) {
+        std::printf("usage: placeables_test <PortalSDK/FbExportData>\n");
+        return 2;
+    }
+    std::string dir = argv[1];
 
     bf6::PlaceableDB db;
     std::string err;

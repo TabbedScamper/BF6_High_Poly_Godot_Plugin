@@ -5,6 +5,7 @@
 #include <cstdio>
 
 #include "oodle.h"
+#include "stdio_compat.h"
 
 namespace bf6 {
 
@@ -100,7 +101,7 @@ FILE* cas_handle(const std::string& path)
     static thread_local CasHandles cache;
     auto it = cache.open.find(path);
     if (it != cache.open.end()) return it->second;
-    FILE* f = std::fopen(path.c_str(), "rb");
+    FILE* f = fopen_binary_read(path.c_str());
     cache.open.emplace(path, f);   // a null is cached too: a missing archive
     return f;                      // should not be reopened once per read either
 }

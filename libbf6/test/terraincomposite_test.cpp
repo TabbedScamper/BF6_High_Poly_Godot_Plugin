@@ -258,7 +258,9 @@ int main(int argc, char** argv)
         return 2;
     }
     const std::string game = argv[1], level = argv[2];
-    std::string outdir = "C:/PortalSDK_1.4.2.0/BF6_Frostbite_Research/data/terrain_bake";
+    // Diagnostic output is local to the invocation. Evidence is promoted to
+    // the research corpus only after review, never written there implicitly.
+    std::string outdir = "terrain_bake";
     std::string tag;
     TerrainBakeOpts opt;
     opt.size = 1024;

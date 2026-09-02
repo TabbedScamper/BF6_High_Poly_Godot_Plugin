@@ -114,6 +114,17 @@ int main(int argc, char** argv)
     bf6_ctx* c = bf6_open(argv[1], err, (int)sizeof(err));
     if (!c) { std::fprintf(stderr, "open: %s\n", err); return 1; }
 
+    // Explicit front-end VisualEnvironments live in flow_mainmenu rather than
+    // a playable level.  Mount the non-level archives so this harness tests
+    // those presets through the same runtime path as the native armory viewer.
+    // A made-up partition below remains the negative control; mounting more
+    // archives must not turn a nonexistent name into a match.
+    if (!bf6_mount_all(c, 0, err, (int)sizeof(err))) {
+        std::fprintf(stderr, "mount: %s\n", err);
+        bf6_close(c);
+        return 1;
+    }
+
     int bad = 0;
     for (int i = 2; i < argc; i++) {
         const char* level = argv[i];
@@ -146,11 +157,36 @@ int main(int argc, char** argv)
         f1("CloudShadowExponent", v.cloud_shadow_exponent);
         std::printf("  %-30s %.6g, %.6g\n", "CloudShadowSpeed",
                     v.cloud_shadow_speed[0], v.cloud_shadow_speed[1]);
+        f1("SecondaryCloudShadowSize", v.secondary_cloud_shadow_size);
+        f1("SecondaryCloudShadowCoverage", v.secondary_cloud_shadow_coverage);
+        f1("SecondaryCloudShadowExponent", v.secondary_cloud_shadow_exponent);
+        std::printf("  %-30s %.6g, %.6g\n", "SecondaryCloudShadowSpeed",
+                    v.secondary_cloud_shadow_speed[0], v.secondary_cloud_shadow_speed[1]);
+        std::printf("  %-30s %.6g, %.6g\n", "SecondaryCloudShadowTranslation",
+                    v.secondary_cloud_shadow_translation[0], v.secondary_cloud_shadow_translation[1]);
+        i1("CloudShadowAddressingMode", v.cloud_shadow_addressing_mode);
+        i1("SecondaryCloudAddressingMode", v.secondary_cloud_shadow_addressing_mode);
+        i1("CloudShadowIsTopDown", v.cloud_shadow_is_top_down);
+        i1("SecondaryCloudIsTopDown", v.secondary_cloud_shadow_is_top_down);
+        f1("CloudShadowStartFade", v.cloud_shadow_start_fade);
+        f1("CloudShadowsFadeDistance", v.cloud_shadows_fade_distance);
+        i1("CloudShadowHeightFadeEnable", v.cloud_shadow_height_fade_enable);
+        f1("CloudShadowStartHeightFade", v.cloud_shadow_start_height_fade);
+        f1("CloudShadowsHeightFadeDist", v.cloud_shadows_height_fade_distance);
 
         std::printf("-- sky\n");
         i1("SkyType", v.sky_type);
         f1("LuminanceScale", v.sky_luminance_scale);
         f1("PanoramicRotation (turns)", v.sky_panoramic_rotation);
+        std::printf("  %-30s %.6g, %.6g\n", "PanoramicUvMin",
+                    v.sky_panoramic_uv_min[0], v.sky_panoramic_uv_min[1]);
+        std::printf("  %-30s %.6g, %.6g\n", "PanoramicUvMax",
+                    v.sky_panoramic_uv_max[0], v.sky_panoramic_uv_max[1]);
+        f1("FlowDistance", v.sky_flow_distance);
+        f1("FlowDirection (degrees)", v.sky_flow_direction);
+        f1("FlowPeriod (seconds)", v.sky_flow_period);
+        f1("FlowHeightMaskScale", v.sky_flow_height_mask_scale);
+        f1("FlowHeightMaskBias", v.sky_flow_height_mask_bias);
         i1("DrawSunDisc", v.sky_draw_sun_disc);
         f1("SunSize", v.sun_disc_size);
         f1("SunScale (sky)", v.sun_disc_scale);
@@ -231,16 +267,22 @@ int main(int argc, char** argv)
         // rest on - that a VE names an EBX partition whose texture RESOURCE
         // shares the name - is exactly the kind of thing that is true until it
         // is not. So it is exercised rather than asserted.
-        const int ids[2] = { v.panorama_texture, v.sky_gradient_texture };
-        const char* what[2] = { "panorama", "sky gradient" };
-        for (int k = 0; k < 2; k++) {
+        const int ids[] = { v.panorama_texture, v.sky_gradient_texture,
+                            v.flow_mask_texture, v.cloud_shadow_texture,
+                            v.secondary_cloud_shadow_texture,
+                            v.grading_lut_texture };
+        const char* what[] = { "panorama", "sky gradient", "flow mask",
+                               "cloud shadow", "secondary cloud shadow",
+                               "grading LUT" };
+        for (int k = 0; k < (int)(sizeof(ids) / sizeof(ids[0])); k++) {
             if (ids[k] < 0) continue;
             const bf6_texture* t = bf6_texture_at(c, ids[k]);
             if (!t || t->width <= 0)
                 std::printf("  %-30s id %d DOES NOT DECODE\n", what[k], ids[k]);
             else
-                std::printf("  %-30s %dx%d fmt %d mips %d\n", what[k],
-                            t->width, t->height, (int)t->format, t->mip_count);
+                std::printf("  %-30s %dx%d fmt %d mips %d bytes %d\n", what[k],
+                            t->width, t->height, (int)t->format, t->mip_count,
+                            t->data_len);
         }
 
         const int nimp = bf6_level_lighting_imports(c, level, nullptr, 0);

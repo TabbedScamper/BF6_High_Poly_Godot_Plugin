@@ -259,11 +259,38 @@ bool Terrain::read_chunk_directory(const std::vector<uint8_t>& res, std::string&
 
 bool Terrain::parse(const std::vector<uint8_t>& res, std::string& err)
 {
+    return parse_block(res, kBlockHeights, err);
+}
+
+bool Terrain::parse_water_surface(const std::vector<uint8_t>& res, std::string& err)
+{
+    return parse_block(res, 2, err);
+}
+
+bool Terrain::parse_block(const std::vector<uint8_t>& res, int block, std::string& err)
+{
     err.clear();
+    block_id_ = block;
+    primary_prefix_bytes_ = 0;
+    stream_page_bytes_ = 0;
     if (res.size() >= kHeaderSize) node_count_ = rd<int32_t>(res, 0x19);
 
+    // Primary chunks are ordered [block0 payload][streamed pages][block2
+    // payload][trailing pages].  Derive both units from the live block-0
+    // header; no exported offset or per-map table is consumed at runtime.
+    if (block != kBlockHeights)
+    {
+        std::vector<uint8_t> ground;
+        if (!find_block(res, kBlockHeights, ground, err)) return false;
+        Terrain header;
+        if (!header.read_block_header(ground, err)) return false;
+        primary_prefix_bytes_ = header.data_size_;
+        const int page_side = std::max(0, (header.xs_ - 1) / 4);
+        stream_page_bytes_ = (size_t)page_side * (size_t)page_side;
+    }
+
     std::vector<uint8_t> blk;
-    if (!find_block(res, kBlockHeights, blk, err)) return false;
+    if (!find_block(res, block, blk, err)) return false;
     if (!read_block_header(blk, err)) return false;
     if (!walk_nodes(blk, err)) return false;
 
@@ -305,15 +332,59 @@ int Terrain::resolve_external(const FetchChunk& fetch)
         if (de != dir_.end() && !de->second.primary.empty())
         {
             const std::vector<uint8_t>& d = grab(de->second.primary);
-            if (d.size() >= want * 2)
+            size_t payload = 0;
+            bool valid = d.size() >= want * 2;
+
+            if (valid && block_id_ == 2)
+            {
+                // The block-2 offset is not stored in the directory. Search
+                // only offsets permitted by the live block-0 page unit, then
+                // validate candidate sample heights against this node's own
+                // Y AABB. Wrong offsets tend to contain colour/tile bytes and
+                // score near zero; accepting them would produce convincing
+                // but false water geometry.
+                valid = false;
+                double best_score = -1.0;
+                size_t best_off = 0;
+                if (stream_page_bytes_ > 0 && d.size() >= data_size_)
+                {
+                    const double scale = world_size_y_ > 0.f
+                        ? 65536.0 / (double)world_size_y_ : 0.0;
+                    const int lo = (int)std::floor(((double)n.lo[1] - 0.5) * scale);
+                    const int hi = (int)std::ceil (((double)n.hi[1] + 0.5) * scale);
+                    for (size_t tail = 0; tail + data_size_ <= d.size(); tail += stream_page_bytes_)
+                    {
+                        const size_t off = d.size() - tail - data_size_;
+                        if (off < primary_prefix_bytes_) break;
+                        size_t hit = 0, sampled = 0;
+                        for (size_t s = 0; s < want; s += 97)
+                        {
+                            const uint16_t v = rd<uint16_t>(d, off + s * 2);
+                            hit += ((int)v >= lo && (int)v <= hi) ? 1u : 0u;
+                            sampled++;
+                        }
+                        const double score = sampled ? (double)hit / (double)sampled : 0.0;
+                        if (score > best_score) { best_score = score; best_off = off; }
+                    }
+                }
+                if (best_score >= 0.90) { payload = best_off; valid = true; }
+            }
+
+            if (valid && payload + want * 2 <= d.size())
             {
                 n.values.resize(want);
-                std::memcpy(n.values.data(), d.data(), want * 2);
+                std::memcpy(n.values.data(), d.data() + payload, want * 2);
                 n.external = false;
                 got_n++;
                 continue;
             }
         }
+
+        // Block 2 is presently verified in each node's own primary chunk.
+        // Ground's paired-child layout cannot be reused: block 2 follows a
+        // variable number of streamed pages, so guessing its paired offset is
+        // worse than leaving that node unresolved.
+        if (block_id_ == 2) continue;
 
         const uint64_t parent = n.key >> 4;
         const uint64_t child  = n.key & 0xF;
@@ -347,6 +418,39 @@ int Terrain::native_size() const
         if (!n.values.empty()) d = std::max(d, n.depth);
     if (d < 0) return 0;
     return (1 << d) * std::max(1, xs_ - 1 - border_ * 2) + 1;
+}
+
+bool Terrain::sample_window(float min_x,float min_z,float size_m,int core_size,
+                            int border,TerrainWindow& out,std::string& err) const
+{
+    out=TerrainWindow();err.clear();
+    if(!(size_m>0.f)||core_size<=0||border<0||border>16){err="invalid terrain window request";return false;}
+    std::vector<const TerrainNode*> with;for(const TerrainNode& n:nodes_)if(!n.values.empty())with.push_back(&n);
+    if(with.empty()){err="no nodes carry height values";return false;}
+    std::stable_sort(with.begin(),with.end(),[](const TerrainNode* a,const TerrainNode* b){return a->depth<b->depth;});
+    out.core_size=core_size;out.border=border;out.size=core_size+2*border;out.core_lo[0]=min_x;out.core_lo[1]=min_z;
+    out.core_size_m=size_m;out.texel_m=size_m/(float)core_size;out.world_size_y=world_size_y_;
+    out.heights.assign((size_t)out.size*out.size,0);std::vector<uint8_t> found((size_t)out.size*out.size,0);
+    const int s0=border_,s1=xs_-1-border_;const float span=(float)std::max(1,s1-s0);
+    for(const TerrainNode* n:with){
+        const float nx=n->hi[0]-n->lo[0],nz=n->hi[2]-n->lo[2];if(!(nx>0.f&&nz>0.f))continue;
+        for(int z=0;z<out.size;z++){
+            const float wz=min_z+((float)(z-border)+.5f)*out.texel_m;if(wz<n->lo[2]||wz>n->hi[2])continue;
+            const float fz=std::clamp((wz-n->lo[2])/nz,0.f,1.f);const float sy=(float)s0+fz*span;const int y0=std::min(xs_-2,std::max(0,(int)std::floor(sy)));const float ty=sy-y0;
+            for(int x=0;x<out.size;x++){
+                const float wx=min_x+((float)(x-border)+.5f)*out.texel_m;if(wx<n->lo[0]||wx>n->hi[0])continue;
+                const float fx=std::clamp((wx-n->lo[0])/nx,0.f,1.f);const float sx=(float)s0+fx*span;const int x0=std::min(xs_-2,std::max(0,(int)std::floor(sx)));const float tx=sx-x0;
+                const size_t a=(size_t)y0*xs_+x0;if(a+(size_t)xs_+1>=n->values.size())continue;
+                const float h0=(float)n->values[a]+((float)n->values[a+1]-n->values[a])*tx;
+                const float h1=(float)n->values[a+xs_]+((float)n->values[a+xs_+1]-n->values[a+xs_])*tx;
+                const float hv=std::clamp(h0+(h1-h0)*ty,0.f,65535.f);const size_t at=(size_t)z*out.size+x;
+                out.heights[at]=(uint16_t)(hv+.5f);found[at]=1;
+            }
+        }
+    }
+    for(uint8_t v:found)if(!v)out.missing++;
+    if(out.missing==found.size()){err="terrain window lies outside every resolved height node";return false;}
+    return true;
 }
 
 bool Terrain::composite(TerrainGrid& out, int size, std::string& err) const

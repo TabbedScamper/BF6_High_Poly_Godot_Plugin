@@ -67,6 +67,16 @@ int main(int argc, char** argv)
         {
             bad++;
             failures[e]++;
+            if (bad <= 12)
+            {
+                const char* which = Texture::which_chunk(h);
+                const std::string guid = std::strcmp(which, "streamed") == 0 ? h.streamed : h.embedded;
+                const std::vector<uint8_t> payload = guid.empty() ? std::vector<uint8_t>() : fetch(guid);
+                std::printf("  REFUSED %-60s fmt %-3d %5d x %-5d x %-3d mips %-2d %s %8zu bytes: %s\n",
+                            kv.first.substr(kv.first.size() > 60 ? kv.first.size() - 60 : 0).c_str(),
+                            h.format, h.width, h.height, h.slices, h.mipcount, which,
+                            payload.size(), e.c_str());
+            }
             continue;
         }
         ok++;

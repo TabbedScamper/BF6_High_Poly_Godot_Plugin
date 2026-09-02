@@ -74,6 +74,13 @@ public:
     static bool decode(const std::vector<uint8_t>& res, const FetchChunk& fetch,
                        TextureImage& out, int max_dim, std::string& err);
 
+    // Viewer-oriented variant: when mip0 is isolated in the streamed chunk,
+    // read the authored embedded tail instead so max_dim can actually select
+    // a smaller authored mip. The ordinary decoder deliberately keeps its
+    // historical chunk-selection contract.
+    static bool decode_capped(const std::vector<uint8_t>& res, const FetchChunk& fetch,
+                              TextureImage& out, int max_dim, std::string& err);
+
     static int  block_bytes(int dxgi);
     static bool is_srgb(int dxgi);
 

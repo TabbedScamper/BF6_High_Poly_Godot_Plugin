@@ -67,7 +67,7 @@ const char* kDestructionBranch[] = {
 };
 
 // Subworld paths that are not part of a playable map.
-const char* kSkipSubworld[] = { "_autotests", "_tools", "marketing", "glacierflow/" };
+const char* kSkipSubworld[] = { "_autotests", "_tools", "marketing" };
 
 constexpr int kMaxDepth = 24;
 
@@ -420,6 +420,8 @@ void Walk::visit(const EbxValue& inst, const Mat34& parent, const std::string& r
             const std::string low = lower(bn->s);
             for (const char* s : kSkipSubworld)
                 if (contains(low, s)) { n_subworld_skipped++; return; }
+            if (!include_frontend_ && contains(low, "glacierflow/"))
+            { n_subworld_skipped++; return; }
             const std::string sub = resolve_name(bn->s);
             if (!sub.empty()) { n_subworld++; walk_ref(sub, world, guard, depth + 1); }
             else n_subworld_unresolved++;

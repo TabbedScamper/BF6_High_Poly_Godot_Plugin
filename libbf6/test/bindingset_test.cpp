@@ -16,6 +16,7 @@
  * Layout per SHADERS.md 8.1.1 and its BindingSet section.
  *
  *   bindingset_test <game_dir> <level> [ubershader_index]
+ *   bindingset_test <game_dir> <level> --permutation <live_compute_permutation_id>
  */
 #include <algorithm>
 #include <cstdio>
@@ -86,8 +87,11 @@ static bool read_bindingset(Source& src, uint64_t id,
 
 int main(int argc, char** argv)
 {
-    if (argc < 3) { std::fprintf(stderr, "usage: bindingset_test <game_dir> <level> [ubershader]\n"); return 2; }
-    const int want_idx = argc > 3 ? std::atoi(argv[3]) : 0;
+    if (argc < 3) { std::fprintf(stderr, "usage: bindingset_test <game_dir> <level> [ubershader] | --permutation <id>\n"); return 2; }
+    const bool direct_permutation = argc > 4 && std::string(argv[3]) == "--permutation";
+    const int want_idx = argc > 3 && !direct_permutation ? std::atoi(argv[3]) : 0;
+    const uint64_t requested_permutation = direct_permutation
+        ? std::strtoull(argv[4], nullptr, 10) : 0;
 
     Source src;
     std::string err;
@@ -106,19 +110,21 @@ int main(int argc, char** argv)
     uint64_t programPointer = 0;
     std::memcpy(&programPointer, db.data() + 4, 8);
 
-    const uint64_t kTerrainProg = 0x9F11D96B0FDF4773ull;
-    uint64_t perm_id = 0;
-    for (uint32_t s = 0; s < programCount; s++) {
-        const size_t rec = (size_t)programPointer + (size_t)s * 0xA8;
-        if (rec + 0xA8 > db.size()) break;
-        bool hit = false;
-        for (size_t o = 0; o + 8 <= 0xA8; o += 4)
-            if (rd64(db, rec + o) == kTerrainProg) { hit = true; break; }
-        if (!hit) continue;
-        const uint32_t pcount = rd32(db, rec + 0x60);
-        const uint32_t poff   = rd32(db, rec + 0x64);
-        if ((uint32_t)want_idx < pcount) perm_id = rd64(db, poff + 8ull * want_idx);
-        break;
+    uint64_t perm_id = requested_permutation;
+    if (!perm_id) {
+        const uint64_t kTerrainProg = 0x9F11D96B0FDF4773ull;
+        for (uint32_t s = 0; s < programCount; s++) {
+            const size_t rec = (size_t)programPointer + (size_t)s * 0xA8;
+            if (rec + 0xA8 > db.size()) break;
+            bool hit = false;
+            for (size_t o = 0; o + 8 <= 0xA8; o += 4)
+                if (rd64(db, rec + o) == kTerrainProg) { hit = true; break; }
+            if (!hit) continue;
+            const uint32_t pcount = rd32(db, rec + 0x60);
+            const uint32_t poff   = rd32(db, rec + 0x64);
+            if ((uint32_t)want_idx < pcount) perm_id = rd64(db, poff + 8ull * want_idx);
+            break;
+        }
     }
     if (!perm_id) { std::printf("no terrain compositor permutation for index %d\n", want_idx); return 1; }
 
@@ -133,8 +139,9 @@ int main(int argc, char** argv)
     std::snprintf(sn, sizeof(sn), "expressionshader/permutationshareddata/%llu",
         (unsigned long long)shared_id);
     std::vector<uint8_t> sd = src.get_res(sn, err);
-    std::printf("%s ubershader %d\n  permutation %llu\n  sharedData %llu (%zu bytes)\n",
-        level.c_str(), want_idx, (unsigned long long)perm_id,
+    std::printf("%s %s %d\n  permutation %llu\n  sharedData %llu (%zu bytes)\n",
+        level.c_str(), direct_permutation ? "direct compute permutation" : "ubershader",
+        direct_permutation ? -1 : want_idx, (unsigned long long)perm_id,
         (unsigned long long)shared_id, sd.size());
     if (sd.size() < 0x60) { std::printf("shared data too short\n"); return 1; }
 

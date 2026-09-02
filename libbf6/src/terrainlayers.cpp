@@ -92,6 +92,7 @@ void fill_material(const MaterialBinding& mb, TerrainLayerMaterial& m)
     m.resolved = mb.valid;
     for (const auto& kv : mb.textures)
     {
+        m.raw_textures[kv.first] = kv.second;
         switch (kv.first)
         {
         case tl::kTexBaseColorA:    m.set_a.base_color    = kv.second; break;
@@ -126,6 +127,7 @@ void fill_material(const MaterialBinding& mb, TerrainLayerMaterial& m)
 
     for (const auto& kv : mb.constants)
     {
+        m.raw_constants[kv.first] = kv.second;
         const std::vector<uint8_t>& b = kv.second;
         switch (kv.first)
         {

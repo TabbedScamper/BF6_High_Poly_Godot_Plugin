@@ -95,12 +95,33 @@ struct VeLighting {
     float cloud_shadow_speed[2] = {0.f, 0.f};
     float cloud_shadow_translation[2] = {0.f, 0.f};
     int   cloud_radiosity = 0;
+    float secondary_cloud_shadow_size = 0.f;
+    float secondary_cloud_shadow_coverage = 0.f;
+    float secondary_cloud_shadow_exponent = 0.f;
+    float secondary_cloud_shadow_speed[2] = {0.f, 0.f};
+    float secondary_cloud_shadow_translation[2] = {0.f, 0.f};
+    int cloud_shadow_addressing_mode = 0;
+    int secondary_cloud_shadow_addressing_mode = 0;
+    int cloud_shadow_is_top_down = 0;
+    int secondary_cloud_shadow_is_top_down = 0;
+    float cloud_shadow_start_fade = 0.f;
+    float cloud_shadows_fade_distance = 0.f;
+    int cloud_shadow_height_fade_enable = 0;
+    float cloud_shadow_start_height_fade = 0.f;
+    float cloud_shadows_height_fade_distance = 0.f;
 
     // ---- sky (SkyComponentData) -----------------------------------------
     int   sky_type = 0;
     float sky_luminance_scale = 0.f;
     float sky_panoramic_rotation = 0.f;     // TURNS, not degrees
     float sky_panoramic_tile_factor = 0.f;
+    float sky_panoramic_uv_min[2] = {0.f, 0.f};
+    float sky_panoramic_uv_max[2] = {1.f, 1.f};
+    float sky_flow_distance = 0.f;
+    float sky_flow_direction = 0.f;         // degrees
+    float sky_flow_period = 0.f;            // seconds
+    float sky_flow_height_mask_scale = 0.f;
+    float sky_flow_height_mask_bias = 0.f;
     int   sky_draw_sun_disc = 0;
     float sun_disc_size = 0.f;
     float sun_disc_scale = 0.f;
@@ -194,6 +215,12 @@ std::string ve_active_preset(Source& src, TypeDb& types, const std::string& leve
 // Find the active preset and decode it. False with err set.
 bool ve_lighting(Source& src, TypeDb& types, const std::string& level,
                  VeLighting& out, std::string& err);
+
+// Decode one explicitly named VisualEnvironment partition. Front-end screens
+// author their presets directly and have no playable level root from which an
+// "active" preset could be selected.
+bool ve_lighting_partition(Source& src, TypeDb& types, const std::string& partition,
+                           VeLighting& out, std::string& err);
 
 }  // namespace bf6
 

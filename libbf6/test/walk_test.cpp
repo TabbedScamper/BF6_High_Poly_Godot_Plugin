@@ -25,7 +25,8 @@ int main(int argc, char** argv)
         std::fprintf(stderr, "usage: walk_test <game_dir> <exe> <level> [--all-levels]\n");
         return 2;
     }
-    const bool all = argc > 4 && std::strcmp(argv[4], "--all-levels") == 0;
+    const bool asset = argc > 4 && std::strcmp(argv[4], "--asset") == 0;
+    const bool all = asset || (argc > 4 && std::strcmp(argv[4], "--all-levels") == 0);
 
     using clk = std::chrono::steady_clock;
     auto ms = [](clk::time_point a, clk::time_point b)
@@ -35,7 +36,8 @@ int main(int argc, char** argv)
     std::string err;
     const auto t0 = clk::now();
     if (!src.open(argv[1], err)) { std::fprintf(stderr, "open: %s\n", err.c_str()); return 1; }
-    if (!src.mount_level(argv[3], all, err)) { std::fprintf(stderr, "mount: %s\n", err.c_str()); return 1; }
+    if (!src.mount_level(asset ? std::string() : std::string(argv[3]), all, err))
+    { std::fprintf(stderr, "mount: %s\n", err.c_str()); return 1; }
     const auto t1 = clk::now();
 
     TypeDb types;

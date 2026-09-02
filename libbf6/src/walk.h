@@ -70,6 +70,11 @@ public:
     using Progress = std::function<bool(const char*, int, int)>;
     void set_progress(Progress p) { progress_ = std::move(p); }
 
+    // A playable-level import excludes GlacierFlow's non-playable front-end
+    // subworlds. A caller explicitly walking the front-end scene opts in so
+    // its Content subworld is traversed and placed. Default remains false.
+    void set_include_frontend(bool v) { include_frontend_ = v; }
+
     // level_rel is the level's asset path, e.g. "game/glaciermp/levels/mp_dumbo",
     // or just the leaf. False when the root cannot be resolved.
     bool run(const std::string& level_rel, std::string& err);
@@ -109,6 +114,7 @@ private:
     std::string                                  scope_;
     std::string                                  bundle_;
     Progress                                     progress_;
+    bool                                         include_frontend_ = false;
 };
 
 }  // namespace bf6

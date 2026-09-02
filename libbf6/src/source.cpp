@@ -10,12 +10,13 @@
 #include "bundle.h"
 #include "cas.h"
 #include "oodle.h"
+#include "stdio_compat.h"
 
 namespace bf6 {
 
 static std::vector<uint8_t> read_file(const std::string& path) {
     std::vector<uint8_t> out;
-    FILE* f = std::fopen(path.c_str(), "rb");
+    FILE* f = fopen_binary_read(path.c_str());
     if (!f) return out;
     std::fseek(f, 0, SEEK_END);
     long n = std::ftell(f);
@@ -43,6 +44,10 @@ std::vector<uint8_t> Source::read_seg(const CasLoc& seg, bool allow_raw, std::st
 }
 
 bool Source::mount_toc(const std::string& toc_path, std::string& err) {
+    // bf6_open and later targeted mounts share the same non-level TOCs. A
+    // second parse cannot add anything under the first-wins law, so remember
+    // successful paths and make repeated mount requests free.
+    if (mounted_tocs_.find(toc_path) != mounted_tocs_.end()) return true;
     std::vector<uint8_t> raw = read_file(toc_path);
     if (raw.empty()) { err = "cannot read " + toc_path; return false; }
 
@@ -108,8 +113,60 @@ bool Source::mount_toc(const std::string& toc_path, std::string& err) {
             si++;
         }
     }
-    if (ebx_.size() != before) { pidx_built_ = false; pidx_.clear(); }
+    if (ebx_.size() != before) {
+        pidx_built_ = false; pidx_.clear();
+        armory_pidx_built_ = false; armory_pidx_.clear();
+    }
+    mounted_tocs_.insert(toc_path);
     return true;
+}
+
+bool Source::mount_ebx_owner(const std::string& toc_path,
+                             const std::string& bundle_name,
+                             const std::string& ebx_name,
+                             std::string& err)
+{
+    if (ebx_.find(ebx_name) != ebx_.end()) return true;
+    const std::filesystem::path requested(toc_path);
+    const std::string full = requested.is_absolute()
+        ? requested.string()
+        : (std::filesystem::path(game_) / requested).string();
+    std::vector<uint8_t> raw = read_file(full);
+    if (raw.empty()) { err = "cannot read " + full; return false; }
+
+    Toc toc;
+    if (!toc.parse(raw.data(), raw.size(), err)) return false;
+    const std::vector<uint8_t>& body = toc.body();
+    for (const TocBundle& b : toc.bundles)
+    {
+        if (b.name != bundle_name) continue;
+        std::string e2;
+        const std::vector<CasLoc> segs = read_segments(
+            body.data(), body.size(), (size_t)b.offset, e2);
+        if (segs.empty()) { err = e2; return false; }
+        std::vector<uint8_t> meta = read_seg(segs[0], true, e2);
+        if (meta.empty()) { err = e2; return false; }
+        Payload pay;
+        if (!pay.parse(meta.data(), meta.size(), e2)) { err = e2; return false; }
+        size_t si = 1;
+        for (const auto& e : pay.ebx)
+        {
+            if (e.first == ebx_name && si < segs.size())
+            {
+                EbxEntry ee; ee.loc = segs[si]; ee.dsize = e.second;
+                ebx_[e.first] = ee;
+                ebx_bundle_[e.first] = b.name;
+                pidx_built_ = false; pidx_.clear();
+                armory_pidx_built_ = false; armory_pidx_.clear();
+                return true;
+            }
+            ++si;
+        }
+        err = "bundle does not carry EBX " + ebx_name;
+        return false;
+    }
+    err = "TOC does not carry bundle " + bundle_name;
+    return false;
 }
 
 std::vector<uint8_t> Source::get_chunk(const std::string& guid_hex, std::string& err) {
@@ -319,6 +376,80 @@ const std::map<std::string, std::string>& Source::partition_index()
     return pidx_;
 }
 
+const std::map<std::string, std::string>& Source::armory_partition_index()
+{
+    if (armory_pidx_built_) return armory_pidx_;
+    armory_pidx_built_ = true;
+
+    // This is intentionally a broad runtime selector. The full-index control
+    // resolves 931/931 model-definition mesh imports for all 185 roster rows
+    // inside these families (shuffled/non-family control: 0 outside). Keeping
+    // whole authored roots also covers gadgets and future names that do not
+    // happen to contain the word "weapon".
+    auto candidate = [](const std::string& name)
+    {
+        return name.find("common/hardware") != std::string::npos ||
+               name.find("common/gameplay") != std::string::npos ||
+               name.find("common/ui") != std::string::npos ||
+               name.find("common/gamesetup/gameconfigurations") != std::string::npos ||
+               name.find("weapon") != std::string::npos ||
+               name.find("projectile") != std::string::npos;
+    };
+
+    std::vector<const std::pair<const std::string, EbxEntry>*> order;
+    order.reserve(ebx_.size() / 4);
+    for (const auto& kv : ebx_) if (candidate(kv.first)) order.push_back(&kv);
+    std::sort(order.begin(), order.end(),
+        [](const std::pair<const std::string, EbxEntry>* a,
+           const std::pair<const std::string, EbxEntry>* b)
+        {
+            if (a->second.loc.chunk_id != b->second.loc.chunk_id)
+                return a->second.loc.chunk_id < b->second.loc.chunk_id;
+            if (a->second.loc.cas_ix != b->second.loc.cas_ix)
+                return a->second.loc.cas_ix < b->second.loc.cas_ix;
+            if (a->second.loc.off != b->second.loc.off)
+                return a->second.loc.off < b->second.loc.off;
+            return a->first < b->first;
+        });
+
+    const size_t n = order.size();
+    std::vector<std::string> found(n);
+    const unsigned hw = std::thread::hardware_concurrency();
+    const size_t workers = std::max<size_t>(1, std::min<size_t>(hw ? hw : 4, 16));
+    std::atomic<size_t> next{0};
+    auto worker = [&]()
+    {
+        std::string e;
+        for (;;)
+        {
+            const size_t i = next.fetch_add(1);
+            if (i >= n) return;
+            if (progress_ && (i & 511) == 0 &&
+                !progress_("indexing armory partitions", (int)i, (int)n)) return;
+            std::vector<uint8_t> bytes = read_seg(order[i]->second.loc, false, e);
+            if (!bytes.empty()) found[i] = efix_guid(bytes);
+        }
+    };
+    std::vector<std::thread> pool;
+    pool.reserve(workers);
+    for (size_t i = 0; i < workers; i++) pool.emplace_back(worker);
+    for (std::thread& t : pool) t.join();
+    for (size_t i = 0; i < n; i++)
+        if (!found[i].empty())
+        {
+            const std::string path = order[i]->first + ".ebx";
+            armory_pidx_.emplace(found[i], path);
+            armory_pidx_candidates_[found[i]].push_back(path);
+        }
+    return armory_pidx_;
+}
+
+const std::map<std::string, std::vector<std::string>>& Source::armory_partition_candidates()
+{
+    armory_partition_index();
+    return armory_pidx_candidates_;
+}
+
 // ---------------------------------------------------------------------------
 // Finding and mounting a level's archives
 // ---------------------------------------------------------------------------
@@ -471,6 +602,43 @@ bool Source::mount_level(const std::string& level, bool all_levels, std::string&
             return false;
         }
     }
+    return true;
+}
+
+bool Source::mount_frontend(std::string& err)
+{
+    const std::vector<std::string> all = find_tocs(std::string(), false);
+    if (all.empty()) { err = "no shared .toc found under " + game_; return false; }
+
+    auto ends = [](const std::string& value, const char* suffix) {
+        const size_t n = std::strlen(suffix);
+        return value.size() >= n && value.compare(value.size() - n, n, suffix) == 0;
+    };
+    std::vector<std::string> selected;
+    for (const std::string& toc : all)
+    {
+        const std::string low = lower_slash(toc);
+        const bool contentFamily =
+            ends(low, "/characters.toc") || ends(low, "/globals.toc") ||
+            ends(low, "/ui.toc") || ends(low, "/vehicles.toc") ||
+            ends(low, "/weapons.toc");
+        const bool mainMenu =
+            low.find("/game/glacierflow/flow_mainmenu/") != std::string::npos;
+        const bool englishText = ends(low, "/loc/en.toc");
+        if (contentFamily || mainMenu || englishText) selected.push_back(toc);
+    }
+    if (selected.empty()) { err = "no front-end archive families found"; return false; }
+
+    int mounted = 0, done = 0;
+    for (const std::string& toc : selected)
+    {
+        if (progress_ && !progress_("mounting front-end archives", done++,
+                                    (int)selected.size()))
+        { err = "cancelled"; return false; }
+        std::string one;
+        if (mount_toc(toc, one)) ++mounted;
+    }
+    if (!mounted) { err = "no front-end archive mounted"; return false; }
     return true;
 }
 

@@ -32,6 +32,7 @@ using namespace bf6;
 static const char* kOceanComp  = "f7f42a90-6547-0ee2-cb65-9252e610e782";
 static const char* kWaterType  = "ae0b69fc-2207-d874-8230-fcd467a592cf";
 static const char* kSimType    = "3ad51130-494f-ee8a-45cd-01103be713ee";
+static const char* kWaveType   = "f616e49a-e740-d842-f3e5-224f025761cc";
 static const uint32_t kStateKeyField = 0x2E15621F;
 static const uint32_t kFieldFlags    = 0x66A77748;
 static const uint32_t kPropOverrides = 0x0BD67EC6;
@@ -130,6 +131,7 @@ int main(int argc, char** argv)
 
         // ---- A: every OceanComponentData, and the sim entity ---------------
         const bool wide = getenv("BF6_WIDE") != nullptr;
+        const bool wide_waves = getenv("BF6_WIDE_WAVES") != nullptr;
         for (const auto& kv : src.ebx()) {
             const std::string& n = kv.first;
             if (wide) {
@@ -139,7 +141,7 @@ int main(int argc, char** argv)
                 if (n.find("/lighting/") == std::string::npos &&
                     n.find("/ve_") == std::string::npos &&
                     n.find("visualenvironment") == std::string::npos) continue;
-            } else if (n.compare(0, lvl_dir.size(), lvl_dir) != 0) continue;
+            } else if (!wide_waves && n.compare(0, lvl_dir.size(), lvl_dir) != 0) continue;
             std::vector<uint8_t> raw = src.get_ebx(n, err);
             if (raw.empty()) continue;
             Ebx e(types);
@@ -147,10 +149,13 @@ int main(int argc, char** argv)
             if (!e.parse(std::move(raw), err)) continue;
             for (size_t i = 0; i < e.instance_count(); i++) {
                 const std::string tg = TypeDb::guid_str(e.instance_type(i));
-                if (tg != kOceanComp && tg != kSimType) continue;
+                if (tg != kOceanComp && tg != kSimType && tg != kWaveType) continue;
                 if (wide && tg != kOceanComp) continue;
+                if (wide_waves && n.compare(0, lvl_dir.size(), lvl_dir) != 0 &&
+                    tg != kWaveType) continue;
                 EbxValue d = e.read_instance(i);
-                const char* tag = (tg == kOceanComp) ? "OC" : "SIM";
+                const char* tag = (tg == kOceanComp) ? "OC" :
+                                  (tg == kSimType) ? "SIM" : "WAVE";
                 std::printf("%s %s %s", tag, level.c_str(), n.c_str());
                 for (const auto& f : d.fields) {
                     if (f.first == kFieldFlags || f.first == kPropOverrides) continue;

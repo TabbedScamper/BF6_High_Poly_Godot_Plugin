@@ -5,6 +5,8 @@
 #include <cstdio>
 #include <cstring>
 
+#include "stdio_compat.h"
+
 namespace bf6 {
 namespace {
 
@@ -64,7 +66,7 @@ std::string TypeDb::guid_str(const TypeGuid& g)
 bool TypeDb::open(const std::string& exe_path, std::string& err)
 {
     err.clear();
-    FILE* f = std::fopen(exe_path.c_str(), "rb");
+    FILE* f = fopen_binary_read(exe_path.c_str());
     if (!f) { err = "no exe at " + exe_path; return false; }
 
     // How big is it on disk, asked BEFORE the read rather than trusted after.

@@ -1,5 +1,5 @@
 /* The FX decode over the C ABI, the way a binding will call it.
- *   fxabi_test <game_dir> <MAP>
+ *   fxabi_test <game_dir> <MAP> [effect-substring]
  */
 #include <cstdio>
 #include <cstring>
@@ -36,6 +36,48 @@ int main(int argc, char** argv)
         if (first_sheet < 0) first_sheet = i;
     }
     std::printf("rows with a resolvable sheet: %d\n", with_sheet);
+
+    // Optional placement audit for one effect/layer family. Search every
+    // authored identity string, not just the effect leaf: water foam commonly
+    // has a generic effect name and is identified by its graph or atlas.
+    // This stays in the test harness: it is evidence for an engine binding,
+    // never a staged runtime input. A fake substring is the zero-hit control.
+    if (argc > 3) {
+        const char* q = argv[3];
+        int matched = 0;
+        for (int i = 0; i < n; i++) {
+            const bf6_fx_layer& L = rows[(size_t)i];
+            const bool hit =
+                (L.effect      && std::strstr(L.effect, q)) ||
+                (L.effect_path && std::strstr(L.effect_path, q)) ||
+                (L.graph       && std::strstr(L.graph, q)) ||
+                (L.family      && std::strstr(L.family, q)) ||
+                (L.atlas       && std::strstr(L.atlas, q)) ||
+                (L.atlas_res   && std::strstr(L.atlas_res, q));
+            if (!L.effect_path || !hit) continue;
+            bool seen = false;
+            for (int j = 0; j < i; j++)
+                if (rows[(size_t)j].effect_path && !std::strcmp(rows[(size_t)j].effect_path, L.effect_path))
+                    seen = true;
+            if (seen) continue;
+            matched++;
+            const int np = bf6_fx_placements(c, argv[2], L.effect_path, nullptr, 0);
+            std::vector<float> xf((size_t)np * 12);
+            const int got = bf6_fx_placements(c, argv[2], L.effect_path, xf.data(), np);
+            std::printf("MATCH row=%d effect=%s layer=%d family=%s placements=%d\n"
+                        "  graph=%s\n  atlas=%s %dx%d cols=%d frames=%d params=%d\n",
+                        i, L.effect ? L.effect : "", L.layer,
+                        L.family ? L.family : "", got,
+                        L.graph ? L.graph : "", L.atlas ? L.atlas : "",
+                        L.atlas_width, L.atlas_height, L.atlas_cols,
+                        L.atlas_frames, L.param_count);
+            for (int k = 0; k < got; k++) {
+                const float* m = xf.data() + (size_t)k * 12;
+                std::printf("  P %d %.3f %.3f %.3f\n", k, m[9], m[10], m[11]);
+            }
+        }
+        std::printf("CONTROL substring=%s matched=%d\n", q, matched);
+    }
 
     if (first_sheet >= 0) {
         const bf6_fx_layer& L = rows[(size_t)first_sheet];

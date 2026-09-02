@@ -35,14 +35,11 @@
  * (which the layer-graph depot fills, and which terrainlayers.h decodes), and
  * STATIC binding from the compute permutation's CommonBindingSet - 26 of the 40
  * layer bodies on Aftermath and 34 of 47 on Dumbo, where they are the road
- * surfaces. `terrainstatic.h` decodes the second route and this file falls back
- * to it, under TerrainBakeOpts::static_fallback, for any layer the depot left
- * without a colour. What is exact and what is not is set out in that header:
- * the descriptor table resolves completely, the descriptor-triple-to-layer join
- * is an ordinal walk that matches the shipped evaluator bytecode on aftermath
- * and dumbo and drifts on isolated. A layer neither route reaches is still
- * SKIPPED, never faked, and the texels it leaves are still counted in
- * `texels_untouched`.
+ * surfaces. `terrainstatic.h` decodes the second route and recovers its
+ * descriptor-to-layer join from the current level's live evaluator DXIL. This
+ * file uses it, under TerrainBakeOpts::static_fallback, for any layer the depot
+ * left without a colour. A layer neither route reaches is still SKIPPED, never
+ * faked, and the texels it leaves are still counted in `texels_untouched`.
  *
  * NO ENGINE HEADERS, no exceptions, no image library. The BCn decoder is here
  * because the library genuinely has none: texture.h hands back compressed
@@ -175,14 +172,10 @@ struct TerrainBakeOpts {
     // asphalt street under an urban map; without it mp_dumbo's entire road grid
     // bakes as the fallback colour.
     //
-    // ON BY DEFAULT, and here is the case against it, stated where it can be
-    // acted on. The descriptor table is exact; the join from a descriptor
-    // triple to a LAYER is an ordinal walk validated against the shipped
-    // evaluator bytecode on three maps - exact on mp_aftermath (15/16) and
-    // mp_dumbo (19/20), and DRIFTING on mp_isolated (5/20), where two static
-    // layers sample nothing and slip the walk by one. A drifted mapping paints
-    // roads with grass and looks plausible while being wrong. Turn this off to
-    // get back the honest hole: `texels_untouched` counts real holes either way.
+    // ON BY DEFAULT. The descriptor table and its layer join are read from the
+    // mounted game; if live DXIL disassembly or the register-base control fails,
+    // the layer stays an honest hole. Turn this off for a bindless-only control;
+    // `texels_untouched` counts genuine holes either way.
     bool  static_fallback = true;
 };
 

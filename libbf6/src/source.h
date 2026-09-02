@@ -13,6 +13,7 @@
 #include <map>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "caslocator.h"
@@ -27,6 +28,13 @@ class Source {
 public:
     bool open(const std::string& game_dir, std::string& err);   // build the locator
     bool mount_toc(const std::string& toc_path, std::string& err);
+
+    // Add one EBX from its proven TOC + bundle owner without importing every
+    // unrelated name in that archive into the active mount/index.
+    bool mount_ebx_owner(const std::string& toc_path,
+                         const std::string& bundle_name,
+                         const std::string& ebx_name,
+                         std::string& err);
 
     // Called from inside the long loops. See the ABI's note: it can be called
     // from several threads at once and must not touch a UI. False asks to stop.
@@ -48,6 +56,12 @@ public:
     // level read does not need it and it is not free.
     bool mount_level(const std::string& level, bool all_levels, std::string& err);
 
+    // Focused front-end/armory mount. Discovers the current install's shared
+    // TOCs at runtime, then mounts only the authored UI, weapons, characters,
+    // vehicles, global, main-menu and English-localization families. This is
+    // a path-class filter over the installed files, never a staged asset list.
+    bool mount_frontend(std::string& err);
+
     // The .toc paths under the install, IN MOUNT ORDER. See the ordering law in
     // the .cpp: first mount wins, so shared archives go first, then the level
     // being read, then every other level.
@@ -61,6 +75,18 @@ public:
     // cost; the result is cached on this Source. First name wins, so the result
     // is stable across runs rather than dependent on iteration order.
     const std::map<std::string, std::string>& partition_index();
+
+    // The armory follows imports only into authored hardware, gameplay and UI
+    // families.  Building this runtime index reads that bounded name space
+    // instead of every level partition; it is an optimization of the same
+    // EFIX read path, not a staged/exported cache.
+    const std::map<std::string, std::string>& armory_partition_index();
+
+    // Some authored UI aliases deliberately share a partition GUID.  A
+    // one-value index cannot represent that fact.  Callers that have an
+    // authored discriminator (for example a Rime widget-reference Name) use
+    // this live candidate set and must decline unresolved ambiguity.
+    const std::map<std::string, std::vector<std::string>>& armory_partition_candidates();
 
     // WHICH BUNDLE A RESOURCE CAME IN, which is how a mesh finds its depot.
     //
@@ -128,6 +154,7 @@ private:
     CasLocator  loc_;
     std::unordered_map<std::string, ResEntry> res_;
     std::unordered_map<std::string, EbxEntry> ebx_;
+    std::unordered_set<std::string>           mounted_tocs_;
     std::map<std::string, CasLoc>             chunks_;    // loose-chunk guid -> loc
     std::map<std::string, CasLoc>             chunk_seg_; // bundle-chunk guid -> loc
     Progress                                  progress_;
@@ -136,6 +163,9 @@ private:
     std::map<std::string, std::string>        depot_by_bundle_; // bundle -> depot res
     std::map<std::string, std::string>        pidx_;      // partition guid -> name.ebx
     bool                                      pidx_built_ = false;
+    std::map<std::string, std::string>        armory_pidx_;
+    std::map<std::string, std::vector<std::string>> armory_pidx_candidates_;
+    bool                                      armory_pidx_built_ = false;
 
     std::vector<uint8_t> read_seg(const CasLoc& seg, bool allow_raw, std::string& err);
 };

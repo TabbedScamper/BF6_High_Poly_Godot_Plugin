@@ -3,13 +3,15 @@
 #include <cstdio>
 #include <filesystem>
 
+#include "stdio_compat.h"
+
 namespace fs = std::filesystem;
 
 namespace bf6 {
 
 static std::vector<uint8_t> read_file(const std::string& path) {
     std::vector<uint8_t> out;
-    FILE* f = std::fopen(path.c_str(), "rb");
+    FILE* f = fopen_binary_read(path.c_str());
     if (!f) return out;
     std::fseek(f, 0, SEEK_END);
     long n = std::ftell(f);

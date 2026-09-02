@@ -1,3 +1,4 @@
+#include <cstdlib>
 #include "meshset.h"
 
 #include <cstring>
@@ -87,6 +88,37 @@ static const int U_POS = 1, U_NORMAL = 6, U_UV0 = 33, U_UV4 = 37;
 // BoneIndices. On a Rigid or Composite destructible this is the per-vertex
 // destruction part index; on a Skinned mesh it is a skeleton bone id.
 static const int U_BONE = 2;
+// The rest of the skin binding. Usage 2 and 3 are the bone index lanes (u16,
+// UShort2/UShort4); usage 4 and 5 are the matching weight lanes (UByte4N).
+// A section with 8 influences declares all four; one with 4 declares 2 and 4.
+static const int U_BONE2 = 3, U_BONE_W = 4, U_BONE_W2 = 5;
+
+// A bone index with 0x8000 set addresses a RENDERBONE, and this reader does
+// NOT resolve it - deliberately.
+//
+// The documented rule is ((raw & 0x7FFF) >> 1) + base, where `base` is the RIG
+// BONE COUNT of the skeleton the mesh binds to: a flagged value names a slot in
+// the mesh's Renderbones array, which is appended past the rig. The shifted
+// slot is small (global max 20 across the character population).
+//
+// A mesh reader cannot know `base`. It is a property of the SKELETON, and the
+// mesh does not carry it. Resolving here would mean inventing one, and both
+// ways of inventing it are wrong in a way that still renders:
+//   - dropping the + base binds the vertex to a low real bone
+//   - masking the flag off without the shift maps 0x8001 to bone 1
+// Either produces plausible-looking wrong deformation rather than a failure.
+//
+// So the raw value is passed through with its flag intact, and the consumer -
+// which has the skeleton and therefore `base` - resolves it. The header
+// documents the arithmetic. An unflagged value is already a skeleton bone id
+// and needs nothing.
+//
+// (An earlier revision of this file remapped flagged values in place, and then
+// a second revision narrowed that to values with bit 0 set. Both were wrong:
+// the bit-0 rule came from a 55-mesh sample that the format spec has since
+// superseded at full population, where 2.5% of flagged values have bit 0 clear
+// and the shift holds for all of them.)
+static inline uint16_t decode_bone_index(uint16_t raw) { return raw; }
 
 static int fmt_size(int fmt) {
     switch (fmt) {
@@ -259,11 +291,20 @@ std::vector<MeshGeomSection> meshset_read_lod(const MeshSet& ms, int lod,
         if (pcount == 0 || vcount == 0) continue;
         std::string low = s.material;
         for (char& ch : low) if (ch >= 'A' && ch <= 'Z') ch += 32;
-        if (low.find("shadow") != std::string::npos || low.find("zonly") != std::string::npos ||
-            low.find("depth") != std::string::npos) continue;
+        /* Depth-only and shadow passes carry no shading of interest, so they are
+         * skipped - but the SKIP IS INVISIBLE to a caller, which matters when a
+         * section is missing for some other reason. BF6_MESH_KEEP_ALL keeps
+         * them so a diagnostic can see the full section list of a mesh. */
+        static const bool keep_all = [](){ const char* e = std::getenv("BF6_MESH_KEEP_ALL");
+                                           return e && *e && *e != '0'; }();
+        if (!keep_all &&
+            (low.find("shadow") != std::string::npos || low.find("zonly") != std::string::npos ||
+             low.find("depth") != std::string::npos)) continue;
 
         int voff = s.vertex_offset;
         std::vector<float> pos, nrm;
+        std::vector<float> bi[2], bw[2];      // BoneIndices/2, BoneWeights/2
+        int bi_comps[2] = {0, 0}, bw_comps[2] = {0, 0};
         int pos_comps = 0, nrm_comps = 0;
         std::pair<std::vector<float>, int> uv_ch[5];   // by channel, not by order
         for (const auto& el : s.decl.elements) {
@@ -274,6 +315,18 @@ std::vector<MeshGeomSection> meshset_read_lod(const MeshSet& ms, int lod,
             } else if (usage == U_NORMAL && nrm.empty()) {
                 auto r = read_attr(chunk, clen, voff, vcount, el, s.decl.streams);
                 if (!r.first.empty()) { nrm = std::move(r.first); nrm_comps = r.second; }
+            } else if (usage == U_BONE || usage == U_BONE2) {
+                const int k = (usage == U_BONE) ? 0 : 1;
+                if (bi[k].empty()) {
+                    auto r = read_attr(chunk, clen, voff, vcount, el, s.decl.streams);
+                    if (!r.first.empty()) { bi[k] = std::move(r.first); bi_comps[k] = r.second; }
+                }
+            } else if (usage == U_BONE_W || usage == U_BONE_W2) {
+                const int k = (usage == U_BONE_W) ? 0 : 1;
+                if (bw[k].empty()) {
+                    auto r = read_attr(chunk, clen, voff, vcount, el, s.decl.streams);
+                    if (!r.first.empty()) { bw[k] = std::move(r.first); bw_comps[k] = r.second; }
+                }
             } else if (usage >= U_UV0 && usage <= U_UV4) {
                 // <= U_UV4, not <= 36: the old bound silently dropped TC4,
                 // which is the channel a pictorial wrap lives on.
@@ -288,6 +341,7 @@ std::vector<MeshGeomSection> meshset_read_lod(const MeshSet& ms, int lod,
 
         MeshGeomSection g;
         g.material = s.material; g.state_key = s.state_key; g.material_id = s.material_id;
+        g.category_flags = s.category_flags;
         g.positions.resize((size_t)vcount * 3);
         for (int i = 0; i < vcount; i++) {
             int o = i * pos_comps;
@@ -356,6 +410,39 @@ std::vector<MeshGeomSection> meshset_read_lod(const MeshSet& ms, int lod,
             }
         }
 
+        // THE SKIN BINDING. Concatenate the two index elements and the two
+        // weight elements lane for lane, so an 8-influence vertex arrives as
+        // one run of 8 rather than as two halves the caller has to know to join.
+        //
+        // The influence count comes from what the section DECLARES, not from
+        // MeshSection.bones_per_vertex: the second pair is simply absent on a
+        // 4-influence section, and trusting a count field over the declaration
+        // would read four lanes of nothing.
+        if (!bi[0].empty() && !bw[0].empty()) {
+            const int n0 = bi_comps[0] < bw_comps[0] ? bi_comps[0] : bw_comps[0];
+            int n1 = 0;
+            if (!bi[1].empty() && !bw[1].empty())
+                n1 = bi_comps[1] < bw_comps[1] ? bi_comps[1] : bw_comps[1];
+            const int inf = n0 + n1;
+            if (inf > 0) {
+                g.influences = inf;
+                g.skin_bones.resize((size_t)vcount * inf);
+                g.skin_weights.resize((size_t)vcount * inf);
+                for (int i = 0; i < vcount; i++) {
+                    for (int c = 0; c < n0; c++) {
+                        const size_t d = (size_t)i * inf + c;
+                        g.skin_bones[d]   = decode_bone_index((uint16_t)bi[0][(size_t)i * bi_comps[0] + c]);
+                        g.skin_weights[d] = bw[0][(size_t)i * bw_comps[0] + c];
+                    }
+                    for (int c = 0; c < n1; c++) {
+                        const size_t d = (size_t)i * inf + n0 + c;
+                        g.skin_bones[d]   = decode_bone_index((uint16_t)bi[1][(size_t)i * bi_comps[1] + c]);
+                        g.skin_weights[d] = bw[1][(size_t)i * bw_comps[1] + c];
+                    }
+                }
+            }
+        }
+
         g.indices = read_indices(chunk, clen, vsize, isize, L.idx32, s.start_index, pcount, vcount, voff);
         if (g.indices.empty()) continue;
         out.push_back(std::move(g));
@@ -380,6 +467,24 @@ MeshSet meshset_parse(const uint8_t* d, size_t len, std::string& err) {
     ms.lod_count = u16(d, h + 0x9C);
     ms.section_count = u16(d, h + 0x9E);
 
+    // The bone/part block sits at header+0xAC and exists only on a non-Rigid
+    // mesh. Read it before the LODs so every section can point at one palette.
+    if (ms.mesh_type != 0 && (size_t)(h + 0xAC + 4) <= len) {
+        ms.bone_count      = (int)u16(d, h + 0xAC);
+        const int npart     = (int)u16(d, h + 0xAE);
+        // The two offsets follow ONLY IF either count is non-zero. Reading them
+        // unconditionally on a mesh that declares neither walks into whatever
+        // follows the block and yields a plausible-looking offset.
+        if ((ms.bone_count || npart) && (size_t)(h + 0xAC + 20) <= len) {
+            const int64_t bio = s64(d, h + 0xB0) + BASE;
+            if (npart > 0 && bio > 0 && (size_t)bio + (size_t)npart * 2 <= len) {
+                ms.bone_parts.resize((size_t)npart);
+                for (int i = 0; i < npart; i++)
+                    ms.bone_parts[(size_t)i] = u16(d, (size_t)bio + (size_t)i * 2);
+            }
+        }
+    }
+
     int nl = ms.lod_count < 6 ? ms.lod_count : 6;
     for (int li = 0; li < nl; li++) {
         int64_t lo = lod_offs[li] + BASE;
@@ -395,6 +500,21 @@ MeshSet meshset_parse(const uint8_t* d, size_t len, std::string& err) {
         lod.index = li;
         lod.section_count = sec_count;
         lod.sections = sections_at(d, len, sec_off, sec_count);
+        // The render category is authored per section. Category 2 is the
+        // executable's MeshSubsetCategory_TransparentDecal; a filename test
+        // finds only 28.5% of those sections and has false positives.
+        for (int cat = 0; cat < 5; cat++) {
+            const size_t cp = (size_t)lo + 0x14 + (size_t)cat * 12;
+            const int cnt = s32(d, cp);
+            const int64_t off = s64(d, cp + 4) + BASE;
+            if (cnt <= 0 || cnt > sec_count || off < 0 || (size_t)off + cnt > len)
+                continue;
+            for (int k = 0; k < cnt; k++) {
+                const int si = d[(size_t)off + k];
+                if (si >= 0 && si < (int)lod.sections.size())
+                    lod.sections[(size_t)si].category_flags |= (uint8_t)(1u << cat);
+            }
+        }
         lod.idx32 = (idx_fmt == 46);
         lod.index_size = idx_size;
         lod.vertex_size = vtx_size;

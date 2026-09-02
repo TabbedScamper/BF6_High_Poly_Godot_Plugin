@@ -51,11 +51,34 @@ const uint32_t kCsTranslate  = 0x98E1C6A5;
 const uint32_t kCsRadiosity  = 0x79764BCD;
 const uint32_t kCsTexture    = 0x3EF85CF5;
 const uint32_t kCs2Texture   = 0x7C9018D2;
+const uint32_t kCs2Speed     = 0x56DC1C70;
+const uint32_t kCs2Size      = 0x514C1243;
+const uint32_t kCs2Coverage  = 0x3578E33D;
+const uint32_t kCs2Exponent  = 0x3D209359;
+const uint32_t kCs2Translate = 0xF0A5F091;
+const uint32_t kCsAddress    = 0x569EADF9;
+const uint32_t kCs2Address   = 0xF064FB16;
+const uint32_t kCsTopDown    = 0x487133AF;
+const uint32_t kCs2TopDown   = 0x7EE5650B;
+const uint32_t kCsStartFade  = 0xED9AF476;
+const uint32_t kCsFadeDist   = 0x1A72CA69;
+const uint32_t kCsHeightEn   = 0xD31DE602;
+const uint32_t kCsHeightFrom = 0x3D448389;
+const uint32_t kCsHeightDist = 0x334F8124;
 
 const uint32_t kSkyType      = 0xFF6D65E7;
 const uint32_t kSkyLumScale  = 0x5EBAF2B1;
 const uint32_t kPanoRotation = 0x89F2223A;
 const uint32_t kPanoTile     = 0x54FCDDF6;
+const uint32_t kPanoUvMinX   = 0xA024201A;
+const uint32_t kPanoUvMaxX   = 0x6EAAB0C6;
+const uint32_t kPanoUvMinY   = 0x9482E7A9;
+const uint32_t kPanoUvMaxY   = 0x7827E1A9;
+const uint32_t kFlowDistance = 0x8507484E;
+const uint32_t kFlowDirection= 0x08D30301;
+const uint32_t kFlowPeriod   = 0x60158673;
+const uint32_t kFlowHeightScl= 0xFF89FAA5;
+const uint32_t kFlowHeightBias=0x3F08367A;
 const uint32_t kDrawSunDisc  = 0x029A4B53;
 const uint32_t kSunDiscSize  = 0xEF6748FB;
 const uint32_t kSunDiscScale = 0x0A654B9F;   // the SKY's SunScale, 300000
@@ -344,16 +367,19 @@ std::string ve_active_preset(Source& src, TypeDb& types, const std::string& leve
     return best ? best->name : std::string();
 }
 
-bool ve_lighting(Source& src, TypeDb& types, const std::string& level,
-                 VeLighting& out, std::string& err)
+bool ve_lighting_partition(Source& src, TypeDb& types, const std::string& partition,
+                           VeLighting& out, std::string& err)
 {
     out = VeLighting();
-    int cands = 0;
-    const std::string part = ve_active_preset(src, types, level, &cands, err);
-    if (part.empty()) return false;
+    std::string part = partition;
+    const std::string part_lower = lower(part);
+    if (part_lower.size() >= 4 &&
+        part_lower.compare(part_lower.size() - 4, 4, ".ebx") == 0)
+        part.resize(part.size() - 4);
+    if (part.empty()) { err = "no VisualEnvironment partition"; return false; }
     out.preset_path = part;
     out.preset = leaf_of(part);
-    out.preset_candidates = cands;
+    out.preset_candidates = 1;
 
     std::vector<uint8_t> raw = src.get_ebx(part, err);
     if (raw.empty()) { err = "preset unreadable: " + part; return false; }
@@ -450,12 +476,35 @@ bool ve_lighting(Source& src, TypeDb& types, const std::string& level,
     I(kSun, kCsRadiosity, out.cloud_radiosity);
     T(kSun, kCsTexture, out.cloud_shadow_res);
     T(kSun, kCs2Texture, out.secondary_cloud_shadow_res);
+    F(kSun, kCs2Size, out.secondary_cloud_shadow_size);
+    F(kSun, kCs2Coverage, out.secondary_cloud_shadow_coverage);
+    F(kSun, kCs2Exponent, out.secondary_cloud_shadow_exponent);
+    V(kSun, kCs2Speed, out.secondary_cloud_shadow_speed, 2);
+    V(kSun, kCs2Translate, out.secondary_cloud_shadow_translation, 2);
+    I(kSun, kCsAddress, out.cloud_shadow_addressing_mode);
+    I(kSun, kCs2Address, out.secondary_cloud_shadow_addressing_mode);
+    I(kSun, kCsTopDown, out.cloud_shadow_is_top_down);
+    I(kSun, kCs2TopDown, out.secondary_cloud_shadow_is_top_down);
+    F(kSun, kCsStartFade, out.cloud_shadow_start_fade);
+    F(kSun, kCsFadeDist, out.cloud_shadows_fade_distance);
+    I(kSun, kCsHeightEn, out.cloud_shadow_height_fade_enable);
+    F(kSun, kCsHeightFrom, out.cloud_shadow_start_height_fade);
+    F(kSun, kCsHeightDist, out.cloud_shadows_height_fade_distance);
 
     // ---- sky -------------------------------------------------------------
     I(kSky, kSkyType, out.sky_type);
     F(kSky, kSkyLumScale, out.sky_luminance_scale);
     F(kSky, kPanoRotation, out.sky_panoramic_rotation);
     F(kSky, kPanoTile, out.sky_panoramic_tile_factor);
+    F(kSky, kPanoUvMinX, out.sky_panoramic_uv_min[0]);
+    F(kSky, kPanoUvMinY, out.sky_panoramic_uv_min[1]);
+    F(kSky, kPanoUvMaxX, out.sky_panoramic_uv_max[0]);
+    F(kSky, kPanoUvMaxY, out.sky_panoramic_uv_max[1]);
+    F(kSky, kFlowDistance, out.sky_flow_distance);
+    F(kSky, kFlowDirection, out.sky_flow_direction);
+    F(kSky, kFlowPeriod, out.sky_flow_period);
+    F(kSky, kFlowHeightScl, out.sky_flow_height_mask_scale);
+    F(kSky, kFlowHeightBias, out.sky_flow_height_mask_bias);
     I(kSky, kDrawSunDisc, out.sky_draw_sun_disc);
     F(kSky, kSunDiscSize, out.sun_disc_size);
     F(kSky, kSunDiscScale, out.sun_disc_scale);
@@ -540,6 +589,17 @@ bool ve_lighting(Source& src, TypeDb& types, const std::string& level,
     // ---- shadows -----------------------------------------------------------
     F(kShadow, kSunShadowDist, out.sun_shadow_view_distance);
 
+    return true;
+}
+
+bool ve_lighting(Source& src, TypeDb& types, const std::string& level,
+                 VeLighting& out, std::string& err)
+{
+    int cands = 0;
+    const std::string part = ve_active_preset(src, types, level, &cands, err);
+    if (part.empty()) return false;
+    if (!ve_lighting_partition(src, types, part, out, err)) return false;
+    out.preset_candidates = cands;
     return true;
 }
 
