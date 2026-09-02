@@ -2657,7 +2657,18 @@ int bf6_level_lighting(bf6_ctx* c, const char* level,
 
     std::string e;
     const std::string requested = level;
-    const bool explicit_preset = requested.find("/lighting/ve_") != std::string::npos;
+    /* A VE PRESET IS IDENTIFIED BY ITS LEAF NAME, not by its directory. This
+     * test used to look for "/lighting/ve_", which is where a LEVEL keeps its
+     * presets - but the gameplay ones do not live there:
+     * `common/fx/ve/gameplay/ve_fullscreen_thermal_whot` and the optic thermal
+     * views are under common/fx. Those fell through to the LEVEL branch and
+     * failed with "no archives for level '<a partition name>'", which reads as
+     * the preset being absent rather than as this test being too narrow. A
+     * level id never begins "ve_", so widening to the leaf cannot swallow one. */
+    const size_t leaf_at = requested.find_last_of('/');
+    const std::string leaf = (leaf_at == std::string::npos) ? requested
+                                                            : requested.substr(leaf_at + 1);
+    const bool explicit_preset = leaf.rfind("ve_", 0) == 0;
     if (!explicit_preset && !ensure_mounted(c, level, e)) return fail(e);
     if (!ensure_types(c, e)) return fail(e);
 
