@@ -36,10 +36,16 @@
 extern "C" {
 #endif
 
-#define BF6_ABI_VERSION 1
+#define BF6_ABI_VERSION 3
 
 /* ------------------------------------------------------------------ session */
 typedef struct bf6_ctx bf6_ctx;
+
+/* Runtime contract check for dynamically loaded consumers. A binding must
+ * compare this result with BF6_ABI_VERSION before resolving or calling any
+ * struct-bearing API; this catches a current DLL paired with a stale copied
+ * header, which otherwise compiles and can corrupt memory without an error. */
+BF6_API int bf6_abi_version(void);
 
 /* Open an install: mount, read the type schema, and OOA-lift the executable in
  * memory if it is DRM-wrapped (EA App). All storefront divergence lives behind
@@ -135,10 +141,57 @@ typedef struct {
      * Decoded all along; it simply never crossed this ABI, the same way uv1
      * did not. */
     const uint16_t* bones;
-    /* This section's bone palette: bone_list[i] is the SKELETON bone id for
-     * palette slot i. NULL on a mesh that carries no palette. */
+    /* The mesh's bone/part list from the MeshSet header (one per mesh, handed
+     * to every section). These are skeleton bone ids, but this is NOT a
+     * skinning palette - it is the set of bones that own mesh parts and
+     * bounding boxes, and it is far too short to index with `skin_bones`.
+     * NULL on a Rigid mesh, which carries no block at all. */
     const uint16_t* bone_list;
     int32_t         bone_list_count;
+    /* PER-VERTEX SKIN BINDING. NULL on an unskinned section.
+     *
+     * `skin_influences` is 4 or 8. Both arrays are
+     * skin_influences * vertex_count and are lane-aligned:
+     * skin_weights[v * skin_influences + k] weights skin_bones[v * skin_influences + k].
+     *
+     * `bones` above is ONE index per vertex and is not the same thing - on a
+     * destructible it is a destruction part, and even on a skinned mesh it is
+     * only the last lane. Skinning a character with it collapses every vertex
+     * onto a single joint.
+     *
+     * The weights sum to 1 ACROSS ALL `skin_influences` LANES. On an
+     * 8-influence section the first four alone sum to less than 1; the rest is
+     * in the second element, and both are already concatenated here.
+     *
+     * THE INDICES ARE SKELETON BONE IDS DIRECTLY - do not remap them through
+     * `bone_list`. That was the natural assumption and it is wrong: on a
+     * character the palette holds 1 to 7 entries (it is the part-ownership and
+     * bounding-box list) while skin indices reach 210, so routing through it
+     * would index past the end of a 7-element array on nearly every vertex.
+     * Measured on ske_soldier_3p: 0 of 339,568 body influences and 0 of 69,096
+     * face influences fall outside the rig's 291 bones, and the bones they
+     * weight are the right ones - the face mesh's heaviest are Head, Neck and
+     * HeadRoll, the body's are Spine, Hips and the knees.
+     *
+     * A bone index carrying 0x8000 has already been decoded on the way out. */
+    const uint16_t* skin_bones;
+    const float*    skin_weights;
+    int32_t         skin_influences;
+    /* Authored MeshSubsetCategory_TransparentDecal membership. Per section,
+     * never inferred from an asset or material name. */
+    int32_t         is_decal;
+    /* THIS SECTION'S SHADER STATE KEY, from the MeshSection record.
+     *
+     * It is the handle into the ShaderBlockDepot, and therefore the way to
+     * reach everything the section-texture list does NOT carry - the character
+     * eye shader, skin subsurface and wrinkle slots among them. Without it a
+     * consumer can only see the two or three textures the section resolves
+     * directly.
+     *
+     * A STATE KEY IS NOT GLOBALLY UNIQUE - it is scoped to the depot it came
+     * from, so the same key resolves differently against a different bundle.
+     * Resolve it against the depot of the bundle the mesh was read with. */
+    uint64_t        state_key;
 } bf6_section;
 
 typedef struct bf6_material_desc bf6_material_desc;   /* below */
@@ -148,6 +201,20 @@ typedef struct {
     int32_t                  section_count;
     const bf6_material_desc*  materials;
     int32_t                  material_count;
+    /* MeshType: 0 Rigid, 1 Skinned, 2 Composite.
+     *
+     * NOT cosmetic. It decides what the per-vertex usage-2 element MEANS, and
+     * the two readings are different index spaces entirely: on a Skinned mesh
+     * it is a skeleton bone id, on a Rigid or Composite destructible it is a
+     * DESTRUCTION PART index. A consumer that assumes one gets plausible small
+     * integers either way and binds vertices to the wrong thing with no error.
+     * The renderbone 0x8000 convention is likewise MeshType 1 only.
+     *
+     * `bone_count` is the MeshSet's declared bone count; `lod_count` is how
+     * many LODs the set carries, of which this handle decoded one. */
+    int32_t                  mesh_type;
+    int32_t                  bone_count;
+    int32_t                  lod_count;
     float                    aabb_min[3];
     float                    aabb_max[3];
 } bf6_mesh;
@@ -175,6 +242,12 @@ BF6_API bf6_mesh* bf6_read_mesh(bf6_ctx*, const char* res_name, int lod);
 BF6_API bf6_mesh* bf6_read_mesh_scoped(bf6_ctx*, const char* res_name, int lod,
                               const char* placing_bundle, const char* variation);
 
+/* Armory-specialized form of the same read. It resolves material FILE guids
+ * through the bounded runtime armory index, avoiding a scan of unrelated level
+ * partitions. Geometry and bundle scoping are otherwise identical. */
+BF6_API bf6_mesh* bf6_read_armory_mesh_scoped(bf6_ctx*, const char* res_name, int lod,
+                              const char* placing_bundle, const char* variation);
+
 /* DOES THIS VARIATION CHANGE ANYTHING FOR THIS MESH? 1 when any of the mesh's
  * section keys derives a resolving record in the placing bundle's depot, else
  * 0. The question exists because splitting instance groups by variation is
@@ -188,11 +261,18 @@ BF6_API int bf6_variation_live(bf6_ctx*, const char* res_name,
 typedef enum {
     BF6_TEX_ALBEDO = 0,
     BF6_TEX_NORMAL,
-    BF6_TEX_MRO,          /* metallic / roughness / occlusion, packed       */
+    /* Hardware/weapon `_wo` sheet.  This is NOT a generic M/R/O texture:
+     * R is an edge/wear field and A is the paint mask; G/B are not yet
+     * identified.  Smoothness comes from the ALBEDO `_cs` alpha channel. */
+    BF6_TEX_WO,
     BF6_TEX_EMISSIVE,
     BF6_TEX_MASK,
     BF6_TEX_SLOT_COUNT
 } bf6_tex_slot;
+
+/* Source-compatibility only.  Older consumers called `_wo` an MRO map.  The
+ * numeric slot remains stable, but new code must not apply M/R/O semantics. */
+#define BF6_TEX_MRO BF6_TEX_WO
 
 typedef struct {
     bf6_tex_slot slot;
@@ -231,6 +311,10 @@ struct bf6_material_desc {
      * composition makes the sheet's authentic dark texels impossible to
      * light and reads as corruption. */
     int32_t                normal_is_nsm; /* 0/1 */
+    /* The depot record binds the terrain virtual-texture colour slot
+     * 0x89D3AD5E and has no usable albedo of its own. These are the authored
+     * M_TerrainBlend surfaces that receive terrain decals. */
+    int32_t                terrain_decal_receiver; /* 0/1 */
 };
 
 /* ---------------------------------------------------------------- textures */
@@ -242,6 +326,9 @@ typedef enum {
      * binding that quietly reported them as BC7 would upload garbage. */
     BF6_FMT_BC6H_U, BF6_FMT_BC6H_S,
     BF6_FMT_R8,     BF6_FMT_RGBA16F,
+    /* The 33-cubed VisualEnvironment grading LUT. Appended so the values of
+     * every previously published format remain ABI-stable. */
+    BF6_FMT_RGB10A2,
     BF6_FMT_UNKNOWN = 255
 } bf6_fmt;
 
@@ -259,6 +346,19 @@ typedef struct {
  * texture_id comes from a material's bf6_tex_binding. Owned by the ctx. */
 BF6_API const bf6_texture* bf6_texture_at(bf6_ctx*, int texture_id);
 
+/* Same exact texture resource and authored mip chain, capped for an on-screen
+ * preview. For streamed textures this deliberately reads the embedded mip tail
+ * rather than isolated mip0, which makes the cap effective. Context-owned. */
+BF6_API const bf6_texture* bf6_texture_at_max_dim(bf6_ctx*, int texture_id,
+                                                  int max_dimension);
+
+/* The live resource name behind a texture id returned by any read path.
+ * Context-owned, stable until bf6_close. This is metadata, not an exported
+ * intermediate: consumers use it to select material behaviour from the
+ * current install (for example road paint versus track wear) without shipping
+ * a per-patch id table. */
+BF6_API const char* bf6_texture_name_at(bf6_ctx*, int texture_id);
+
 /* --------------------------------------------------------------- placements */
 typedef struct {
     const char* res_name;      /* the mesh to instance                       */
@@ -272,6 +372,10 @@ typedef struct {
      * bf6_open_level. */
     const char* placing_bundle;
     const char* variation;
+    /* Authoring partition that emitted this placement.  This is deliberately
+     * appended so existing consumers keep the offsets of every older field.
+     * Owned by the context, with the same lifetime as res_name. */
+    const char* source;
 } bf6_instance;
 
 /* ---------------------------------------------------------------- progress */
@@ -307,6 +411,14 @@ BF6_API int bf6_open_level(bf6_ctx*, const char* level, const char* exe_path,
  * next bf6_open_level. */
 BF6_API int bf6_level_instances(bf6_ctx*, const char* level,
                         bf6_instance* out, int out_max);
+
+/* Walk one mounted prefab/asset directly and return its placements.  This is
+ * the runtime read path for front-end scenes that are instantiated by flow
+ * code instead of appearing as a conventional level root.  The asset is read
+ * from the mounted game archives; no exported placement table is involved. */
+BF6_API int bf6_asset_instances(bf6_ctx*, const char* asset,
+                        bf6_instance* out, int out_max,
+                        char* err, int err_len);
 
 /* ------------------------------------------------------- local light placements
  *
@@ -463,6 +575,64 @@ BF6_API int bf6_level_lights(bf6_ctx*, const char* level,
                              bf6_light* out, int out_max,
                              bf6_light_stats* stats, char* err, int err_len);
 
+/* Every light reachable from one named EBX asset. This is the same graph and
+ * field decoder as bf6_level_lights, but it deliberately does not remount a
+ * level: front-end scenes and studio rigs live in the global install mount and
+ * are not playable levels. Call bf6_mount_all first. Count/fill and ownership
+ * match bf6_level_lights. */
+BF6_API int bf6_asset_lights(bf6_ctx*, const char* asset,
+                             bf6_light* out, int out_max,
+                             bf6_light_stats* stats, char* err, int err_len);
+
+/* -------------------------------------- local VisualEnvironment trigger zones
+ * A VisualEnvironment preset does not carry its own bounds. These are the
+ * exact shapes connected from AreaProximityEntityData.Geometry in the owning
+ * blueprint, transformed through the placed level graph. Only zones whose
+ * property/event graph reaches a concrete VisualEnvironmentReferenceObjectData
+ * preset are returned. Channel-routed zones are counted in `omitted_no_preset`
+ * and deliberately omitted until their channel-to-preset join is decoded. */
+enum bf6_lighting_zone_kind {
+    BF6_LIGHTING_ZONE_OBB = 0,
+    BF6_LIGHTING_ZONE_POLYGON = 1
+};
+
+typedef struct {
+    int32_t kind;              /* bf6_lighting_zone_kind */
+    float   xform[12];         /* world transform, same row layout as instances */
+    float   half_extents[3];   /* OBB local half extents; zero for polygon */
+    /* Polygon vertices as point_count triples, local to xform. Context-owned,
+     * valid until this function is called for another level or bf6_close. */
+    const float* points;
+    int32_t point_count;
+    float   height;            /* polygon extrusion along local +Y */
+    float   fade_distance;     /* authored AreaProximity ProximityDistance */
+    const char* preset;        /* exact imported VE partition */
+    const char* source;        /* owning blueprint partition */
+    int32_t proximity_instance;
+    int32_t shape_instance;
+} bf6_lighting_zone;
+
+typedef struct {
+    int32_t total, obb, polygon;
+    int32_t partitions, instances, proximity;
+    int32_t shape_links;
+    int32_t non_geometry_links;
+    int32_t non_shape_geometry_links;
+    int32_t target_obb, target_polygon, target_other;
+    int32_t joined_preset, omitted_no_preset;
+    int32_t parse_fail, missing, cycles, malformed_shape, unresolved_types;
+    /* Negative control: source instance rotated by one while target is held
+     * fixed. A real join should dominate this fabricated pairing. */
+    int32_t rotated_control_hits;
+} bf6_lighting_zone_stats;
+
+/* Count/fill convention. Mounts the level and reflection schema on demand.
+ * Returns 0 with err set on failure; stats may be NULL. */
+BF6_API int bf6_level_lighting_zones(bf6_ctx*, const char* level,
+                                     bf6_lighting_zone* out, int out_max,
+                                     bf6_lighting_zone_stats* stats,
+                                     char* err, int err_len);
+
 /* ------------------------------------------------------------------ effects */
 /* One GPU-exposed parameter. `type` is 0 Float, 1 Vec2, 2 Vec3, 3 Vec4, 4 Bool,
  * 5 Int, and IT IS THE READ RULE: only the first width(type) components of v[]
@@ -613,6 +783,10 @@ typedef struct {
 } bf6_terrain;
 
 BF6_API bf6_terrain* bf6_read_terrain(bf6_ctx*, const char* level);
+/* Absolute-Y water surface heightfield from streaming-tree block 2.  This is
+ * the large spatial offset sampled by the water vertex shader; it is distinct
+ * from the small ocean FFT displacement.  Reads the mounted game at runtime. */
+BF6_API bf6_terrain* bf6_read_water_heightfield(bf6_ctx*, const char* level);
 
 /* ------------------------------------------------------------ terraindecals */
 /* Roads and street markings.
@@ -741,9 +915,8 @@ BF6_API int bf6_level_water(bf6_ctx*, const char* level, bf6_water* out, int out
  * tungsten's only instance is NOT flagged, so "flagged only" loses the most
  * oceanic map in the game).
  *
- * Units, as far as the corpus settles them: wind_angle is radians with an
- * UNRESOLVED axis convention; wind_speed is a normalised authoring scalar, NOT
- * m/s.
+ * Units: the executable's initial-spectrum builder divides wind_angle by 360,
+ * so it is degrees. wind_speed is a normalised authoring scalar, NOT m/s.
  *
  * RETRACTED: this comment used to give that scalar's scale as "0.01 calm, 0.07
  * windy, 0.30+ the D-Day sea". Those numbers were read through the SINGLE
@@ -777,6 +950,60 @@ typedef struct {
 /* Requires bf6_open_level. Returns 1 and fills out when the level has a sim
  * entity, else 0. */
 BF6_API int bf6_level_water_sim(bf6_ctx*, const char* level, bf6_water_sim* out);
+
+/* Complete ocean-cascade input. Unlike bf6_water_sim this preserves every
+ * value consumed by the game's CPU H0 builder, including the Hermite tangent
+ * pairs and the selected PC resolution. source_index is the original EBX
+ * instance index; returned rows are in renderer cascade order (largest tile
+ * first), up to the game's four-cascade limit. */
+typedef struct {
+    int32_t source_index;
+    int32_t enabled;
+    int32_t resolution;       /* PlatformScalableInt.Default: Win64/PC route */
+    float   wind_angle_degrees;
+    float   wind_speed;
+    float   choppiness;
+    float   tile_dimension;
+    float   min_wavelength;
+    float   large_wave_reduction;
+    float   wave_amplitude;
+    float   wave_thickness;
+    int32_t foam_enable;
+    float   foam_threshold;
+    float   foam_max;
+    float   foam_half_life;
+    int32_t physics_simulation_enabled;
+    int32_t force_simple_plane_collision;
+    int32_t visual_cpu_simulation_enabled;
+    int32_t dist_count;       /* 5, 9 or 13 */
+    float   dist_x[13];
+    float   dist_y[13];
+    float   dist_tangent_out[12];
+    float   dist_tangent_in[12];
+    float   dist_clamp_min;
+    float   dist_clamp_max;
+} bf6_water_sim_v2;
+
+/* Requires bf6_open_level. Returns the total enabled cascade count; writes at
+ * most out_max rows. A null output/count-only call is supported. */
+BF6_API int bf6_level_water_sims(bf6_ctx*, const char* level,
+                                  bf6_water_sim_v2* out, int out_max);
+
+/* Water-lab route: mount only the named level archives, load the executable
+ * type schema, and inspect only that level's water schematic partitions. It
+ * deliberately does NOT run bf6_open_level's placement/object-graph walk.
+ * The returned rows and count/fill contract are identical to
+ * bf6_level_water_sims, so callers can compare the isolated and full routes
+ * byte-for-byte as a control. */
+BF6_API int bf6_level_water_sims_isolated(bf6_ctx*, const char* level,
+                                           bf6_water_sim_v2* out, int out_max);
+
+/* Rebuild the CPU-created complex H0 texture used by the shipped ocean FFT.
+ * out_rg contains resolution*resolution float2 values. Returns the required
+ * float count on success (also for a null/count-only call), or 0 on invalid
+ * input. The seed and random walk are the executable's deterministic route. */
+BF6_API int bf6_water_spectrum_h0(const bf6_water_sim_v2* sim,
+                                  float* out_rg, int out_float_count);
 
 /* ---------------------------------------------------------- water, part 2
  *
@@ -846,12 +1073,101 @@ typedef struct {
     /* for bf6_texture_at, or -1 */
     int32_t detail_normal, foam_normal, foam_rgb, noise, perlin;
     int32_t contact_foam, foam_rgb2;
+
+    /* Extended-water draw graph parameters. These are appended so older ABI
+       consumers keep their layout. They are read from the current level's
+       ShaderBlockDepot on every call; negative means this graph does not
+       author the parameter. MP_Isolated uses separate scales for the micro
+       and foam normal sheets -- collapsing them to one scale is visibly
+       wrong -- plus an authored micro-sheet animation rate. */
+    float micro_sheet_uv_scale;         /* cycles / metre                  */
+    float foam_sheet_uv_scale;          /* cycles / metre                  */
+    float micro_sheet_flow_speed;       /* graph time multiplier           */
+    float foam_composite_low;           /* final coverage range remap low  */
+    float foam_composite_high;          /* final coverage range remap high */
+    float contact_world_divisor_m;      /* contact UV = world/divisor-.5   */
+    float contact_remap_low;
+    float contact_gain;
+    /* MP_Isolated's broad moving crest sheet.  These three values are depot
+       constants selected by the current pixel permutation, not fitted
+       preview controls.  The three motion coefficients which combine them
+       are literals in the current shipped permutation. */
+    float broad_pattern_world_mul;
+    float broad_pattern_world_scale;
+    float broad_pattern_floor;
+    /* Exact current extended-water material cbuffer, registers 0..21.  The
+       values are assembled from the mounted depot by Name32, never loaded
+       from a staged dump.  Version is zero unless every value used by the
+       current MP_Isolated graph and all five textures are present AND the
+       live ShaderStateDatabase selects the pixel program this translation was
+       decoded from. */
+    uint32_t extended_graph_version;
+    float extended_cb1[22][4];
+    /* Raw .NET-layout GUID bytes of pass 0's selected pixel program. */
+    uint8_t selected_pass0_pixel_guid[16];
+    /* Current selected vertex shader's cascade-0 overlap transform. Appended
+       for ABI compatibility. Version is zero unless the live entity carries
+       every source field and pass 0 selects the shader whose arithmetic was
+       decoded. params=(sin,cos,shear_x,shear_y), params2=(1/A,1/B,A,B). */
+    uint32_t cascade_overlap_version;
+    int32_t cascade_overlap_enabled;
+    float cascade_overlap_params[4];
+    float cascade_overlap_params2[4];
+    float cascade_overlap_height_scale;
+    uint8_t selected_pass0_vertex_guid[16];
+
+    /* Active VisualEnvironment OceanComponentData, joined at runtime through
+       the level root's import list.  These are the inputs consumed by the
+       deferred water composite; they do not come from the surface material
+       above.  Version is zero unless the active preset and every required
+       source field were resolved from the mounted game. */
+    uint32_t ocean_component_version;
+    char ocean_preset[128];
+    int32_t ocean_preset_candidates;
+    int32_t ocean_enable;
+    int32_t simplified_distortion;
+    int32_t foam_enable;
+    float composite_ior;
+    float opacity_ramp_m;
+    float foam_depth_ramp_m;
+    float scatter_phase_g;
+    float transmission_colour[3];
+    float scatter_shadow_influence;
+    float foam_tint[3];
+    float foam_smoothness;
+    float foam_roughness;              /* derived as 1-FoamSmoothness */
+    float authored_ocean_albedo[3];
+    float authored_albedo_distance_m;
 } bf6_water_render;
 
 /* Requires bf6_open_level for this level first. Same convention as
   bf6_level_instances: returns the count, fills out[] to out_max. */
 BF6_API int bf6_level_water_render(bf6_ctx*, const char* level,
                                    bf6_water_render* out, int out_max);
+
+/* The terrain utility raster bound by the selected water vertex shader as the
+ * CoarseMask source. The atlas is the game's R8 pages in persistent-record
+ * order, byte-for-byte; indirection is the packed uint32 table built by the
+ * game's runtime loader. Pointers are owned by the context and remain valid
+ * until the next mask read or bf6_close. No exported intermediate is used. */
+typedef struct bf6_water_mask {
+    uint32_t version;                 /* 1 = current exact utility-raster path */
+    uint32_t tile_side;               /* stored page side, including border   */
+    uint32_t interior_side;           /* tile_side - 2*border - 1             */
+    uint32_t border;
+    uint32_t page_count;
+    uint32_t indirection_side;        /* 1 << max_level                       */
+    float bounds_min[2];              /* world X,Z metres                     */
+    float bounds_max[2];
+    float coverage_side_rcp;          /* 1 / (bounds_max.x-bounds_min.x)       */
+    float border_fraction;            /* border / (tile_side-1)                */
+    const uint8_t* atlas_r8;          /* page_count*tile_side*tile_side bytes  */
+    const uint32_t* indirection_u32;  /* indirection_side squared packed cells */
+} bf6_water_mask;
+
+/* Requires the level to be mounted. Returns 1 and fills out on success. */
+BF6_API int bf6_level_water_mask(bf6_ctx*, const char* level,
+                                 bf6_water_mask* out, char* err, int err_cap);
 
 
 /* --------------------------------------------------------------- lighting */
@@ -1077,9 +1393,44 @@ typedef struct {
      * failure. */
     int32_t fields_found;
     int32_t fields_expected;
+
+    /* Version 1 appended sky/cloud fields. They are kept at the tail so every
+     * previously published member retains its ABI offset. The values are read
+     * from the active preset in the current install; no fleet table is a
+     * runtime input. */
+    uint32_t sky_cloud_extension_version;
+    float sky_panoramic_uv_min[2];
+    float sky_panoramic_uv_max[2];
+    float sky_flow_distance;
+    float sky_flow_direction;           /* degrees */
+    float sky_flow_period;              /* seconds */
+    float sky_flow_height_mask_scale;
+    float sky_flow_height_mask_bias;
+    float secondary_cloud_shadow_size;
+    float secondary_cloud_shadow_coverage;
+    float secondary_cloud_shadow_exponent;
+    float secondary_cloud_shadow_speed[2];
+    float secondary_cloud_shadow_translation[2];
+    int32_t cloud_shadow_addressing_mode;
+    int32_t secondary_cloud_shadow_addressing_mode;
+    int32_t cloud_shadow_is_top_down;
+    int32_t secondary_cloud_shadow_is_top_down;
+    float cloud_shadow_start_fade;
+    float cloud_shadows_fade_distance;
+    int32_t cloud_shadow_height_fade_enable;
+    float cloud_shadow_start_height_fade;
+    float cloud_shadows_height_fade_distance;
+    int32_t secondary_cloud_shadow_texture;
+    int32_t panorama_alpha_texture;
+    int32_t flow_mask_texture;
+    int32_t cloud_layer1_texture;
+    int32_t grading_lut_texture;
+    int32_t lens_dirt_texture;
 } bf6_ve_lighting;
 
-/* Decode `level`'s active VisualEnvironment. Returns 1 on success.
+/* Decode `level`'s active VisualEnvironment. An explicitly named
+ * game/.../lighting/ve_* partition is decoded directly; front-end screens have
+ * no playable level root and select these presets themselves. Returns 1 on success.
  *
  * Mounts on demand, so it works on a context where bf6_open_level failed at the
  * placement walk (or was never called). */
@@ -1190,13 +1541,17 @@ typedef struct {
     float       height_blend;
     float       coord_scale[2];
     float       uv_offset[2];
+    /* Authored auxiliary `_op` sheet used by the generated evaluator to gate
+     * the stored paint mask. Appended so every earlier field keeps its ABI
+     * offset; NULL/empty means the multiplicative identity. */
+    const char* coverage_res;
 } bf6_ground_material;
 
 typedef struct {
     int32_t        size;
     float          lo[2];           /* world XZ of the low corner, metres   */
     float          hi[2];
-    /* size*size*4 each, owned by the context. idx indexes MATERIALS, not raw
+    /* size*size*slot_count each, owned by the context. idx indexes MATERIALS, not raw
      * layer ids, and 255 means "no layer here"; w is that slot's weight,
      * weight-sorted with the first zero ending the list. Sample idx with
      * POINT filtering - a bilinear read of an index is a different index. */
@@ -1211,6 +1566,9 @@ typedef struct {
     const bf6_ground_material* materials;
     int32_t        material_count;
     float          empty_fraction;
+    /* Number of compact evaluator slots per texel. Appended for ABI hygiene;
+     * zero from an older DLL means the historical width of four. */
+    int32_t        slot_count;
 } bf6_ground_coverage;
 
 /* Requires bf6_open_level. size 0 -> 2048. Returns 1 on success. */
@@ -1264,6 +1622,26 @@ BF6_API int bf6_layer_sheet(bf6_ctx*, const char* res_name, int size,
  * Returns 1 on success, 0 with a reason in err. */
 BF6_API int bf6_mount_all(bf6_ctx*, int include_levels, char* err, int err_len);
 
+/* Focused native-viewer mount. It discovers installed TOCs and selects the
+ * shared UI/weapons/characters/vehicles/globals/main-menu/English-text archive
+ * families by their live paths. It does not consume an exported owner table.
+ * Use bf6_mount_all for whole-install enumeration. */
+BF6_API int bf6_mount_frontend(bf6_ctx*, char* err, int err_len);
+
+/* Add one named level's archives to an existing mount without walking or
+ * decoding the level. This is for narrowly owned shared assets (for example a
+ * UI palette authored in one campaign bundle), and is deliberately distinct
+ * from bf6_open_level. Existing names still win. */
+BF6_API int bf6_mount_level_archives(bf6_ctx*, const char* level,
+                                     char* err, int err_len);
+
+/* Mount one EBX through an exact TOC + bundle owner read path. `toc_path` may
+ * be relative to the game directory. This avoids widening a focused viewer's
+ * active name/index population merely to read one authored record. */
+BF6_API int bf6_mount_ebx_owner(bf6_ctx*, const char* toc_path,
+                                const char* bundle_name, const char* ebx_name,
+                                char* err, int err_len);
+
 /* One row of the mount's name tables. `name` points into the ctx and is valid
  * until bf6_close. `type` is the resource type id (0 for EBX), `size` the
  * decompressed byte length the bundle recorded. */
@@ -1301,6 +1679,10 @@ typedef struct {
 
 BF6_API int bf6_partition_index(bf6_ctx*, bf6_partition* out, int out_max);
 
+/* The runtime-read subset needed by the native armory. Same lifetime and
+ * count/fill contract as bf6_partition_index. */
+BF6_API int bf6_armory_partition_index(bf6_ctx*, bf6_partition* out, int out_max);
+
 typedef enum {
     BF6_RAW_EBX = 0,
     BF6_RAW_RES = 1,
@@ -1320,6 +1702,94 @@ typedef enum {
  * NOT thread safe against itself for that reason: one reader per context. */
 BF6_API int64_t bf6_read_raw(bf6_ctx*, int kind, const char* name,
                              const uint8_t** out_data);
+
+/* Structural inspection of one raw SerializedExpressionNodeGraph RES
+ * (0x7DD4CC89). The caller mounts the owning frontend/level first, then names
+ * the installed resource directly. No exported corpus table is consumed.
+ * `exact_record_tiling` is 1 only when every record byte is covered by a
+ * measured kind length; 0 is an explicit rare-kind coverage gap, not failure.
+ */
+typedef struct {
+    uint32_t payload_bytes;
+    uint32_t content_hash;
+    uint32_t instance_header_size;
+    uint32_t constant_pool_size;
+    uint32_t slot_file_size;
+    uint32_t record_bytes;
+    uint32_t pointer_table_entries;
+    uint32_t external_bindings;
+    uint32_t type_count;
+    uint32_t instance_value_group_count;
+    uint32_t slot_value_group_count;
+    uint32_t relocation_count;
+    uint32_t fixup_count;
+    uint32_t record_count;
+    uint32_t discovered_record_bytes;
+    uint8_t  exact_record_tiling;
+    uint8_t  instance_buffer_count;
+    uint8_t  register_group_0;
+    uint8_t  register_group_1;
+    uint8_t  register_group_2;
+    uint8_t  _reserved[3];
+} bf6_expression_stats;
+
+BF6_API int bf6_expression_inspect(bf6_ctx*, const char* res_name,
+                                   bf6_expression_stats* out,
+                                   char* err, int err_len);
+
+/* Current executable's 32-byte DiceExpression descriptor registry. This is a
+ * direct structural PE scan, so game updates add/remove rows automatically.
+ * Returns TOTAL matches and writes up to out_max, like the asset listings. */
+typedef struct {
+    uint32_t key;
+    uint32_t flags;
+    uint64_t implementation_va;
+    uint64_t record_va;
+} bf6_expression_operator;
+
+BF6_API int bf6_expression_descriptor_operators(
+    const char* exe_path, bf6_expression_operator* out, int out_max,
+    char* err, int err_len);
+
+/* Query-driven compact EA::EX::MethodRegistry scan. `keys` must come from
+ * graph fixups; unrelated executable tables share this 16-byte shape. */
+BF6_API int bf6_expression_method_operators(
+    const char* exe_path, const uint32_t* keys, int key_count,
+    bf6_expression_operator* out, int out_max,
+    char* err, int err_len);
+
+typedef struct {
+    uint32_t key;
+    uint32_t match_count; /* 1 is usable; >1 is deliberately withheld */
+    char     name[128];
+} bf6_expression_operator_name;
+
+BF6_API int bf6_expression_resolve_operator_names(
+    const char* exe_path, const uint32_t* keys, int key_count,
+    bf6_expression_operator_name* out, int out_max,
+    char* err, int err_len);
+
+typedef struct {
+    uint32_t key;
+    uint16_t parameter_count;
+    uint16_t _reserved;
+    uint32_t signature;
+    uint64_t descriptor_va;
+    uint64_t parameters_va;
+} bf6_expression_reflected_operator;
+
+BF6_API int bf6_expression_reflected_operators(
+    const char* exe_path, bf6_expression_reflected_operator* out, int out_max,
+    char* err, int err_len);
+
+/* Resolve an EBX ResourceRef id to the RES name it points at. Returns 1 and
+ * fills `out` on success, 0 if no resource carries that rid.
+ *
+ * A ResourceRef is a 64-bit id, not a name. A reader that only resolves by name
+ * cannot follow one, which makes a live reference look like a dead end - so
+ * "the reference does not resolve" and "this reader cannot follow references"
+ * get confused. This tells them apart. */
+BF6_API int bf6_res_by_rid(bf6_ctx*, uint64_t rid, char* out, int out_len);
 
 /* What a chunk is TO the resource that named it. A caller extracting to disk
  * wants this: the streamed chunks are the high-resolution mip0 sheets and they
@@ -1375,14 +1845,10 @@ BF6_API int bf6_typeinfo_readable(const char* exe_path, double* bits);
 BF6_API int64_t bf6_ebx_dump(bf6_ctx*, const char* name, int max_depth,
                              char* out, int out_len);
 
-/* An EBX field's real NAME for its nameHash, or NULL when unknown.
- *
- * BF6 strips names and changed its hash function, so these are recovered by
- * joining its baked reflection against older Frostbite titles' named dumps -
- * by type GUID, and by (GUID, field offset) for fields. 20,614 pairs. Use it
- * instead of carrying magic numbers: it is what turns 0xB77123CC into
- * IsPlayerFacing, and stops a field being named after what it happens to
- * correlate with. */
+/* BF6's installed reflection does not ship field names, only hashes. This ABI
+ * is retained for compatibility and returns NULL in the runtime library.
+ * Research tools may join hashes against the guarded field-name oracle, but a
+ * runtime reader must carry its proven field hashes and read path directly. */
 BF6_API const char* bf6_field_name(uint32_t name_hash);
 
 /* ------------------------------------------------------------------ armory */
@@ -1391,11 +1857,11 @@ BF6_API const char* bf6_field_name(uint32_t name_hash);
  * There are 43 of these, not the 11 three-letter codes that appear in
  * attachment FILENAMES. `mzl` is an abbreviation in a filename; MuzzleDevice
  * is a slot. A consumer that works from the abbreviations cannot see the
- * slots that have no filename form, cosmetics among them. */
+ * slots that have no filename form, including camo and charm slots. */
 typedef struct {
     uint32_t    id;        /* authored, NOT a hash of the name - it must be read */
     const char* name;      /* owned by the ctx, valid until bf6_close            */
-    int32_t     cosmetic;  /* 0/1; set on camo and charm slots                   */
+    int32_t     is_player_facing; /* IsPlayerFacing, 0/1; authored field          */
     int32_t     flag2;     /* 0/1; meaning not yet established                   */
 } bf6_armory_slot;
 
@@ -1406,11 +1872,173 @@ typedef struct {
  * be loaded (an EA App install, whose type table is encrypted). */
 BF6_API int bf6_armory_slots(bf6_ctx*, bf6_armory_slot* out, int out_max);
 
+/* One live armory CameraModeAsset. `mode` is the asset leaf (for example
+ * "weaponbehavior" or "weaponsightbehavior"). The two offsets are returned
+ * in evaluation order around LookAtTarget: pre is weapon-anchor local, post
+ * is camera local. No recorded camera table is a runtime input. */
+typedef struct {
+    char    mode[64];
+    char    anchor[64];
+    char    look_at[64];
+    float   pre_offset[3];
+    float   pre_rotation_degrees[3];
+    float   post_offset[3];
+    float   post_rotation_degrees[3];
+    float   focal_length_mm;
+    float   aperture;
+    float   shutter;
+    float   focus_distance;
+    int32_t lens_candidates;
+} bf6_armory_camera_mode;
+
+/* Reads game/glacierflow/flow_mainmenu/camera/<mode> from the current mount.
+ * Returns 1 only when the anchor, look-at, both constant offsets and a physical
+ * lens were found in the authored controller graph. */
+BF6_API int bf6_armory_camera_mode_read(bf6_ctx*, const char* mode,
+                                        bf6_armory_camera_mode* out);
+
+/* Enumerates every structurally valid weapon camera under the live main-menu
+ * camera directory. Returns TOTAL and fills up to out_max. This keeps the
+ * shipped mode inventory out of viewer-side tables. */
+BF6_API int bf6_armory_camera_modes(bf6_ctx*, bf6_armory_camera_mode* out,
+                                    int out_max);
+
+/* Physical sensor gate used by the armory rig.  This is deliberately a
+ * separate ABI record: adding fields to bf6_armory_camera_mode would change
+ * the size of an existing public struct.  The reader discovers the body asset
+ * from the current mount and accepts it only when every distinct candidate
+ * agrees on the same positive SensorWidth and SensorHeight values. */
+typedef struct {
+    char    asset[192];
+    float   width_mm;
+    float   height_mm;
+    int32_t candidates;
+} bf6_armory_camera_sensor;
+
+BF6_API int bf6_armory_camera_sensor_read(bf6_ctx*,
+                                          bf6_armory_camera_sensor* out);
+
+/* Per-weapon values written into the eight runtime CameraVec3Assets consumed
+ * by the slot camera modes.  The order is the graph's proven memory-slot
+ * order, not the declaration order of MenuWeaponAttachmentsCamera:
+ * sight position, sight look-at, top rail, right rail, left rail, muzzle,
+ * underbarrel, magazine.  `has_record` is false for the two trailing weapon
+ * references for which the current graph deliberately falls back to zero. */
+typedef enum {
+    BF6_ARMORY_CAMERA_SIGHT_POSITION = 0,
+    BF6_ARMORY_CAMERA_SIGHT_LOOK_AT = 1,
+    BF6_ARMORY_CAMERA_TOP_RAIL_LOOK_AT = 2,
+    BF6_ARMORY_CAMERA_RIGHT_RAIL_LOOK_AT = 3,
+    BF6_ARMORY_CAMERA_LEFT_RAIL_LOOK_AT = 4,
+    BF6_ARMORY_CAMERA_MUZZLE_LOOK_AT = 5,
+    BF6_ARMORY_CAMERA_UNDERBARREL_LOOK_AT = 6,
+    BF6_ARMORY_CAMERA_MAGAZINE_LOOK_AT = 7,
+    BF6_ARMORY_CAMERA_CORRECTION_COUNT = 8
+} bf6_armory_camera_correction_slot;
+
+typedef struct {
+    char    weapon[64];
+    float   correction[BF6_ARMORY_CAMERA_CORRECTION_COUNT][3];
+    int32_t reference_index;
+    int32_t record_index;
+    int32_t has_record;
+} bf6_armory_camera_weapon_correction;
+
+/* Reads WeaponAttachments_CameraSetup and its SerializedExpressionNodeGraph
+ * from the mounted install.  No recorded camera TSV is a runtime input.
+ * Returns TOTAL and fills up to out_max. */
+BF6_API int bf6_armory_camera_weapon_corrections(
+    bf6_ctx*, bf6_armory_camera_weapon_correction* out, int out_max);
+BF6_API int bf6_armory_camera_weapon_correction_read(
+    bf6_ctx*, const char* weapon, bf6_armory_camera_weapon_correction* out);
+
+/* One ASLO category anchor. Category ids are authored opaque ids and are
+ * returned unchanged; consumers join them to the live armory category assets.
+ * The position is metric weapon space. `has_position` distinguishes an
+ * authored zero from a non-zero override without inventing a threshold. */
+typedef struct {
+    uint32_t category_id;
+    float    position[3];
+    float    line_offset[2];
+    int32_t  has_position;
+} bf6_armory_slot_anchor;
+
+/* Reads common/hardware/.../<weapon>/aslo_<weapon>. Returns 0 when that weapon
+ * ships no ASLO asset, -1 on malformed input, or TOTAL rows on success. */
+BF6_API int bf6_armory_slot_anchors(bf6_ctx*, const char* weapon,
+                                    bf6_armory_slot_anchor* out, int out_max);
+
 /* The armory screen's 12 attachment categories, IN THE ORDER THE GAME SHOWS
  * THEM. Read from the screen's own config asset, not tabulated here, and not
  * the navigation order - a sibling asset carries the same labels in a
  * different permutation for input indexing. Strings are owned by the ctx. */
 BF6_API int bf6_armory_categories(bf6_ctx*, const char** out, int out_max);
+
+/* One row of the armory screen's authored category binding, joined to the
+ * three-letter filename vocabulary by reading this weapon's attachment
+ * records.  `label` and `category_asset` come from
+ * BFUIWeaponCustomizationViewManagerConfig; `code` is accepted only when all
+ * attachment records that reference that category agree on one filename code.
+ * An empty code is an explicit unresolved join, never a guessed abbreviation.
+ */
+typedef struct {
+    char     label[32];
+    char     code[8];
+    char     category_asset[192];
+    uint32_t category_id;
+    int32_t  evidence_rows;
+    int32_t  conflicting_rows;
+} bf6_armory_category_binding;
+
+/* Returns the twelve rows in authored presentation order. `weapon` is the
+ * bare runtime token, for example "m4a1". A fake or absent weapon may still
+ * return the authored rows, but every `code` will remain empty. */
+BF6_API int bf6_armory_category_bindings(
+    bf6_ctx*, const char* weapon, bf6_armory_category_binding* out, int out_max);
+
+/* The three honestly reproducible BASE numbers in the armory stat block.
+ * The four bars are attribute-delegate outputs and are intentionally absent
+ * until those delegate expressions are decoded. */
+typedef struct {
+    int32_t damage;
+    int32_t rate_of_fire;
+    int32_t magazine;
+} bf6_weapon_base_stats;
+
+/* Read <weapon>_wb plus its ProjectileData import at runtime. Returns 1 when
+ * all three values resolve, 0 for an unsupported/non-weapon roster entry. */
+BF6_API int bf6_base_weapon_stats(bf6_ctx*, const char* weapon_class,
+                                  const char* weapon, bf6_weapon_base_stats* out);
+
+/* Read the customization allowance from equipment_<weapon> in the mounted
+ * install.  The value is field 0x3CE3B411 on the weapon's customization
+ * registry (100 on current primaries, 60 on current sidearms).  Returns -1
+ * when the exact equipment partition or field is absent; callers must not
+ * substitute a plausible default. */
+BF6_API int bf6_weapon_point_budget(bf6_ctx*, const char* weapon);
+
+/* Read WeaponCustomizationAttachmentDBD.Weight from one per-weapon
+ * attachment partition.  The read is keyed by the attachment-record type
+ * GUID and reflected field 0x6EE865A5; it does not depend on the field's
+ * current byte offset.  Returns -1 when the partition, exact record type, or
+ * field is absent. */
+BF6_API int bf6_attachment_weight(bf6_ctx*, const char* attachment_ebx);
+
+typedef struct bf6_weapon_ui_info {
+    const char* name;
+    const char* description;
+    const char* class_label;
+    const char* factory_label;
+    const char* traits[3];
+    int32_t trait_count;
+} bf6_weapon_ui_info;
+
+/* US-English strings and weapon UI metadata, decoded from the mounted
+ * FsUITextDatabase/UIWeaponAbilityMetadata at runtime. Returned strings are
+ * context-owned; weapon_ui_info pointers last until the next such call. */
+BF6_API const char* bf6_localized_string(bf6_ctx*, uint32_t string_id);
+BF6_API int bf6_weapon_ui_info_read(bf6_ctx*, const char* weapon,
+                                    bf6_weapon_ui_info* out);
 
 /* -------------------------------------------------------------------- rime */
 /* One axis of a UI element's box. Anchors are fractions of the parent, offsets
@@ -1447,6 +2075,1100 @@ typedef struct {
 BF6_API int bf6_rime_elements(bf6_ctx*, const char* partition,
                               bf6_rime_element* out, int out_max);
 
+/* A live, recursively expanded Rime screen tree.  Unlike bf6_rime_elements,
+ * this follows the authored Elements arrays and widget-reference imports, so
+ * depth describes the real parent/child order used by the layout pass.  All
+ * text is stored inline: rows remain valid independently of later calls.
+ *
+ * `kind` is one of BF6_RIME_* below.  A node with kind UNKNOWN is retained as
+ * an explicit gap, but no fixed offsets are read from it unless its concrete
+ * (type GUID, shipped signature) pair is in the compiled gate. */
+enum {
+    BF6_RIME_UNKNOWN = 0,
+    BF6_RIME_WIDGET_REFERENCE,
+    BF6_RIME_CONTAINER,
+    BF6_RIME_STACK_CONTAINER,
+    BF6_RIME_LABEL,
+    BF6_RIME_LAYER,
+    BF6_RIME_REPEAT_SHAPE,
+    BF6_RIME_VECTOR_SHAPE,
+    BF6_RIME_FILL,
+    BF6_RIME_SVG,
+    BF6_RIME_TEXTURE,
+    BF6_RIME_LINE,
+    BF6_RIME_MOVIE,
+    /* Appended element kinds keep every earlier numeric value ABI-stable.
+     * These are concrete shipped Rime records, not presentation guesses. */
+    BF6_RIME_BORDER,
+    BF6_RIME_BLUR,
+    BF6_RIME_PROGRESS,
+    BF6_RIME_ARC_PROGRESS,
+    BF6_RIME_FLIPBOOK,
+    BF6_RIME_TEXTURE_BLEND,
+    BF6_RIME_INPUT_BEHAVIOR,
+    /* Custom front-end elements whose visible content is supplied by a live
+     * property/view-model binding.  Keeping them distinct prevents a renderer
+     * from mistaking "not statically populated" for an ordinary empty box. */
+    BF6_RIME_LAYERED_ICON_BINDING,
+    BF6_RIME_HARDWARE_ICON_BINDING,
+    BF6_RIME_REMOTE_WIDGET_PRESENTER
+};
+
+typedef struct {
+    char          partition[256];   /* partition that owns this instance       */
+    char          reference[256];   /* widget target, empty if not a reference */
+    char          type_guid[37];
+    char          type_name[64];
+    char          name[128];
+    uint32_t      type_signature;   /* signature shipped in this partition     */
+    uint32_t      name_hash;
+    bf6_rime_axis h, v;
+    float         width, height, alpha;
+    float         pad_l, pad_t, pad_r, pad_b;
+    float         item_spacing;
+    int32_t       kind, depth, parent, instance;
+    int32_t       visible, fit_w, fit_h;
+    int32_t       stack_orientation; /* -1 except on a stack                    */
+
+    /* PAINT.  Appended after the box fields on purpose: the struct still grew,
+     * so header and dll move together as always, but the geometry offsets a
+     * consumer already relies on do not shift. */
+    char          color_id[40];   /* the authored ColorId, "" when unnamed     */
+    char          color_name[64]; /* its palette name, e.g. "FE-Neutral"       */
+    uint32_t      color_rgb;      /* 0x00RRGGBB, sRGB-ENCODED and ready to use */
+    int32_t       color_source;   /* BF6_RIME_COLOR_*                          */
+
+    /* Repeat shapes: the pip strip's own count and distribution, rather than a
+     * guess.  0 / -1 on every other kind. */
+    int32_t       repeat_instances;
+    int32_t       repeat_distribution; /* BF6_RIME_DIST_*, -1 when not a repeat */
+
+    /* Image elements: the asset the element draws, resolved to a partition
+     * path, plus the uv window on it.
+     *
+     * A NULL image is the common case and is not a failure: 21 of the 30 SVG
+     * elements on the weapon screen carry no asset because the icon arrives
+     * from a data binding. Those must draw nothing rather than a placeholder,
+     * or the screen fills with boxes the game does not have. */
+    char          image_asset[192];
+    float         image_uv[4];      /* u0,v0,u1,v1; 0,0,1,1 when unauthored */
+
+    /* Fills only: the authored fill style.
+     *
+     * A null FillStyle is NOT an error - it is a flat fill of the element's own
+     * resolved colour, which is 26 of the 32 fills on the weapon screen. The six
+     * that name a style are all a single gradient layer whose start and end
+     * colours are WHITE and whose only variation is alpha: the layer is an
+     * ALPHA RAMP modulating the element colour, not a colour gradient. Read as a
+     * colour gradient it turns white-on-white and the full-screen scrim that
+     * every menu lays down simply vanishes. */
+    int32_t       fill_kind;        /* BF6_RIME_FILL_*                      */
+    int32_t       fill_direction;   /* BF6_RIME_GRADIENT_*                  */
+    float         fill_alpha_start;
+    float         fill_alpha_end;
+    int32_t       blend_mode;       /* authored on the element base, -1 if absent */
+
+    /* Labels only: the authored text style, and the point size resolved from
+     * it.  PointSize on the element itself is an override and is 0 throughout
+     * the shipped front end, so the style is the answer.  Canvas pixels are
+     * point_size / 1.5. */
+    char          font_style[160];
+    float         point_size;
+    float         line_height;
+
+    /* Anchor containers only: the point ON THIS BOX that a leader line leaves
+     * from, as a fraction of the box.  The customization screen's twelve
+     * floating attachment tiles are laid out entirely from these plus the
+     * axes above, so a consumer does not need a transcribed anchor table.
+     * has_attach is 0 on every other kind - (0,0) is a real value. */
+    int32_t       has_attach;
+    float         attach_x, attach_y;
+
+    /* Runtime-populated list metadata, read from the shipped DiceUI element.
+     * item_template is the authored cell widget; the remaining fields are the
+     * uniform-grid repetition law. Empty / -1 means this is not a list. */
+    char          item_template[256];
+    int32_t       grid_static_segment_item_count;
+    float         grid_column_size;
+    float         grid_row_size;
+    float         grid_row_spacing;
+    float         grid_column_spacing;
+    int32_t       grid_segment_distribution;
+    int32_t       grid_segment_count_mode;
+    int32_t       grid_column_flow_direction;
+    int32_t       grid_row_flow_direction;
+    int32_t       grid_item_fit_content;
+
+    /* Fixed-size paint records carried directly by their gated concrete
+     * element.  These remain zero/-1 on other kinds. */
+    float         progress;
+    float         progress_segment_gap;
+    int32_t       progress_segment_count;
+    int32_t       progress_orientation; /* RimeOrientation, -1 if absent */
+    float         border_thickness;
+    float         border_start_alpha;
+    float         border_end_alpha;
+    int32_t       border_alignment;      /* RimeOutlineAlignment, -1 */
+    int32_t       border_gradient_direction; /* RimeGradientDirection, -1 */
+
+    /* DiceUIDataListElementData only, gated by shipped type GUID
+     * 2420ee41-1c4d-38bd-4203-777f31cf9c9a.  ItemSpacing uses the existing
+     * item_spacing member above.  These are the remaining authored repetition
+     * fields at +420/+436/+444/+449.  FlowDirection is the shipped
+     * Default/Reverse/TextDirection enum; it is NOT an axis/orientation and a
+     * consumer must not turn it into Horizontal/Vertical. */
+    int32_t       data_list_size_distribution;
+    int32_t       data_list_flow_direction;
+    int32_t       data_list_space_distribution;
+    int32_t       data_list_preserve_fit_content;
+
+    /* RimeViewportStretchContainerElementData only.  These are authored edge
+     * selectors, not inferred from the element name.  The old schema shipped
+     * in UI partitions places them after its Elements/FlowDirection tail; the
+     * concrete type GUID + signature gate protects the fixed read.  -1 on
+     * every other element kind. */
+    int32_t       viewport_flow_direction;
+    int32_t       viewport_extend_top;
+    int32_t       viewport_extend_bottom;
+    int32_t       viewport_extend_left;
+    int32_t       viewport_extend_right;
+
+    /* Shipped stack/reference layout controls.  These are appended to keep
+     * every established bf6_rime_node member ABI-stable.  -1 means the row is
+     * not the corresponding concrete type. */
+    float         stack_wrap_spacing;
+    int32_t       stack_overflow_mode;
+    int32_t       stack_size_distribution;
+    int32_t       stack_space_distribution;
+    int32_t       stack_preserve_fit_content;
+    int32_t       widget_use_width;
+    int32_t       widget_use_height;
+
+    /* RimeContainerBaseData.FlowDirection at old-schema +328.  This is a
+     * presentation-order enum (Default/Reverse/TextDirection), not a stack
+     * orientation.  Appended so existing consumers keep their member offsets. */
+    int32_t       container_flow_direction;
+} bf6_rime_node;
+
+enum {
+    BF6_RIME_FILL_FLAT = 0,   /* no style: the element colour, flat        */
+    BF6_RIME_FILL_GRADIENT,   /* an alpha ramp over the element colour     */
+    BF6_RIME_FILL_SOLID,
+    BF6_RIME_FILL_TEXTURE
+};
+
+/* RimeGradientDirection.
+ *
+ * VERTICAL IS ZERO. The obvious guess is the other way round and it reads
+ * plausibly - every gradient still ramps, just along the wrong axis. Two
+ * independent things pin it: the shipped elements are edge fades whose names
+ * say which way they run ("[Fill] Bottom" must ramp vertically, "[Fill] Left
+ * Gradient Fade" horizontally), and rime-paint-read-path states Bottom is
+ * vertical. Under the reversed reading all four of the weapon screen's
+ * gradients disagree with their own names; under this one all four agree. */
+enum {
+    BF6_RIME_GRADIENT_VERTICAL = 0,
+    BF6_RIME_GRADIENT_HORIZONTAL
+};
+
+/* Where a node's colour came from.  Kept explicit because "white" is three
+ * different facts: an element that named white, an element that named nothing
+ * and sits under an ancestor that named nothing either, and a read that
+ * failed.  A consumer that cannot tell those apart paints the third one. */
+enum {
+    BF6_RIME_COLOR_NONE = 0,      /* no id, no named ancestor: white x alpha  */
+    BF6_RIME_COLOR_PALETTE,       /* its own ColorId resolved in the palette  */
+    BF6_RIME_COLOR_RAW,           /* authored non-white RawColor, no id       */
+    BF6_RIME_COLOR_INHERITED      /* nearest ancestor that named one          */
+};
+
+/* RimeRepeatShapeElementData.DistributionType.  The SDK type database names
+ * these wrongly; a conservative shipped literal-name oracle scores this
+ * mapping 9/9 and a rotated one 0/9. */
+enum {
+    BF6_RIME_DIST_RADIAL = 0,
+    BF6_RIME_DIST_HORIZONTAL,
+    BF6_RIME_DIST_VERTICAL,
+    BF6_RIME_DIST_GRID
+};
+
+/* One entry of the front end's authored colour palette.
+ *
+ * 111 entries across seven assets under common/ui/assets/styles/colorpalette.
+ * The stored floats are LINEAR light, and encoding them with the standard sRGB
+ * transfer is not optional: skip it and FE-Neutral #BFCAD1 comes out olive.
+ * `rgb` is already encoded; `linear` is kept for a consumer that wants to
+ * blend before encoding. */
+typedef struct {
+    char     id[40];      /* ColorId, spelled as an element's SelectedColorId */
+    char     name[64];    /* "FE-Neutral"                                     */
+    char     palette[64]; /* "gla_frontend"                                   */
+    uint32_t rgb;         /* 0x00RRGGBB, sRGB                                 */
+    float    linear[3];   /* as authored                                      */
+} bf6_rime_color;
+
+/* The whole palette, read live from the mounted install.  Returns the TOTAL
+ * count and fills up to out_max, so size then fill.  -1 when the palette
+ * assets are not reachable.  Cached on the context after the first call. */
+BF6_API int bf6_rime_palette(bf6_ctx*, bf6_rime_color* out, int out_max);
+
+/* ------------------------------------------------------------------- fonts */
+/* One authored text style.
+ *
+ * The front end does not carry font SIZES at its use sites; it carries a
+ * reference to one of these, and the style says how big the text is and how
+ * far apart the lines sit.  A consumer that picks its own pixel sizes is
+ * inventing typography next to the game's own.
+ *
+ * POINT SIZE IS NOT PIXELS.  Canvas pixels are PointSize / 1.5 - the filename
+ * of every style spells both, e.g. fe_body_14px_(21pt)_regular is 21.02 pt and
+ * 14 px.  Line height is authored independently and is not derived from the
+ * point size: above roughly 40 pt it is SMALLER, which is the tight display
+ * leading the headings use. */
+typedef struct {
+    char    name[160];       /* the style asset's authored name               */
+    char    font_asset[192]; /* FontAsset path for the default language       */
+    char    family[64];      /* the sfnt family, e.g. "BFText"                */
+    float   point_size;      /* authored; divide by 1.5 for canvas pixels     */
+    float   line_height;     /* authored independently of point_size          */
+    int32_t weight;          /* 400, 500, 700 ...                             */
+} bf6_rime_font_style;
+
+/* Every RimeFontStyle in the mount.  Returns the TOTAL and fills up to out_max.
+ * Cached on the context. */
+BF6_API int bf6_rime_font_styles(bf6_ctx*, bf6_rime_font_style* out, int out_max);
+
+/* One weapon's in-game identity. Keyed by the bare token the roster uses, so
+ * the two join exactly rather than by resemblance. */
+typedef struct {
+    char weapon[64];       /* bare token, from the row's hiao_<weapon> import */
+    char name[96];         /* the localised display name */
+    char class_label[64];  /* the localised class */
+    char factory_label[64];/* shared localised Factory package label */
+    char icon_asset[256];  /* same-row imported archetype TextureAsset */
+    char category_icon_asset[256]; /* same-row weapon-category TextureAsset */
+} bf6_weapon_name_row;
+
+/* Every weapon the metadata names, in ONE pass. bf6_weapon_ui_info_read
+ * answers for one weapon and rescans every metadata partition to do it; a
+ * roster of 185 wants the table. Returns the TOTAL and fills up to out_max. */
+BF6_API int bf6_weapon_names(bf6_ctx*, bf6_weapon_name_row* out, int out_max);
+
+/* One authored entry in MainMenu_WeaponCollectionViewManagerConfig.  This is
+ * the collection source consumed by UM_WeaponNavigationListGenerator; it is
+ * deliberately not reduced to a copied list of English tab labels. */
+typedef struct {
+    int32_t ordinal;          /* row identity carried by the config           */
+    int32_t sort_index;       /* authored SortIndex                           */
+    char    icon_asset[256];  /* category icon import; stable class identity  */
+} bf6_weapon_navigation_row;
+
+/* Read the ordered collection directly from the mounted install. Returns the
+ * TOTAL count and fills up to out_max. A missing/changed config returns -1. */
+BF6_API int bf6_weapon_navigation_rows(
+    bf6_ctx*, bf6_weapon_navigation_row* out, int out_max);
+
+/* ------------------------------------------------- the attachment catalogue */
+/* One row of `aam_<weapon>.ebx`, the game's own presentation list for a
+ * weapon's attachments.
+ *
+ * TWO LISTS EXIST AND THEY ARE NOT THE SAME LIST. The roster built from
+ * partition names says what can be FITTED; this says how the armory PRESENTS
+ * it - display name, description, icon and sort order. They overlap but do not
+ * correspond: m4a1 has 15 muzzle tokens against 11 catalogue rows, two of those
+ * rows share one description asset, and the strings are independently authored
+ * (`socomrc3` against "SOCOM556 RC3", `nt4qdsuppressor` against "NT4
+ * Suppressor"). So a consumer decorates the roster with this where the two
+ * meet and keeps the token where they do not - it must not swap one list for
+ * the other.
+ *
+ * `name_key` is the display name folded to lowercase alphanumerics, which is
+ * the only join to a roster token that exists today. It matches 74% on m4a1
+ * against a 39% shuffled control: real, and not enough to rely on silently. */
+typedef struct {
+    char    slot[8];          /* three-letter code, from the authored row      */
+    char    name[96];         /* localised display name                        */
+    char    name_key[96];     /* name folded for joining; see above            */
+    char    detail_title[96]; /* description asset title used on fitted tiles  */
+    char    description[512]; /* localised description                         */
+    int32_t order;            /* authored display order                        */
+    /* The description asset's own stem, folded and with its "ad_" prefix
+     * removed. A SECOND join key, and it earns its place: the display name and
+     * the filename token are independently authored, but the asset stem often
+     * sits closer to the token than the name does. */
+    char    ad_stem[96];
+
+    /* Art. The index selects directly into the atlas's entry array, so these
+     * pair with bf6_icon_atlas on the same partition. */
+    char    icon_atlas[192];      /* per-category atlas                        */
+    int32_t icon_index;
+    char    layered_atlas[192];   /* the weapon's own silhouette atlas         */
+    int32_t layered_index;
+} bf6_attachment_catalogue_row;
+
+/* Read one weapon's catalogue. `weapon` is the bare name, e.g. "m4a1".
+ * Returns the TOTAL row count and fills up to out_max; -1 when the weapon has
+ * no aam_ asset in the mount. */
+BF6_API int bf6_weapon_attachment_catalogue(bf6_ctx*, const char* weapon,
+                                            bf6_attachment_catalogue_row* out,
+                                            int out_max);
+
+/* ------------------------------------------------------------- connections */
+/* One authored property connection - the wire that carries a value from one
+ * element to another.
+ *
+ * This is how the front end is actually assembled. The element tree gives the
+ * boxes; the connections give the DATA FLOW, and without them a screen is a
+ * pile of unlabelled rectangles. menuweaponattachmenticonscreen alone carries
+ * 912 of them, every endpoint internal to the partition.
+ *
+ * Both endpoints are instance indices into the same partition, so they join
+ * directly against bf6_rime_node.instance. */
+typedef struct {
+    int32_t  source;        /* instance index */
+    int32_t  target;        /* instance index */
+    uint32_t source_field;  /* semantic property hash on source */
+    uint32_t target_field;  /* semantic property hash on target */
+    int32_t  mode;          /* raw shipped flags; low 3 bits are realm */
+} bf6_rime_connection;
+
+/* Every property connection authored in one partition.  This reads the
+ * shipped Blueprint +48 relative array and its 32-byte records directly; it
+ * does not reflect the older Rime widget graph through bf6.exe. Returns the
+ * TOTAL and fills up to out_max; -1 when the partition cannot be read. */
+BF6_API int bf6_rime_connections(bf6_ctx*, const char* partition,
+                                 bf6_rime_connection* out, int out_max);
+
+/* One authored event connection. Event ids intentionally remain raw hashes:
+ * the installed graph proves the routing, while most event names are not yet
+ * independently identified. Both endpoints are local instance indices. */
+typedef struct {
+    int32_t  source;        /* instance index */
+    int32_t  target;        /* instance index */
+    uint32_t source_event;  /* raw EventSpec.Id on the source */
+    uint32_t target_event;  /* raw EventSpec.Id on the target */
+    int32_t  mode;          /* target realm: 2 Client, 3 Server */
+} bf6_rime_event_connection;
+
+/* Every event connection authored in one partition. This reads the shipped
+ * Blueprint +64 relative array and its 32-byte records directly. Returns the
+ * TOTAL and fills up to out_max; -1 when the partition cannot be read. */
+BF6_API int bf6_rime_event_connections(bf6_ctx*, const char* partition,
+                                       bf6_rime_event_connection* out,
+                                       int out_max);
+
+/* One authored ConditionalFloatEntityData node from a Rime property graph.
+ * These logic types have matching shipped/executable signatures; unlike the
+ * older Rime element family they are safe to read through current reflection.
+ * The viewer joins `instance` to the raw property wires above, so the game
+ * data decides both the condition source and every target property. */
+typedef struct {
+    int32_t instance;
+    float   value_if_true;
+    float   value_if_false;
+    int32_t authored_condition;
+} bf6_rime_conditional_float;
+
+/* Every ConditionalFloatEntityData node in one live partition. Returns TOTAL
+ * and fills up to out_max. No research table or exported intermediate is a
+ * runtime input. */
+BF6_API int bf6_rime_conditional_floats(bf6_ctx*, const char* partition,
+                                        bf6_rime_conditional_float* out,
+                                        int out_max);
+
+/* One authored ConditionalPropertyEntityData node.  Unlike a conditional
+ * float, this node does not carry two values: it carries the hashes of two
+ * dynamic input properties and selects one onto a dynamic output property.
+ * That distinction is what lets WeaponInfoHeader choose Category vs Title
+ * without the renderer naming either destination element. */
+typedef struct {
+    int32_t  instance;
+    uint32_t value_if_true_property_hash;
+    uint32_t value_if_false_property_hash;
+    uint32_t out_hash;
+    int32_t  authored_condition;
+} bf6_rime_conditional_property;
+
+/* Every ConditionalPropertyEntityData node in one live partition. */
+BF6_API int bf6_rime_conditional_properties(
+    bf6_ctx*, const char* partition,
+    bf6_rime_conditional_property* out, int out_max);
+
+/* Local instance indices whose concrete type is InterfaceDescriptorData.
+ * The descriptor is the blueprint's public runtime-facing property surface;
+ * values sourced from it are not authored constants.  Returning identity only
+ * lets consumers distinguish a dynamic input from an element fallback without
+ * inventing the value.  The exact type GUID is read from the live partition;
+ * the corpus is verification evidence, never a runtime lookup table. */
+BF6_API int bf6_rime_interface_descriptors(bf6_ctx*, const char* partition,
+                                           int32_t* out, int out_max);
+
+/* Typed default values on an InterfaceDescriptorData's public Fields array.
+ * These are decoded from the partition's DataField.BoxedValue through its
+ * EBXX boxed-value descriptor; `raw typeWord` is never treated as the value.
+ * A Null default remains Null -- it means the runtime provider owns that
+ * property, not false/zero. */
+enum {
+    BF6_RIME_VALUE_NULL = 0,
+    BF6_RIME_VALUE_BOOL,
+    BF6_RIME_VALUE_INT,
+    BF6_RIME_VALUE_UINT,
+    BF6_RIME_VALUE_REAL,
+    BF6_RIME_VALUE_STRING,
+    BF6_RIME_VALUE_STRUCT,
+    BF6_RIME_VALUE_ARRAY,
+    BF6_RIME_VALUE_UNRESOLVED
+};
+
+typedef struct {
+    int32_t  interface_instance;
+    uint32_t field_id;
+    int32_t  access_type;       /* FieldAccessType: source/target/both */
+    int32_t  value_kind;        /* BF6_RIME_VALUE_*                    */
+    int32_t  bool_value;
+    int64_t  int_value;
+    uint64_t uint_value;
+    double   real_value;
+    char     string_value[256];
+} bf6_rime_interface_field;
+
+/* Returns TOTAL and fills up to out_max. A fabricated partition returns -1.
+ * Runtime code reads the installed EBX every process; no research TSV/JSON is
+ * consumed. */
+BF6_API int bf6_rime_interface_fields(bf6_ctx*, const char* partition,
+                                      bf6_rime_interface_field* out,
+                                      int out_max);
+
+/* Concrete type identity for boxed STRUCT interface defaults. This is a
+ * separate narrow row rather than an extension of bf6_rime_interface_field so
+ * existing C ABI consumers keep the same struct size. It intentionally
+ * exposes no struct payload: callers may classify a proven type GUID, but
+ * must not reinterpret an unknown struct by field name or byte offset. */
+typedef struct {
+    int32_t  interface_instance;
+    uint32_t field_id;
+    char     type_guid[40];
+} bf6_rime_interface_struct_type;
+
+/* Returns one row per STRUCT default; fabricated partitions return -1. */
+BF6_API int bf6_rime_interface_struct_types(
+    bf6_ctx*, const char* partition,
+    bf6_rime_interface_struct_type* out, int out_max);
+
+/* One field from a mounted Rime DataBindingDefinition.  This deliberately
+ * exposes only the two pieces authored by the DBD: its exact property name
+ * and the opaque TypeRef payload.  The latter is evidence, not a guessed
+ * semantic type. */
+typedef struct {
+    char     name[128];
+    uint64_t type_signature;
+} bf6_rime_dbd_field;
+
+/* Read one DBD directly from the current mounted install without constructing
+ * the generic, full-game partition GUID index used by the diagnostic EBX
+ * dumper.  Returns TOTAL and fills up to out_max; a fabricated/unreadable
+ * partition returns -1.  data_name may be NULL.  Count/fill calls both read
+ * the live mounted EBX and never consume an exported table. */
+BF6_API int bf6_rime_dbd_fields(bf6_ctx*, const char* partition,
+                                char* data_name, int data_name_len,
+                                bf6_rime_dbd_field* out, int out_max);
+
+/* A localized-string entity's key, by instance. These are the authored text
+ * the screen pushes into its widgets - the customization tile captions are
+ * twelve of them - and they reach a label through a connection rather than by
+ * sitting on it. Returns 0 when that instance is not a string entity. */
+BF6_API uint32_t bf6_rime_string_entity(bf6_ctx*, const char* partition,
+                                        int instance);
+
+/* ------------------------------------------------------------------ shapes */
+/* The front end's plates, brackets, rules and chrome are vector shapes, and
+ * the FILLED ones ship their triangulation - anchors, offsets, per-vertex
+ * colours and a u16 index list.  A consumer that draws a rectangle where a
+ * shape belongs is not approximating the screen, it is drawing something else.
+ *
+ * VERTEX POSITION IS `anchor * (element_w, element_h) + offset`.  The anchors
+ * are fractions of the ELEMENT's solved box, not of the asset's design Size,
+ * which is how one 12x12 corner bracket serves boxes of every size.  Origin
+ * top-left, +Y down, matching the box-solving law.
+ *
+ * STROKED SHAPES SHIP NO TRIANGLES.  They carry a corner polyline instead and
+ * the renderer strokes it with Thickness and Alignment.  Corner ROUNDING is
+ * not baked either - it is driven at draw time by CornerType and Curvature -
+ * though 5,709 of 7,402 authored corners have curvature exactly 0. */
+enum {
+    BF6_RIME_DRAW_NONE = 0,
+    BF6_RIME_DRAW_OUTLINED,
+    BF6_RIME_DRAW_FILLED
+};
+
+typedef struct {
+    float anchor[2];   /* fraction of the element box */
+    float offset[2];   /* authored pixels */
+    float color[4];    /* per-vertex; (1,1,1,1) throughout the shipped screens */
+} bf6_rime_shape_vertex;
+
+typedef struct {
+    float   anchor[2], offset[2];
+    int32_t corner_type;
+    float   curvature;
+} bf6_rime_shape_corner;
+
+typedef struct {
+    int32_t vertex_count;   /* triangulated vertices; 0 on a stroked shape */
+    int32_t index_count;    /* u16 indices                                  */
+    int32_t corner_count;   /* path corners, for stroking                   */
+    int32_t draw_style;     /* BF6_RIME_DRAW_*                              */
+    float   thickness;
+    float   alpha;
+    float   size[2];        /* the asset's design box, diagnostic only      */
+} bf6_rime_shape_info;
+
+/* The geometry behind one shape element, by the partition and instance the
+ * Rime tree reports.  Returns the shape count found (0 or 1 here), -1 on a
+ * failed read.  Sizes are reported in `info` so a caller can size then fill. */
+BF6_API int bf6_rime_shape(bf6_ctx*, const char* partition, int instance,
+                           bf6_rime_shape_info* info,
+                           bf6_rime_shape_vertex* verts, int vmax,
+                           unsigned short* indices, int imax,
+                           bf6_rime_shape_corner* corners, int cmax);
+
+/* RimeLineElementData keeps its polyline inline as PointData records.  This is
+ * deliberately separate from bf6_rime_shape: lines do not reference a vector
+ * shape asset and their points may be authored either as fractions of the
+ * element box or as canvas-pixel coordinates.  Returns the TOTAL point count
+ * and fills up to point_max, or -1 when the concrete shipped signature/type or
+ * instance does not match. */
+typedef struct {
+    float x, y;
+} bf6_rime_line_point;
+
+typedef struct {
+    int32_t point_count;
+    float   width;
+    float   glow_size;
+    float   start_progress;
+    float   end_progress;
+    int32_t cap_type;
+    int32_t relative_coordinates;
+    int32_t close_line_shape;
+    int32_t single_pixel;
+} bf6_rime_line_info;
+
+BF6_API int bf6_rime_line(bf6_ctx*, const char* partition, int instance,
+                          bf6_rime_line_info* info,
+                          bf6_rime_line_point* points, int point_max);
+
+/* The raw sfnt bytes behind a FontAsset path, read out of the install.
+ *
+ * These are ordinary TrueType files with no wrapper, so the result can be
+ * handed straight to a rasteriser.  Returns the TOTAL byte count and fills up
+ * to out_max, or -1 if the asset is not in the mount.  A previewer therefore
+ * does not need - and must not keep - extracted .ttf files beside it. */
+BF6_API int bf6_rime_font_data(bf6_ctx*, const char* font_asset,
+                               unsigned char* out, int out_max);
+
+/* The native resource named by an authored Rime image partition.  This is the
+ * ResourceId join used by both vector and texture assets; it does not assume
+ * that the resource shares the EBX name. Returns the required string length,
+ * excluding NUL, or -1. */
+BF6_API int bf6_rime_image_resource(bf6_ctx*, const char* image_asset,
+                                    char* out, int out_len);
+
+/* Resolve a RimeTextureElementData image partition to the standalone texture
+ * resource it names and register that resource in the ordinary texture cache.
+ * Returns an id for bf6_texture_at, or -1 when the partition is not a texture
+ * asset / its ResourceId is absent from the live mount.  The partition is read
+ * from the installed game on this call; no exported lookup table participates. */
+BF6_API int bf6_rime_texture_id(bf6_ctx*, const char* image_asset);
+
+/* Compiled SvgImageData (RES 0x89983F10) is retained cubic-Bezier geometry,
+ * not XML and not a pre-rasterized bitmap.  One contour is a start point plus
+ * groups of three control/end points: (point_count - 1) % 3 == 0. */
+typedef struct {
+    float x, y;
+} bf6_rime_svg_point;
+
+typedef struct {
+    int32_t shape;
+    int32_t point_first;
+    int32_t point_count;
+    int32_t flag;             /* shipped 0/1; semantics remain unidentified */
+    float   bounds[4];
+} bf6_rime_svg_contour;
+
+typedef struct {
+    float   canvas[2];
+    int32_t shape_count;
+    int32_t contour_count;
+    int32_t point_count;
+} bf6_rime_svg_info;
+
+/* Decode one RimeSvg image partition by its live ResourceId join.  Returns the
+ * TOTAL contour count and reports total point capacity through info.  A count
+ * call may pass NULL arrays; a fill call supplies the capacities from info.
+ * SvgImageData paint blocks have measured 50/54/58-byte forms which may mix
+ * within one resource.  Until their selector is decoded the reader constrains
+ * the walk by the cubic grammar and exact resource-end closure.  -2 means no
+ * unique structural walk exists; ambiguous/unknown forms are never guessed. */
+BF6_API int bf6_rime_svg(bf6_ctx*, const char* image_asset,
+                         bf6_rime_svg_info* info,
+                         bf6_rime_svg_contour* contours, int contour_max,
+                         bf6_rime_svg_point* points, int point_max);
+
+/* A ScreenHub is a logic blueprint whose Objects array selects other hub or
+ * screen blueprints at runtime.  These imports are the real main-menu
+ * composition; `/screens/` name enumeration alone cannot reconstruct it. */
+typedef struct {
+    int32_t instance;
+    char    blueprint[256];
+} bf6_ui_hub_entry;
+
+/* Direct children of one live ScreenHub partition, in authored Objects order.
+ * Returns TOTAL and fills up to out_max.  Only exact Blueprint ImportRefs are
+ * returned; null/dynamic entries remain absent rather than guessed by name. */
+BF6_API int bf6_ui_hub_entries(bf6_ctx*, const char* hub_asset,
+                               bf6_ui_hub_entry* out, int out_max);
+
+/* Photon/Twinkle's OFFLINE visual bundle.  This is distinct from the
+ * CurrentBundle-selected production JavaScript: the mounted PhotonBundle EBX
+ * names one chunk plus an authored, contiguous list of PNG/SVG/font slices.
+ * A consumer reads these rows and then calls bf6_read_raw(BF6_RAW_CHUNK,
+ * info.chunk_guid, ...) once, slicing those exact bytes in memory.  No files
+ * are exported and no research table participates at runtime. */
+typedef enum {
+    BF6_PHOTON_ASSET_UNKNOWN = 0,
+    BF6_PHOTON_ASSET_PNG = 1,
+    BF6_PHOTON_ASSET_SVG = 2,
+    BF6_PHOTON_ASSET_FONT = 3
+} bf6_photon_asset_kind;
+
+typedef struct {
+    char    name[256];
+    uint32_t offset;
+    uint32_t size;
+    int32_t kind;              /* bf6_photon_asset_kind */
+} bf6_photon_asset;
+
+typedef struct {
+    char    chunk_guid[33];    /* mounted spelling accepted by BF6_RAW_CHUNK */
+    int64_t chunk_size;
+    int32_t asset_count;
+    int32_t ranges_in_bounds;
+    int32_t ranges_contiguous;
+    int32_t signatures_valid;
+} bf6_photon_bundle_info;
+
+/* Returns TOTAL authored asset rows, or -1 when the live bundle cannot be
+ * decoded. Count/fill is cached on the context so the 29.5 MB chunk is read
+ * only once. `info` reports internal controls; a renderer must reject the
+ * bundle unless every count equals asset_count. */
+BF6_API int bf6_photon_offline_assets(bf6_ctx*, bf6_photon_bundle_info* info,
+                                      bf6_photon_asset* out, int out_max);
+
+typedef struct {
+    int32_t nodes;
+    int32_t gated_nodes;       /* concrete types accepted by signature gate */
+    int32_t unknown_types;     /* retained without speculative field reads   */
+    int32_t unresolved_refs;
+    int32_t cycles;
+    int32_t depth_limited;
+    int32_t duplicate_guid_refs;    /* refs whose GUID names >1 partition    */
+    int32_t instance_disambiguated_refs; /* import InstanceGuid selected one */
+    int32_t name_disambiguated_refs;/* duplicate resolved by authored Name  */
+    int32_t identity_collision_refs;/* same full identity; mount-first wins */
+    int32_t equivalent_alias_refs;  /* byte-identical aliases; mount first  */
+    int32_t ambiguous_refs;         /* duplicate still ambiguous; not read  */
+} bf6_rime_tree_stats;
+
+/* Read one screen directly from the mounted install.  max_ref_depth <= 0 uses
+ * six, matching the verified menuweaponscreen oracle.  Returns the total row
+ * count, -1 when the root partition cannot be read.  The function caches the
+ * last root on the context, so the count/fill pair performs one traversal. */
+BF6_API int bf6_rime_tree(bf6_ctx*, const char* root_partition,
+                          int max_ref_depth, bf6_rime_node* out, int out_max,
+                          bf6_rime_tree_stats* stats);
+
+/* --------------------------------------------------------- animation ----- */
+/* AnimationAssetRelocResource - RES type 0x4088BF7E.
+ *
+ * 486,942 resources fleet-wide, 99.9% of BF6's animation, and the ONLY thing a
+ * clip-player node ever reaches. The raw and ACL clip containers documented
+ * elsewhere hold a few hundred payloads between them; a consumer that reads
+ * only those reaches essentially none of the game's animation.
+ *
+ * Region 0's offset is the header size and decides the framing: 32 means the
+ * DCT clip, 48 'VBR ', 64 'RAW '. A parser that assumes two descriptors reads
+ * a RAW payload as a truncated structure WITHOUT failing, which is why the
+ * framing is reported explicitly rather than inferred by the caller.
+ *
+ * Region meanings differ per framing. For RAW they are, in order: KeyTimes
+ * (u16, empty across the whole shipped population), MappingIndices (u16),
+ * ChannelIndices (u16, the inverse permutation of the previous), Data (float4)
+ * and ConstData (float4). Data and ConstData are HETEROGENEOUS float4 storage -
+ * channel metadata decides whether a record is a quaternion, a vector or packed
+ * scalars, so neither has a unit-length invariant to check against. */
+typedef enum {
+    BF6_ANIM_UNKNOWN = 0,
+    BF6_ANIM_DCT,          /* header 32 - the serialized DCT clip   */
+    BF6_ANIM_VBR,          /* header 48                             */
+    BF6_ANIM_RAW           /* header 64                             */
+} bf6_anim_framing;
+
+typedef struct { uint32_t count, offset, flags; } bf6_anim_region;
+
+typedef struct {
+    bf6_anim_framing       framing;
+    int32_t                header_size;   /* == regions[0].offset          */
+    const bf6_anim_region* regions;
+    int32_t                region_count;  /* terminator excluded           */
+    const uint8_t*         data;          /* the whole payload             */
+    int64_t                size;
+} bf6_anim_reloc;
+
+BF6_API bf6_anim_reloc* bf6_anim_reloc_read(bf6_ctx*, const char* res_name);
+
+/* A DECODED VARIANT-A (DCT) CLIP.
+ *
+ * Channels are ordered quaternions, then vector3s, then vector-float groups.
+ * Each group packs up to four scalar DOFs into one float4, lane by position, so
+ * scalar ordinal s is group s/4 lane s%4 and the last group may be short.
+ *
+ * `predicted_stream_bytes` against `actual_stream_bytes` is the reader's own
+ * self-check: the prediction is a function of every lane width in every
+ * descriptor, so a single misresolved width nibble moves it. They should be
+ * equal; if they are not, do not trust the samples.
+ *
+ * Sampling takes a SAMPLE ORDINAL, not a time. When `sparse_times` is NULL the
+ * key times are implicit and dense - every integer from 0 to the owning EBX
+ * frame count INCLUSIVE, which is a last-frame index rather than a count. */
+typedef struct {
+    int32_t key_time_count;
+    int32_t quat_count, vec3_count, group_count;
+    int32_t channel_count;          /* quat + vec3 + group                    */
+    int32_t block_count;            /* ceil(key_time_count / 8)               */
+    const uint16_t* sparse_times;   /* NULL when times are implicit and dense */
+    int32_t sparse_time_count;
+    int32_t full_block_bits;
+    int32_t first_coefficient_bits;
+    int64_t predicted_stream_bytes;
+    int64_t actual_stream_bytes;
+} bf6_anim_clip;
+
+BF6_API bf6_anim_clip* bf6_anim_clip_open(bf6_ctx*, const char* res_name);
+
+/* Fill `out` with channel_count float4s for one sample ordinal. Returns 0 if
+ * the ordinal is outside the clip. Quaternion channels come back normalised;
+ * vector channels do not, because the engine does not normalise them. */
+/* `out_quat_magnitude` may be NULL. When given, it receives quat_count entries:
+ * each quaternion's magnitude BEFORE normalisation. That is the decode-health
+ * signal - a correct unpack arrives near 1.0 because the encoder quantised a
+ * unit quaternion. Checking the returned quaternions are unit proves nothing,
+ * since they are normalised on the way out. */
+BF6_API int bf6_anim_clip_sample(bf6_ctx*, bf6_anim_clip*, int sample_ordinal,
+                                 float* out, float* out_quat_magnitude);
+
+/* Sample at a playback TIME rather than an exact ordinal, bracketing the two
+ * surrounding samples and interpolating between them. `loop` wraps.
+ *
+ * Time is in FRAMES. On a dense clip the ordinal is the time; on a sparse clip
+ * region 0's key-time table converts, and two adjacent ordinals may be several
+ * frames apart - which is why a large change between adjacent ordinals on a
+ * sparse clip is correct rather than a decode fault.
+ *
+ * CAVEAT, stated because it is not measured: the format spec records THAT the
+ * engine interpolates, not WHICH interpolation it uses for quaternions. This is
+ * shortest-arc nlerp followed by renormalisation - correct to within the usual
+ * nlerp/slerp difference, and not a reproduction of the engine's arithmetic. */
+BF6_API int bf6_anim_clip_sample_time(bf6_ctx*, bf6_anim_clip*, float time,
+                                      int loop, float* out);
+
+/* ------------------------------------------------------- renderbones ----- */
+/* THE PROCEDURAL BONES ABOVE THE RIG.
+ *
+ * A skin index with 0x8000 set does not name a rig bone. It names slot
+ * ((raw & 0x7FFF) >> 1) of this array, and the composed skeleton the mesh
+ * actually addresses is the SkeletonAsset's bones followed by these, in order:
+ * entry k IS bone rigCount + k.
+ *
+ * `parent` is a bone of the COMPOSED skeleton - either a base-rig bone
+ * (< rigCount) or an earlier entry (rigCount + j with j < k) - so one forward
+ * pass composes them, exactly like the rig. Model pose for entry k is
+ * local composed onto the parent's model pose.
+ *
+ * `source_pose` is the bind pose expressed in the SOURCE bone's frame, which is
+ * what a bind-pose driver re-anchors when the source bone moves. It is not the
+ * local pose and the two are not interchangeable.
+ *
+ * The mesh's own EBX names its Renderbones asset through SkinnedMeshAsset field
+ * 0xA38BC860; the `<stem>_renderbonesdata` filename is a convention, not the
+ * source, and meshes do import another outfit's asset outright. */
+typedef struct {
+    float   source_pose[12];  /* bind pose in the source bone's frame     */
+    float   local[12];        /* local pose, relative to `parent`         */
+    int32_t parent;           /* index into the COMPOSED skeleton         */
+} bf6_renderbone;
+
+typedef struct {
+    const bf6_renderbone* bones;
+    int32_t               bone_count;
+} bf6_renderbones;
+
+BF6_API bf6_renderbones* bf6_renderbones_read(bf6_ctx*, const char* ebx_name);
+
+/* ------------------------------------------------- character deformation */
+/* GPU DEFORM ADJACENCY: for each vertex, the FACES touching it.
+ *
+ * Not the neighbouring VERTICES. Reading the ids as vertices is the mistake
+ * this decode was stuck on for two attempts: against a vertex count the ids
+ * look out of range (they run to ~2x it, because a closed mesh has about twice
+ * as many triangles as vertices) and vertex-vertex edge symmetry scores near
+ * zero, so correct data looks broken.
+ *
+ * Faces for vertex v are faces[first[v] .. first[v+1]).  `first` has
+ * vertex_count+1 entries.  Mean fan size is ~6, the textbook valence of a
+ * closed triangulated 2-manifold, and a triangle is referenced by exactly three
+ * vertices about 96% of the time (the rest are mesh boundary and UV seams). */
+typedef struct {
+    int32_t         vertex_count;
+    const uint32_t* first;       /* vertex_count + 1 offsets into `faces`     */
+    const uint16_t* faces;       /* incident face ids, grouped by vertex      */
+    int32_t         face_count;  /* total ids, == first[vertex_count]         */
+    const uint32_t* aux;         /* one per vertex, MEANING NOT DECODED       */
+} bf6_deform_adjacency;
+
+BF6_API bf6_deform_adjacency* bf6_deform_adjacency_read(bf6_ctx*, const char* res_name);
+
+/* STRAND HAIR SCALP BINDING: each strand root rides a triangle of the head.
+ *
+ * Per LOD, per strand: the three corner indices of a scalp triangle and TWO
+ * barycentric weights. The third weight is IMPLIED - w2 = 1 - w0 - w1. Reading
+ * three from the buffer walks into the next strand.
+ *
+ * For lod L and strand s:
+ *     tri [ lod_first_tri[L]  + s*3 .. +3 )
+ *     bary[ lod_first_bary[L] + s*2 .. +2 )
+ *
+ * lod_count is 0 on a HIGHDEF bind asset, and that is an answer, not a failure:
+ * the highdef tier fills a different slot and binds every hair vertex directly
+ * instead of binding strand roots per LOD. */
+typedef struct {
+    int32_t        lod_count;
+    const int32_t* lod_strands;     /* strands at each LOD                    */
+    const int32_t* lod_first_tri;   /* start index into `tri`  for each LOD   */
+    const int32_t* lod_first_bary;  /* start index into `bary` for each LOD   */
+    const uint16_t* tri;            /* 3 scalp vertex ids per strand          */
+    const float*   bary;            /* 2 weights per strand; w2 = 1 - w0 - w1 */
+} bf6_hair_bind;
+
+BF6_API bf6_hair_bind* bf6_hair_bind_read(bf6_ctx*, const char* res_name);
+
+/* SWARM CROWDS: crowd spawn points and region transforms from an SP campaign
+ * `*_area_swarm` partition. Field SHAPES are confirmed against the executable
+ * typeinfo section (Vec3 size 16, LinearTransform size 64); the field NAMES are
+ * hashed in retail and are not recoverable, so a consumer gets trustworthy
+ * geometry and no labels. A multiplayer level yields zero of both - swarm
+ * content is SP-only - which is an answer, not a parse failure. */
+typedef struct {
+    int32_t      point_count;
+    const float* points;   /* 3 floats per spawn point, world space       */
+    int32_t      xform_count;
+    const float* xforms;   /* 12 floats per transform, 3x4 row-major      */
+} bf6_swarm;
+
+BF6_API bf6_swarm* bf6_swarm_read(bf6_ctx*, const char* ebx_name);
+
+/* ALTERNATE SPAWN POINTS: authored spawn placements on a per-game-mode gameplay
+ * layer (`_layers_gameplay/<mode>/...`). Field names come from the executable's
+ * reflection table, so these are LABELLED, unlike the swarm reader's geometry.
+ *
+ * `team` IS ALWAYS 0 in shipped data - 529 instances over three levels, none
+ * selecting a side. Do NOT sort spawns by it; that reading was tested and
+ * failed. It is returned so a consumer can verify rather than trust.
+ *
+ * `transform` is 12 floats, 3x4 row-major, and is yaw-only: row1 == (0,1,0)
+ * and row0.y == row2.y == 0 on 247/247 measured. Position and facing. */
+typedef struct {
+    float    transform[12];      /* 3x4 row-major; valid if has_transform     */
+    uint32_t flags;              /* 0x5645E663; 0x06000000 on 242 of 247      */
+    int32_t  team;               /* 0x2ADBF2A3 TeamId; 0 in ALL shipped data  */
+    float    initial_spawn_delay;/* 0x3F680D24; 1, 8, 10 or 100 observed      */
+    float    unnamed_060;        /* 0x54F22136; 0.1 on all 247                */
+    float    unnamed_070;        /* 0x60D18AE7; 0.01 on all 247               */
+    uint8_t  enabled;            /* 0xF97D7309; genuinely per-instance        */
+    uint8_t  use_as_fallback;    /* 0x3A6F09AD; true on all 247               */
+    uint8_t  draw_debug_pool;    /* 0x666021F3 DrawDebugTexturePool           */
+    uint8_t  unnamed_077;        /* 0xCF690BA2; varies, meaning unknown       */
+    uint8_t  has_transform;      /* 1 if transform[] was populated            */
+} bf6_spawn_point;
+
+typedef struct {
+    int32_t                count;
+    const bf6_spawn_point* points;
+} bf6_spawns;
+
+BF6_API bf6_spawns* bf6_spawns_read(bf6_ctx*, const char* ebx_name);
+
+/* TELEMETRY SCORING ENUMS: the metrics a game mode reports.
+ * `<mode>_scoringtelemetryenum` members name them - Conquest ships
+ * current_tickets, kill_tickets, majority_bleed.
+ *
+ * `id` is the file's own 32-bit value and is NOT an FNV hash of the name:
+ * FNV-1 and FNV-1a with the engine's 0x811c9dc5 seed both scored 0 of 3, so it
+ * is passed through raw rather than reinterpreted.
+ *
+ * Members arrive in FILE order, which is not enum order - Conquest's are 1,0,2.
+ * Sort by `value` if you need the declared sequence. */
+typedef struct {
+    int32_t     value;     /* enum value                                     */
+    int32_t     ordinal;   /* the separate ordinal field; equals value so far */
+    uint32_t    id;        /* 32-bit id, provenance unknown                  */
+    const char* name;      /* e.g. "current_tickets"                         */
+} bf6_telemetry_member;
+
+typedef struct {
+    int32_t                     count;
+    const bf6_telemetry_member* members;
+    const char*                 name;   /* the enum asset's own path         */
+} bf6_telemetry_enum;
+
+BF6_API bf6_telemetry_enum* bf6_telemetry_enum_read(bf6_ctx*, const char* ebx_name);
+
+/* POSE-SPACE DEFORMATION: which facial poses displace which vertices, and by
+ * how much. This is what makes an expression, on top of the skinned pose.
+ *
+ * The storage is SPARSE - only vertices a pose actually moves are stored - so
+ * this is a flat list of (vertex, pose, delta) rather than an N x V array. A
+ * dense array would be larger than the whole file.
+ *
+ * `scale` is the payload's own quantisation scale (0.01 on every sampled file):
+ * one 10-bit signed lane spans +/- that, so a delta magnitude cannot exceed
+ * scale*sqrt(3), about 17.3 mm. Measured mean is around 10 mm on a face mesh
+ * roughly 0.2 m across - millimetre-scale correctives, as a face rig should be.
+ *
+ * `pose_index` indexes the pose-descriptor table, whose names come from the
+ * paired EBX (for example NN_Squash_100, NN_Taco_050). */
+typedef struct {
+    int32_t vertex_index;   /* into the LOD's vertex array, < vertex_count */
+    int32_t pose_index;     /* < pose_count                                */
+    float   delta[3];       /* metres, already dequantised                 */
+} bf6_psd_delta;
+
+typedef struct {
+    int32_t vertex_count;            /* V for this LOD                     */
+    int32_t pose_count;              /* N                                  */
+    float   scale;                   /* per-axis quantisation range        */
+    int32_t affected_vertex_count;   /* vertices any pose displaces        */
+    /* the header's own deformedVertexCount at +0x10. Should equal the
+     * above; if it does not, the index table was mis-walked. */
+    int32_t declared_deformed_count;
+    const bf6_psd_delta* deltas;
+    int32_t delta_count;
+} bf6_psd;
+
+BF6_API bf6_psd* bf6_psd_read(bf6_ctx*, const char* res_name);
+
+/* THE PSD VERTEX MAP - source render vertex to welded PSD vertex.
+ *
+ * This is what connects a mesh to its facial deformation: `bf6_psd` is keyed by
+ * PSD vertex and a renderer has RENDER vertices, so applying an expression means
+ *
+ *     pv = psd_vertex_id[renderVertex];
+ *     if (pv != 0xFFFFFFFF) apply every bf6_psd_delta whose vertex_index == pv
+ *
+ * The map is MANY-TO-ONE by design - render vertices split at UV and normal
+ * seams and several copies collapse onto one deformation vertex - so duplicate
+ * ids are correct, not a bad read. 0xFFFFFFFF means this render vertex is not
+ * deformed by any pose and MUST be skipped; it is roughly 7% of elements across
+ * the shipped population, so treating it as an index is not a rare edge case. */
+typedef struct {
+    int32_t         element_count;      /* source render vertices in this LOD  */
+    int32_t         mesh_vertex_offset; /* cumulative source offset of the LOD */
+    const uint32_t* psd_vertex_id;      /* 0xFFFFFFFF = not deformed           */
+    int32_t         mapped_count;       /* entries that are not 0xFFFFFFFF     */
+    int32_t         max_psd_vertex;     /* highest mapped id; must be < the
+                                         * paired bf6_psd's vertex_count       */
+} bf6_psd_map;
+
+BF6_API bf6_psd_map* bf6_psd_map_read(bf6_ctx*, const char* res_name);
+
+/* --------------------------------------------------------------- skeleton */
+/* THE CHARACTER RIG.
+ *
+ * A skinned mesh hands back bone indices and weights; they mean nothing without
+ * this. Read the rig the mesh binds to - for every shipped soldier part that is
+ * `common/characters/_soldier/ske_soldier_3p` (291 bones), or `_1p` (203).
+ *
+ * The three transforms are each 3x4 ROW-MAJOR: rows 0..2 are the right, up and
+ * forward columns, row 3 is the translation. Applying one is
+ * v' = right*v.x + up*v.y + forward*v.z + trans.
+ *
+ * They are related, and the relations are what tell you which is which:
+ *     model[i]   == local[i] composed onto model[parent[i]]
+ *     inverse[i] composed onto model[i] == identity
+ * Both hold on 291 of 291 bones of the 3P rig and 203 of 203 of the 1P rig.
+ *
+ * `inverse` is NOT the transpose of `model` - these transforms carry scale, so
+ * transposing gives a rig that looks almost right and drifts on scaled bones.
+ *
+ * TO SKIN A VERTEX: for each of the section's `skin_influences` lanes, take
+ * bone b = skin_bones[...] (resolve through the section's palette first), and
+ * accumulate skin_weights[...] * (pose[b] * inverse[b] * v), where `pose` is
+ * your animated model-space transform for that bone. At bind time pose == model
+ * and the inverse cancels it, which is the cheapest way to check a rig is
+ * wired correctly: the mesh must come back unchanged.
+ *
+ * Bones are TOPOLOGICALLY ORDERED - a parent's index is always lower than its
+ * child's - so one forward pass composes the whole rig with no recursion. */
+typedef struct {
+    const char* name;        /* bone name, e.g. "LeftForeArm"                  */
+    uint32_t    name_hash;   /* FNV-1 32-bit of the name, CASE SENSITIVE       */
+    int32_t     parent;      /* parent bone index, -1 on the single root       */
+    float       local[12];   /* bind pose relative to the parent               */
+    float       model[12];   /* bind pose in model space                       */
+    float       inverse[12]; /* inverse of model: model space -> bone space    */
+} bf6_bone;
+
+typedef struct {
+    const bf6_bone* bones;
+    int32_t         bone_count;
+    const char*     name;    /* the rig's own authored path, or NULL           */
+    /* Bones [0, rig_bone_count) come from the SkeletonAsset; anything at or
+     * above it is an appended renderbone. Equals bone_count on a plain rig. */
+    int32_t         rig_bone_count;
+} bf6_skeleton;
+
+/* Read a rig by EBX name. NULL if the name is not in the mount or the instance
+ * is not a skeleton. Free with bf6_free().
+ *
+ * NOT EVERY ASSET NAMED *skeleton IS THIS TYPE. The animation side ships a
+ * second, topology-only skeleton (parent / first-child / next-sibling, names,
+ * NO transforms) and the two are not distinguishable by filename -
+ * propcommonskeleton is this type while weaponskeleton is the other. This
+ * returns NULL on the other type rather than a rig with an empty pose. */
+BF6_API bf6_skeleton* bf6_skeleton_read(bf6_ctx*, const char* ebx_name);
+
+/* THE SKELETON A SKINNED CHARACTER MESH ACTUALLY INDEXES: a rig with the mesh's
+ * renderbones appended, so entry k of the renderbones array is bone
+ * rigCount + k, with model and inverse bind poses already composed.
+ *
+ * Use this rather than composing by hand. Three things fail quietly otherwise:
+ * a flagged skin index resolves to rigCount + slot and not to the shifted slot
+ * alone; a renderbone's model pose is its local pose composed onto its parent's
+ * MODEL pose, and that parent may be another renderbone; and the inverse must
+ * be a general affine inverse, because these transforms carry scale and the
+ * transpose shortcut drifts on exactly the bones where it is hardest to see.
+ *
+ * `renderbones_ebx` may be NULL, which just returns the plain rig. Free with
+ * bf6_free(). Verified: skinning at bind pose against a composed skeleton
+ * reproduces the mesh exactly on 360,619 vertices over four characters and nine
+ * meshes, with zero vertices left unplaceable. */
+BF6_API bf6_skeleton* bf6_skeleton_compose(bf6_ctx*, const char* skeleton_ebx,
+                                           const char* renderbones_ebx);
+
+/* Resolve a per-vertex skin index (bf6_section.skin_bones) against a composed
+ * skeleton, handling the 0x8000 renderbone flag. Returns -1 if out of range. */
+BF6_API int32_t bf6_skin_index_to_bone(const bf6_skeleton*, uint16_t raw);
+
 /* ------------------------------------------------------------------- bones */
 /* One bone's skinning matrix, 3x4 row-major: right, up, forward, trans -
  * the same convention a placement transform uses. */
@@ -1473,6 +3195,14 @@ typedef struct { float m[12]; } bf6_bone_xform;
 BF6_API int bf6_weapon_skin(bf6_ctx*, const char* md_partition,
                             bf6_bone_xform* out, int out_max);
 
+/* Model-space transform of one named weapon bone after the model-definition's
+ * parent-local pose overrides have been applied and composed. This is a pose
+ * transform, not a skinning matrix. Returns 1 for an exact case-sensitive
+ * bone-name match and 0 for a fabricated/absent name. */
+BF6_API int bf6_weapon_bone_transform(bf6_ctx*, const char* md_partition,
+                                      const char* bone_name,
+                                      bf6_bone_xform* out);
+
 /* The shader bundle that owns a weapon part's material, or 0 if none matches.
  *
  * Pass the result to bf6_read_mesh_scoped. A part's material lives in
@@ -1496,7 +3226,8 @@ typedef struct {
     int32_t     page;        /* -> <atlas>_atlas<page>                        */
     float       uv[4];       /* u0, v0, u1, v1 within the page                */
     float       size[2];     /* pixel size                                    */
-    float       offset[2];   /* placement on the canvas                       */
+    float       offset[2];   /* slot in the packed sheet (not card placement) */
+    float       placement[2];/* authored base placement on the 512x256 canvas */
     float       canvas[2];   /* the canvas it is placed on, {512, 256}        */
 } bf6_icon_sprite;
 
@@ -1528,7 +3259,26 @@ BF6_API int bf6_card_layers(bf6_ctx*, const char* hiao_partition,
 typedef struct {
     const char* mesh;     /* resource name for bf6_read_mesh                */
     const char* bundle;   /* placing bundle for bf6_read_mesh_scoped        */
+    /* Runtime-authored record Binding[0] translation plus the slot-group
+     * socket translation. Add after skinning. Zero when the part has no
+     * gameplay-bone binding (receiver, most magazines, charms). */
+    float       attach_offset[3];
+    int32_t     has_attach_offset;
 } bf6_weapon_part;
+
+typedef struct {
+    const char* slot;       /* shipped UI slot code: scp, rgt, btm...        */
+    const char* attachment; /* token from attachment_<weapon>_<slot>_<token> */
+} bf6_weapon_fit;
+
+/* The game's stock/factory configuration, read from equipment_<weapon>.ebx.
+ *
+ * MeshSlot.Default is a UI preselection and is NOT the stock weapon.  The
+ * actual presentation is the set of equipment grants whose grantor import is
+ * u_<weapon>_pkg_factory.  Strings are context-owned and remain valid until
+ * the next call to this function on the same context. */
+BF6_API int bf6_weapon_factory_fits(bf6_ctx*, const char* equipment_partition,
+                                    bf6_weapon_fit* out, int out_max);
 
 /* Every part mesh a weapon's model definition can draw, with its bundle.
  *
@@ -1537,6 +3287,43 @@ typedef struct {
  * optic's lens and a receiver's charm holder come from - draw them all. */
 BF6_API int bf6_weapon_parts(bf6_ctx*, const char* md_partition,
                              bf6_weapon_part* out, int out_max);
+
+/* The model-definition default presentation, one authored MeshSlot.Default member per
+ * slot.  Unlike bf6_weapon_parts (the complete mutually-exclusive graph), this
+ * is directly drawable as one weapon.  Mesh and bundle strings are context
+ * owned and valid until the next weapon-parts call on that context. */
+BF6_API int bf6_weapon_default_parts(bf6_ctx*, const char* md_partition,
+                                     bf6_weapon_part* out, int out_max);
+
+/* A zero-optional-attachment presentation with fitted slots selected from the
+ * live model-definition graph. Structural defaults (base, barrel, magazine,
+ * iron sights and rail covers) remain. The token join is bounded to the selected slot's
+ * own groups and requires an exact normalized substring; an unknown/fake
+ * token therefore leaves the authored default unchanged instead of choosing
+ * a plausible wrong part. */
+BF6_API int bf6_weapon_configured_parts(bf6_ctx*, const char* md_partition,
+                                        const bf6_weapon_fit* fits, int fit_count,
+                                        bf6_weapon_part* out, int out_max);
+
+/* ---------------------------------------------------------- ground scatter */
+/* One record from the level's MeshScatteringDatabase RES (0x2AB067B5).
+ * This is the exact shipped CATALOGUE: which mesh, its visibility horizon and
+ * dissolve ratio. The retail resource does not contain per-instance world
+ * positions; consumers must label any generated placement as reconstruction. */
+typedef struct {
+    const char* name;              /* authored blueprint path                  */
+    const char* mesh_res;          /* resolved MeshSet RES, context-owned      */
+    float       view_distance;     /* metres                                   */
+    float       dissolve_ratio;    /* fade fraction of the view distance       */
+    int32_t     point_count;       /* opaque authored points; not placements   */
+} bf6_scatter_entry;
+
+/* Returns the exact record count, 0 when the level carries no database, or -1
+ * on a malformed resource. A variable-length parse is accepted only when it
+ * consumes the payload exactly. Strings remain valid until the next call. */
+BF6_API int bf6_level_scatter(bf6_ctx*, const char* level,
+                              bf6_scatter_entry* out, int out_max,
+                              char* err, int err_len);
 
 /* -------------------------------------------------------------------- memory */
 /* Free anything this API returned (bf6_mesh*, bf6_terrain*, ...). The bf6_ctx*

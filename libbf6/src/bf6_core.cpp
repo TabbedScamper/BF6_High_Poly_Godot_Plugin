@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <algorithm>
 #include <cmath>
+#include <climits>
 #include <set>
 #include <cstring>
 #include <exception>
@@ -28,13 +29,18 @@
 #include "destruction.h"
 #include "terrain.h"
 #include "terraincomposite.h"
+#include "stdio_compat.h"
 #include "groundsplat.h"
+#include "splat.h"
 #include "texture.h"
 #include "walk.h"
 #include "placeables.h"
 #include "velighting.h"
 #include "levellights.h"
+#include "lightingzones.h"
 #include "fx.h"
+#include "expression_graph.h"
+#include "expression_registry.h"
 
 namespace fs = std::filesystem;
 
@@ -45,8 +51,55 @@ struct bf6_ctx {
     std::vector<std::string> armory_slot_names;
     std::vector<std::string> armory_category_names;
     std::vector<std::string> rime_names;
+    std::vector<bf6_rime_node> rime_tree_rows;
+    std::string                rime_tree_key;
+    bf6_rime_tree_stats        rime_tree_stats{};
+    // Property connections and localized-string entities belong to the same
+    // partition. Keep their decoded rows together so the C count/fill calls
+    // and subsequent per-source lookups do not decompress and parse that EBX
+    // once per connection.
+    std::string                         rime_bindings_key;
+    std::vector<bf6_rime_connection>    rime_binding_connections;
+    std::vector<bf6_rime_event_connection> rime_binding_event_connections;
+    std::vector<bf6_rime_conditional_float> rime_binding_conditional_floats;
+    std::vector<bf6_rime_conditional_property> rime_binding_conditional_properties;
+    std::vector<int32_t>                    rime_binding_interface_descriptors;
+    std::vector<bf6_rime_interface_field>    rime_binding_interface_fields;
+    std::vector<bf6_rime_interface_struct_type>
+                                                rime_binding_interface_struct_types;
+    std::map<int32_t, uint32_t>         rime_binding_string_entities;
+    // The front end's colour palette, read once. `tried` is kept apart from
+    // `empty` so a failed read is not retried once per element.
+    std::vector<bf6_rime_color>   rime_palette;
+    std::map<std::string, size_t> rime_palette_by_id;
+    bool                          rime_palette_tried = false;
+    // The authored text styles, and the raw sfnt of the last font asked for.
+    // The font blob is held so the ABI can hand out a pointer-free size/fill
+    // pair without re-reading the archive between the two calls.
+    std::vector<bf6_rime_font_style> rime_font_styles;
+    std::map<std::string, size_t>    rime_font_by_name;
+    bool                             rime_fonts_tried = false;
+    std::string                      rime_font_blob_name;
+    std::vector<uint8_t>             rime_font_blob;
+
+    // Photon offline visual bundle.  The rows are copied values; the chunk is
+    // retained only long enough to validate ranges and file signatures.  A
+    // consumer obtains its own one-slot view with BF6_RAW_CHUNK.
+    bool                             photon_assets_tried = false;
+    bf6_photon_bundle_info           photon_bundle_info{};
+    std::vector<bf6_photon_asset>    photon_assets;
     std::vector<std::string> icon_names;
     std::vector<std::string> part_meshes, part_bundles;
+    std::vector<std::string> factory_fit_slots, factory_fit_tokens;
+    std::vector<bf6_weapon_fit> factory_fit_rows;
+    std::vector<float>       part_attach_offsets; // 3 floats per returned part
+    std::vector<int32_t>     part_has_attach_offset;
+    std::map<uint32_t, std::string> loc_en;
+    bool loc_en_tried = false;
+    std::vector<std::string> weapon_ui_strings;
+    // The attachment catalogue for the last weapon asked about.
+    std::vector<bf6_attachment_catalogue_row> catalogue;
+    std::vector<bf6_weapon_name_row> weapon_names;
     bf6::PlaceableDB pdb;
     int lifted = 0;
 
@@ -74,7 +127,9 @@ struct bf6_ctx {
     //
     // The ABI hands out bare pointers by design, so the type has to be
     // remembered here. Registered on the way out, looked up on the way back.
-    enum HandleKind { HK_MESH = 1, HK_TERRAIN = 2 };
+    enum HandleKind { HK_MESH = 1, HK_TERRAIN = 2, HK_SKELETON = 3,
+                      HK_ADJACENCY = 4, HK_HAIRBIND = 5,
+                      HK_RENDERBONES = 6, HK_ANIMRELOC = 7, HK_ANIMCLIP = 8, HK_PSD = 9, HK_PSDMAP = 10, HK_SWARM = 11, HK_TELEMETRY = 12, HK_SPAWNS = 13 };
     std::map<void*, int> handles;
 
     // The last coverage, and the C view of its material list. Same lifetime
@@ -82,9 +137,19 @@ struct bf6_ctx {
     std::unique_ptr<bf6::GroundCoverage> ground;
     std::vector<bf6_ground_material>     ground_mats;
 
+    // Exact MeshScatteringDatabase catalogue and its C-string backing store.
+    std::vector<std::string>             scatter_names, scatter_meshes;
+    std::vector<bf6_scatter_entry>       scatter_rows;
+
     // The last ground bake, so its buffers outlive the call that made it and
     // a second bake replaces the first rather than leaking it.
     std::unique_ptr<bf6::TerrainBake> bake;
+
+    // The live utility raster used by CoarseMask water attenuation. The C ABI
+    // returns views into these buffers, matching the ownership convention used
+    // by textures and ground coverage. A subsequent mask read replaces them.
+    std::vector<uint8_t>              water_mask_atlas;
+    std::vector<uint32_t>             water_mask_indirection;
 
     // bf6_variation_live answers, keyed res|bundle|variation. The question is
     // asked once per distinct triple while a level's groups are being formed,
@@ -118,6 +183,13 @@ struct bf6_ctx {
     bf6::LightStats              light_stats;
     std::string                  lights_level;
 
+    // ---- local VisualEnvironment zones -----------------------------------
+    std::vector<bf6::LightingZone> lighting_zones;
+    std::vector<bf6_lighting_zone> lighting_zone_rows;
+    std::vector<std::vector<float>> lighting_zone_points;
+    bf6::LightingZoneStats         lighting_zone_stats;
+    std::string                    lighting_zones_level;
+
     bf6_progress_fn progress = nullptr;
     void*           progress_user = nullptr;
 
@@ -146,6 +218,13 @@ struct bf6_ctx {
     };
     std::vector<TexHold>          textures;
     std::map<std::string, int32_t> tex_by_res;
+
+    struct CappedTexHold {
+        bf6::TextureImage img;
+        bf6_texture abi{};
+        bool tried = false, ok = false;
+    };
+    std::map<uint64_t, CappedTexHold> capped_textures; // (id,max-dimension)
 
     // FORGET EVERY DECODED TEXTURE, KEEPING THE IDS.
     //
@@ -275,6 +354,7 @@ static bf6_fmt fmt_of(int dxgi)
     case 28: return BF6_FMT_RGBA8;
     case 61: return BF6_FMT_R8;
     case 10: return BF6_FMT_RGBA16F;
+    case 24: return BF6_FMT_RGB10A2;
     default: return BF6_FMT_UNKNOWN;
     }
 }
@@ -578,7 +658,12 @@ static bf6_tex_slot slot_for(uint32_t n32, bool& out_known, uint32_t albedo_slot
     // Normals: one hash per SHADER FAMILY, not one globally.
     case 0xEC35A74C: case 0xEC35A9E2: case 0xEC35A757:
     case 0xEC35A68C: case 0xEC35A697:                 return BF6_TEX_NORMAL;
-    case 0xB1A29A3C:                                  return BF6_TEX_MRO;
+    // Weapon/prop `_wo`, not metallic/roughness/occlusion.  The channel
+    // census identifies R=edge/wear and A=paint mask; G/B remain unknown.
+    // Calling this MRO made the native viewer use wear as metalness, an
+    // unidentified field as roughness, and a sparse field as AO, turning the
+    // M4A1 black and marbled.  `_cs` alpha is the verified smoothness source.
+    case 0xB1A29A3C:                                  return BF6_TEX_WO;
     case 0x407055FD: case 0xD405B0E5:                 return BF6_TEX_EMISSIVE;
     case 0xD405B0E1:                                  return BF6_TEX_MASK;
     default: break;
@@ -629,6 +714,22 @@ static uint64_t variation_key(uint64_t state_key, const std::string& variation)
     return state_key + djb2_lower(p);
 }
 
+/* Defined in skeleton_ext.inc, which is included below bf6_free. The
+ * deleter is forward-declared rather than the struct: deleting an
+ * incomplete type is undefined, and the compiler cannot warn about it
+ * reliably. */
+void bf6__skeleton_delete(void*);
+void bf6__adjacency_delete(void*);
+void bf6__hairbind_delete(void*);
+void bf6__swarm_delete(void*);
+void bf6__telemetry_delete(void*);
+void bf6__spawns_delete(void*);
+void bf6__renderbones_delete(void*);
+void bf6__animreloc_delete(void*);
+void bf6__animclip_delete(void*);
+void bf6__psd_delete(void*);
+void bf6__psdmap_delete(void*);
+
 struct MeshHandle {
     bf6_mesh                            mesh{};
     std::vector<bf6_section>            sections;
@@ -643,10 +744,20 @@ struct MeshHandle {
     // meshset decodes them into MeshGeomSection::parts and the ABI dropped
     // them one line before any consumer could see them.
     std::vector<std::vector<uint16_t>>  bones;
+    // The full skin binding, one array per section: 4 or 8 influences per
+    // vertex with matching weights. `bones` above keeps only a single lane and
+    // cannot express a vertex that belongs to two joints, which is every vertex
+    // near a character's elbow.
+    std::vector<std::vector<uint16_t>>  skin_b;
+    std::vector<std::vector<float>>     skin_w;
+    std::vector<int>                    skin_n;
     std::vector<std::vector<uint32_t>>  idx;
+    std::vector<uint16_t>               palette;   // mesh-wide bone palette
 };
 
 extern "C" {
+
+int bf6_abi_version(void) { return BF6_ABI_VERSION; }
 
 bf6_ctx* bf6_open(const char* game_dir, char* err, int err_len) {
     // Empty game_dir is the explicit no-install mode: a context with nothing
@@ -778,8 +889,9 @@ int bf6_catalogue(bf6_ctx* c, const char* search, bf6_cat_entry* out, int out_ma
     return total;
 }
 
-bf6_mesh* bf6_read_mesh_scoped(bf6_ctx* c, const char* res_name, int lod,
-                               const char* placing_bundle, const char* variation) {
+static bf6_mesh* bf6__read_mesh_scoped(bf6_ctx* c, const char* res_name, int lod,
+                                      const char* placing_bundle, const char* variation,
+                                      bool armory_index) {
     if (!c || !res_name) return nullptr;
     const std::string placing = placing_bundle ? placing_bundle : "";
     const std::string variant = variation ? variation : "";
@@ -906,10 +1018,12 @@ bf6_mesh* bf6_read_mesh_scoped(bf6_ctx* c, const char* res_name, int lod,
     }
 
     MeshHandle* mh = new MeshHandle();
+    mh->palette = ms.bone_parts;
     const size_t n = secs.size();
     mh->pos.reserve(n); mh->nrm.reserve(n); mh->uv.reserve(n); mh->idx.reserve(n);
     mh->uv1.reserve(n);
     mh->bones.reserve(n);
+    mh->skin_b.reserve(n); mh->skin_w.reserve(n); mh->skin_n.reserve(n);
     for (auto& s : secs) {
         mh->pos.push_back(std::move(s.positions));
         mh->nrm.push_back(std::move(s.normals));
@@ -919,6 +1033,9 @@ bf6_mesh* bf6_read_mesh_scoped(bf6_ctx* c, const char* res_name, int lod,
         // for ch == 1. A weapon mesh's second channel is ~8 bytes a vertex.
         mh->uv1.push_back(s.uv[1]);
         mh->bones.push_back(std::move(s.parts));
+        mh->skin_b.push_back(std::move(s.skin_bones));
+        mh->skin_w.push_back(std::move(s.skin_weights));
+        mh->skin_n.push_back(s.influences);
         mh->idx.push_back(std::move(s.indices));
     }
     mh->sections.resize(n);
@@ -935,8 +1052,16 @@ bf6_mesh* bf6_read_mesh_scoped(bf6_ctx* c, const char* res_name, int lod,
         // The palette is not decoded yet - see meshset.cpp. Reported as absent
         // rather than as an empty-but-present list, so a consumer can tell the
         // difference between "no bones" and "bones we cannot resolve".
-        sec.bone_list       = nullptr;
-        sec.bone_list_count = 0;
+        // ONE PALETTE PER MESH, not per section: the bone/part block lives in
+        // the MeshSet header, so every section is handed the same list rather
+        // than a private copy. Reported as absent when the mesh declares none.
+        sec.bone_list       = mh->palette.empty() ? nullptr : mh->palette.data();
+        sec.bone_list_count = (int32_t)mh->palette.size();
+        sec.skin_bones      = mh->skin_b[i].empty() ? nullptr : mh->skin_b[i].data();
+        sec.skin_weights    = mh->skin_w[i].empty() ? nullptr : mh->skin_w[i].data();
+        sec.skin_influences = mh->skin_b[i].empty() ? 0 : mh->skin_n[i];
+        sec.is_decal        = (secs[i].category_flags & (1u << 2)) ? 1 : 0;
+        sec.state_key       = secs[i].state_key;
         sec.indices      = mh->idx[i].data();
         sec.index_count  = (int32_t)mh->idx[i].size();
         sec.material     = (int32_t)i;
@@ -949,6 +1074,9 @@ bf6_mesh* bf6_read_mesh_scoped(bf6_ctx* c, const char* res_name, int lod,
     }
     mh->mesh.sections       = mh->sections.data();
     mh->mesh.section_count  = (int32_t)n;
+    mh->mesh.mesh_type      = (int32_t)ms.mesh_type;
+    mh->mesh.bone_count     = (int32_t)ms.bone_count;
+    mh->mesh.lod_count      = (int32_t)ms.lod_count;
 
     // ---- materials, one per section --------------------------------------
     //
@@ -1000,6 +1128,7 @@ bf6_mesh* bf6_read_mesh_scoped(bf6_ctx* c, const char* res_name, int lod,
         md.translucent = 0;
         md.alpha_from_albedo = 0;
         md.normal_is_nsm = 0;
+        md.terrain_decal_receiver = 0;
         md.textures = nullptr;
         md.texture_count = 0;
         if (!dep) continue;
@@ -1102,7 +1231,8 @@ bf6_mesh* bf6_read_mesh_scoped(bf6_ctx* c, const char* res_name, int lod,
         auto slot_is_usable = [&](uint32_t n32) {
             auto t = mb.textures.find(n32);
             if (t == mb.textures.end()) return false;
-            const auto& pidx = c->src.partition_index();
+            const auto& pidx = armory_index ? c->src.armory_partition_index()
+                                             : c->src.partition_index();
             auto ait = pidx.find(t->second);
             if (ait == pidx.end()) return false;
             const std::string& nm = ait->second;
@@ -1111,6 +1241,12 @@ bf6_mesh* bf6_read_mesh_scoped(bf6_ctx* c, const char* res_name, int lod,
         };
         const uint32_t albedo_slot = albedo_slot_of(mb, slot_is_usable);
         const bool wrap_albedo = albedo_slot == 0x54BBCD22;
+        // The verified terrain-decal receiver set: a surface sampling the
+        // terrain colour VT and carrying no real albedo of its own. Preserve
+        // this identity before generic slot mapping discards the authored
+        // parameter name.
+        md.terrain_decal_receiver =
+            mb.textures.count(0x89D3AD5E) && albedo_slot == 0 ? 1 : 0;
 
         // AND AN IMPOSTOR IS NOT ALPHA TESTED, however binary its sheet looks.
         //
@@ -1130,7 +1266,8 @@ bf6_mesh* bf6_read_mesh_scoped(bf6_ctx* c, const char* res_name, int lod,
 
             // The FILE guid resolves through the partition index to the texture
             // asset's name; the resource is that name without the .ebx.
-            const auto& gi = c->src.partition_index();
+            const auto& gi = armory_index ? c->src.armory_partition_index()
+                                           : c->src.partition_index();
             auto ait = gi.find(kv.second);
             if (ait == gi.end()) continue;
             std::string tres = ait->second;
@@ -1168,6 +1305,14 @@ bf6_mesh* bf6_read_mesh_scoped(bf6_ctx* c, const char* res_name, int lod,
     for (int k = 0; k < 3; k++) { mh->mesh.aabb_min[k] = lo[k]; mh->mesh.aabb_max[k] = hi[k]; }
     c->handles[&mh->mesh] = bf6_ctx::HK_MESH;
     return &mh->mesh;
+}
+bf6_mesh* bf6_read_mesh_scoped(bf6_ctx* c, const char* res_name, int lod,
+                               const char* placing_bundle, const char* variation) {
+    return bf6__read_mesh_scoped(c, res_name, lod, placing_bundle, variation, false);
+}
+bf6_mesh* bf6_read_armory_mesh_scoped(bf6_ctx* c, const char* res_name, int lod,
+                                      const char* placing_bundle, const char* variation) {
+    return bf6__read_mesh_scoped(c, res_name, lod, placing_bundle, variation, true);
 }
 bf6_mesh* bf6_read_mesh(bf6_ctx* c, const char* res_name, int lod) {
     return bf6_read_mesh_scoped(c, res_name, lod, nullptr, nullptr);
@@ -1210,6 +1355,40 @@ const bf6_texture* bf6_texture_at(bf6_ctx* c, int texture_id) {
         }
     }
     return h.ok ? &h.abi : nullptr;
+}
+
+const bf6_texture* bf6_texture_at_max_dim(bf6_ctx* c, int texture_id, int max_dim) {
+    if (!c || texture_id < 0 || (size_t)texture_id >= c->textures.size() || max_dim <= 0)
+        return nullptr;
+    const uint64_t key = ((uint64_t)(uint32_t)texture_id << 32) | (uint32_t)max_dim;
+    bf6_ctx::CappedTexHold& h = c->capped_textures[key];
+    if (!h.tried) {
+        h.tried = true;
+        std::string e;
+        try {
+            const std::string resName = c->textures[(size_t)texture_id].res;
+            std::vector<uint8_t> res = c->src.get_res(resName, e);
+            if (!res.empty()) {
+                auto fetch = [c](const std::string& g) {
+                    std::string e2;
+                    return c->src.get_chunk(g, e2);
+                };
+                h.ok = bf6::Texture::decode_capped(res, fetch, h.img, max_dim, e);
+            }
+        } catch (...) { h.ok = false; }
+        if (h.ok) {
+            h.abi.width = h.img.width; h.abi.height = h.img.height;
+            h.abi.mip_count = h.img.mip_count; h.abi.format = fmt_of(h.img.dxgi);
+            h.abi.data = h.img.blocks.data(); h.abi.data_len = (int32_t)h.img.blocks.size();
+            h.abi.srgb = h.img.srgb ? 1 : 0;
+        }
+    }
+    return h.ok ? &h.abi : nullptr;
+}
+
+const char* bf6_texture_name_at(bf6_ctx* c, int texture_id) {
+    if (!c || texture_id < 0 || (size_t)texture_id >= c->textures.size()) return nullptr;
+    return c->textures[(size_t)texture_id].res.c_str();
 }
 void bf6_set_progress(bf6_ctx* c, bf6_progress_fn fn, void* user) {
     if (!c) return;
@@ -1263,9 +1442,8 @@ int bf6_open_level(bf6_ctx* c, const char* level, const char* exe_path,
     return 0;
 }
 
-int bf6_level_instances(bf6_ctx* c, const char* level,
-                        bf6_instance* out, int out_max) {
-    if (!c || !c->walk || !level || c->walked_level != level) return 0;
+static int serve_instance_rows(bf6_ctx* c, bf6_instance* out, int out_max) {
+    if (!c || !c->walk) return 0;
     const std::vector<bf6::WalkRow>& rows = c->walk->rows();
     const int n = (int)rows.size();
     for (int i = 0; i < n && i < out_max; i++) {
@@ -1282,12 +1460,19 @@ int bf6_level_instances(bf6_ctx* c, const char* level,
         // Owned by the walk, alive until the level is reopened, same as the name.
         out[i].placing_bundle = r.bundle.empty() ? nullptr : r.bundle.c_str();
         out[i].variation      = r.var.empty()    ? nullptr : r.var.c_str();
+        out[i].source         = r.src.empty()    ? nullptr : r.src.c_str();
     }
     return n;
 }
+
+int bf6_level_instances(bf6_ctx* c, const char* level,
+                        bf6_instance* out, int out_max) {
+    if (!c || !c->walk || !level || c->walked_level != level) return 0;
+    return serve_instance_rows(c, out, out_max);
+}
 /* bf6_level_lights lives beside bf6_level_lighting at the bottom of this file:
  * it needs ensure_mounted and ensure_types, which are declared down there. */
-bf6_terrain* bf6_read_terrain(bf6_ctx* c, const char* level) {
+static bf6_terrain* read_terrain_block(bf6_ctx* c, const char* level, bool water_surface) {
     if (!c || !level || !*level) return nullptr;
 
     // The level's heightfield lives in its streaming-tree resource, which is
@@ -1312,7 +1497,7 @@ bf6_terrain* bf6_read_terrain(bf6_ctx* c, const char* level) {
     if (res.empty()) return nullptr;
 
     bf6::Terrain t;
-    if (!t.parse(res, err)) return nullptr;
+    if (water_surface ? !t.parse_water_surface(res, err) : !t.parse(res, err)) return nullptr;
     t.resolve_external([&](const std::string& guid) {
         std::string e;
         return c->src.get_chunk(guid, e);
@@ -1334,6 +1519,14 @@ bf6_terrain* bf6_read_terrain(bf6_ctx* c, const char* level) {
     th->t.color_texture = -1;
     c->handles[&th->t] = bf6_ctx::HK_TERRAIN;
     return &th->t;
+}
+
+bf6_terrain* bf6_read_terrain(bf6_ctx* c, const char* level) {
+    return read_terrain_block(c, level, false);
+}
+
+bf6_terrain* bf6_read_water_heightfield(bf6_ctx* c, const char* level) {
+    return read_terrain_block(c, level, true);
 }
 
 // ------------------------------------------------------------ terraindecals
@@ -1465,9 +1658,18 @@ static const uint32_t kSimTileDim      = 0x54A5216B;
 static const uint32_t kSimMinWavelen   = 0x787474E1;
 static const uint32_t kSimLargeWaveRed = 0xC44A1FAF;
 static const uint32_t kSimWaveThick    = 0xAA2BBED7;
+static const uint32_t kSimWaveAmp      = 0xD395F0B1;
+static const uint32_t kSimFoamHalfLife = 0x65FEEA86;
+static const uint32_t kSimResolution   = 0x590C8625;
+static const uint32_t kSimDefault      = 0x97EA1523;
+static const uint32_t kSimPhysics      = 0xBBDB3870;
+static const uint32_t kSimForcePlane   = 0x8C10DE28;
+static const uint32_t kSimVisualCpu    = 0xA0EA8621;
 static const uint32_t kSimCurveType    = 0xEC989148;
 static const uint32_t kSimCurveX[3] = { 0xA3F9DFEE, 0xAB145027, 0x4FBB37BF };
 static const uint32_t kSimCurveY[4] = { 0x57C358C3, 0xE9D446E7, 0xE4DA513E, 0xF324662A };
+static const uint32_t kSimCurveG[6] = { 0x434009FD, 0x2767762B, 0x7378B1F0,
+                                         0x36B72C11, 0xB2E9FCA9, 0xEB22B313 };
 // Vec4 component field hashes, IN OFFSET ORDER - the warning in the finding:
 // read x,y,z,w by offset, never by hash order.
 static const uint32_t kSimVec4[4] = { 0x3901DB14, 0x42FC0F5E, 0x32A99B9C, 0x7C8062F2 };
@@ -1492,48 +1694,92 @@ static bool BF6_SimB(const bf6::EbxValue& d, uint32_t h, bool dflt)
     return dflt;
 }
 
-static void BF6_SimRow(const bf6::EbxValue& d, bf6_water_sim& s)
+static int BF6_SimI(const bf6::EbxValue& d, uint32_t h, int dflt)
 {
-    s = bf6_water_sim{};
-    s.enabled              = BF6_SimB(d, kSimEnable, false) ? 1 : 0;
-    s.wind_angle           = BF6_SimF(d, kSimWindAngle, 0.f);
-    s.wind_speed           = BF6_SimF(d, kSimWindSpeed, 0.f);
-    s.choppiness           = BF6_SimF(d, kSimChoppiness, 0.f);
-    s.tile_dimension       = BF6_SimF(d, kSimTileDim, 0.f);
-    s.min_wavelength       = BF6_SimF(d, kSimMinWavelen, 0.f);
-    s.large_wave_reduction = BF6_SimF(d, kSimLargeWaveRed, 0.f);
-    s.wave_thickness       = BF6_SimF(d, kSimWaveThick, 1.f);
-    s.foam_enable          = BF6_SimB(d, kSimFoamEnable, true) ? 1 : 0;
-    s.foam_threshold       = BF6_SimF(d, kSimFoamThresh, 0.f);
-    s.foam_max             = BF6_SimF(d, kSimFoamMax, 0.f);
+    const bf6::EbxValue* f = d.field(h);
+    if (!f) return dflt;
+    if (f->kind == bf6::EbxValue::Kind::Int)  return (int)f->i;
+    if (f->kind == bf6::EbxValue::Kind::Uint) return (int)f->u;
+    if (f->kind == bf6::EbxValue::Kind::Real) return (int)f->f;
+    return dflt;
+}
 
-    // WindDistribution: a SplineCurve whose SplineType enum IS the control
-    // point count (5, 9, 13). n-1 stored X (the last is implicitly 1.0), n
-    // stored Y, packed across Vec4 members read by offset.
+static void BF6_SimRowV2(const bf6::EbxValue& d, int source_index,
+                         bf6_water_sim_v2& s)
+{
+    s = bf6_water_sim_v2{};
+    s.source_index                  = source_index;
+    s.enabled                       = BF6_SimB(d, kSimEnable, false) ? 1 : 0;
+    s.wind_angle_degrees            = BF6_SimF(d, kSimWindAngle, 0.f);
+    s.wind_speed                    = BF6_SimF(d, kSimWindSpeed, 0.f);
+    s.choppiness                    = BF6_SimF(d, kSimChoppiness, 0.f);
+    s.tile_dimension                = BF6_SimF(d, kSimTileDim, 0.f);
+    s.min_wavelength                = BF6_SimF(d, kSimMinWavelen, 0.f);
+    s.large_wave_reduction          = BF6_SimF(d, kSimLargeWaveRed, 0.f);
+    s.wave_amplitude                = BF6_SimF(d, kSimWaveAmp, 0.f);
+    s.wave_thickness                = BF6_SimF(d, kSimWaveThick, 0.f);
+    s.foam_enable                   = BF6_SimB(d, kSimFoamEnable, true) ? 1 : 0;
+    s.foam_threshold                = BF6_SimF(d, kSimFoamThresh, 0.f);
+    s.foam_max                      = BF6_SimF(d, kSimFoamMax, 0.f);
+    s.foam_half_life                = BF6_SimF(d, kSimFoamHalfLife, 0.f);
+    s.physics_simulation_enabled    = BF6_SimB(d, kSimPhysics, false) ? 1 : 0;
+    s.force_simple_plane_collision  = BF6_SimB(d, kSimForcePlane, false) ? 1 : 0;
+    s.visual_cpu_simulation_enabled = BF6_SimB(d, kSimVisualCpu, false) ? 1 : 0;
+
+    if (const bf6::EbxValue* resolution = d.field(kSimResolution)) {
+        if (resolution->kind == bf6::EbxValue::Kind::Struct)
+            s.resolution = BF6_SimI(*resolution, kSimDefault, 0);
+    }
+
     const bf6::EbxValue* c = d.field(kSimWindDist);
     if (!c || c->kind != bf6::EbxValue::Kind::Struct) return;
-    int n = (int)BF6_SimF(*c, kSimCurveType, 0.f);
-    if (n < 2 || n > 13) return;
-
-    float xs[12] = {0}, ys[16] = {0};
-    int xi = 0, yi = 0;
-    for (uint32_t mh : kSimCurveX) {
-        const bf6::EbxValue* v = c->field(mh);
-        for (uint32_t ch : kSimVec4)
-            xs[xi++] = (v && v->kind == bf6::EbxValue::Kind::Struct)
-                ? BF6_SimF(*v, ch, 0.f) : 0.f;
-    }
-    for (uint32_t mh : kSimCurveY) {
-        const bf6::EbxValue* v = c->field(mh);
-        if (yi + 4 > 16) break;
-        for (uint32_t ch : kSimVec4)
-            ys[yi++] = (v && v->kind == bf6::EbxValue::Kind::Struct)
-                ? BF6_SimF(*v, ch, 0.f) : 0.f;
-    }
+    const int n = BF6_SimI(*c, kSimCurveType, 0);
+    if (n != 5 && n != 9 && n != 13) return;
     s.dist_count = n;
-    for (int i = 0; i < n; i++) {
-        s.dist_x[i] = (i < n - 1 && i < 12) ? xs[i] : 1.f;
-        s.dist_y[i] = (i < 16) ? ys[i] : 0.f;
+
+    float xs[12] = {0};
+    float ys[12] = {0};
+    int xi = 0, yi = 0;
+    for (uint32_t hash : kSimCurveX) {
+        const bf6::EbxValue* value = c->field(hash);
+        for (uint32_t channel : kSimVec4)
+            xs[xi++] = (value && value->kind == bf6::EbxValue::Kind::Struct)
+                ? BF6_SimF(*value, channel, 0.f) : 0.f;
+    }
+    for (int block = 0; block < 3; ++block) {
+        const bf6::EbxValue* value = c->field(kSimCurveY[block]);
+        for (uint32_t channel : kSimVec4)
+            ys[yi++] = (value && value->kind == bf6::EbxValue::Kind::Struct)
+                ? BF6_SimF(*value, channel, 0.f) : 0.f;
+    }
+
+    const bf6::EbxValue* limits = c->field(kSimCurveY[3]);
+    s.dist_clamp_min = limits && limits->kind == bf6::EbxValue::Kind::Struct
+        ? BF6_SimF(*limits, kSimVec4[0], 0.f) : 0.f;
+    s.dist_clamp_max = limits && limits->kind == bf6::EbxValue::Kind::Struct
+        ? BF6_SimF(*limits, kSimVec4[1], 1.f) : 1.f;
+
+    for (int i = 0; i < n; ++i) {
+        s.dist_x[i] = i < n - 1 ? xs[i] : 1.f;
+        s.dist_y[i] = i < n - 1 ? ys[i] : s.dist_clamp_min;
+    }
+
+    // G0/G1, G2/G3 and G4/G5 are the out/in coefficient pairs for the three
+    // four-interval blocks. Their physical reflected offsets are scrambled,
+    // but field-by-hash lookup has already restored the logical order here.
+    for (int group = 0; group < 3; ++group) {
+        const bf6::EbxValue* tangent_out = c->field(kSimCurveG[group * 2]);
+        const bf6::EbxValue* tangent_in  = c->field(kSimCurveG[group * 2 + 1]);
+        for (int lane = 0; lane < 4; ++lane) {
+            const int interval = group * 4 + lane;
+            if (interval >= n - 1) break;
+            s.dist_tangent_out[interval] =
+                tangent_out && tangent_out->kind == bf6::EbxValue::Kind::Struct
+                    ? BF6_SimF(*tangent_out, kSimVec4[lane], 0.f) : 0.f;
+            s.dist_tangent_in[interval] =
+                tangent_in && tangent_in->kind == bf6::EbxValue::Kind::Struct
+                    ? BF6_SimF(*tangent_in, kSimVec4[lane], 0.f) : 0.f;
+        }
     }
 }
 
@@ -1558,13 +1804,14 @@ static bool ensure_mounted(bf6_ctx* c, const char* level, std::string& err)
     return true;
 }
 
+static bool ensure_types(bf6_ctx* c, std::string& err);
+
 int bf6_layer_sheet(bf6_ctx* c, const char* res_name, int size,
                     uint8_t* out, char* err, int err_len)
 {
     auto fail = [&](const std::string& m) {
         if (err && err_len > 0) {
-            std::strncpy(err, m.c_str(), (size_t)err_len - 1);
-            err[err_len - 1] = 0;
+            std::snprintf(err, (size_t)err_len, "%s", m.c_str());
         }
         return 0;
     };
@@ -1636,8 +1883,7 @@ int bf6_ground_coverage_get(bf6_ctx* c, const char* level, int size,
 {
     auto fail = [&](const std::string& m) {
         if (err && err_len > 0) {
-            std::strncpy(err, m.c_str(), (size_t)err_len - 1);
-            err[err_len - 1] = 0;
+            std::snprintf(err, (size_t)err_len, "%s", m.c_str());
         }
         return 0;
     };
@@ -1686,6 +1932,7 @@ int bf6_ground_coverage_get(bf6_ctx* c, const char* level, int size,
         g.coord_scale[1] = m.coord_scale[1];
         g.uv_offset[0] = m.uv_offset[0];
         g.uv_offset[1] = m.uv_offset[1];
+        g.coverage_res = m.coverage_res.c_str();
         c->ground_mats.push_back(g);
     }
 
@@ -1701,6 +1948,7 @@ int bf6_ground_coverage_get(bf6_ctx* c, const char* level, int size,
     const double total = (double)c->ground->size * (double)c->ground->size;
     out->empty_fraction = total > 0.0
         ? (float)((double)c->ground->empty_texels / total) : 0.f;
+    out->slot_count = c->ground->slots;
     return 1;
 }
 
@@ -1710,8 +1958,7 @@ int bf6_bake_terrain(bf6_ctx* c, const char* level,
 {
     auto fail = [&](const std::string& m) {
         if (err && err_len > 0) {
-            std::strncpy(err, m.c_str(), (size_t)err_len - 1);
-            err[err_len - 1] = 0;
+            std::snprintf(err, (size_t)err_len, "%s", m.c_str());
         }
         return 0;
     };
@@ -1780,16 +2027,11 @@ int bf6_bake_terrain(bf6_ctx* c, const char* level,
     return 1;
 }
 
-int bf6_level_water_sim(bf6_ctx* c, const char* level, bf6_water_sim* out)
+static void BF6_CollectWaterSimsInDir(bf6_ctx* c, const std::string& lvl,
+                                      std::vector<bf6_water_sim_v2>& rows)
 {
-    if (!c || !level || !*level || !out || !c->types || !c->walk) return 0;
-    if (c->walked_level != level) return 0;
-
-    std::string lvl = c->walk->root;
-    if (lvl.size() > 4 && lvl.compare(lvl.size() - 4, 4, ".ebx") == 0) lvl.resize(lvl.size() - 4);
-    const size_t slash = lvl.find_last_of('/');
-    lvl = slash == std::string::npos ? std::string() : lvl.substr(0, slash);
-    if (lvl.empty()) return 0;
+    rows.clear();
+    if (!c || !c->types || lvl.empty()) return;
 
     // Same order-not-scope idiom as the water partition: schematics whose name
     // says water first, then default_schematic, then the rest of the level.
@@ -1812,35 +2054,279 @@ int bf6_level_water_sim(bf6_ctx* c, const char* level, bf6_water_sim* out)
         bf6::Ebx e(*c->types);
         if (!e.parse(std::move(raw), err)) continue;
 
-        bf6_water_sim first{};
-        bool have_first = false;
         for (size_t i = 0; i < e.instance_count(); i++) {
             if (bf6::TypeDb::guid_str(e.instance_type(i)) != kSimTypeGuid) continue;
             bf6::EbxValue d = e.read_instance(i);
-            bf6_water_sim row;
-            BF6_SimRow(d, row);
-            if (row.enabled) { *out = row; return 1; }   // the flagged one wins
-            if (!have_first) { first = row; have_first = true; }
+            bf6_water_sim_v2 row;
+            BF6_SimRowV2(d, (int)i, row);
+            if (row.enabled) rows.push_back(row);
         }
-        if (have_first) { *out = first; return 1; }
+        if (!rows.empty()) break;
     }
-    return 0;
+
+    std::stable_sort(rows.begin(), rows.end(),
+        [](const bf6_water_sim_v2& a, const bf6_water_sim_v2& b) {
+            return a.tile_dimension > b.tile_dimension;
+        });
+    if (rows.size() > 4) rows.resize(4);
 }
 
-int bf6_level_water(bf6_ctx* c, const char* level, bf6_water* out, int out_max)
+static void BF6_CollectWaterSims(bf6_ctx* c, const char* level,
+                                 std::vector<bf6_water_sim_v2>& rows)
 {
-    if (!c || !level || !*level || !c->types || !c->walk) return 0;
-    if (c->walked_level != level) return 0;
+    rows.clear();
+    if (!c || !level || !*level || !c->types || !c->walk) return;
+    if (c->walked_level != level) return;
 
-    // The level directory, off the walk's own root - the narrowest prefix that
-    // reaches both the water entity and the depot that materials it. Aftermath
-    // declares water in _layers_content/water while the record lives in
-    // _layers_content/content, so walking UP from the partition cannot reach
-    // it; the level dir does.
     std::string lvl = c->walk->root;
     if (lvl.size() > 4 && lvl.compare(lvl.size() - 4, 4, ".ebx") == 0) lvl.resize(lvl.size() - 4);
     const size_t slash = lvl.find_last_of('/');
     lvl = slash == std::string::npos ? std::string() : lvl.substr(0, slash);
+    BF6_CollectWaterSimsInDir(c, lvl, rows);
+}
+
+extern "C++" {
+static std::string BF6_IsolatedLevelDir(bf6_ctx* c, const char* level)
+{
+    std::string token = level ? level : "";
+    std::replace(token.begin(), token.end(), '\\', '/');
+    while (!token.empty() && token.back() == '/') token.pop_back();
+    const size_t slash = token.find_last_of('/');
+    if (slash != std::string::npos) token = token.substr(slash + 1);
+    for (char& ch : token) ch = (char)std::tolower((unsigned char)ch);
+    if (token.empty()) return {};
+
+    const std::string marker = "/" + token + "/";
+    const std::string schematic = "/default_schematic";
+    const std::string fallback = "/default";
+    std::string best;
+    for (const auto& kv : c->src.ebx()) {
+        std::string low = kv.first;
+        for (char& ch : low) ch = (char)std::tolower((unsigned char)ch);
+        const size_t at = low.find(marker);
+        if (at == std::string::npos) continue;
+
+        const bool exact = low.size() >= schematic.size() &&
+            low.compare(low.size() - schematic.size(), schematic.size(), schematic) == 0;
+        const bool default_part = low.size() >= fallback.size() &&
+            low.compare(low.size() - fallback.size(), fallback.size(), fallback) == 0;
+        if (exact || default_part) {
+            const size_t cut = kv.first.find_last_of('/');
+            if (cut != std::string::npos) {
+                const std::string dir = kv.first.substr(0, cut);
+                if (best.empty() || exact || dir.size() < best.size()) best = dir;
+                if (exact) break;
+            }
+        } else if (best.empty()) {
+            // Mount names are authoritative. This fallback truncates the first
+            // matching name immediately after /<level>/ if a map omits the
+            // conventional default partitions.
+            best = kv.first.substr(0, at + marker.size() - 1);
+        }
+    }
+    return best;
+}
+} // extern "C++"
+
+int bf6_level_water_sims(bf6_ctx* c, const char* level,
+                         bf6_water_sim_v2* out, int out_max)
+{
+    std::vector<bf6_water_sim_v2> rows;
+    BF6_CollectWaterSims(c, level, rows);
+    if (out && out_max > 0) {
+        const int count = std::min<int>((int)rows.size(), out_max);
+        for (int i = 0; i < count; ++i) out[i] = rows[(size_t)i];
+    }
+    return (int)rows.size();
+}
+
+int bf6_level_water_sims_isolated(bf6_ctx* c, const char* level,
+                                  bf6_water_sim_v2* out, int out_max)
+{
+    if (!c || !level || !*level) return 0;
+    std::string err;
+    if (!ensure_mounted(c, level, err) || !ensure_types(c, err)) return 0;
+    const std::string lvl = BF6_IsolatedLevelDir(c, level);
+    if (lvl.empty()) return 0;
+
+    std::vector<bf6_water_sim_v2> rows;
+    BF6_CollectWaterSimsInDir(c, lvl, rows);
+    if (out && out_max > 0) {
+        const int count = std::min<int>((int)rows.size(), out_max);
+        for (int i = 0; i < count; ++i) out[i] = rows[(size_t)i];
+    }
+    return (int)rows.size();
+}
+
+int bf6_level_water_sim(bf6_ctx* c, const char* level, bf6_water_sim* out)
+{
+    if (!out) return 0;
+    bf6_water_sim_v2 full{};
+    if (bf6_level_water_sims(c, level, &full, 1) <= 0) return 0;
+
+    *out = bf6_water_sim{};
+    out->wind_angle           = full.wind_angle_degrees;
+    out->wind_speed           = full.wind_speed;
+    out->choppiness           = full.choppiness;
+    out->tile_dimension       = full.tile_dimension;
+    out->min_wavelength       = full.min_wavelength;
+    out->large_wave_reduction = full.large_wave_reduction;
+    out->wave_thickness       = full.wave_thickness;
+    out->foam_enable          = full.foam_enable;
+    out->foam_threshold       = full.foam_threshold;
+    out->foam_max             = full.foam_max;
+    out->enabled              = full.enabled;
+    out->dist_count           = full.dist_count;
+    for (int i = 0; i < 13; ++i) {
+        out->dist_x[i] = full.dist_x[i];
+        out->dist_y[i] = full.dist_y[i];
+    }
+    return 1;
+}
+
+static float BF6_WaterSpline(const bf6_water_sim_v2& sim, float x)
+{
+    if (sim.dist_count != 5 && sim.dist_count != 9 && sim.dist_count != 13)
+        return 0.f;
+    int interval = sim.dist_count - 2;
+    for (int i = 0; i < sim.dist_count - 1; ++i) {
+        if (sim.dist_x[i] <= x && x < sim.dist_x[i + 1]) {
+            interval = i;
+            break;
+        }
+    }
+    const float x0 = sim.dist_x[interval];
+    const float x1 = sim.dist_x[interval + 1];
+    float t = x1 - x0 >= 1.0e-5f ? (x - x0) / (x1 - x0) : 0.f;
+    t = std::max(0.f, std::min(1.f, t));
+    const float t2 = t * t;
+    const float t3 = t2 * t;
+    const float value =
+        (2.f * t3 - 3.f * t2 + 1.f) * sim.dist_y[interval] +
+        (t3 - 2.f * t2 + t) * sim.dist_tangent_out[interval] +
+        (-2.f * t3 + 3.f * t2) * sim.dist_y[interval + 1] +
+        (t3 - t2) * sim.dist_tangent_in[interval];
+    return std::max(sim.dist_clamp_min, std::min(sim.dist_clamp_max, value));
+}
+
+static uint32_t BF6_WaterRngFold(uint32_t value, uint32_t multiplier)
+{
+    const int32_t signed_value = (int32_t)value;
+    const uint32_t low = (uint32_t)(uint16_t)signed_value * multiplier;
+    const int32_t high = (signed_value >> 16) * (int32_t)multiplier +
+                         (int32_t)(low >> 16);
+    uint32_t folded = ((uint32_t)high & 0x7fffu) << 16;
+    folded += (uint32_t)(high >> 15);
+    folded += low & 0xffffu;
+    folded += 0x80000001u;
+    folded += (uint32_t)(((int32_t)folded >> 31) & 0x7fffffff);
+    return folded;
+}
+
+static uint32_t BF6_WaterRngStep(uint32_t value)
+{
+    if (value == 0) value = 1;
+    value = BF6_WaterRngFold(value, 0x5e30u);
+    return BF6_WaterRngFold(value, 0x661fu);
+}
+
+static float BF6_WaterRngSigned(uint32_t& state)
+{
+    state = BF6_WaterRngStep(state);
+    const int32_t top24 = ((int32_t)(state | 0x80u) >> 7) + 1;
+    const float unit = (float)top24 * 5.9604644775390625e-8f;
+    return unit + unit - 1.f;
+}
+
+int bf6_water_spectrum_h0(const bf6_water_sim_v2* sim,
+                          float* out_rg, int out_float_count)
+{
+    if (!sim) return 0;
+    const int n = sim->resolution;
+    if (n < 16 || (n & (n - 1)) != 0 || sim->tile_dimension <= 0.f)
+        return 0;
+    const int64_t required64 = (int64_t)n * (int64_t)n * 2;
+    if (required64 > INT_MAX) return 0;
+    const int required = (int)required64;
+    if (!out_rg) return required;
+    if (out_float_count < required) return 0;
+
+    const float inv_tile = 1.f / sim->tile_dimension;
+    const float pi = 3.1415927410125732421875f;
+    const float inv_two_pi = 0.15915493667125701904296875f;
+    const float inv_g = 0.10204081237316131591796875f;
+    const float inv_g2 = 0.010412327013909816741943359375f;
+    uint32_t rng = 1;
+
+    for (int y = 0; y < n; ++y) {
+        for (int x = 0; x < n; ++x) {
+            float random_x, random_y, radius2;
+            do {
+                random_x = BF6_WaterRngSigned(rng);
+                random_y = BF6_WaterRngSigned(rng);
+                radius2 = random_x * random_x + random_y * random_y;
+            } while (radius2 > 1.f);
+            const float normal_scale = std::sqrt((-2.f * std::log(radius2)) / radius2);
+            const float normal_x = normal_scale * random_x;
+            const float normal_y = normal_scale * random_y;
+
+            const float kx = ((float)(x + x) - (float)n) * -pi * inv_tile;
+            const float ky = ((float)(y + y) - (float)n) *  pi * inv_tile;
+            const float k2 = kx * kx + ky * ky;
+            const float k = std::sqrt(k2);
+            float spectrum = 0.f;
+            if (k >= 1.0e-4f) {
+                float direction = std::atan2(ky, kx) * inv_two_pi + 0.5f -
+                                  sim->wind_angle_degrees * (1.f / 360.f);
+                if (direction < 0.f) direction += 1.f;
+                const float directional_energy = BF6_WaterSpline(*sim, direction);
+                const float wind_l = directional_energy * sim->wind_speed * sim->wind_speed;
+                if (wind_l * inv_g >= 1.0e-6f) {
+                    const float l2k2 = wind_l * wind_l * inv_g2 * k2;
+                    float large_wave_factor = 1.f;
+                    if (sim->large_wave_reduction > 0.f) {
+                        large_wave_factor = sim->tile_dimension * 3.f * k /
+                                                sim->large_wave_reduction - 2.f;
+                        large_wave_factor = std::max(0.f, std::min(1.f, large_wave_factor));
+                    }
+                    spectrum = std::exp(-1.f / l2k2) * sim->wave_amplitude /
+                               (k2 * k2) * directional_energy *
+                               std::exp(-l2k2 * sim->min_wavelength) *
+                               large_wave_factor;
+                }
+            }
+            const float h0_scale = std::sqrt(spectrum * 0.5f) * inv_tile;
+            const size_t offset = ((size_t)y * (size_t)n + (size_t)x) * 2;
+            out_rg[offset] = normal_x * h0_scale;
+            out_rg[offset + 1] = normal_y * h0_scale;
+        }
+    }
+    return required;
+}
+
+int bf6_level_water(bf6_ctx* c, const char* level, bf6_water* out, int out_max)
+{
+	if (!c || !level || !*level) return 0;
+
+	// The level directory, off the walk's own root - the narrowest prefix that
+    // reaches both the water entity and the depot that materials it. Aftermath
+    // declares water in _layers_content/water while the record lives in
+    // _layers_content/content, so walking UP from the partition cannot reach
+    // it; the level dir does.
+	std::string lvl;
+	if (c->types && c->walk && c->walked_level == level) {
+		lvl = c->walk->root;
+		if (lvl.size() > 4 && lvl.compare(lvl.size() - 4, 4, ".ebx") == 0) lvl.resize(lvl.size() - 4);
+		const size_t slash = lvl.find_last_of('/');
+		lvl = slash == std::string::npos ? std::string() : lvl.substr(0, slash);
+	} else {
+		// Lightweight water-lab route: mount the named level and locate its
+		// authored directory without constructing the placement/object graph.
+		std::string mount_err;
+		if (!ensure_mounted(c, level, mount_err) || !ensure_types(c, mount_err)) return 0;
+		lvl = BF6_IsolatedLevelDir(c, level);
+		if (lvl.empty()) return 0;
+	}
 
     // Find the partition that declares the water: the two authored homes
     // first, then anything under the level whose name says water, then the
@@ -1952,7 +2438,19 @@ int bf6_level_water(bf6_ctx* c, const char* level, bf6_water* out, int out_max)
                     // variant binds its detail elsewhere, and a reader that
                     // only looks for the names it knows reports "no textures"
                     // for a surface that is covered in them.
-                    if (getenv("BF6_WATER_SLOTS")) {
+                    bool dump_water_slots = false;
+#if defined(_MSC_VER)
+                    char* water_slots_env = nullptr;
+                    size_t water_slots_len = 0;
+                    if (_dupenv_s(&water_slots_env, &water_slots_len,
+                                  "BF6_WATER_SLOTS") == 0)
+                        dump_water_slots = water_slots_env && *water_slots_env;
+                    std::free(water_slots_env);
+#else
+                    const char* water_slots_env = std::getenv("BF6_WATER_SLOTS");
+                    dump_water_slots = water_slots_env && *water_slots_env;
+#endif
+                    if (dump_water_slots) {
                         for (const auto& kv2 : mb.textures) {
                             auto a2 = gi.find(kv2.second);
                             std::fprintf(stderr, "    water slot %08x -> %s\n",
@@ -2129,11 +2627,16 @@ int bf6_level_lighting(bf6_ctx* c, const char* level,
     if (!c || !level || !*level || !out) return fail("bad arguments");
 
     std::string e;
-    if (!ensure_mounted(c, level, e)) return fail(e);
+    const std::string requested = level;
+    const bool explicit_preset = requested.find("/lighting/ve_") != std::string::npos;
+    if (!explicit_preset && !ensure_mounted(c, level, e)) return fail(e);
     if (!ensure_types(c, e)) return fail(e);
 
     bf6::VeLighting v;
-    if (!bf6::ve_lighting(c->src, *c->types, level, v, e))
+    const bool decoded = explicit_preset
+        ? bf6::ve_lighting_partition(c->src, *c->types, requested, v, e)
+        : bf6::ve_lighting(c->src, *c->types, level, v, e);
+    if (!decoded)
         return fail(e.empty() ? "no visual environment" : e);
 
     c->ve = v;
@@ -2265,6 +2768,36 @@ int bf6_level_lighting(bf6_ctx* c, const char* level,
 
     out->fields_found = v.fields_found;
     out->fields_expected = v.fields_expected;
+    out->sky_cloud_extension_version = 1;
+    for (int i = 0; i < 2; i++) {
+        out->sky_panoramic_uv_min[i] = v.sky_panoramic_uv_min[i];
+        out->sky_panoramic_uv_max[i] = v.sky_panoramic_uv_max[i];
+        out->secondary_cloud_shadow_speed[i] = v.secondary_cloud_shadow_speed[i];
+        out->secondary_cloud_shadow_translation[i] = v.secondary_cloud_shadow_translation[i];
+    }
+    out->sky_flow_distance = v.sky_flow_distance;
+    out->sky_flow_direction = v.sky_flow_direction;
+    out->sky_flow_period = v.sky_flow_period;
+    out->sky_flow_height_mask_scale = v.sky_flow_height_mask_scale;
+    out->sky_flow_height_mask_bias = v.sky_flow_height_mask_bias;
+    out->secondary_cloud_shadow_size = v.secondary_cloud_shadow_size;
+    out->secondary_cloud_shadow_coverage = v.secondary_cloud_shadow_coverage;
+    out->secondary_cloud_shadow_exponent = v.secondary_cloud_shadow_exponent;
+    out->cloud_shadow_addressing_mode = v.cloud_shadow_addressing_mode;
+    out->secondary_cloud_shadow_addressing_mode = v.secondary_cloud_shadow_addressing_mode;
+    out->cloud_shadow_is_top_down = v.cloud_shadow_is_top_down;
+    out->secondary_cloud_shadow_is_top_down = v.secondary_cloud_shadow_is_top_down;
+    out->cloud_shadow_start_fade = v.cloud_shadow_start_fade;
+    out->cloud_shadows_fade_distance = v.cloud_shadows_fade_distance;
+    out->cloud_shadow_height_fade_enable = v.cloud_shadow_height_fade_enable;
+    out->cloud_shadow_start_height_fade = v.cloud_shadow_start_height_fade;
+    out->cloud_shadows_height_fade_distance = v.cloud_shadows_height_fade_distance;
+    out->secondary_cloud_shadow_texture = tex(v.secondary_cloud_shadow_res);
+    out->panorama_alpha_texture = tex(v.panorama_alpha_res);
+    out->flow_mask_texture = tex(v.flow_mask_res);
+    out->cloud_layer1_texture = tex(v.cloud_layer1_res);
+    out->grading_lut_texture = tex(v.grading_lut_res);
+    out->lens_dirt_texture = tex(v.lens_dirt_res);
     return 1;
 }
 
@@ -2296,75 +2829,65 @@ int bf6_level_lighting_imports(bf6_ctx* c, const char* level,
 // and the placement component's `Light` pointer sits at a different offset in
 // each. Reading MP level data through the SP schema returns wrong values from
 // the right bytes and reports no error. ensure_types prefers the MP build.
-int bf6_level_lights(bf6_ctx* c, const char* level,
-                     bf6_light* out, int out_max,
-                     bf6_light_stats* stats, char* err, int err_len)
+static void cache_light_rows(bf6_ctx* c, const std::string& key,
+                             std::vector<bf6::LevelLight>&& lights,
+                             const bf6::LightStats& light_stats)
 {
-    auto fail = [&](const std::string& m) {
-        if (err && err_len > 0) std::snprintf(err, (size_t)err_len, "%s", m.c_str());
-        return 0;
-    };
-    if (!c || !level || !*level) return fail("bad arguments");
+    c->lights = std::move(lights);
+    c->light_stats = light_stats;
+    c->lights_level = key;
+    c->light_rows.clear();
 
-    if (c->lights_level != level) {
-        std::string e;
-        if (!ensure_mounted(c, level, e)) return fail(e);
-        if (!ensure_types(c, e)) return fail(e);
-
-        c->lights.clear();
-        c->light_rows.clear();
-        c->light_stats = bf6::LightStats();
-        if (!bf6::level_lights(c->src, *c->types, level, c->lights, c->light_stats, e))
-            return fail(e.empty() ? "the light traversal found no level root" : e);
-        c->lights_level = level;
-
-        // Built once and kept, because every const char* in it points into the
-        // strings held by c->lights.
-        c->light_rows.resize(c->lights.size());
-        for (size_t i = 0; i < c->lights.size(); i++) {
-            const bf6::LevelLight& L = c->lights[i];
-            bf6_light& r = c->light_rows[i];
-            r = bf6_light{};
-            r.type = L.kind;
-            for (int k = 0; k < 4; k++) {
-                r.xform[k * 3 + 0] = L.xf.m[k].x;
-                r.xform[k * 3 + 1] = L.xf.m[k].y;
-                r.xform[k * 3 + 2] = L.xf.m[k].z;
-            }
-            for (int k = 0; k < 3; k++) r.color[k] = L.color[k];
-            r.intensity = L.intensity;
-            r.unit = L.unit;
-            r.dimmer = L.dimmer;
-            r.attenuation_radius = L.attenuation_radius;
-            r.attenuation_offset = L.attenuation_offset;
-            r.inner_angle = L.inner_angle;
-            r.outer_angle = L.outer_angle;
-            r.shape_radius = L.shape_radius;
-            r.tube_width = L.tube_width;
-            r.is_capsule = L.is_capsule;
-            r.rect_height = L.rect_height;
-            r.rect_aspect = L.rect_aspect;
-            r.rect_shape = L.rect_shape;
-            r.cast_shadows_enable = L.cast_shadows_enable;
-            r.cast_shadows = L.cast_shadows;
-            r.cast_volumetric = L.cast_volumetric;
-            r.volumetric_scattering = L.volumetric_scattering;
-            r.affect_diffuse = L.affect_diffuse;
-            r.affect_specular = L.affect_specular;
-            r.affect_radiosity = L.affect_radiosity;
-            r.emissive_shape_enable = L.emissive_shape_enable;
-            r.ies_profile = L.ies_profile.empty() ? nullptr : L.ies_profile.c_str();
-            r.ies_multiplier = L.ies_multiplier;
-            r.ies_as_mask = L.ies_as_mask;
-            r.texture = L.texture.empty() ? nullptr : L.texture.c_str();
-            r.cull_distance = L.cull_distance;
-            r.fade_distance = L.fade_distance;
-            r.source = L.source.empty() ? nullptr : L.source.c_str();
-            r.flags = L.flags;
-            r.from_component = L.from_component;
+    // Built once and kept, because every const char* in it points into the
+    // strings held by c->lights.
+    c->light_rows.resize(c->lights.size());
+    for (size_t i = 0; i < c->lights.size(); i++) {
+        const bf6::LevelLight& L = c->lights[i];
+        bf6_light& r = c->light_rows[i];
+        r = bf6_light{};
+        r.type = L.kind;
+        for (int k = 0; k < 4; k++) {
+            r.xform[k * 3 + 0] = L.xf.m[k].x;
+            r.xform[k * 3 + 1] = L.xf.m[k].y;
+            r.xform[k * 3 + 2] = L.xf.m[k].z;
         }
+        for (int k = 0; k < 3; k++) r.color[k] = L.color[k];
+        r.intensity = L.intensity;
+        r.unit = L.unit;
+        r.dimmer = L.dimmer;
+        r.attenuation_radius = L.attenuation_radius;
+        r.attenuation_offset = L.attenuation_offset;
+        r.inner_angle = L.inner_angle;
+        r.outer_angle = L.outer_angle;
+        r.shape_radius = L.shape_radius;
+        r.tube_width = L.tube_width;
+        r.is_capsule = L.is_capsule;
+        r.rect_height = L.rect_height;
+        r.rect_aspect = L.rect_aspect;
+        r.rect_shape = L.rect_shape;
+        r.cast_shadows_enable = L.cast_shadows_enable;
+        r.cast_shadows = L.cast_shadows;
+        r.cast_volumetric = L.cast_volumetric;
+        r.volumetric_scattering = L.volumetric_scattering;
+        r.affect_diffuse = L.affect_diffuse;
+        r.affect_specular = L.affect_specular;
+        r.affect_radiosity = L.affect_radiosity;
+        r.emissive_shape_enable = L.emissive_shape_enable;
+        r.ies_profile = L.ies_profile.empty() ? nullptr : L.ies_profile.c_str();
+        r.ies_multiplier = L.ies_multiplier;
+        r.ies_as_mask = L.ies_as_mask;
+        r.texture = L.texture.empty() ? nullptr : L.texture.c_str();
+        r.cull_distance = L.cull_distance;
+        r.fade_distance = L.fade_distance;
+        r.source = L.source.empty() ? nullptr : L.source.c_str();
+        r.flags = L.flags;
+        r.from_component = L.from_component;
     }
+}
 
+static int serve_light_rows(bf6_ctx* c, bf6_light* out, int out_max,
+                            bf6_light_stats* stats)
+{
     if (stats) {
         const bf6::LightStats& s = c->light_stats;
         *stats = bf6_light_stats{};
@@ -2392,6 +2915,174 @@ int bf6_level_lights(bf6_ctx* c, const char* level,
     return n;
 }
 
+int bf6_level_lights(bf6_ctx* c, const char* level,
+                     bf6_light* out, int out_max,
+                     bf6_light_stats* stats, char* err, int err_len)
+{
+    auto fail = [&](const std::string& m) {
+        if (err && err_len > 0) std::snprintf(err, (size_t)err_len, "%s", m.c_str());
+        return 0;
+    };
+    if (!c || !level || !*level) return fail("bad arguments");
+
+    if (c->lights_level != level) {
+        std::string e;
+        if (!ensure_mounted(c, level, e)) return fail(e);
+        if (!ensure_types(c, e)) return fail(e);
+
+        std::vector<bf6::LevelLight> lights;
+        bf6::LightStats light_stats;
+        if (!bf6::level_lights(c->src, *c->types, level, lights, light_stats, e))
+            return fail(e.empty() ? "the light traversal found no level root" : e);
+        cache_light_rows(c, level, std::move(lights), light_stats);
+    }
+    return serve_light_rows(c, out, out_max, stats);
+}
+
+int bf6_asset_lights(bf6_ctx* c, const char* asset,
+                     bf6_light* out, int out_max,
+                     bf6_light_stats* stats, char* err, int err_len)
+{
+    auto fail = [&](const std::string& m) {
+        if (err && err_len > 0) std::snprintf(err, (size_t)err_len, "%s", m.c_str());
+        return 0;
+    };
+    if (!c || !asset || !*asset) return fail("bad arguments");
+
+    const std::string key = std::string("@asset:") + asset;
+    if (c->lights_level != key) {
+        std::string e;
+        if (!ensure_types(c, e)) return fail(e);
+        std::vector<bf6::LevelLight> lights;
+        bf6::LightStats light_stats;
+        if (!bf6::level_lights(c->src, *c->types, asset, lights, light_stats, e))
+            return fail(e.empty() ? "the light traversal could not resolve the asset" : e);
+        cache_light_rows(c, key, std::move(lights), light_stats);
+    }
+    return serve_light_rows(c, out, out_max, stats);
+}
+
+int bf6_asset_instances(bf6_ctx* c, const char* asset,
+                        bf6_instance* out, int out_max,
+                        char* err, int err_len)
+{
+    auto fail = [&](const std::string& m) {
+        if (err && err_len > 0) std::snprintf(err, (size_t)err_len, "%s", m.c_str());
+        return 0;
+    };
+    if (!c || !asset || !*asset) return fail("bad arguments");
+
+    const std::string key = std::string("@asset:") + asset;
+    if (!c->walk || c->walked_level != key) {
+        std::string e;
+        if (!ensure_types(c, e)) return fail(e);
+
+        auto tick = [c](const char* stage, int done, int total) {
+            return c->report(stage, done, total);
+        };
+        std::unique_ptr<bf6::Walk> w(new bf6::Walk(c->src, *c->types));
+        w->set_progress(tick);
+        w->set_include_frontend(true);
+        w->build_catalog();
+        if (!w->run(asset, e))
+            return fail(e.empty() ? "the placement traversal could not resolve the asset" : e);
+        c->walk = std::move(w);
+        c->walked_level = key;
+    }
+    return serve_instance_rows(c, out, out_max);
+}
+
+int bf6_level_lighting_zones(bf6_ctx* c, const char* level,
+                             bf6_lighting_zone* out, int out_max,
+                             bf6_lighting_zone_stats* stats,
+                             char* err, int err_len)
+{
+    auto fail = [&](const std::string& m) {
+        if (err && err_len > 0) std::snprintf(err, (size_t)err_len, "%s", m.c_str());
+        return 0;
+    };
+    if (!c || !level || !*level) return fail("bad arguments");
+
+    if (c->lighting_zones_level != level) {
+        std::string e;
+        if (!ensure_mounted(c, level, e)) return fail(e);
+        if (!ensure_types(c, e)) return fail(e);
+
+        c->lighting_zones.clear();
+        c->lighting_zone_rows.clear();
+        c->lighting_zone_points.clear();
+        c->lighting_zone_stats = bf6::LightingZoneStats();
+        if (!bf6::level_lighting_zones(c->src, *c->types, level,
+                                      c->lighting_zones,
+                                      c->lighting_zone_stats, e))
+            return fail(e.empty() ? "the lighting-zone traversal found no level root" : e);
+        c->lighting_zones_level = level;
+
+        const size_t n = c->lighting_zones.size();
+        c->lighting_zone_rows.resize(n);
+        c->lighting_zone_points.resize(n);
+        for (size_t i = 0; i < n; ++i) {
+            const bf6::LightingZone& z = c->lighting_zones[i];
+            bf6_lighting_zone& r = c->lighting_zone_rows[i];
+            r = bf6_lighting_zone{};
+            r.kind = z.kind == bf6::kZonePolygon
+                ? BF6_LIGHTING_ZONE_POLYGON : BF6_LIGHTING_ZONE_OBB;
+            for (int k = 0; k < 4; ++k) {
+                r.xform[k * 3 + 0] = z.xf.m[k].x;
+                r.xform[k * 3 + 1] = z.xf.m[k].y;
+                r.xform[k * 3 + 2] = z.xf.m[k].z;
+            }
+            r.half_extents[0] = z.half_extents.x;
+            r.half_extents[1] = z.half_extents.y;
+            r.half_extents[2] = z.half_extents.z;
+            std::vector<float>& p = c->lighting_zone_points[i];
+            p.reserve(z.points.size() * 3);
+            for (const bf6::Vec3& v : z.points) {
+                p.push_back(v.x); p.push_back(v.y); p.push_back(v.z);
+            }
+            r.points = p.empty() ? nullptr : p.data();
+            r.point_count = (int32_t)z.points.size();
+            r.height = z.height;
+            r.fade_distance = z.fade_distance;
+            r.preset = z.preset.empty() ? nullptr : z.preset.c_str();
+            r.source = z.source.empty() ? nullptr : z.source.c_str();
+            r.proximity_instance = z.proximity_instance;
+            r.shape_instance = z.shape_instance;
+        }
+    }
+
+    if (stats) {
+        const bf6::LightingZoneStats& s = c->lighting_zone_stats;
+        *stats = bf6_lighting_zone_stats{};
+        stats->total = (int32_t)c->lighting_zone_rows.size();
+        for (const bf6_lighting_zone& z : c->lighting_zone_rows)
+            z.kind == BF6_LIGHTING_ZONE_POLYGON ? ++stats->polygon : ++stats->obb;
+        stats->partitions = (int32_t)s.partitions;
+        stats->instances = (int32_t)s.instances;
+        stats->proximity = (int32_t)s.proximity;
+        stats->shape_links = (int32_t)s.link_edges;
+        stats->non_geometry_links = (int32_t)s.non_geometry_links;
+        stats->non_shape_geometry_links = (int32_t)s.non_shape_geometry_links;
+        stats->target_obb = (int32_t)s.target_obb;
+        stats->target_polygon = (int32_t)s.target_polygon;
+        stats->target_other = (int32_t)s.target_other;
+        stats->joined_preset = (int32_t)s.joined_preset;
+        stats->omitted_no_preset = (int32_t)s.omitted_no_preset;
+        stats->parse_fail = (int32_t)s.parse_fail;
+        stats->missing = (int32_t)s.missing;
+        stats->cycles = (int32_t)s.cycles;
+        stats->malformed_shape = (int32_t)s.malformed_shape;
+        stats->unresolved_types = (int32_t)s.unresolved_types;
+        stats->rotated_control_hits = (int32_t)s.rotated_control_hits;
+    }
+
+    const int n = (int)c->lighting_zone_rows.size();
+    if (out && out_max > 0)
+        for (int i = 0; i < n && i < out_max; ++i)
+            out[i] = c->lighting_zone_rows[(size_t)i];
+    return n;
+}
+
 void bf6_free(bf6_ctx* c, void* handle) {
     if (!handle || !c) return;
     auto it = c->handles.find(handle);
@@ -2404,29 +3095,48 @@ void bf6_free(bf6_ctx* c, void* handle) {
     switch (kind) {
     case bf6_ctx::HK_MESH:    delete reinterpret_cast<MeshHandle*>(handle);    break;
     case bf6_ctx::HK_TERRAIN: delete reinterpret_cast<TerrainHandle*>(handle); break;
+    case bf6_ctx::HK_SKELETON: bf6__skeleton_delete(handle); break;
+    case bf6_ctx::HK_ADJACENCY: bf6__adjacency_delete(handle); break;
+    case bf6_ctx::HK_HAIRBIND: bf6__hairbind_delete(handle); break;
+    case bf6_ctx::HK_RENDERBONES: bf6__renderbones_delete(handle); break;
+    case bf6_ctx::HK_ANIMRELOC: bf6__animreloc_delete(handle); break;
+    case bf6_ctx::HK_ANIMCLIP: bf6__animclip_delete(handle); break;
+    case bf6_ctx::HK_PSD: bf6__psd_delete(handle); break;
+    case bf6_ctx::HK_PSDMAP: bf6__psdmap_delete(handle); break;
+    case bf6_ctx::HK_SWARM: bf6__swarm_delete(handle); break;
+    case bf6_ctx::HK_TELEMETRY: bf6__telemetry_delete(handle); break;
+    case bf6_ctx::HK_SPAWNS: bf6__spawns_delete(handle); break;
     default: break;
     }
 }
 
+}  // extern "C"
+
 
 // The water RENDER description. Its own translation unit so the decode
-// can grow without this file growing with it, and included INSIDE the
-// extern "C" block because it defines part of the C ABI.
+// can grow without this file growing with it. Public definitions inherit C
+// linkage from bf6_core.h; private helpers retain ordinary C++ linkage.
 #include "water_ext.inc"
 
 
 // The FX decode over the C ABI. Its own translation unit for the same
-// reason water_ext.inc is, and included INSIDE the extern "C" block
-// because it defines part of the C ABI.
+// reason water_ext.inc is. Public definitions inherit the header's C linkage.
 #include "fx_ext.inc"
 
 
 // The mount's own name tables and raw bytes. Same reason as the two above, and
-// included INSIDE the extern "C" block because it defines part of the C ABI.
+// Public definitions inherit the header's C linkage.
 #include "raw_ext.inc"
+#include "expression_ext.inc"
+#include "expression_registry_ext.inc"
 #include "ebxdump_ext.inc"
 #include "armory_ext.inc"
 #include "rime_ext.inc"
 #include "bones_ext.inc"
-
-}  // extern "C"
+#include "skeleton_ext.inc"
+#include "chardeform_ext.inc"
+#include "anim_ext.inc"
+#include "scatter_ext.inc"
+#include "swarm_ext.inc"
+#include "telemetry_ext.inc"
+#include "spawn_ext.inc"
