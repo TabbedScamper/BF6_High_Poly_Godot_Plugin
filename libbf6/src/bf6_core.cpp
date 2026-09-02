@@ -1431,9 +1431,19 @@ int bf6_open_level(bf6_ctx* c, const char* level, const char* exe_path,
     } else {
         // No exe given: try the install's own, MP first because that is the
         // build a Portal level comes from.
+        //
+        // FIRST THAT OPENS IS NOT FIRST THAT WORKS. An executable whose
+        // reflection sections are encrypted opens perfectly well and then
+        // resolves every type to zero fields, so breaking on the first
+        // successful open pins the schema to an unusable build and never
+        // reaches a readable fallback. Keep looking, and only settle for an
+        // encrypted one if nothing better exists, so the error below still
+        // describes what was actually wrong.
         bool ok = false;
         for (const std::string& cand : bf6::TypeDb::exe_candidates(c->src.game_dir())) {
-            if (c->types->open(cand, e)) { ok = true; break; }
+            if (!c->types->open(cand, e)) continue;
+            ok = true;
+            if (!c->types->looks_encrypted()) break;
         }
         if (!ok) return fail("no readable executable for the type schema");
     }
@@ -2601,16 +2611,19 @@ static bool ensure_types(bf6_ctx* c, std::string& err)
 {
     if (c->types) return true;
     std::unique_ptr<bf6::TypeDb> t(new bf6::TypeDb());
-    for (const std::string& cand : bf6::TypeDb::exe_candidates(c->src.game_dir()))
-        if (t->open(cand, err)) {
-            if (t->looks_encrypted()) {
-                err = "this install's type table is encrypted (EA App build)";
-                return false;
-            }
-            c->types = std::move(t);
-            return true;
-        }
-    if (err.empty()) err = "no readable executable for the type schema";
+    // FIRST THAT OPENS IS NOT FIRST THAT WORKS - see the same rule in
+    // bf6_mount_all. Returning on the first candidate that opens abandons a
+    // readable fallback the moment an encrypted build is listed ahead of it.
+    bool opened = false;
+    for (const std::string& cand : bf6::TypeDb::exe_candidates(c->src.game_dir())) {
+        if (!t->open(cand, err)) continue;
+        opened = true;
+        if (t->looks_encrypted()) continue;
+        c->types = std::move(t);
+        return true;
+    }
+    err = opened ? "this install's type table is encrypted (EA App build)"
+                 : "no readable executable for the type schema";
     return false;
 }
 

@@ -539,6 +539,11 @@ add_executable(expression_weapon_runtime_test
 target_link_libraries(expression_weapon_runtime_test PRIVATE bf6_core_static)
 target_include_directories(expression_weapon_runtime_test PRIVATE src include)
 
+add_executable(expression_attribute_runtime_test
+  test/expression_attribute_runtime_test.cpp)
+target_link_libraries(expression_attribute_runtime_test PRIVATE bf6_core_static)
+target_include_directories(expression_attribute_runtime_test PRIVATE src include)
+
 add_executable(rime_interface_color_test
   test/rime_interface_color_test.cpp)
 target_link_libraries(rime_interface_color_test PRIVATE bf6_core_static)
@@ -744,3 +749,9 @@ target_include_directories(eal3rebuild_test PRIVATE src include)
 add_executable(typescan_test test/typescan_test.cpp)
 target_link_libraries(typescan_test PRIVATE bf6_core_static)
 target_include_directories(typescan_test PRIVATE src include)
+add_executable(gpcensus_test test/gpcensus_test.cpp)
+target_link_libraries(gpcensus_test PRIVATE bf6_core_static)
+target_include_directories(gpcensus_test PRIVATE src include)
+add_executable(exedb_test test/exedb_test.cpp)
+target_link_libraries(exedb_test PRIVATE bf6_core_static)
+target_include_directories(exedb_test PRIVATE src include)

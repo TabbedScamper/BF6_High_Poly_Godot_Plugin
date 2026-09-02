@@ -49,7 +49,25 @@ std::vector<std::string> TypeDb::exe_candidates(const std::string& game_dir)
     //
     // Portal levels are MP levels, so MP is the right default. SP remains a
     // fallback for an install that has no MP build.
-    return { game_dir + "/bf6.exe", game_dir + "/SP/bf6.exe" };
+    //
+    // BF6_EXE OVERRIDES BOTH, and it exists because of a measured failure, not
+    // as a convenience. The shipping build's `typeinfo`/`fieldinf` sections are
+    // now ENCRYPTED - entropy 8.00 bits/byte against 3.44 for a build that
+    // reads - and an encrypted table does NOT fail to open. It opens, reports a
+    // section of the right size, and resolves every type to ZERO FIELDS, which
+    // reaches a caller as an empty level rather than as an error. Measured on
+    // the 2026-08-18 install: three types known to ship (BTSequenceNode,
+    // BasicAffectorAsset, ActionMessageAsset) resolve 0/0/0 fields there and
+    // 11/6/2 from a research copy of an earlier build.
+    //
+    // This still reads a real executable's real reflection tables. It is not a
+    // staged schema file, and nothing here consumes an exported table.
+    std::vector<std::string> out;
+    if (const char* env = std::getenv("BF6_EXE"))
+        if (*env) out.push_back(env);
+    out.push_back(game_dir + "/bf6.exe");
+    out.push_back(game_dir + "/SP/bf6.exe");
+    return out;
 }
 
 std::string TypeDb::guid_str(const TypeGuid& g)
