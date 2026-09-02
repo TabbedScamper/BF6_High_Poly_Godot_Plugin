@@ -16,6 +16,14 @@
  * engine's usual 0x811c9dc5 seed were scored against three members and matched
  * 0 of 3, so the id is left raw rather than guessed at.
  *
+ * TWO MEMBER TYPES SHARE THIS SHAPE. Scoring enums use
+ * 469a734c-7247-12c4-b34d-3f2436954754 with an integer ordinal at 0x4A8FC6B0;
+ * the round-reason enums under common/telemetry/round/ use
+ * ccdf7446-8133-14d9-15b1-f0411409ae48, which has a STRING at 0x6A1E3529 in
+ * that slot instead. Requiring the ordinal therefore rejected every
+ * round-reason member - the reader selects on name, id and value, which both
+ * families carry, and falls back to `value` when no ordinal is present.
+ *
  * Members are stored in arbitrary instance order - Conquest's arrive 1, 0, 2 -
  * so a consumer wanting enum order must sort by `value`. This reader does not
  * sort; it reports what the file holds. */
@@ -68,7 +76,7 @@ bf6_telemetry_enum* bf6_telemetry_enum_read(bf6_ctx* c, const char* name)
         const bf6::EbxValue* id = v.field(kTelId);
         const bf6::EbxValue* va = v.field(kTelValue);
         const bf6::EbxValue* od = v.field(kTelOrdinal);
-        if (!nm || !id || !va || !od) continue;
+        if (!nm || !id || !va) continue;   /* ordinal is OPTIONAL - see note */
         if (nm->kind != bf6::EbxValue::Kind::Str || nm->s.empty()) continue;
         h->names.push_back(nm->s);
     }
@@ -81,10 +89,10 @@ bf6_telemetry_enum* bf6_telemetry_enum_read(bf6_ctx* c, const char* name)
         const bf6::EbxValue* id = v.field(kTelId);
         const bf6::EbxValue* va = v.field(kTelValue);
         const bf6::EbxValue* od = v.field(kTelOrdinal);
-        if (!nm || !id || !va || !od) continue;
+        if (!nm || !id || !va) continue;   /* ordinal is OPTIONAL - see note */
         if (nm->kind != bf6::EbxValue::Kind::Str || nm->s.empty()) continue;
         h->members[k].value   = bf6__tel_int(va);
-        h->members[k].ordinal = bf6__tel_int(od);
+        h->members[k].ordinal = od ? bf6__tel_int(od) : bf6__tel_int(va);
         h->members[k].id      = (uint32_t)bf6__tel_int(id);
         h->members[k].name    = h->names[k].c_str();
         k++;

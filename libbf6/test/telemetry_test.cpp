@@ -53,6 +53,23 @@ int main(int argc, char** argv)
         std::printf("\n");
     }
 
+    /* Does the same reader generalise to a DIFFERENT enum family? The round
+     * folder ships <mode>roundreasontelemetryenum assets. If the member record
+     * is shared, these read with no change. */
+    const char* rounds[] = {"escalation", "payload", "strikepoint"};
+    int round_found = 0;
+    for (const char* r : rounds) {
+        char path[256];
+        std::snprintf(path, sizeof(path), "common/telemetry/round/%sroundreasontelemetryenum", r);
+        bf6_telemetry_enum* e = bf6_telemetry_enum_read(c, path);
+        if (!e) { std::printf("  round %-12s NOT READ\n", r); continue; }
+        round_found++; total_members += e->count;
+        std::printf("  round %-12s members=%-3d  ", r, e->count);
+        for (int i = 0; i < e->count && i < 6; i++)
+            std::printf("%s(%d) ", e->members[i].name, e->members[i].value);
+        std::printf("\n");
+    }
+
     /* control: fabricated names */
     const char* fake[] = {
         "common/telemetry/gamemodescoringsettings/notarealmode_scoringtelemetryenum",
@@ -69,6 +86,7 @@ int main(int argc, char** argv)
     std::printf("  members total    %d\n", total_members);
     std::printf("  empty names      %d   duplicates %d   non-contiguous %d\n", bad_name, dup, noncontig);
     std::printf("  fake resolved    %d  (must be 0)\n", fake_hits);
+    std::printf("  round-reason enums read %d of 3 with the SAME reader\n", round_found);
     const bool pass = found > 0 && total_members > 0 && !bad_name && !dup && !noncontig && !fake_hits;
     std::printf("\n  => %s\n", pass ? "PASS" : "FAIL");
     bf6_close(c);
