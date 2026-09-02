@@ -3037,6 +3037,46 @@ typedef struct {
 
 BF6_API bf6_vector_shapes* bf6_vector_shapes_read(bf6_ctx*, const char* ebx_name);
 
+/* FOOTPRINTS: battle-royale procedural PLACEMENT, not snow/sand deformation
+ * (a separate system shares the word). A footprint is a reserved slot with a
+ * category that the runtime fills from a weighted prefab database.
+ *
+ * One call serves both halves of the system: point a level partition at it for
+ * PLACEMENTS, or a `*_footprint_size` asset for the CATEGORY vocabulary
+ * (LootLocation_Chest_Rare, Vehicle_Heli_UH60, MissionObject_CTFDeposit, ...).
+ *
+ * Unlike spawn points these are NOT yaw-only - 18 of 26 measured are, the rest
+ * carry pitch and roll and spread over 52 m of height, sitting on whatever
+ * surface they are placed against. */
+typedef struct {
+    float    transform[12];      /* 3x4 row-major; valid if has_transform     */
+    uint32_t flags;              /* 0x5645E663; per-instance, unlike spawns   */
+    int32_t  suppression_type;   /* 0x032A545B; 0 in every sample             */
+    uint8_t  is_next_to_wall;    /* 0x24ADFFBC                                */
+    uint8_t  is_interior;        /* 0x6B4CCC16                                */
+    uint8_t  draw_debug_pool;    /* 0x666021F3                                */
+    uint8_t  has_prefab_override;/* 0x8D7A921F non-null; null in all samples  */
+    uint8_t  has_category;       /* 0x18D8777E non-null                       */
+    uint8_t  has_transform;
+} bf6_footprint;
+
+typedef struct {
+    int32_t              count;
+    const bf6_footprint* points;
+    int32_t              category_count;  /* 79 in granite_footprint_size     */
+    const char* const*   categories;      /* category DebugNames              */
+} bf6_footprints;
+
+BF6_API bf6_footprints* bf6_footprints_read(bf6_ctx*, const char* ebx_name);
+
+/* The engine's name hash: djb2-XOR, basis 5381, CASE-SENSITIVE.
+ *     h = 5381; for each byte: h = (h * 33) ^ byte;
+ * Identified on 62 FootprintBiomeTheme DebugName/NameHash pairs (62 of 62),
+ * held out on a second biome list (4 of 4) and on the telemetry member ids
+ * (3 of 3). FNV-1, FNV-1a, additive djb2, sdbm and CRC32 each score 0.
+ * A stored NameHash of 0 means "not baked" - hash the name instead. */
+BF6_API uint32_t bf6_name_hash(const char* s);
+
 /* TELEMETRY SCORING ENUMS: the metrics a game mode reports.
  * `<mode>_scoringtelemetryenum` members name them - Conquest ships
  * current_tickets, kill_tickets, majority_bleed.
