@@ -291,7 +291,10 @@ void bf6__unlocks_delete(void* p) { delete (UnlockHandle*)p; }
  * dissociated - against 0 hits for 400 x 44 random u32. That is the join
  * between the gems layer and the schematics layer, in the bytes. */
 
-/* 08780b19-98bf-107a-f976-b05452616568  gem root (unnamed, nameHash 0xCBD4EB97) */
+/* 08780b19-98bf-107a-f976-b05452616568  GemType (module GemsShared).
+ * Recorded as unnamed when this reader was written; named 2026-09-02 from the
+ * TypeInfo corpus by MD5, NOT by reversing the name hash - djb2 reproduces 0 of
+ * 8,577 known nameHash pairs and that remains true. */
 static const uint8_t kGemRoot[16] = {
     0x19, 0x0b, 0x78, 0x08, 0xbf, 0x98, 0x7a, 0x10,
     0xf9, 0x76, 0xb0, 0x54, 0x52, 0x61, 0x65, 0x68
