@@ -3402,6 +3402,21 @@ BF6_API bf6_schematic* bf6_schematic_read(bf6_ctx*, const char* ebx_name);
  * The container is self-checking: five monotonic bounds and four exact
  * span == count * stride equations, all enforced by the reader. */
 typedef struct {
+    float    quat[4];            /* WORLD orientation of the inertia PRINCIPAL AXES */
+    float    inv_inertia[3];     /* INVERSE principal inertia, unit mass            */
+    float    center_of_mass[3];  /* WORLD space, not a local offset                 */
+    float    reciprocal_mass;    /* 1.0 = static placeholder, 0 = infinite mass     */
+    uint32_t motion_type;        /* 1 Fixed, 2 Keyframed, 3 Dynamic (0/4 no-ops)    */
+    uint32_t group_index;        /* body group/layer - u32, NOT a float             */
+    float    static_friction;    /* -1 = take the world default                     */
+    float    dynamic_friction;   /* -1 = world default                              */
+    float    restitution;        /* -1 = world default                              */
+    float    linear_drag;        /* f32, NOT a u32                                  */
+    float    angular_drag;       /* f32, NOT a u32                                  */
+    uint8_t  keyframed_contacts, autosleep, start_asleep;
+} bf6_phys_body;
+
+typedef struct {
     uint16_t vertex_count;
     uint16_t index_count;      /* total face-vertex indices, NOT triangles */
     uint16_t face_count;       /* LOW u16 of +0x1C; the high half is below  */
@@ -3431,7 +3446,9 @@ typedef struct {
 
 typedef struct {
     uint32_t flags;
-    int32_t  body_count;      /* region A */
+    int32_t  body_count;      /* region A, from the header       */
+    int32_t  body_rec_count;  /* region A records actually read  */
+    const bf6_phys_body* bodies;
     int32_t  region_c;        /* region C */
     int32_t  shape_count;
     int32_t  inst_count;

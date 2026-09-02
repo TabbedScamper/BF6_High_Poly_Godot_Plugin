@@ -105,6 +105,48 @@ int main(int argc, char** argv)
     std::printf("  hull/mesh with ZERO radius       : %d of %d\n", solid_radius_ok, solid);
     std::printf("  shape indices out of range       : %ld\n", badref);
 
+    /* ---- region A bodies: every field constrained by the spec ------------ */
+    /* The spec states each field's legal range and its sentinel. Reading them
+     * back and requiring those ranges is what distinguishes a decoded record
+     * from 76 bytes that happen to parse. `-1` on the three surface fields
+     * means "take the world default" and MUST survive - a reader that clamped
+     * it to 0 would silently make everything frictionless. */
+    long bodies = 0, bad_motion = 0, bad_drag = 0, bad_inertia = 0, bad_quat = 0;
+    long default_friction = 0, static_placeholder = 0;
+    std::set<uint32_t> motion_types;
+    for (int i = 0; i < got && bodies < 4000; i++) {
+        const bf6_asset& a = assets[(size_t)i];
+        if (!a.name || a.type != 0x41759364u) continue;
+        bf6_physics* p = bf6_physics_read(c, a.name);
+        if (!p) continue;
+        for (int k = 0; k < p->body_rec_count; k++) {
+            const bf6_phys_body& bd = p->bodies[k];
+            bodies++;
+            motion_types.insert(bd.motion_type);
+            if (bd.motion_type > 4) bad_motion++;
+            if (!std::isfinite(bd.linear_drag) || bd.linear_drag < 0.f ||
+                !std::isfinite(bd.angular_drag) || bd.angular_drag < 0.f) bad_drag++;
+            for (int q = 0; q < 3; q++)
+                if (!std::isfinite(bd.inv_inertia[q]) || bd.inv_inertia[q] < 0.f) bad_inertia++;
+            const float ql = bd.quat[0]*bd.quat[0] + bd.quat[1]*bd.quat[1] +
+                             bd.quat[2]*bd.quat[2] + bd.quat[3]*bd.quat[3];
+            if (std::fabs(ql - 1.f) > 0.01f && ql > 1e-6f) bad_quat++;
+            if (bd.static_friction == -1.f) default_friction++;
+            if (bd.reciprocal_mass == 1.f) static_placeholder++;
+        }
+        bf6_free(c, p);
+    }
+    std::printf("\n  region A bodies read: %ld\n", bodies);
+    std::printf("    motion types seen           : ");
+    for (uint32_t m : motion_types) std::printf("%u ", m);
+    std::printf("  (spec: 1 Fixed, 2 Keyframed, 3 Dynamic; 0/4 no-ops)\n");
+    std::printf("    motion type out of range    : %ld\n", bad_motion);
+    std::printf("    non-finite or negative drag : %ld\n", bad_drag);
+    std::printf("    bad inverse inertia         : %ld\n", bad_inertia);
+    std::printf("    non-unit, non-zero quaternion: %ld\n", bad_quat);
+    std::printf("    StaticFriction == -1 (world default, must survive): %ld\n", default_friction);
+    std::printf("    ReciprocalMass == 1 (static placeholder)          : %ld\n", static_placeholder);
+
     /* CONTROL 3, DEMONSTRATED. The spec says offsets are self-relative and
      * that a base-relative parser "passes the obvious spot check and then
      * reads vertices out of a descriptor region". Rather than take that on
@@ -151,7 +193,8 @@ int main(int argc, char** argv)
     std::printf("  fabricated reads returning data  : %d of 2 (must be 0)\n", fake);
 
     const bool pass =
-        read > 50 && failed == 0 && self_ok == checked && base_ok == 0 && both == 0 && midphase_bad == 0 && fs_bad == 0 &&
+        read > 50 && failed == 0 && self_ok == checked && base_ok == 0 &&
+        bodies > 0 && bad_motion == 0 && bad_drag == 0 && bad_inertia == 0 && bad_quat == 0 && both == 0 && midphase_bad == 0 && fs_bad == 0 &&
         badref == 0 && fake == 0 && prim_radius_ok == prim && solid_radius_ok == solid &&
         idx38.size() > idx24.size();
     std::printf("\n%s\n", pass ? "PASS" : "FAIL");

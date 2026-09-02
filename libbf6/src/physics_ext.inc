@@ -48,6 +48,7 @@ static int64_t phys_rel(const uint8_t* b, size_t n, size_t at)
 
 struct PhysHandle {
     bf6_physics                  p{};
+    std::vector<bf6_phys_body>   bodies;
     std::vector<bf6_phys_shape>  shapes;
     std::vector<bf6_phys_inst>   insts;
     std::vector<float>           verts;    /* all shapes' vertices, packed */
@@ -84,6 +85,7 @@ bf6_physics* bf6_physics_read(bf6_ctx* c, const char* res_name)
     if (rd - rc != (int64_t)regCCount  * 44) return nullptr;
     if (gb - rd != (int64_t)instCount  * 72) return nullptr;
 
+    const uint8_t* b_ptr = b.data();
     PhysHandle* h = new PhysHandle();
     h->p.flags        = phys_u32(b.data() + 0x00);
     h->p.body_count   = (int32_t)bodyCount;
@@ -151,6 +153,34 @@ bf6_physics* bf6_physics_read(bf6_ctx* c, const char* res_name)
         h->shapes.push_back(s);
     }
 
+
+    /* ---- region A: rigid bodies (76 bytes) - spec section 5.1 ------------ */
+    /* A body is its world transform AT THE CENTRE OF MASS, its mass
+     * properties and its surface material. Merged static-model groups carry
+     * NONE, because static geometry has no mass - so bodyCount 0 is normal and
+     * is not a misread. Three fields are -1 to mean "take the world default",
+     * which a reader must not clamp away. */
+    h->bodies.reserve(bodyCount);
+    for (uint32_t i = 0; i < bodyCount; i++) {
+        const size_t r = (size_t)ra + (size_t)i * 76;
+        bf6_phys_body b{};
+        for (int k = 0; k < 4; k++) b.quat[k] = phys_f32(b_ptr + r + (size_t)k * 4);
+        for (int k = 0; k < 3; k++) b.inv_inertia[k] = phys_f32(b_ptr + r + 0x10 + (size_t)k * 4);
+        for (int k = 0; k < 3; k++) b.center_of_mass[k] = phys_f32(b_ptr + r + 0x1C + (size_t)k * 4);
+        b.reciprocal_mass  = phys_f32(b_ptr + r + 0x28);
+        b.motion_type      = phys_u32(b_ptr + r + 0x2C);
+        b.group_index      = phys_u32(b_ptr + r + 0x30);   /* u32, NOT a float */
+        b.static_friction  = phys_f32(b_ptr + r + 0x34);
+        b.dynamic_friction = phys_f32(b_ptr + r + 0x38);
+        b.restitution      = phys_f32(b_ptr + r + 0x3C);
+        b.linear_drag      = phys_f32(b_ptr + r + 0x40);   /* f32, NOT a u32 */
+        b.angular_drag     = phys_f32(b_ptr + r + 0x44);
+        b.keyframed_contacts = b_ptr[r + 0x48];
+        b.autosleep          = b_ptr[r + 0x49];
+        b.start_asleep       = b_ptr[r + 0x4A];
+        h->bodies.push_back(b);
+    }
+
     /* ---- region D: instances --------------------------------------------- */
     h->insts.reserve(instCount);
     for (uint32_t i = 0; i < instCount; i++) {
@@ -174,6 +204,8 @@ bf6_physics* bf6_physics_read(bf6_ctx* c, const char* res_name)
         h->insts.push_back(d);
     }
 
+    h->p.body_rec_count = (int32_t)h->bodies.size();
+    h->p.bodies      = h->bodies.empty() ? nullptr : h->bodies.data();
     h->p.shape_count = (int32_t)h->shapes.size();
     h->p.shapes      = h->shapes.empty() ? nullptr : h->shapes.data();
     h->p.inst_count  = (int32_t)h->insts.size();
