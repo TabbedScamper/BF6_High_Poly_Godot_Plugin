@@ -3155,6 +3155,82 @@ typedef struct {
 
 BF6_API bf6_debris* bf6_debris_read(bf6_ctx*, const char* ebx_name);
 
+/* WIND: authored MeshWind components and vector-field volumes.
+ *
+ * WHERE THESE LIVE is not obvious from the type names. MeshWindComponentData
+ * ships 1,561 instances over 12 levels, ONE PER PARTITION, and those partitions
+ * are `_layers_world/cables/cableset_<guid>` - the component belongs to a CABLE
+ * SET, and its BonePositions array is EMPTY there, consistent with the separate
+ * result that BonePositions is not a cable chain. VectorFieldEntityData ships
+ * 20 instances over 7 levels and lives in BUILDING PREFABS, i.e. authored wind
+ * volumes around architecture rather than level-wide weather.
+ *
+ * This is the authored INPUT side: the primary (mass, area) and secondary
+ * spring constants the two-spring integrator consumes, and the mask selecting
+ * which vector fields a component responds to. */
+typedef struct {
+    float    transform[12];      /* 3x4 row-major; valid if has_transform */
+    float    mass;               /* 0x6E58E5B7 */
+    float    area;               /* 0x31EBB6C2 */
+    float    secondary_mass;     /* 0x0E9552FA */
+    float    secondary_damping;  /* 0xDBF5C20E */
+    float    secondary_area;     /* 0x21D9AF44 */
+    uint32_t vector_field_mask;  /* 0x1021C09C - which fields this responds to */
+    int32_t  client_index;
+    int32_t  bone_count;         /* BonePositions length; 0 on cable sets */
+    uint8_t  excluded;
+    uint8_t  has_transform;
+} bf6_wind_component;
+
+typedef struct {
+    float    transform[12];
+    float    magnitude;          /* 0x79600A6A on VectorFieldData   */
+    float    magnitude_scale;    /* 0x754DEF54 on the entity        */
+    float    bottom_radius_pct;  /* 0xC5BFC01C                      */
+    uint32_t tags;               /* 0x605F79AF                      */
+    int32_t  name_index;         /* into bf6_wind.names, or -1      */
+    uint8_t  is_entity;          /* 1 = VectorFieldEntityData, 0 = VectorFieldData */
+    uint8_t  has_transform;
+} bf6_vector_field;
+
+typedef struct {
+    int32_t                   component_count;
+    const bf6_wind_component* components;
+    int32_t                   field_count;
+    const bf6_vector_field*   fields;
+} bf6_wind;
+
+BF6_API bf6_wind* bf6_wind_read(bf6_ctx*, const char* ebx_name);
+
+/* WEATHER: the global weather-state variable database.
+ *
+ * There is NO authored storm type in this engine, and the WeatherSequencer
+ * state machine ships ONE instance across 28 levels. What ships is
+ * `globals/weather/weatherstatevariabledatabase`: 21 named variables that every
+ * other system reads - Global_Rain, Global_Snow, Global_Fog, Global_Sand_amount,
+ * Global_Storm_Active, Cont_HasLightningstrikes, Temperature, Vfx_*, Audio_Rain,
+ * AI_Visibility_*, GlobalWindTransition. A storm is a VARIABLE, not an entity.
+ *
+ * Each carries a default and a fade window. `name_hash` is djb2-exact of the
+ * name (bf6_name_hash), verified 21 of 21. */
+typedef struct {
+    int32_t  name_index;     /* into bf6_weather.names, or -1 */
+    uint32_t name_hash;      /* djb2-exact of the name        */
+    float    default_value;
+    float    fade_low;       /* FadeLowThreshold  */
+    float    fade_high;      /* FadeHighThreshold */
+    uint8_t  kind;           /* 0 = float, 1 = bool, 2 = int */
+} bf6_weather_var;
+
+typedef struct {
+    int32_t                count;
+    const bf6_weather_var* vars;
+    int32_t                name_count;
+    const char* const*     names;
+} bf6_weather;
+
+BF6_API bf6_weather* bf6_weather_read(bf6_ctx*, const char* ebx_name);
+
 /* TELEMETRY SCORING ENUMS: the metrics a game mode reports.
  * `<mode>_scoringtelemetryenum` members name them - Conquest ships
  * current_tickets, kill_tickets, majority_bleed.
