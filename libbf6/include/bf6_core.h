@@ -2500,6 +2500,29 @@ BF6_API int bf6_rime_conditional_properties(
     bf6_ctx*, const char* partition,
     bf6_rime_conditional_property* out, int out_max);
 
+/* Authored boolean operation nodes used throughout Rime property graphs.
+ * These nodes carry no route-specific constants: their inputs and outputs are
+ * the exact property connections above.  Consumers must require every wired
+ * input to be known before evaluating one; an absent provider value is not
+ * false. */
+enum {
+    BF6_RIME_LOGIC_AND = 1,
+    BF6_RIME_LOGIC_OR,
+    BF6_RIME_LOGIC_NOT,
+    BF6_RIME_LOGIC_PROPERTY_DEFAULT
+};
+
+typedef struct {
+    int32_t instance;
+    int32_t operation; /* BF6_RIME_LOGIC_* */
+} bf6_rime_logic_operation;
+
+/* Every gated AndOperationEntityData, OrOperationEntityData and
+ * NotOperationEntityData node in one live partition. */
+BF6_API int bf6_rime_logic_operations(
+    bf6_ctx*, const char* partition,
+    bf6_rime_logic_operation* out, int out_max);
+
 /* Local instance indices whose concrete type is InterfaceDescriptorData.
  * The descriptor is the blueprint's public runtime-facing property surface;
  * values sourced from it are not authored constants.  Returning identity only
@@ -3422,6 +3445,54 @@ typedef struct {
 } bf6_physics;
 
 BF6_API bf6_physics* bf6_physics_read(bf6_ctx*, const char* res_name);
+
+/* OCCLUDER MESH - hand-authored low-poly occlusion geometry (RES 0x30B4A553,
+ * 4,002 resources). Spec: findings/occluder-entities-decoded.md. Draw calls are
+ * the measured root of the rebuild frame cost and this is what the artists used
+ * to cut them.
+ *
+ * The header stores vertexOffset/indexOffset AND they are derivable from the
+ * two u16 counts, so the reader PREDICTS both and reports whether the
+ * prediction held - a layout error breaks it on every file instead of yielding
+ * plausible geometry. */
+typedef struct {
+    float    aabb_a[3];
+    float    aabb_b[3];
+    uint32_t vertex_count;
+    uint32_t index_count;          /* always a multiple of 3 */
+    uint32_t scratch_at;           /* always 64 on shipped files */
+    uint32_t flag;
+    uint32_t stored_vertex_offset,  predicted_vertex_offset;
+    uint32_t stored_index_offset,   predicted_index_offset;
+    uint8_t  offsets_predicted;    /* 1 when both predictions matched */
+    const float*    vertices;      /* xyz triples; the stored w (1.0) is dropped */
+    const uint16_t* indices;
+} bf6_occluder_mesh;
+
+BF6_API bf6_occluder_mesh* bf6_occluder_mesh_read(bf6_ctx*, const char* res_name);
+
+/* TYPE CENSUS - count instances of a reflected type across a level, read from
+ * the installed game. Exists so that "this system authors nothing" is a
+ * MEASUREMENT the caller can re-run, not a note in a document.
+ *
+ * Counts through each partition's own type table, never by searching raw bytes
+ * for the GUID: a raw search hits the type TABLE of any partition that merely
+ * references the type, which is a candidate finder rather than a census.
+ *
+ * A zero is only meaningful beside a non-zero. Run a control type known to
+ * ship, and check `partitions_parsed` - zero instances over zero partitions
+ * means the mount failed, not that the data is absent. */
+typedef struct {
+    int32_t partitions_matched;   /* names containing the level substring   */
+    int32_t partitions_parsed;    /* of those, successfully parsed          */
+    int32_t partitions_with;      /* partitions carrying >= 1 instance      */
+    int32_t instances;            /* total instances of the type            */
+    char    last_partition[256];  /* first partition seen carrying it       */
+} bf6_type_census_result;
+
+/* `type_guid_hex` may be dashed or bare; BOTH byte orders are matched. */
+BF6_API bf6_type_census_result bf6_type_census(bf6_ctx*, const char* level,
+                                               const char* type_guid_hex);
 
 /* TELEMETRY SCORING ENUMS: the metrics a game mode reports.
  * `<mode>_scoringtelemetryenum` members name them - Conquest ships
