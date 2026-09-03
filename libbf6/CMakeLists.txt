@@ -478,6 +478,10 @@ add_executable(factory_fit_test test/factory_fit_test.cpp)
 target_link_libraries(factory_fit_test PRIVATE bf6_core_static)
 target_include_directories(factory_fit_test PRIVATE src include)
 
+add_executable(weapon_packages_test test/weapon_packages_test.cpp)
+target_link_libraries(weapon_packages_test PRIVATE bf6_core_static)
+target_include_directories(weapon_packages_test PRIVATE src include)
+
 add_executable(armory_test test/armory_test.cpp)
 target_link_libraries(armory_test PRIVATE bf6_core_static)
 target_include_directories(armory_test PRIVATE src include)
@@ -509,6 +513,13 @@ target_include_directories(portal_armory_codegen PRIVATE src include)
 add_executable(ui_runtime_audit tools/ui_runtime_audit.cpp viewer/rime.cpp)
 target_link_libraries(ui_runtime_audit PRIVATE bf6_core_static)
 target_include_directories(ui_runtime_audit PRIVATE src include viewer)
+
+# Fail-closed selected-screen gate for the compositor semantics that still
+# prevent a pixel-exact Rime frame. Reads only the mounted current install;
+# emitted JSON is diagnostic output and never a viewer input.
+add_executable(ui_compositor_gate tools/ui_compositor_gate.cpp)
+target_link_libraries(ui_compositor_gate PRIVATE bf6_core_static)
+target_include_directories(ui_compositor_gate PRIVATE src include)
 
 add_executable(ebxls_test test/ebxls_test.cpp)
 target_link_libraries(ebxls_test PRIVATE bf6_core_static)
@@ -562,6 +573,31 @@ add_executable(rime_reference_frame_test
   test/rime_reference_frame_test.cpp viewer/rime.cpp)
 target_link_libraries(rime_reference_frame_test PRIVATE bf6_core_static)
 target_include_directories(rime_reference_frame_test PRIVATE src include viewer)
+
+# Applies occurrence-safe post-binding state to the native Rime value model.
+# The adapter consumes in-memory state from a current-install evaluator; it
+# never reads an exported UI table or route-specific mapping.
+add_executable(rime_state_bridge_test
+  test/rime_state_bridge_test.cpp
+  viewer/rime_state_bridge.cpp
+  viewer/rime.cpp)
+target_link_libraries(rime_state_bridge_test PRIVATE bf6_core_static)
+target_include_directories(rime_state_bridge_test PRIVATE src include viewer)
+
+add_executable(rime_state_bridge_live_test
+  test/rime_state_bridge_live_test.cpp
+  viewer/rime_state_bridge.cpp
+  viewer/rime.cpp)
+target_link_libraries(rime_state_bridge_live_test PRIVATE bf6_core_static)
+target_include_directories(rime_state_bridge_live_test PRIVATE src include viewer)
+
+add_executable(rime_state_process_live_test
+  test/rime_state_process_live_test.cpp
+  viewer/rime_state_process.cpp
+  viewer/rime_state_bridge.cpp
+  viewer/rime.cpp)
+target_link_libraries(rime_state_process_live_test PRIVATE bf6_core_static)
+target_include_directories(rime_state_process_live_test PRIVATE src include viewer)
 
 # One-mount proof of the complete authored front-end spine: boot, legal,
 # universal menu, weapons and attachment editing. It discovers the screens
@@ -630,6 +666,8 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/${IMGUI}/imgui.cpp)
   add_executable(bf6viewer
     viewer/bf6viewer.cpp
     viewer/rime.cpp
+    viewer/rime_state_bridge.cpp
+    viewer/rime_state_process.cpp
     viewer/rime_list_provider.cpp
     viewer/offline_profile_provider.cpp
     viewer/armory_header_actions.cpp
@@ -650,7 +688,14 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/${IMGUI}/imgui.cpp)
   # arguments. Every UI colour in this viewer was reversed before it: FE-Text
   # #BFCAD1 rendered #D1CABF, Charcoal #22313C rendered #3C3122, which is why
   # the whole screen read brown instead of blue-grey.
-  target_compile_definitions(bf6viewer PRIVATE IMGUI_USE_BGRA_PACKED_COLOR)
+  get_filename_component(BF6_WORKSPACE_ROOT
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../../../.." ABSOLUTE)
+  file(TO_CMAKE_PATH
+    "${BF6_WORKSPACE_ROOT}/BF6_Frostbite_Research/tools/current_install_ui_state_capture.py"
+    BF6_UI_STATE_TOOL_PATH)
+  target_compile_definitions(bf6viewer PRIVATE
+    IMGUI_USE_BGRA_PACKED_COLOR
+    BF6_UI_STATE_TOOL_DEFAULT="${BF6_UI_STATE_TOOL_PATH}")
   # Keep optimized viewer symbols beside release builds.  UI composition is
   # deliberately data-driven and a bad runtime tree can otherwise leave only
   # an opaque executable RVA in Windows Error Reporting.
@@ -786,3 +831,24 @@ target_include_directories(typecensus_test PRIVATE src include)
 add_executable(thermal_test test/thermal_test.cpp)
 target_link_libraries(thermal_test PRIVATE bf6_core_static)
 target_include_directories(thermal_test PRIVATE src include)
+add_executable(liftprobe_test test/liftprobe_test.cpp)
+target_link_libraries(liftprobe_test PRIVATE bf6_core_static)
+target_include_directories(liftprobe_test PRIVATE src include)
+add_executable(restype_test test/restype_test.cpp)
+target_link_libraries(restype_test PRIVATE bf6_core_static)
+target_include_directories(restype_test PRIVATE src include)
+add_executable(mountcmp_test test/mountcmp_test.cpp)
+target_link_libraries(mountcmp_test PRIVATE bf6_core_static)
+target_include_directories(mountcmp_test PRIVATE src include)
+add_executable(resprov_test test/resprov_test.cpp)
+target_link_libraries(resprov_test PRIVATE bf6_core_static)
+target_include_directories(resprov_test PRIVATE src include)
+add_executable(toccount_test test/toccount_test.cpp)
+target_link_libraries(toccount_test PRIVATE bf6_core_static)
+target_include_directories(toccount_test PRIVATE src include)
+add_executable(pmvolume_test test/pmvolume_test.cpp)
+target_link_libraries(pmvolume_test PRIVATE bf6_core_static)
+target_include_directories(pmvolume_test PRIVATE src include)
+add_executable(lightprobe_test test/lightprobe_test.cpp)
+target_link_libraries(lightprobe_test PRIVATE bf6_core_static)
+target_include_directories(lightprobe_test PRIVATE src include)

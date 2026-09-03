@@ -2040,6 +2040,26 @@ BF6_API const char* bf6_localized_string(bf6_ctx*, uint32_t string_id);
 BF6_API int bf6_weapon_ui_info_read(bf6_ctx*, const char* weapon,
                                     bf6_weapon_ui_info* out);
 
+/* One authored row from <weapon>/pkg_<weapon>.ebx.  This is the package list
+ * consumed by the armory package screen; array order is the authored UI order.
+ * The fixed buffers deliberately make the count/fill result self-contained --
+ * no exported catalogue is consulted and no pointer lifetime leaks through
+ * the C ABI. */
+typedef struct {
+    char    key[96];          /* author/debug identity, e.g. M4A1_WSEr0014 */
+    char    name[128];        /* localized NameSid                        */
+    char    description[512]; /* localized DescriptionSid                 */
+    char    icon_asset[256];  /* authored weapon-package TextureAsset, if any */
+    int32_t ordinal;          /* index in UIItemDescriptionAsset.Items    */
+} bf6_weapon_package_row;
+
+/* Read pkg_<weapon> directly from the mounted install. `weapon` is the bare
+ * roster token. Returns the total row count, -1 when the exact partition or
+ * schema is absent. A fake token is therefore a negative control, not an
+ * empty but apparently valid package catalogue. */
+BF6_API int bf6_weapon_packages(bf6_ctx*, const char* weapon,
+                                bf6_weapon_package_row* out, int out_max);
+
 /* -------------------------------------------------------------------- rime */
 /* One axis of a UI element's box. Anchors are fractions of the parent, offsets
  * are authored pixels on a 1920x1080 canvas (a consumer scales by nothing).
@@ -3510,6 +3530,53 @@ typedef struct {
 /* `type_guid_hex` may be dashed or bare; BOTH byte orders are matched. */
 BF6_API bf6_type_census_result bf6_type_census(bf6_ctx*, const char* level,
                                                const char* type_guid_hex);
+
+/* PARTICIPATING MEDIA - the authored half of volumetric fog. 2,886 volumes over
+ * 25 levels plus 40 graphs. Parameters use the EXPOSED-PARAMETER record shape
+ * shared with FX emitters (PropertyId / Vec4 value / IntValue / ExposableType /
+ * Normalize); the id VOCABULARY is not shown to be shared. */
+typedef struct {
+    int32_t  volume_index;
+    uint32_t property_id;      /* a hash - never read through a float */
+    uint32_t int_value;
+    uint32_t exposable_type;
+    uint8_t  normalize;
+    int32_t  value_components; /* how many of value[] were present    */
+    float    value[4];
+} bf6_pm_param;
+
+typedef struct {
+    int32_t volume_count;
+    int32_t graph_count;
+    int32_t graph_param_count;
+    uint32_t object_layers;
+    int32_t param_count;
+    const bf6_pm_param* params;
+} bf6_pm_volumes;
+
+BF6_API bf6_pm_volumes* bf6_pm_volumes_read(bf6_ctx*, const char* ebx_name);
+
+/* LIGHT PROBE VOLUMES - authored diffuse-GI blend regions. 12,983 over 25
+ * levels. A volume is a falloff box: one BlendDistance with a per-axis min/max
+ * override on each of X/Y/Z, a Weight, and a DistanceOffsetAlongNormal. The
+ * reflection volume types alongside these are COUNTED but not decoded - their
+ * 35 fields resolve to no names. */
+typedef struct {
+    int32_t  instance;
+    float    blend_distance;
+    float    blend_min[3];   /* BlendDistanceOverrideMin X, Y, Z */
+    float    blend_max[3];   /* BlendDistanceOverrideMax X, Y, Z */
+    float    distance_offset_along_normal;
+    float    weight;
+    uint32_t unnamed_int;    /* 0x3F680D24, unnamed; 20 where sampled */
+} bf6_light_probe;
+
+typedef struct {
+    int32_t count;
+    const bf6_light_probe* volumes;
+} bf6_light_probes;
+
+BF6_API bf6_light_probes* bf6_light_probes_read(bf6_ctx*, const char* ebx_name);
 
 /* TELEMETRY SCORING ENUMS: the metrics a game mode reports.
  * `<mode>_scoringtelemetryenum` members name them - Conquest ships
