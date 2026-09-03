@@ -517,9 +517,9 @@ target_include_directories(ui_runtime_audit PRIVATE src include viewer)
 # Fail-closed selected-screen gate for the compositor semantics that still
 # prevent a pixel-exact Rime frame. Reads only the mounted current install;
 # emitted JSON is diagnostic output and never a viewer input.
-add_executable(ui_compositor_gate tools/ui_compositor_gate.cpp)
+add_executable(ui_compositor_gate tools/ui_compositor_gate.cpp viewer/rime.cpp)
 target_link_libraries(ui_compositor_gate PRIVATE bf6_core_static)
-target_include_directories(ui_compositor_gate PRIVATE src include)
+target_include_directories(ui_compositor_gate PRIVATE src include viewer)
 
 add_executable(ebxls_test test/ebxls_test.cpp)
 target_link_libraries(ebxls_test PRIVATE bf6_core_static)
@@ -852,3 +852,6 @@ target_include_directories(pmvolume_test PRIVATE src include)
 add_executable(lightprobe_test test/lightprobe_test.cpp)
 target_link_libraries(lightprobe_test PRIVATE bf6_core_static)
 target_include_directories(lightprobe_test PRIVATE src include)
+add_executable(camcensus_test test/camcensus_test.cpp)
+target_link_libraries(camcensus_test PRIVATE bf6_core_static)
+target_include_directories(camcensus_test PRIVATE src include)
