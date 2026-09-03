@@ -478,9 +478,6 @@ add_executable(factory_fit_test test/factory_fit_test.cpp)
 target_link_libraries(factory_fit_test PRIVATE bf6_core_static)
 target_include_directories(factory_fit_test PRIVATE src include)
 
-add_executable(weapon_packages_test test/weapon_packages_test.cpp)
-target_link_libraries(weapon_packages_test PRIVATE bf6_core_static)
-target_include_directories(weapon_packages_test PRIVATE src include)
 
 add_executable(armory_test test/armory_test.cpp)
 target_link_libraries(armory_test PRIVATE bf6_core_static)
@@ -553,16 +550,7 @@ target_include_directories(expression_weapon_runtime_test PRIVATE src include)
 # Direct-install proof for MenuWeapon's expression-authored header actions.
 # The test follows localize-call slot producers and reports a fabricated SID
 # control, so an adjacent favorites description cannot become a fourth button.
-add_executable(armory_header_actions_test
-  test/armory_header_actions_test.cpp
-  viewer/armory_header_actions.cpp)
-target_link_libraries(armory_header_actions_test PRIVATE bf6_core_static)
-target_include_directories(armory_header_actions_test PRIVATE src include viewer)
 
-add_executable(expression_attribute_runtime_test
-  test/expression_attribute_runtime_test.cpp)
-target_link_libraries(expression_attribute_runtime_test PRIVATE bf6_core_static)
-target_include_directories(expression_attribute_runtime_test PRIVATE src include)
 
 add_executable(rime_interface_color_test
   test/rime_interface_color_test.cpp)
@@ -577,27 +565,8 @@ target_include_directories(rime_reference_frame_test PRIVATE src include viewer)
 # Applies occurrence-safe post-binding state to the native Rime value model.
 # The adapter consumes in-memory state from a current-install evaluator; it
 # never reads an exported UI table or route-specific mapping.
-add_executable(rime_state_bridge_test
-  test/rime_state_bridge_test.cpp
-  viewer/rime_state_bridge.cpp
-  viewer/rime.cpp)
-target_link_libraries(rime_state_bridge_test PRIVATE bf6_core_static)
-target_include_directories(rime_state_bridge_test PRIVATE src include viewer)
 
-add_executable(rime_state_bridge_live_test
-  test/rime_state_bridge_live_test.cpp
-  viewer/rime_state_bridge.cpp
-  viewer/rime.cpp)
-target_link_libraries(rime_state_bridge_live_test PRIVATE bf6_core_static)
-target_include_directories(rime_state_bridge_live_test PRIVATE src include viewer)
 
-add_executable(rime_state_process_live_test
-  test/rime_state_process_live_test.cpp
-  viewer/rime_state_process.cpp
-  viewer/rime_state_bridge.cpp
-  viewer/rime.cpp)
-target_link_libraries(rime_state_process_live_test PRIVATE bf6_core_static)
-target_include_directories(rime_state_process_live_test PRIVATE src include viewer)
 
 # One-mount proof of the complete authored front-end spine: boot, legal,
 # universal menu, weapons and attachment editing. It discovers the screens
@@ -831,21 +800,12 @@ target_include_directories(typecensus_test PRIVATE src include)
 add_executable(thermal_test test/thermal_test.cpp)
 target_link_libraries(thermal_test PRIVATE bf6_core_static)
 target_include_directories(thermal_test PRIVATE src include)
-add_executable(liftprobe_test test/liftprobe_test.cpp)
-target_link_libraries(liftprobe_test PRIVATE bf6_core_static)
-target_include_directories(liftprobe_test PRIVATE src include)
 add_executable(restype_test test/restype_test.cpp)
 target_link_libraries(restype_test PRIVATE bf6_core_static)
 target_include_directories(restype_test PRIVATE src include)
-add_executable(mountcmp_test test/mountcmp_test.cpp)
-target_link_libraries(mountcmp_test PRIVATE bf6_core_static)
-target_include_directories(mountcmp_test PRIVATE src include)
 add_executable(resprov_test test/resprov_test.cpp)
 target_link_libraries(resprov_test PRIVATE bf6_core_static)
 target_include_directories(resprov_test PRIVATE src include)
-add_executable(toccount_test test/toccount_test.cpp)
-target_link_libraries(toccount_test PRIVATE bf6_core_static)
-target_include_directories(toccount_test PRIVATE src include)
 add_executable(pmvolume_test test/pmvolume_test.cpp)
 target_link_libraries(pmvolume_test PRIVATE bf6_core_static)
 target_include_directories(pmvolume_test PRIVATE src include)

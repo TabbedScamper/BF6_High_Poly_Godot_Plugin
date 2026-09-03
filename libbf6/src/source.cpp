@@ -93,6 +93,11 @@ bool Source::mount_toc(const std::string& toc_path, std::string& err) {
             si++;
         }
         for (const PayloadRes& r : pay.res) {
+            /* COUNT THE LISTING, not the survivor. This runs before the dedup
+             * test on purpose - it is the number data/res_types.tsv appears to
+             * hold, and the whole point is to compare the two. */
+            res_entry_type_[r.type]++;
+            res_entries_total_++;
             if (si < nseg && !res_.count(r.name)) {
                 ResEntry re; re.loc = segs[si]; re.dsize = r.size;
                 re.type = r.type; re.rid = r.rid;

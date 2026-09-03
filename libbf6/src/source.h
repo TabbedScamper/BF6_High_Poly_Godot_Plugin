@@ -136,6 +136,15 @@ public:
     size_t res_count() const { return res_.size(); }
     size_t ebx_count() const { return ebx_.size(); }
     const std::unordered_map<std::string, ResEntry>& res() const { return res_; }
+
+    /* RES ENTRIES SEEN BEFORE DEDUP, per type. res_ keys by NAME and the first
+     * bundle wins, so res_.size() is a DISTINCT-NAME count. A resource shared
+     * by many bundles is listed once per bundle in the payloads and counted
+     * once here per listing. Exposed to settle what data/res_types.tsv counts:
+     * its totals are ~18x res_.size() overall and vary 2x-76x per type, which
+     * distinct names cannot explain but listings can. */
+    const std::map<uint32_t, uint64_t>& res_entries_by_type() const { return res_entry_type_; }
+    uint64_t res_entries_total() const { return res_entries_total_; }
     const std::unordered_map<std::string, EbxEntry>& ebx() const { return ebx_; }
     // The chunk tables, for a caller that enumerates rather than asking for one
     // guid it already knows. Two of them because they ARE two: a loose chunk is
@@ -153,6 +162,8 @@ private:
     std::string game_;
     CasLocator  loc_;
     std::unordered_map<std::string, ResEntry> res_;
+    std::map<uint32_t, uint64_t> res_entry_type_;
+    uint64_t res_entries_total_ = 0;
     std::unordered_map<std::string, EbxEntry> ebx_;
     std::unordered_set<std::string>           mounted_tocs_;
     std::map<std::string, CasLoc>             chunks_;    // loose-chunk guid -> loc
