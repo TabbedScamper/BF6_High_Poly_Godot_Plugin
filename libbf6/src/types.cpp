@@ -1,4 +1,5 @@
 #include "types.h"
+#include <cstdlib>
 
 #include <algorithm>
 #include <cmath>
@@ -31,6 +32,9 @@ bool all_zero(const TypeGuid& g)
 }
 
 }  // namespace
+
+/* The OOA licence lift lives in its own file; it needs Section and data_. */
+#include "ooa_lift.inc"
 
 std::vector<std::string> TypeDb::exe_candidates(const std::string& game_dir)
 {
@@ -156,6 +160,22 @@ bool TypeDb::open(const std::string& exe_path, std::string& err)
         ti_size_ = 0;
     }
     if (ti_end_ > data_.size()) ti_end_ = data_.size();
+
+    /* IF THE TABLES ARE CIPHERTEXT, TRY THE LIFT BEFORE HANDING BACK A DATABASE
+     * THAT RESOLVES NOTHING. Doing it here means every reader in libbf6 gets it
+     * without knowing it exists, which is the whole point - the alternative was
+     * every caller needing BF6_EXE pointed at a decrypted copy. */
+    lifted_ = 0;
+    lift_note_.clear();
+    if (looks_encrypted()) {
+        const int n = ooa_lift(lift_note_);
+        if (n > 0 && !looks_encrypted()) {
+            lifted_ = n;
+            lift_note_ = "lifted " + std::to_string(n) + " section(s) in memory via " + lift_note_;
+        } else if (n > 0) {
+            lift_note_ = "attempted the lift but the type table is still encrypted";
+        }
+    }
     return true;
 }
 

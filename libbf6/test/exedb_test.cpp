@@ -23,7 +23,7 @@ int main(int argc, char** argv)
         std::printf("%-70s open=%d typeinfo=%d size=%llu entropy=%.2f bits/byte zero=%.1f%% %s\n",
                     e.c_str(), (int)ok, (int)db.typeinfo_found(),
                     (unsigned long long)db.typeinfo_size(), bits, zero * 100.0,
-                    ok && db.looks_encrypted() ? "<== ENCRYPTED" : "");
+                    ok && db.looks_encrypted() ? "<== ENCRYPTED" : (db.lifted() ? "<== LIFTED" : ""));
         if (!ok) std::printf("    err: %s\n", err.c_str());
     }
 

@@ -122,12 +122,26 @@ public:
 
     static std::string guid_str(const TypeGuid& g);
 
+    /* THE OOA LIFT. An EA App install ships its reflection sections encrypted,
+     * and an encrypted table does not fail to open - it resolves every type to
+     * zero fields. open() therefore attempts an in-memory lift using the
+     * machine's OWN licence before giving up. Nothing is written to disk and
+     * the installed executable is never modified; on a machine with no licence
+     * the lift simply does not happen and looks_encrypted() stays true.
+     * `lift_note()` says what happened either way. */
+    int                lifted()    const { return lifted_; }
+    const std::string& lift_note() const { return lift_note_; }
+
 private:
     int64_t  offset_of(uint64_t va) const;   // virtual address -> file offset, or -1
     int64_t  find_guid(const TypeGuid& guid);
     TypeGuid guid_at_typeinfo(uint64_t va) const;
     bool     type_guid_only(uint64_t type_va, TypeGuid& out) const;
     const TypeLayout& layout_full_depth(const TypeGuid& guid, int depth);
+    std::vector<uint8_t> ooa_section_key(const std::string& content_id, std::string& note);
+    int                  ooa_lift(std::string& note);
+    int         lifted_ = 0;
+    std::string lift_note_;
 
     struct Section {
         std::string name;
