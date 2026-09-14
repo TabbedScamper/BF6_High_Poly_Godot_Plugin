@@ -1,9 +1,11 @@
 @echo off
-REM Build the BF6 native shim.
+REM Build the BF6 Godot native binding.
 REM
 REM No godot-cpp: this compiles against gdextension_interface.h alone, which
-REM Godot itself emits (--dump-gdextension-interface). One translation unit,
-REM no submodules, no SCons.
+REM Godot itself emits (--dump-gdextension-interface). The binding links the
+REM shared core (BF6_High_Poly_Core, the core submodule) and stages its DLL beside
+REM the extension. The core is built first, so a submodule update is all an
+REM upgrade needs. BF6_CORE_SOURCE overrides the checkout used.
 REM
 REM   build.bat            release
 REM   build.bat debug      with symbols
@@ -29,6 +31,10 @@ if errorlevel 1 (
 
 set "HERE=%~dp0"
 set "OUT=%HERE%bin"
+set "PLUGINBIN=%HERE%..\addons\highpoly_toggle\bin"
+set "CORE=%HERE%..\core"
+if defined BF6_CORE_SOURCE set "CORE=%BF6_CORE_SOURCE%"
+set "COREBUILD=%CORE%\build\Release"
 
 REM WHY INC EXISTS, and it is the whole reason this script failed for a while.
 REM
@@ -44,16 +50,46 @@ REM the escape, so the quote closes and the argument ends in a single one.
 set "INC=%HERE:~0,-1%"
 
 if not exist "%OUT%" mkdir "%OUT%"
+if not exist "%CORE%\include\bf6_core.h" (
+  echo missing the core at %CORE%
+  echo run: git submodule update --init core
+  exit /b 1
+)
+if not exist "%CORE%\build\CMakeCache.txt" (
+  cmake -S "%CORE%" -B "%CORE%\build" -A x64
+  if errorlevel 1 (
+    echo could not configure the core
+    exit /b 1
+  )
+)
+cmake --build "%CORE%\build" --config Release --target bf6_core
+if errorlevel 1 (
+  echo CORE BUILD FAILED
+  exit /b 1
+)
 
 set "FLAGS=/nologo /std:c++17 /EHsc /W3 /O2 /DNDEBUG"
 if "%1"=="debug" set "FLAGS=/nologo /std:c++17 /EHsc /W3 /Od /Zi"
 
-cl %FLAGS% /LD /I"%INC%" "%HERE%src\bf6_oodle.cpp" /Fe:"%OUT%\bf6_oodle.windows.x86_64.dll" /Fo:"%OUT%\\" /link /DLL
+cl %FLAGS% /LD /I"%INC%" /I"%CORE%\include" "%HERE%src\bf6_oodle.cpp" /Fe:"%OUT%\bf6_oodle.windows.x86_64.dll" /Fo:"%OUT%\\" /link /DLL /LIBPATH:"%COREBUILD%" bf6_core.lib
 
 if errorlevel 1 (
   echo BUILD FAILED
   exit /b 1
 )
+copy /Y "%COREBUILD%\bf6_core.dll" "%OUT%\bf6_core.dll" >nul
+if errorlevel 1 (
+  echo failed to stage bf6_core.dll
+  exit /b 1
+)
+if not exist "%PLUGINBIN%" mkdir "%PLUGINBIN%"
+copy /Y "%OUT%\bf6_oodle.windows.x86_64.dll" "%PLUGINBIN%\bf6_oodle.windows.x86_64.dll" >nul
+copy /Y "%OUT%\bf6_core.dll" "%PLUGINBIN%\bf6_core.dll" >nul
+if errorlevel 1 (
+  echo failed to stage the runtime DLLs in %PLUGINBIN%
+  exit /b 1
+)
 echo.
 echo built %OUT%\bf6_oodle.windows.x86_64.dll
+echo staged runtime DLLs in %PLUGINBIN%
 endlocal

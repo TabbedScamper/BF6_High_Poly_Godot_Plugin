@@ -9,3 +9,10 @@ _bakeproj/
 # one directory per run. These accumulate quickly and are never worth
 # committing. The rolled-up history/baseline files beside them ARE tracked.
 native/perfrun/
+native/_zonetestproj/
+
+# All newly generated output belongs in out/. Legacy build/output locations are
+# ignored while their producers are migrated.
+/out/
+*.pdb
+*.ilk
