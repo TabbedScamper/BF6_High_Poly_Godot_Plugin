@@ -1,0 +1,3 @@
+[submodule "core"]
+	path = core
+	url = https://github.com/TabbedScamper/BF6_High_Poly_Core.git
