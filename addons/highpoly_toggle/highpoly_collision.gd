@@ -31,9 +31,40 @@ extends RefCounted
 # rotation, mirroring, or parent scales.
 
 const COL_NODE := "_COLLISION_VIS"
-# tiny uniform inflate so an unscaled object's collision (identical geometry)
-# doesn't z-fight its own proxy surfaces
-const EPS := 1.002
+# NO SCALE INFLATE: 1.002 x is proportional, centimetres on a building and under
+# a millimetre on a jerrycan, so the overlay z-fought on small props.
+const EPS := 1.0
+# A hair off the surface instead, 1 mm straight out along each vertex's normal,
+# as the Unreal SDK tool's collision overlay does (kColVisPush, 0.1 cm). Mesh
+# units, before the object's scale.
+const PUSH := 0.001
+
+static var _pushed := {}   # source mesh instance id -> [source Mesh, pushed ArrayMesh]
+
+# The mesh with every vertex moved PUSH along its normal: a copy made once per
+# source mesh, because the render mesh is shared by every placement of the prop.
+static func pushed_mesh(mesh: Mesh) -> Mesh:
+	if mesh == null:
+		return null
+	var key := mesh.get_instance_id()
+	if _pushed.has(key):
+		var hit: Array = _pushed[key]
+		if is_instance_valid(hit[0]) and hit[0] == mesh:
+			return hit[1]
+	var out := ArrayMesh.new()
+	for s in range(mesh.get_surface_count()):
+		var arrays := mesh.surface_get_arrays(s)
+		var verts: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+		var normals = arrays[Mesh.ARRAY_NORMAL]
+		if normals is PackedVector3Array and (normals as PackedVector3Array).size() == verts.size():
+			for i in range(verts.size()):
+				verts[i] += (normals as PackedVector3Array)[i] * PUSH
+			arrays[Mesh.ARRAY_VERTEX] = verts
+		var primitive := (mesh as ArrayMesh).surface_get_primitive_type(s) if mesh is ArrayMesh \
+				else Mesh.PRIMITIVE_TRIANGLES
+		out.add_surface_from_arrays(primitive, arrays)
+	_pushed[key] = [mesh, out]
+	return out
 
 static var _tracked: Array = []    # object nodes carrying an overlay (transform refresh)
 static var _isolated: Array = []   # nodes whose visuals "Isolate" is hiding
@@ -103,7 +134,7 @@ static func ensure_one(node: Node3D) -> bool:
 		c.name = COL_NODE
 		for pair in meshes:
 			var mi := MeshInstance3D.new()
-			mi.mesh = pair[0]
+			mi.mesh = pushed_mesh(pair[0])
 			mi.transform = pair[1]
 			mi.material_override = red_material()
 			mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF

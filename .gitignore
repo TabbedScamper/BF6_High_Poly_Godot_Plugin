@@ -16,3 +16,8 @@ native/_zonetestproj/
 /out/
 *.pdb
 *.ilk
+
+# Local debris: viewer captures, dear-imgui layout and scratch dumps.
+bf6viewer_*.log
+imgui.ini
+/weapons

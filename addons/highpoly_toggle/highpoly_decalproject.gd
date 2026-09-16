@@ -169,9 +169,21 @@ static func _key(xi: int, zi: int) -> int:
 # mesh half-rewritten (the new arrays are built complete, then swapped in).
 func run(tree: SceneTree, roads_mi: MeshInstance3D,
 		props_root: Node3D) -> Dictionary:
+	return await run_many(tree, [roads_mi] if roads_mi != null else [], props_root)
+
+
+# EVERY ROAD MESH, WITH THE PROPS INDEXED ONCE.
+#
+# The shared-core draws path builds one MeshInstance3D per draw instead of a
+# single roads mesh, and indexing the props again for each draw would cost the
+# index - seconds - times the number of draws. So the coverage grid is built
+# from ALL the draws first, the props are indexed once against it, and then each
+# draw is lifted in turn.
+func run_many(tree: SceneTree, roads: Array,
+		props_root: Node3D) -> Dictionary:
 	stats = {"lifted": 0, "vertices": 0, "tris": 0, "instances": 0,
-		"skipped_instances": 0, "surfaces": 0, "ms": 0}
-	if roads_mi == null or props_root == null:
+		"skipped_instances": 0, "surfaces": 0, "ms": 0, "meshes": 0}
+	if roads.is_empty() or props_root == null:
 		return stats
 	var t0 := Time.get_ticks_msec()
 
@@ -179,21 +191,29 @@ func run(tree: SceneTree, roads_mi: MeshInstance3D,
 	# through so a second run (the user rebuilds objects, or switches a layer)
 	# re-projects the original heights instead of lifting already-lifted
 	# vertices onto themselves and creeping upward every pass.
-	var base: Mesh = roads_mi.get_meta("hp_drape_mesh", null) as Mesh
-	if base == null:
-		base = roads_mi.mesh
-		roads_mi.set_meta("hp_drape_mesh", base)
-	if not (base is ArrayMesh):
+	var jobs: Array = []
+	var all_surfaces: Array = []
+	for entry in roads:
+		var mi := entry as MeshInstance3D
+		if mi == null or not is_instance_valid(mi):
+			continue
+		var base: Mesh = mi.get_meta("hp_drape_mesh", null) as Mesh
+		if base == null:
+			base = mi.mesh
+			mi.set_meta("hp_drape_mesh", base)
+		if not (base is ArrayMesh):
+			continue
+		var mesh_surfaces: Array = []
+		for i in range((base as ArrayMesh).get_surface_count()):
+			mesh_surfaces.append((base as ArrayMesh).surface_get_arrays(i))
+		if mesh_surfaces.is_empty():
+			continue
+		jobs.append([mi, base as ArrayMesh, mesh_surfaces])
+		all_surfaces.append_array(mesh_surfaces)
+	if jobs.is_empty():
 		return stats
 
-	var src := base as ArrayMesh
-	var surfaces: Array = []
-	for i in range(src.get_surface_count()):
-		surfaces.append(src.surface_get_arrays(i))
-	if surfaces.is_empty():
-		return stats
-
-	if not _coverage(surfaces):
+	if not _coverage(all_surfaces):
 		return stats
 	var t_ix := Time.get_ticks_usec()
 	await _index_props(tree, props_root)
@@ -203,8 +223,34 @@ func run(tree: SceneTree, roads_mi: MeshInstance3D,
 		stats["ms"] = Time.get_ticks_msec() - t0
 		return stats
 
-	var out := ArrayMesh.new()
 	var t_sv := Time.get_ticks_usec()
+	for job in jobs:
+		var mesh_node := (job as Array)[0] as MeshInstance3D
+		if not is_instance_valid(mesh_node):
+			continue
+		stats["meshes"] = int(stats["meshes"]) + 1
+		await _project_mesh(tree, mesh_node, (job as Array)[1] as ArrayMesh,
+			(job as Array)[2])
+	_solve_us = Time.get_ticks_usec() - t_sv
+	stats["ms"] = Time.get_ticks_msec() - t0
+	# THE SPLIT. index vs solve are wall time including their own awaits;
+	# await_ms is how much of the total was spent parked in
+	# `await tree.process_frame` waiting for the editor to draw the map. What
+	# is left is this script's own work, and the two want opposite fixes.
+	stats["index_ms"] = _index_us / 1000
+	stats["solve_ms"] = _solve_us / 1000
+	stats["await_ms"] = _await_us / 1000
+	stats["await_index_ms"] = _await_index_us / 1000
+	stats["await_solve_ms"] = (_await_us - _await_index_us) / 1000
+	stats["yields"] = _yields
+	stats["work_ms"] = (_index_us + _solve_us - _await_us) / 1000
+	return stats
+
+
+# One road mesh: every vertex that has a receiver under it takes that height.
+func _project_mesh(tree: SceneTree, roads_mi: MeshInstance3D, src: ArrayMesh,
+		surfaces: Array) -> void:
+	var out := ArrayMesh.new()
 	var frame := Time.get_ticks_msec()
 	for i in range(surfaces.size()):
 		var arr: Array = surfaces[i]
@@ -296,30 +342,18 @@ func run(tree: SceneTree, roads_mi: MeshInstance3D,
 				_await_us += Time.get_ticks_usec() - ya
 				_yields += 1
 				if not is_instance_valid(roads_mi):
-					return stats
+					return      # the node went away mid-pass; leave its drape
 				frame = Time.get_ticks_msec()
 		stats["vertices"] = int(stats["vertices"]) + verts.size()
 		arr[Mesh.ARRAY_VERTEX] = moved
 		out.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr)
 		out.surface_set_material(out.get_surface_count() - 1,
 			src.surface_get_material(i))
-	stats["surfaces"] = out.get_surface_count()
-	_solve_us = Time.get_ticks_usec() - t_sv
+	stats["surfaces"] = int(stats.get("surfaces", 0)) + out.get_surface_count()
+	# SWAPPED IN COMPLETE. The new arrays are built before anything on screen
+	# changes, so a pass that is interrupted leaves the drape it started from.
 	if is_instance_valid(roads_mi):
 		roads_mi.mesh = out
-	stats["ms"] = Time.get_ticks_msec() - t0
-	# THE SPLIT. index vs solve are wall time including their own awaits;
-	# await_ms is how much of the total was spent parked in
-	# `await tree.process_frame` waiting for the editor to draw the map. What
-	# is left is this script's own work, and the two want opposite fixes.
-	stats["index_ms"] = _index_us / 1000
-	stats["solve_ms"] = _solve_us / 1000
-	stats["await_ms"] = _await_us / 1000
-	stats["await_index_ms"] = _await_index_us / 1000
-	stats["await_solve_ms"] = (_await_us - _await_index_us) / 1000
-	stats["yields"] = _yields
-	stats["work_ms"] = (_index_us + _solve_us - _await_us) / 1000
-	return stats
 
 
 # Where the decals are, and at what height. Both halves are needed: the XZ

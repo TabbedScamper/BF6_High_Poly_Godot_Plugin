@@ -41,6 +41,7 @@
 #include <cmath>
 #include <unordered_map>
 #include <climits>
+#include <chrono>
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -992,6 +993,66 @@ static void call_core_decode_vertex_attribute(void *, GDExtensionClassInstancePt
 }
 
 #include "bf6_environment.inc"
+#include "bf6_terrain_mesh.inc"
+
+
+// water_draw_tree(view: PackedFloat32Array) -> PackedFloat32Array
+// The shared water tiling (bf6_water_draw_tree), in the core's engine-neutral
+// frame: the plane is (x, y) and z is up, so Godot passes (x, z, y).
+//   view: camera x, y, z, forward x, y, horizontal fov degrees, viewport width,
+//         bounds min x, min y, max x, max y, surface height,
+//         patch quads, tile cap, off-view max depth
+// Returns four floats per tile: centre x, centre y, width, level.
+static void call_core_water_draw_tree(void *, GDExtensionClassInstancePtr,
+        const GDExtensionConstVariantPtr *args, GDExtensionInt argc,
+        GDExtensionVariantPtr ret, GDExtensionCallError *error) {
+    alignas(8) uint8_t output[16] = {};
+    pfa_ctor(&output, nullptr);
+    static auto type_of = load<GDExtensionInterfaceVariantGetType>("variant_get_type");
+    const bool valid = argc == 1 && type_of(args[0]) == GDEXTENSION_VARIANT_TYPE_PACKED_FLOAT32_ARRAY;
+    if (error && !valid) {
+        error->error = argc != 1 ? GDEXTENSION_CALL_ERROR_TOO_FEW_ARGUMENTS : GDEXTENSION_CALL_ERROR_INVALID_ARGUMENT;
+        error->argument = 0;
+        error->expected = GDEXTENSION_VARIANT_TYPE_PACKED_FLOAT32_ARRAY;
+    }
+    if (valid) {
+        static auto to_pfa = get_variant_to(GDEXTENSION_VARIANT_TYPE_PACKED_FLOAT32_ARRAY);
+        alignas(8) uint8_t input[16] = {};
+        to_pfa(&input, const_cast<GDExtensionVariantPtr>(args[0]));
+        int64_t count = 0;
+        pfa_size(&input, nullptr, &count, 0);
+        if (count >= 15) {
+            const float *in = pfa_index(&input, 0);
+            bf6_water_view view{};
+            view.camera[0] = in[0]; view.camera[1] = in[1]; view.camera[2] = in[2];
+            view.forward[0] = in[3]; view.forward[1] = in[4];
+            view.horizontal_fov_degrees = in[5];
+            view.viewport_width = int32_t(in[6]);
+            const double bounds[4] = { in[7], in[8], in[9], in[10] };
+            const double height = in[11];
+            view.patch_quads = int32_t(in[12]);
+            view.tile_cap = int32_t(in[13]);
+            view.off_view_max_depth = int32_t(in[14]);
+            std::vector<bf6_water_tile> tiles(16384);
+            const int n = bf6_water_draw_tree(&view, bounds, height, tiles.data(), int(tiles.size()), nullptr);
+            const int got = n < 0 ? 0 : (n > int(tiles.size()) ? int(tiles.size()) : n);
+            int64_t length = int64_t(got) * 4;
+            const void *resize_args[1] = { &length };
+            GDExtensionInt rc = 0;
+            pfa_resize(&output, resize_args, &rc, 1);
+            float *out = got ? pfa_index(&output, 0) : nullptr;
+            for (int i = 0; out && i < got; ++i) {
+                out[i * 4] = float(tiles[i].center[0]);
+                out[i * 4 + 1] = float(tiles[i].center[1]);
+                out[i * 4 + 2] = float(tiles[i].width_m);
+                out[i * 4 + 3] = float(tiles[i].level);
+            }
+        }
+        pfa_dtor(&input);
+    }
+    get_variant_from(GDEXTENSION_VARIANT_TYPE_PACKED_FLOAT32_ARRAY)(ret, &output);
+    pfa_dtor(&output);
+}
 
 
 // ---- up-front cache (bf6_precache_*) -------------------------------------------
@@ -1060,6 +1121,169 @@ static void call_core_precache_sweep(void *, GDExtensionClassInstancePtr instanc
 	if (!self || !self->precache) { return_int(ret, -1); return; }
 	char err[512] = {};
 	return_int(ret, bf6_precache_sweep_stale(self->precache, err, (int)sizeof(err)));
+}
+
+// write_reader_index(game_dir, level, index_path, partition_path) -> String
+//
+// THE GDSCRIPT READER'S INDEX, WRITTEN FROM THE CORE. BF6Source keeps its mount
+// (ebx, res, chunk and bundle tables) and its partition index as store_var files
+// and loads them with get_var. Building them in GDScript is the cold cost of a
+// map: about 11 s of TOC and bundle parsing and 8 s of partition header reads.
+// The core has the same tables, usually from its memory-mapped mount snapshot,
+// so this writes those files directly in Godot's Variant encoding and the
+// script's own loader reads them. Returns "" on success, else the error.
+namespace {
+struct VariantWriter {
+	std::vector<uint8_t> b;
+	void u32(uint32_t v) { const size_t n = b.size(); b.resize(n + 4); std::memcpy(b.data() + n, &v, 4); }
+	void u64(uint64_t v) { const size_t n = b.size(); b.resize(n + 8); std::memcpy(b.data() + n, &v, 8); }
+	void str(const char *p, size_t n) {
+		u32(4); u32((uint32_t)n);
+		b.insert(b.end(), (const uint8_t *)p, (const uint8_t *)p + n);
+		while (b.size() % 4) b.push_back(0);
+	}
+	void str(const std::string &s) { str(s.data(), s.size()); }
+	// Godot encodes an int in 32 bits when it fits, else 64 with ENCODE_FLAG_64.
+	void integer(int64_t v) {
+		if (v >= INT32_MIN && v <= INT32_MAX) { u32(2); u32((uint32_t)(int32_t)v); }
+		else { u32(2 | (1u << 16)); u64((uint64_t)v); }
+	}
+	void boolean(bool v) { u32(1); u32(v ? 1u : 0u); }
+	void dict(uint32_t n) { u32(27); u32(n); }
+	void array(uint32_t n) { u32(28); u32(n); }
+};
+struct MountRow { std::string name; uint64_t v[7]; int nv; std::string bundle; };
+struct MountCollect { std::vector<MountRow> rows; };
+int collect_mount_row(void *user, const char *name, int32_t name_len, const uint64_t *v, int32_t nv,
+		const char *bundle, int32_t bundle_len) {
+	auto *c = static_cast<MountCollect *>(user);
+	MountRow r;
+	r.name.assign(name, (size_t)name_len);
+	r.nv = nv;
+	for (int i = 0; i < nv && i < 7; ++i) r.v[i] = v[i];
+	r.bundle.assign(bundle, (size_t)bundle_len);
+	c->rows.push_back(std::move(r));
+	return 0;
+}
+std::wstring utf8_wide(const std::string &s) {
+	if (s.empty()) return std::wstring();
+	const int n = MultiByteToWideChar(CP_UTF8, 0, s.data(), (int)s.size(), nullptr, 0);
+	std::wstring w((size_t)n, L'\0');
+	MultiByteToWideChar(CP_UTF8, 0, s.data(), (int)s.size(), &w[0], n);
+	return w;
+}
+bool write_variant_file(const std::string &path, const VariantWriter &w, std::string &err) {
+	const std::wstring wide = utf8_wide(path);
+	const std::wstring temp = wide + L"." + std::to_wstring(GetCurrentProcessId()) + L".part";
+	FILE *f = _wfopen(temp.c_str(), L"wb");
+	if (!f) { err = "cannot write " + path; return false; }
+	const uint32_t len = (uint32_t)w.b.size();
+	bool ok = std::fwrite(&len, 4, 1, f) == 1 && std::fwrite(w.b.data(), 1, w.b.size(), f) == w.b.size();
+	ok = std::fclose(f) == 0 && ok;
+	if (!ok || !MoveFileExW(temp.c_str(), wide.c_str(), MOVEFILE_REPLACE_EXISTING)) {
+		_wremove(temp.c_str());
+		err = "cannot replace " + path;
+		return false;
+	}
+	return true;
+}
+} // namespace
+
+// all_levels: the level's archives first, then every other level's on top - the
+// object catalogue BF6Source.mount_rest builds, in the same first-wins order.
+static void write_index_files(GDExtensionVariantPtr ret, const std::string &game, const std::string &level,
+		const std::string &index_path, const std::string &pidx_path, bool all_levels) {
+	const auto t0 = std::chrono::steady_clock::now();
+	char err[1024] = {};
+	bf6_ctx *ctx = bf6_open(game.c_str(), err, (int)sizeof(err));
+	if (!ctx) { return_string(ret, std::string("cannot open the installation: ") + err); return; }
+	if (!bf6_mount_level_archives(ctx, level.c_str(), err, (int)sizeof(err))) {
+		bf6_close(ctx);
+		return_string(ret, std::string("cannot mount ") + level + ": " + err);
+		return;
+	}
+	MountCollect tables[4];
+	// THE LOOSE-CHUNK TABLE STAYS THE LEVEL'S. BF6Source.mount_rest adds every
+	// other level's ebx, res and bundle chunks but keeps the level mount's loose
+	// chunks, so the catalogue does too (2.27 M fewer entries on mp_limestone).
+	if (all_levels) {
+		bf6_mount_visit(ctx, BF6_MOUNT_LOOSE_CHUNKS, collect_mount_row, &tables[BF6_MOUNT_LOOSE_CHUNKS]);
+		if (!bf6_mount_all(ctx, 1, err, (int)sizeof(err))) {
+			bf6_close(ctx);
+			return_string(ret, std::string("cannot mount every level: ") + err);
+			return;
+		}
+	}
+	for (int t = 0; t < 4; ++t) {
+		if (all_levels && t == BF6_MOUNT_LOOSE_CHUNKS) continue;
+		bf6_mount_visit(ctx, t, collect_mount_row, &tables[t]);
+	}
+	const int64_t mount_ms = (int64_t)std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+
+	std::string failure;
+	{
+		VariantWriter w;
+		w.b.reserve(128u << 20);
+		w.dict(6);
+		const char *names[4] = { "ebx", "res", "chunks", "chunk_seg" };
+		const int order[4] = { BF6_MOUNT_EBX, BF6_MOUNT_RES, BF6_MOUNT_LOOSE_CHUNKS, BF6_MOUNT_BUNDLE_CHUNKS };
+		for (int k = 0; k < 4; ++k) {
+			const MountCollect &t = tables[order[k]];
+			w.str(names[k], std::strlen(names[k]));
+			w.dict((uint32_t)t.rows.size());
+			for (const MountRow &r : t.rows) {
+				w.str(r.name);
+				w.array((uint32_t)r.nv);
+				for (int i = 0; i < r.nv; ++i) w.integer((int64_t)r.v[i]);
+			}
+		}
+		uint32_t with_bundle = 0;
+		for (const MountRow &r : tables[BF6_MOUNT_RES].rows) if (!r.bundle.empty()) ++with_bundle;
+		w.str("res_bundle", 10);
+		w.dict(with_bundle);
+		for (const MountRow &r : tables[BF6_MOUNT_RES].rows) {
+			if (r.bundle.empty()) continue;
+			w.str(r.name);
+			w.str(r.bundle);
+		}
+		w.str("stats", 5);
+		w.dict(9);
+		w.str("ms", 2); w.integer(mount_ms);
+		w.str("tocs", 4); w.integer(0);
+		w.str("bundles_opened", 14); w.integer(0);
+		w.str("bundles_failed", 14); w.integer(0);
+		w.str("ebx", 3); w.integer((int64_t)tables[BF6_MOUNT_EBX].rows.size());
+		w.str("res", 3); w.integer((int64_t)tables[BF6_MOUNT_RES].rows.size());
+		w.str("chunks_loose", 12); w.integer((int64_t)tables[BF6_MOUNT_LOOSE_CHUNKS].rows.size());
+		w.str("chunks_bundle_local", 19); w.integer((int64_t)tables[BF6_MOUNT_BUNDLE_CHUNKS].rows.size());
+		w.str("native_core", 11); w.boolean(true);
+		if (!write_variant_file(index_path, w, failure)) { bf6_close(ctx); return_string(ret, failure); return; }
+	}
+	if (!pidx_path.empty()) {
+		MountCollect parts;
+		bf6_mount_visit(ctx, BF6_MOUNT_PARTITIONS, collect_mount_row, &parts);
+		VariantWriter w;
+		w.dict((uint32_t)parts.rows.size());
+		for (const MountRow &r : parts.rows) { w.str(r.name); w.str(r.bundle); }
+		if (!write_variant_file(pidx_path, w, failure)) { bf6_close(ctx); return_string(ret, failure); return; }
+	}
+	bf6_close(ctx);
+	return_string(ret, "");
+}
+
+static void call_core_write_reader_index(void *, GDExtensionClassInstancePtr,
+		const GDExtensionConstVariantPtr *args, GDExtensionInt argc, GDExtensionVariantPtr ret, GDExtensionCallError *) {
+	if (argc < 4) { return_string(ret, "write_reader_index needs four arguments"); return; }
+	write_index_files(ret, variant_utf8(args[0]), variant_utf8(args[1]), variant_utf8(args[2]), variant_utf8(args[3]), false);
+}
+
+// write_catalogue_index(game_dir, level, index_path) -> String
+// The all-levels index BF6Source.mount_rest otherwise builds by sweeping every
+// level's archives in script (26 s measured on a user's machine).
+static void call_core_write_catalogue_index(void *, GDExtensionClassInstancePtr,
+		const GDExtensionConstVariantPtr *args, GDExtensionInt argc, GDExtensionVariantPtr ret, GDExtensionCallError *) {
+	if (argc < 3) { return_string(ret, "write_catalogue_index needs three arguments"); return; }
+	write_index_files(ret, variant_utf8(args[0]), variant_utf8(args[1]), variant_utf8(args[2]), std::string(), true);
 }
 
 // precache_status() -> String (JSON): overall, per map, per layer, current item.
@@ -1229,6 +1453,8 @@ static void return_blob(GDExtensionVariantPtr ret, uint8_t *blob, int64_t len) {
 	get_variant_from(GDEXTENSION_VARIANT_TYPE_PACKED_BYTE_ARRAY)(ret, &out);
 	pba_dtor(&out);
 }
+
+#include "bf6_loadout.inc"
 
 // precache_mesh_surfaces(level: String, mesh_names: String (newline separated), lod: int, threads: int)
 // -> PackedByteArray (bf6_precache_mesh_surfaces record), empty when no cache is open.
@@ -1484,6 +1710,46 @@ static void initialize(void *, GDExtensionInitializationLevel level) {
         GDEXTENSION_VARIANT_TYPE_INT, GDEXTENSION_VARIANT_TYPE_INT };
     bind_method("BF6Core", "decode_vertex_attribute", call_core_decode_vertex_attribute,
         GDEXTENSION_VARIANT_TYPE_PACKED_FLOAT32_ARRAY, 5, a_attribute);
+    static const GDExtensionVariantType a_floats[1] = { GDEXTENSION_VARIANT_TYPE_PACKED_FLOAT32_ARRAY };
+    bind_method("BF6Core", "water_draw_tree", call_core_water_draw_tree,
+        GDEXTENSION_VARIANT_TYPE_PACKED_FLOAT32_ARRAY, 1, a_floats);
+    static const GDExtensionVariantType a_terrain_open[2] = {
+        GDEXTENSION_VARIANT_TYPE_PACKED_BYTE_ARRAY, GDEXTENSION_VARIANT_TYPE_PACKED_FLOAT32_ARRAY };
+    static const GDExtensionVariantType a_int1[1] = { GDEXTENSION_VARIANT_TYPE_INT };
+    static const GDExtensionVariantType a_int2[2] = { GDEXTENSION_VARIANT_TYPE_INT, GDEXTENSION_VARIANT_TYPE_INT };
+    static const GDExtensionVariantType a_int_floats[2] = {
+        GDEXTENSION_VARIANT_TYPE_INT, GDEXTENSION_VARIANT_TYPE_PACKED_FLOAT32_ARRAY };
+    bind_method("BF6Core", "terrain_mesh_open", call_core_terrain_mesh_open,
+        GDEXTENSION_VARIANT_TYPE_INT, 2, a_terrain_open);
+    bind_method("BF6Core", "terrain_mesh_info", call_core_terrain_mesh_info,
+        GDEXTENSION_VARIANT_TYPE_STRING, 1, a_int1);
+    bind_method("BF6Core", "terrain_mesh_tile", call_core_terrain_mesh_tile,
+        GDEXTENSION_VARIANT_TYPE_PACKED_BYTE_ARRAY, 2, a_int2);
+    bind_method("BF6Core", "terrain_mesh_heights", call_core_terrain_mesh_heights,
+        GDEXTENSION_VARIANT_TYPE_PACKED_FLOAT32_ARRAY, 2, a_int_floats);
+    bind_method("BF6Core", "terrain_mesh_close", call_core_terrain_mesh_close,
+        GDEXTENSION_VARIANT_TYPE_BOOL, 1, a_int1);
+    static const GDExtensionVariantType a_loadout_att[2] = {
+        GDEXTENSION_VARIANT_TYPE_STRING, GDEXTENSION_VARIANT_TYPE_STRING };
+    static const GDExtensionVariantType a_loadout_weapon[3] = {
+        GDEXTENSION_VARIANT_TYPE_STRING, GDEXTENSION_VARIANT_TYPE_STRING, GDEXTENSION_VARIANT_TYPE_STRING };
+    bind_method("BF6Core", "loadout_catalogue", call_core_loadout_catalogue,
+        GDEXTENSION_VARIANT_TYPE_STRING, 0, nullptr);
+    bind_method("BF6Core", "loadout_attachments", call_core_loadout_attachments,
+        GDEXTENSION_VARIANT_TYPE_STRING, 2, a_loadout_att);
+    bind_method("BF6Core", "loadout_weapon", call_core_loadout_weapon,
+        GDEXTENSION_VARIANT_TYPE_PACKED_BYTE_ARRAY, 3, a_loadout_weapon);
+    bind_method("BF6Core", "loadout_soldier", call_core_loadout_soldier,
+        GDEXTENSION_VARIANT_TYPE_PACKED_BYTE_ARRAY, 2, a_loadout_att);
+    static const GDExtensionVariantType a_map_validate[1] = { GDEXTENSION_VARIANT_TYPE_STRING };
+    bind_method("BF6Core", "map_validate", call_core_map_validate,
+        GDEXTENSION_VARIANT_TYPE_STRING, 1, a_map_validate);
+    bind_method("BF6Core", "mode_plan", call_core_mode_plan,
+        GDEXTENSION_VARIANT_TYPE_STRING, 1, a_map_validate);
+    static const GDExtensionVariantType a_scatter_layout[2] = {
+        GDEXTENSION_VARIANT_TYPE_STRING, GDEXTENSION_VARIANT_TYPE_CALLABLE };
+    bind_method("BF6Core", "scatter_layout", call_core_scatter_layout,
+        GDEXTENSION_VARIANT_TYPE_STRING, 2, a_scatter_layout);
 	static const GDExtensionVariantType a_two_strings[2] = {
 		GDEXTENSION_VARIANT_TYPE_STRING, GDEXTENSION_VARIANT_TYPE_STRING };
 	static const GDExtensionVariantType a_string_int[2] = {
@@ -1498,6 +1764,15 @@ static void initialize(void *, GDExtensionInitializationLevel level) {
 			GDEXTENSION_VARIANT_TYPE_BOOL, 1, a_string);
 	bind_method("BF6Core", "precache_sweep", call_core_precache_sweep,
 			GDEXTENSION_VARIANT_TYPE_INT, 0, nullptr);
+	static const GDExtensionVariantType a_four_strings[4] = {
+		GDEXTENSION_VARIANT_TYPE_STRING, GDEXTENSION_VARIANT_TYPE_STRING,
+		GDEXTENSION_VARIANT_TYPE_STRING, GDEXTENSION_VARIANT_TYPE_STRING };
+	bind_method("BF6Core", "write_reader_index", call_core_write_reader_index,
+			GDEXTENSION_VARIANT_TYPE_STRING, 4, a_four_strings);
+	static const GDExtensionVariantType a_three_strings[3] = {
+		GDEXTENSION_VARIANT_TYPE_STRING, GDEXTENSION_VARIANT_TYPE_STRING, GDEXTENSION_VARIANT_TYPE_STRING };
+	bind_method("BF6Core", "write_catalogue_index", call_core_write_catalogue_index,
+			GDEXTENSION_VARIANT_TYPE_STRING, 3, a_three_strings);
 	bind_method("BF6Core", "precache_status", call_core_precache_status,
 			GDEXTENSION_VARIANT_TYPE_STRING, 0, nullptr);
 	static const GDExtensionVariantType a_sections[4] = {

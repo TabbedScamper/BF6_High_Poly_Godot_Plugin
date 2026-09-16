@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "title": "Prepare high-poly maps",
+  "labels": {
+    "overall": "Overall preparation (maps weighted equally)",
+    "current_map": "Current map",
+    "props": "Prop resources",
+    "pause": "Pause",
+    "resume": "Resume",
+    "cancel": "Cancel preparation",
+    "close": "Return to editor",
+    "waiting": "Waiting",
+    "scope": "Preparation scope"
+  },
+  "scopes": {
+    "godot": "Source geometry only. Terrain, materials and scene assembly still run when opening a map.",
+    "unreal": "Mesh and texture resources. Scene assembly and rendering setup still run when opening a map."
+  },
+  "phases": [
+    { "id": "discovery", "label": "Reading map", "weight": 0.10 },
+    { "id": "geometry", "label": "Preparing prop resources", "weight": 0.85 },
+    { "id": "verification", "label": "Verifying resources", "weight": 0.05 }
+  ]
+}

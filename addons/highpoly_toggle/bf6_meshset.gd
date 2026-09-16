@@ -65,6 +65,36 @@ const FMT_SIZE := {
 
 var error := ""
 
+# Keep material/UV selection here; only the bulk byte-to-float work crosses the
+# shared native reader boundary. Older extension packages retain the script path.
+var use_native_attributes := true
+var native_attribute_reads := 0
+var script_attribute_reads := 0
+var _attribute_decoder: Object = null
+var _attribute_decoder_checked := false
+var _packed_vectors_float32 := PackedVector3Array([Vector3.ZERO]).to_byte_array().size() == 12
+
+
+func _vectors2(values: PackedFloat32Array, components: int, count: int) -> PackedVector2Array:
+	if use_native_attributes and _packed_vectors_float32 and components == 2:
+		return values.to_byte_array().to_vector2_array()
+	var result := PackedVector2Array()
+	result.resize(count)
+	for i in range(count):
+		result[i] = Vector2(values[i * components], values[i * components + 1])
+	return result
+
+
+func _vectors3(values: PackedFloat32Array, components: int, count: int) -> PackedVector3Array:
+	if use_native_attributes and _packed_vectors_float32 and components == 3:
+		return values.to_byte_array().to_vector3_array()
+	var result := PackedVector3Array()
+	result.resize(count)
+	for i in range(count):
+		var at := i * components
+		result[i] = Vector3(values[at], values[at + 1], values[at + 2])
+	return result
+
 
 # ---------------------------------------------------------------------------
 # header
@@ -255,7 +285,105 @@ static func chunk_forms(chunk_id: PackedByteArray) -> Array:
 # debugger, which lets a user flip a surface between channels live. Off by
 # default because the build never needs more than the chosen channel and the
 # copies are pure cost there.
+# The whole section decode runs in the shared C++ core (bf6_meshset_sections),
+# which ports read_lod_script below rule for rule; tools/test_meshset_native.gd
+# compares the two over every mesh of a map. The script remains the reference
+# and the fallback for an older native package.
+var use_native_sections := true
+var native_section_reads := 0
+var _section_decoder: Object = null
+var _section_decoder_checked := false
+const _UV2_SOURCES := ["", "uv0", "tc4", "second"]
+const _UV_RULES := ["none", "unique.tc0", "carpaint.tc0", "default.tc0"]
+
+
 func read_lod(d: PackedByteArray, lod := 0, chunk := PackedByteArray(),
+		keep_shadow := false, keep_all_uvs := false) -> Array:
+	if use_native_sections and _packed_vectors_float32:
+		if not _section_decoder_checked:
+			_section_decoder_checked = true
+			if ClassDB.class_exists("BF6Core"):
+				var candidate: Object = ClassDB.instantiate("BF6Core")
+				if candidate != null and candidate.has_method("meshset_sections"):
+					_section_decoder = candidate
+		if _section_decoder != null:
+			var blob: PackedByteArray = _section_decoder.call("meshset_sections", d, lod, chunk,
+				(1 if keep_shadow else 0) | (2 if keep_all_uvs else 0))
+			if blob.size() >= 16 and blob.decode_u32(0) == 0x4C534D42 and blob.decode_u32(4) == 1:
+				native_section_reads += 1
+				return _unpack_sections(blob)
+	return read_lod_script(d, lod, chunk, keep_shadow, keep_all_uvs)
+
+
+# bf6_meshset_sections record -> the same Array of Dictionaries read_lod_script builds.
+func _unpack_sections(b: PackedByteArray) -> Array:
+	var count := int(b.decode_u32(8))
+	var at := 12
+	var elen := int(b.decode_u32(at))
+	error = b.slice(at + 4, at + 4 + elen).get_string_from_ascii()
+	at += 4 + ((elen + 3) & ~3)
+	var out: Array = []
+	for _i in range(count):
+		var mlen := int(b.decode_u32(at))
+		var material := b.slice(at + 4, at + 4 + mlen).get_string_from_ascii()
+		at += 4 + ((mlen + 3) & ~3)
+		var state_key := b.decode_u64(at)
+		var material_id := int(b.decode_u32(at + 8))
+		var v := int(b.decode_u32(at + 12))
+		var present := int(b.decode_u32(at + 16))
+		var uv2_src := int(b.decode_u32(at + 20))
+		var uv_rule := int(b.decode_u32(at + 24))
+		var uv_usage := int(b.decode_s32(at + 28))
+		var pal_mask := int(b.decode_u32(at + 32))
+		var sets := int(b.decode_u32(at + 36))
+		at += 40
+		var declared := b.slice(at, at + sets * 4).to_int32_array()
+		at += sets * 4
+		var verts := b.slice(at, at + v * 12).to_vector3_array()
+		at += v * 12
+		var uvs := b.slice(at, at + v * 8).to_vector2_array()
+		at += v * 8
+		var normals := PackedVector3Array()
+		if present & 1:
+			normals = b.slice(at, at + v * 12).to_vector3_array()
+			at += v * 12
+		var uv2 := PackedVector2Array()
+		if present & 2:
+			uv2 = b.slice(at, at + v * 8).to_vector2_array()
+			at += v * 8
+		var icount := int(b.decode_u32(at))
+		var indices := b.slice(at + 4, at + 4 + icount * 4).to_int32_array()
+		at += 4 + icount * 4
+		var parts := PackedInt32Array()
+		if present & 4:
+			parts = b.slice(at, at + v * 4).to_int32_array()
+			at += v * 4
+		var pal := PackedByteArray()
+		if present & 8:
+			pal = b.slice(at, at + v)
+			at += (v + 3) & ~3
+		var all_count := int(b.decode_u32(at))
+		at += 4
+		var uv_all: Array = []
+		for _k in range(all_count):
+			var usage := int(b.decode_u32(at))
+			uv_all.append([usage, b.slice(at + 4, at + 4 + v * 8).to_vector2_array()])
+			at += 4 + v * 8
+		out.append({"material": material, "verts": verts, "uvs": uvs,
+					"uv2": uv2, "uv2_src": _UV2_SOURCES[uv2_src], "uv_all": uv_all,
+					"normals": normals, "indices": indices,
+					"uv_sets": sets,
+					"uv_rule": _UV_RULES[uv_rule], "uv_usage": uv_usage,
+					"uv_declared": declared,
+					"state_key": state_key,
+					"material_id": material_id,
+					"parts": parts,
+					"pal": pal,
+					"pal_mask": pal_mask})
+	return out
+
+
+func read_lod_script(d: PackedByteArray, lod := 0, chunk := PackedByteArray(),
 		keep_shadow := false, keep_all_uvs := false) -> Array:
 	error = ""
 	var info := parse(d)
@@ -323,11 +451,7 @@ func read_lod(d: PackedByteArray, lod := 0, chunk := PackedByteArray(),
 		if pos.is_empty() or pos_comps < 3:
 			continue
 
-		var verts := PackedVector3Array()
-		verts.resize(vcount)
-		for i in range(vcount):
-			var o := i * pos_comps
-			verts[i] = Vector3(pos[o], pos[o + 1], pos[o + 2])
+		var verts := _vectors3(pos, pos_comps, vcount)
 
 		# WHICH CHANNEL IS THE PRIMARY. TexCoord0, for everything that is not
 		# car paint.
@@ -403,9 +527,7 @@ func read_lod(d: PackedByteArray, lod := 0, chunk := PackedByteArray(),
 			uv_pick_usage = int((uv_sets[upick] as Array)[0])
 			var src: PackedFloat32Array = (uv_sets[upick] as Array)[1]
 			var c: int = (uv_sets[upick] as Array)[2]
-			uvs.resize(vcount)
-			for i in range(vcount):
-				uvs[i] = Vector2(src[i * c], src[i * c + 1])
+			uvs = _vectors2(src, c, vcount)
 
 		# THE UNWRAP CHANNEL. UV0 tiles across many units; the unwrap is the
 		# per-object 0..1 set that livery/ad art (a vehicle's *_unique sheet,
@@ -437,24 +559,17 @@ func read_lod(d: PackedByteArray, lod := 0, chunk := PackedByteArray(),
 				if not r4.is_empty() and int(r4[1]) >= 2:
 					var src4: PackedFloat32Array = r4[0]
 					var c4 := int(r4[1])
-					uv2.resize(vcount)
-					for i in range(vcount):
-						uv2[i] = Vector2(src4[i * c4], src4[i * c4 + 1])
+					uv2 = _vectors2(src4, c4, vcount)
 					uv2_src = "tc4"
 		if uv2_src == "" and uv_sets.size() > 1:
 			var src2: PackedFloat32Array = (uv_sets[1] as Array)[1]
 			var c2: int = (uv_sets[1] as Array)[2]
-			uv2.resize(vcount)
-			for i in range(vcount):
-				uv2[i] = Vector2(src2[i * c2], src2[i * c2 + 1])
+			uv2 = _vectors2(src2, c2, vcount)
 			uv2_src = "second"
 
 		var normals := PackedVector3Array()
 		if nrm_comps >= 3:
-			normals.resize(vcount)
-			for i in range(vcount):
-				var o2 := i * nrm_comps
-				normals[i] = Vector3(nrm[o2], nrm[o2 + 1], nrm[o2 + 2])
+			normals = _vectors3(nrm, nrm_comps, vcount)
 
 		var idx := _read_indices(buf, vsize, isize, idx32,
 				int(s["start_index"]), pcount, vcount, voff)
@@ -489,10 +604,7 @@ func read_lod(d: PackedByteArray, lod := 0, chunk := PackedByteArray(),
 				var ua: int = (us as Array)[0]
 				var sa: PackedFloat32Array = (us as Array)[1]
 				var ca: int = (us as Array)[2]
-				var pa := PackedVector2Array()
-				pa.resize(vcount)
-				for i in range(vcount):
-					pa[i] = Vector2(sa[i * ca], sa[i * ca + 1])
+				var pa := _vectors2(sa, ca, vcount)
 				uv_all.append([ua, pa])
 		out.append({"material": s["material"], "verts": verts, "uvs": uvs,
 					"uv2": uv2, "uv2_src": uv2_src, "uv_all": uv_all,
@@ -703,24 +815,47 @@ static func _usages_of(uv_sets: Array) -> PackedInt32Array:
 
 func _read_attr(buf: PackedByteArray, base: int, count: int, el: Array,
 		streams: Array) -> Array:
+	if count <= 0 or base < 0 or base > buf.size() or el.size() < 4:
+		return []
 	var fmt := int(el[1])
 	var off := int(el[2])
 	var si := int(el[3])
-	if si >= streams.size():
+	if si < 0 or si >= streams.size() or off < 0 or streams[si].is_empty():
 		return []
 	var sstride := int(streams[si][0])
 	var size: int = FMT_SIZE.get(fmt, 0)
-	if size == 0 or sstride == 0:
+	if size == 0 or sstride <= 0:
 		return []
 	var sbase := base
 	for s in range(si):
-		sbase += int(streams[s][0]) * count
-	if sbase + (count - 1) * sstride + off + size > buf.size():
+		if streams[s].is_empty():
+			return []
+		var prefix_stride := int(streams[s][0])
+		if prefix_stride < 0 or prefix_stride > (buf.size() - sbase) / count:
+			return []
+		sbase += prefix_stride * count
+	if off > buf.size() - sbase or size > buf.size() - sbase - off:
+		return []
+	if count - 1 > (buf.size() - sbase - off - size) / sstride:
 		return []
 
 	var comps := _components(fmt)
 	if comps == 0:
 		return []
+	if use_native_attributes:
+		if not _attribute_decoder_checked:
+			_attribute_decoder_checked = true
+			if ClassDB.class_exists("BF6Core"):
+				var candidate: Object = ClassDB.instantiate("BF6Core")
+				if candidate != null and candidate.has_method("decode_vertex_attribute"):
+					_attribute_decoder = candidate
+		if _attribute_decoder != null:
+			var decoded: PackedFloat32Array = _attribute_decoder.call(
+				"decode_vertex_attribute", buf, sbase + off, sstride, count, fmt)
+			if decoded.size() == count * comps:
+				native_attribute_reads += 1
+				return [decoded, comps]
+	script_attribute_reads += 1
 	var out := PackedFloat32Array()
 	out.resize(count * comps)
 	for i in range(count):

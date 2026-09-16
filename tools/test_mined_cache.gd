@@ -1,60 +1,43 @@
 extends SceneTree
 
-# Reproduce the Capstone bug and prove the fix, in the order it actually happens:
-# the dock asks before the map package has downloaded, the package then arrives.
-# Under the old code the second read returned the cached miss forever.
-
+# Unit boundary for HighpolyLighting's runtime input. The old version of this
+# test created placements.json and proved a derived file could become a runtime
+# dependency. This one proves the opposite: only the open live reader is used,
+# and a wrong-map pairing is the negative control.
 const L = preload("res://addons/highpoly_toggle/highpoly_lighting.gd")
-const MAP := "MP_TestCache"
+const MAP := "MP_TestLive"
+
+
+class FakeSource:
+	extends RefCounted
+	var level := "mp_testlive"
+	var fields := {
+		"sun_az": 157.03,
+		"sun_el": 31.0,
+		"sun_lux": 120000.0,
+		"sun_color": [1.0, 0.8, 0.6],
+	}
+
+	func environment_lighting() -> Dictionary:
+		return fields
 
 
 func _init() -> void:
-	var dir := "user://mapcontext/%s" % MAP
-	var path := "%s/placements.json" % dir
-	DirAccess.make_dir_recursive_absolute(dir)
-	if FileAccess.file_exists(path):
-		DirAccess.remove_absolute(path)
-	L.forget()
-
 	var fails := 0
+	L.game_source = null
+	fails += _check("no reader means no runtime lighting", not L.has_data(MAP))
 
-	# 1. asked too early, before the download lands
-	var early: Dictionary = L.mined(MAP)
-	fails += _check("empty before the package exists", early.is_empty())
-	fails += _check("has_data false before it exists (no TABLE row)",
-		not L.has_data(MAP))
+	var live := FakeSource.new()
+	L.game_source = live
+	var got: Dictionary = L.mined(MAP)
+	fails += _check("reads the open live reader", not got.is_empty())
+	fails += _check("keeps the decoded value",
+		is_equal_approx(float(got.get("sun_az", 0.0)), 157.03))
+	fails += _check("wrong-map pairing is rejected",
+		L.mined("MP_ShuffledControl").is_empty())
+	fails += _check("no staged light zones are accepted", L.zones(MAP).is_empty())
 
-	# 2. the package arrives
-	var f := FileAccess.open(path, FileAccess.WRITE)
-	f.store_string(JSON.stringify({
-		"lighting": {"fields": {"sun_az": 157.03, "sun_el": 31.0, "sun_lux": 120000.0}}}))
-	f.close()
-
-	# 3. THE REGRESSION: this used to still be empty, for the whole session
-	var after: Dictionary = L.mined(MAP)
-	fails += _check("picks the package up once it exists", not after.is_empty())
-	fails += _check("reads the right value", is_equal_approx(float(after.get("sun_az", 0.0)), 157.03))
-	fails += _check("has_data true once it exists", L.has_data(MAP))
-
-	# 4. a REPUBLISHED package must also be seen (mtime changes, contents differ)
-	var f2 := FileAccess.open(path, FileAccess.WRITE)
-	f2.store_string(JSON.stringify({
-		"lighting": {"fields": {"sun_az": 42.0, "sun_el": 12.0}}}))
-	f2.close()
-	# mtime has 1 s granularity on some filesystems, so make the change visible
-	FileAccess.set_read_only_attribute(path, false)
-	var t := Time.get_unix_time_from_system()
-	while Time.get_unix_time_from_system() - t < 1.2:
-		pass
-	var f3 := FileAccess.open(path, FileAccess.WRITE)
-	f3.store_string(JSON.stringify({
-		"lighting": {"fields": {"sun_az": 42.0, "sun_el": 12.0}}}))
-	f3.close()
-	var re: Dictionary = L.mined(MAP)
-	fails += _check("picks up a republished package",
-		is_equal_approx(float(re.get("sun_az", 0.0)), 42.0))
-
-	DirAccess.remove_absolute(path)
+	L.game_source = null
 	print("\n%s" % ("ALL PASS" if fails == 0 else "%d FAILED" % fails))
 	quit(0 if fails == 0 else 1)
 

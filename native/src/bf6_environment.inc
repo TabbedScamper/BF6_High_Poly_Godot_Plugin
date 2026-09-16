@@ -99,7 +99,7 @@ static void read(BF6CoreBinding& self, const std::string& level,
         if(detail<0) throw std::runtime_error("simulation time must be nonnegative milliseconds");
         if(self.ocean.empty()) {
             bf6_water_sim_v2 sims[4]={};
-            int n=bf6_level_water_sims_isolated(self.ctx,level.c_str(),sims,4);
+            int n=bf6_level_water_sims_effective(self.ctx,level.c_str(),1,sims,4,nullptr);
             if(n<0 || n>4) throw std::runtime_error("invalid cascade count");
             std::vector<bf6_ocean::Cascade> ocean(n);
             for(int i=0;i<n;++i) if(!ocean[i].initialize(sims[i]))
@@ -127,7 +127,7 @@ static void read(BF6CoreBinding& self, const std::string& level,
     }
     if(kind=="water" || kind=="water_h0") {
         bf6_water_sim_v2 sims[4] = {};
-        int n = bf6_level_water_sims_isolated(self.ctx, level.c_str(), sims, 4);
+        int n = bf6_level_water_sims_effective(self.ctx, level.c_str(), 1, sims, 4, nullptr);
         if(n<0 || n>4) throw std::runtime_error("invalid ocean cascade count");
         if(kind=="water_h0") {
             if(detail<0 || detail>=n) throw std::runtime_error("ocean cascade index out of range");
@@ -235,6 +235,63 @@ static void read(BF6CoreBinding& self, const std::string& level,
             throw std::runtime_error(error);
         f.meta.put("width",detail); f.meta.put("height",detail); f.meta.put("format",0);
         f.block("pixels",rgba.data(),rgba.size()); return;
+    }
+    if(kind.rfind("texture:",0)==0) {
+        // A texture capped at the given largest dimension, as the Unreal add-on
+        // binds decal sheets (1024 for detail, 16384 for markings).
+        const int max_dim=std::atoi(kind.c_str()+8);
+        const bf6_texture* t=bf6_texture_at_max_dim(self.ctx,detail,max_dim>0?max_dim:1024);
+        if(!t || !t->data || t->data_len<=0) throw std::runtime_error("texture unavailable");
+        f.meta.put("width",t->width); f.meta.put("height",t->height);
+        f.meta.put("mip_count",t->mip_count); f.meta.put("format",t->format);
+        f.meta.put("srgb",t->srgb); f.block("pixels",t->data,t->data_len);
+        bf6_release_texture_payload(self.ctx,detail,max_dim>0?max_dim:1024); return;
+    }
+    if(kind=="decal_draws") {
+        // The level's road paint and ground decals from the shared core
+        // (bf6_level_decal_draws), draped on the shared terrain mesh: the
+        // same draws, styles and order the Unreal add-on builds.
+        bf6_terrain* t=bf6_read_terrain(self.ctx,level.c_str());
+        if(!t || t->width<=1) { if(t) bf6_free(self.ctx,t); f.meta.put("present",0); return; }
+        const double wmin[3]={t->world_min[0],t->world_min[1],t->world_min[2]};
+        const double wmax[3]={t->world_max[0],t->world_max[1],t->world_max[2]};
+        bf6_terrain_mesh* m=bf6_terrain_mesh_build(t->heights,t->width,wmin,wmax,t->height_scale,nullptr);
+        bf6_decal_draws* d=m?bf6_level_decal_draws(self.ctx,level.c_str(),m,nullptr):nullptr;
+        if(!d) { bf6_terrain_mesh_free(m); bf6_free(self.ctx,t); f.meta.put("present",0); return; }
+        // Split per attribute so Godot can slice them straight into vector arrays.
+        std::vector<float> positions, uvs, colors;
+        f.meta.put("present",1);
+        f.meta.key("draws"); f.meta.text+='[';
+        const int n=bf6_decal_draws_count(d);
+        for(int i=0;i<n;++i) {
+            bf6_decal_draw w{}; bf6_decal_draws_get(d,i,&w);
+            Object o;
+            o.put("record",w.record); o.put("draw_index",w.draw_index); o.put("sort_key",w.sort_key);
+            o.put("band",w.band); o.put("marking",w.marking); o.put("wear",w.wear);
+            o.put("albedo",w.albedo); o.put("normal",w.normal); o.put("opacity",w.opacity);
+            o.put("tint",w.tint); o.put("opacity_scale",w.opacity_scale);
+            o.put("mask_select",w.mask_select); o.put("mip_bias",w.mip_bias);
+            o.put("first",positions.size()/3); o.put("vertex_count",w.vertex_count);
+            for(int v=0;v<w.vertex_count;++v) {
+                const float* p=w.verts+size_t(v)*9;
+                positions.insert(positions.end(),p,p+3);
+                uvs.insert(uvs.end(),p+3,p+5);
+                colors.insert(colors.end(),p+5,p+9);
+            }
+            if(i) f.meta.text+=','; f.meta.text+=o.done();
+        }
+        f.meta.text+=']';
+        bf6_decal_draw_stats s{}; bf6_decal_draws_stats(d,&s);
+        Object st;
+        st.put("records",s.records); st.put("drawn",s.drawn); st.put("triangles",s.triangles);
+        st.put("painted",s.painted); st.put("colourless",s.colourless); st.put("tint_clamped",s.tint_clamped);
+        st.put("second_colour",s.second_colour); st.put("markings",s.markings); st.put("wear_softened",s.wear_softened);
+        st.put("base_surface_blended",s.base_surface_blended); st.put("surface_blended",s.surface_blended);
+        f.meta.key("stats"); f.meta.text+=st.done();
+        f.block("positions",positions.data(),positions.size()*sizeof(float));
+        f.block("uvs",uvs.data(),uvs.size()*sizeof(float));
+        f.block("colors",colors.data(),colors.size()*sizeof(float));
+        bf6_decal_draws_free(d); bf6_terrain_mesh_free(m); bf6_free(self.ctx,t); return;
     }
     if(kind=="texture") {
         const bf6_texture* t=bf6_texture_at(self.ctx,detail);

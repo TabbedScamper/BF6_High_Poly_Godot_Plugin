@@ -40,6 +40,7 @@ var _show_backdrop := false        # distant skyline / out-of-bounds vista layer
 # visible and stay visible unless something explicitly hides them.
 var _show_roads := true
 var _show_water := false           # rivers / sea layer on
+var _sdk_water_hidden := false     # the SDK's WaterPlane, hidden while ours draws
 # Set by the dock from its own toggles, because the light and FX layers are
 # switched independently of apply() and this object cannot see those buttons.
 # Default TRUE so a caller that never sets them gets exactly the old behaviour:
@@ -124,6 +125,7 @@ static func _step_for(meta: Dictionary) -> int:
 # vegetation scatter (grass/shrub kits from the game's MeshScatteringDatabase);
 # a strict no-op for maps whose package carries no scatter.json
 const BJournal = preload("highpoly_journal.gd")
+const RoadDraws = preload("highpoly_road_draws.gd")   # shared decal draws
 const ScatterScript = preload("highpoly_scatter.gd")
 var _scatter = ScatterScript.new()
 var _scatter_n := 0
@@ -790,8 +792,12 @@ const WATER_COLOR := Color(0.10, 0.22, 0.30, 0.72)
 
 # ---------- map identity ----------
 static func map_of(root: Node) -> String:
-	# level scene roots are named exactly "MP_<Map>"
 	if root == null: return ""
+	# Creator projects preserve authored root names; Home records the verified
+	# base map when importing instead of renaming the creator's node hierarchy.
+	var explicit: String = str(root.get_meta("bf6_base_level", ""))
+	if explicit.begins_with("MP_") and not explicit.contains("/") and not explicit.contains("\\"):
+		return explicit
 	var n := String(root.name)
 	return n if n.begins_with("MP_") else ""
 
@@ -1618,6 +1624,19 @@ static var colormap_strength := 0.75
 
 
 func _colormap_set(map: String) -> Dictionary:
+	if game_source != null:
+		var env = game_source.native_environment()
+		if env != null and not env.ground.is_empty():
+			var cached: Dictionary = _cmap_cache.get(map, {})
+			if int(cached.get("native_source", 0)) == env.get_instance_id(): return cached
+			var far: Dictionary = env.ground.get("far", {})
+			if not far.is_empty():
+				var image := Image.create_from_data(int(far.size), int(far.size), false, Image.FORMAT_RGBA8, far.albedo)
+				image.generate_mipmaps()
+				var native_map := {"tex": ImageTexture.create_from_image(image), "native_source": env.get_instance_id(),
+					"bounds": Vector4(float(far.lo[0]), float(far.lo[1]), float(far.hi[0]) - float(far.lo[0]), float(far.hi[1]) - float(far.lo[1]))}
+				_cmap_cache[map] = native_map
+				return native_map
 	if _cmap_cache.has(map):
 		return _cmap_cache[map]
 	var out: Dictionary = {}
@@ -1721,6 +1740,14 @@ func _layer_tex(map: String, nm: String) -> Texture2D:
 # flat colour. The photo is the SDK's business now; the ground layers are ours,
 # and they are the only thing this actually requires.
 func _terrain_shader_mat(map: String) -> ShaderMaterial:
+	if game_source != null:
+		var native_env = game_source.native_environment()
+		var native_material: ShaderMaterial = HighpolyNativeTerrain.material(native_env)
+		if native_material != null:
+			_splat_active = true
+			_splat_n = native_env.ground.materials.size()
+			_tmat_live = native_material
+			return native_material
 	var ga := _layer_tex(map, "ground_alb"); var gn := _layer_tex(map, "ground_nrm")
 	var ca := _layer_tex(map, "cliff_alb"); var cn := _layer_tex(map, "cliff_nrm")
 	# A MISSING SLOPE TEXTURE NO LONGER COSTS THE WHOLE MATERIAL.
@@ -2134,8 +2161,69 @@ func set_water_shown(root: Node, on: bool) -> bool:
 			+ "this map has no water body).")
 		return false
 	(w as Node3D).visible = on
+	set_sdk_water_hidden(root, on)
 	log_water_state("the Water chip was toggled", root)
 	return true
+
+
+# THE SDK'S OWN WATER PLANE, OUT OF THE WAY WHILE OURS IS ON.
+#
+# The level scene ships a WaterPlane under Static. With our water built, both
+# draw: the SDK's flat plane sits at its authored height and fights ours, which
+# is the surface read from the game with its own cascades. Ours is the one to
+# see, so the SDK's is hidden for as long as ours is shown and put back the
+# moment it is not.
+#
+# HIDDEN ON THE RENDER SIDE, NOT BY SETTING `visible`. This is the user's scene
+# and the node belongs to the SDK: writing a node property marks the scene
+# modified, and a later save would persist a change they never made. Setting
+# the instance's visibility through the RenderingServer draws nothing and
+# leaves the scene byte-identical.
+func set_sdk_water_hidden(root: Node, hidden: bool) -> void:
+	if root == null or not is_instance_valid(root):
+		return
+	var found := 0
+	for node in _sdk_water_planes(root):
+		for rid in _visual_rids(node):
+			RenderingServer.instance_set_visible(rid, not hidden)
+			found += 1
+	if hidden != _sdk_water_hidden or found == 0:
+		# ZERO IS AN ANSWER TOO. "Hid the SDK plane" and "there was no SDK plane
+		# to hide" look identical from the viewport, and the second one is the
+		# case worth seeing: it means this level scene does not carry one, or it
+		# is named something else and ours is now drawing on top of it.
+		Log.info("Water: the SDK's own WaterPlane is %s (%d instance(s)) "
+			% ["hidden while High Poly water is shown" if hidden
+				else "visible again", found]
+			+ "- its scene is not modified, only what the viewport draws.")
+	_sdk_water_hidden = hidden
+
+
+func _sdk_water_planes(root: Node) -> Array:
+	var out: Array = []
+	var stack: Array = [root]
+	while not stack.is_empty():
+		var n: Node = stack.pop_back()
+		# Never our own overlay: it is the water we are showing.
+		if n.name == NODE:
+			continue
+		for c in n.get_children():
+			stack.append(c)
+		if str(n.name).begins_with("WaterPlane"):
+			out.append(n)
+	return out
+
+
+func _visual_rids(node: Node) -> Array:
+	var out: Array = []
+	var stack: Array = [node]
+	while not stack.is_empty():
+		var n: Node = stack.pop_back()
+		for c in n.get_children():
+			stack.append(c)
+		if n is VisualInstance3D:
+			out.append((n as VisualInstance3D).get_instance())
+	return out
 
 
 # The chip's state and the node's state, side by side.
@@ -3984,6 +4072,11 @@ func _apply_body(root: Node, enabled: bool, show_objects: bool, tex = true,
 				old_ctx2.remove_child(pr)
 				saved_props = pr as Node3D
 	var _t_clear := Time.get_ticks_msec()
+	# THE SDK'S WATER COMES BACK FIRST. Our water is about to be torn down, and
+	# leaving its plane hidden after that would take the map's water away
+	# altogether. The water build turns it off again a moment later if ours
+	# returns.
+	set_sdk_water_hidden(root, false)
 	_clear(root, saved_bd != null, saved_props != null)
 	# THE TEARDOWN IS A PHASE. It frees every MultiMeshInstance in the overlay,
 	# which on a full map is tens of thousands of nodes, and it runs on the main
@@ -4215,8 +4308,16 @@ func _apply_body(root: Node, enabled: bool, show_objects: bool, tex = true,
 		# instead of arriving pre-baked in a GLB. Checked BEFORE the file so a
 		# stale roads.glb left behind in a cache by an older version cannot win
 		# over the live read.
+		var rdraws = _data.get("road_draws") if _data is Dictionary else null
+		if rdraws is Dictionary and not (rdraws.get("draws", []) as Array).is_empty():
+			_roads_from = PH_MEMORY
+			var rroot := RoadDraws.build(rdraws)
+			for rc in rroot.get_children():
+				(rc as GeometryInstance3D).layers = EXT_TERRAIN_LAYER
+			ctx.add_child(rroot)
+			rroot.owner = null
 		var rmesh = _data.get("roads") if _data is Dictionary else null
-		if rmesh is Mesh:
+		if rmesh is Mesh and _roads_from == "":
 			_roads_from = PH_MEMORY   # already built by map_data, on the worker
 			var rmi := MeshInstance3D.new()
 			rmi.name = "Roads"
@@ -4226,7 +4327,7 @@ func _apply_body(root: Node, enabled: bool, show_objects: bool, tex = true,
 			ctx.add_child(rmi)
 			rmi.owner = null
 		var rp := "%s/roads/roads.glb" % dir
-		if rmesh == null and FileAccess.file_exists(rp):
+		if rmesh == null and _roads_from == "" and FileAccess.file_exists(rp):
 			_roads_from = PH_CACHE            # the pre-baked roads.glb on disk
 			var rn := _load_external_glb(rp)   # live root, adopted into the tree
 			if rn != null:
@@ -4974,8 +5075,14 @@ func _build_props_async(props_root: Node3D, entries: Array, dir: String,
 	# the evidence.
 	if is_instance_valid(props_root):
 		var _wr := props_root.get_parent()
-		log_water_state("the objects layer finished building",
-			_wr.get_parent() if _wr != null else null)
+		var _scene_root: Node = _wr.get_parent() if _wr != null else null
+		# The objects build is the last thing to finish, and the water node may
+		# have been built before the chip state was known, so this is where the
+		# SDK plane's visibility is settled for the finished map.
+		if _scene_root != null and _wr != null:
+			set_sdk_water_hidden(_scene_root,
+				_show_water and _wr.get_node_or_null("Water") != null)
+		log_water_state("the objects layer finished building", _scene_root)
 	HighpolyProfiler.mark("phase", "textures: %d distinct of %d wanted (%d reused), %d GPU"
 		% [int(_ps["misses"]), int(_ps["hits"]) + int(_ps["misses"]),
 		   int(_ps["hits"]), int(_ps["textures"])])
@@ -5352,6 +5459,7 @@ func _add_water_plane(ctx: Node3D, textured: bool) -> void:
 	ctx.add_child(wroot)
 	wroot.owner = null
 	ctx = wroot
+	var native_materials: Array = []
 	for wcfg in planes:
 		if not (wcfg is Dictionary): continue
 		# THE RIVER/LAKE SURFACE: terrain block 2, meshed per texel by the game
@@ -5396,11 +5504,41 @@ func _add_water_plane(ctx: Node3D, textured: bool) -> void:
 		if not wcfg.has("height"): continue
 		var wc: Array = wcfg.get("center", [0.0, 0.0])
 		var wsz: Array = wcfg.get("size", [5000.0, 5000.0])
+		# THE NATIVE SEA IS TILED LIKE UNREAL'S: the shared 16x16-quad patch
+		# placed by the core's water draw tree (bf6_water_draw_tree), refined
+		# around the camera by the simulation driver. A uniform plane put a
+		# vertex every ~10 m everywhere, so the 12 m and 43 m cascades aliased
+		# into the fast boiling look instead of the broad swell Unreal draws.
+		if textured and bool(wcfg.get("native", false)):
+			var nmat := HighpolyNativeWater.material(wcfg, game_source.native_environment())
+			if nmat != null:
+				native_materials.append(nmat)
+				var tiled := HighpolyNativeWater.tiled_surface(
+					Vector2(float(wc[0]), float(wc[1])), Vector2(float(wsz[0]), float(wsz[1])),
+					float(wcfg.get("yaw", 0.0)), float(wcfg["height"]), nmat)
+				tiled.name = WATER_NODE
+				tiled.layers = EXT_TERRAIN_LAYER
+				ctx.add_child(tiled); tiled.owner = null
+				continue
 		var wp := MeshInstance3D.new()
 		wp.name = WATER_NODE
 		var pm := PlaneMesh.new()
 		pm.size = Vector2(float(wsz[0]), float(wsz[1]))
+		if bool(wcfg.get("native", false)):
+			pm.subdivide_width = clampi(int(ceil(pm.size.x / 8.0)), 1, 512)
+			pm.subdivide_depth = clampi(int(ceil(pm.size.y / 8.0)), 1, 512)
 		wp.mesh = pm
+		if bool(wcfg.get("native", false)):
+			# Vertex displacement can lift a buried material plane to a lake's
+			# actual height. Include the native heightfield bounds in culling.
+			var water_grid: Dictionary = game_source.native_environment().water_height
+			var low := float(wcfg.height) - 16.0
+			var high := float(wcfg.height) + 16.0
+			if bool(water_grid.get("present", false)):
+				low = minf(low, float(water_grid.world_min[1]) - 16.0)
+				high = maxf(high, float(water_grid.world_max[1]) + 16.0)
+			wp.custom_aabb = AABB(Vector3(-pm.size.x * 0.5 - 16.0, low - float(wcfg.height), -pm.size.y * 0.5 - 16.0),
+				Vector3(pm.size.x + 32.0, high - low, pm.size.y + 32.0))
 		# Water follows the Detail Mode like everything else. Textured gets the
 		# BF6-style animated shader (depth-tinted transparency, fresnel and
 		# ripples, see water.gdshader). The study modes get plain translucent
@@ -5411,7 +5549,12 @@ func _add_water_plane(ctx: Node3D, textured: bool) -> void:
 		# ripple-normal textures out of the install (HighpolyWater._apply_game_look).
 		# Passing null is not an error - the mined colours ride in wcfg and apply
 		# either way; only the textures need a live mount.
-		var wmat: Material = HighpolyWater.material(wcfg, game_source) if textured else null
+		var wmat: Material = null
+		if textured and not bool(wcfg.get("native", false)):
+			wmat = HighpolyWater.material(wcfg, game_source)
+		if textured and bool(wcfg.get("native", false)):
+			wmat = HighpolyNativeWater.material(wcfg, game_source.native_environment())
+			if wmat != null: native_materials.append(wmat)
 		if wmat == null:
 			var fb := StandardMaterial3D.new()
 			fb.albedo_color = WATER_COLOR
@@ -5425,6 +5568,8 @@ func _add_water_plane(ctx: Node3D, textured: bool) -> void:
 		wp.rotation.y = float(wcfg.get("yaw", 0.0))   # rotated river/lake quads keep their bearing
 		wp.layers = EXT_TERRAIN_LAYER    # tag: already carries its ground look
 		ctx.add_child(wp); wp.owner = null
+	if not native_materials.is_empty():
+		HighpolyNativeWater.attach(wroot, game_source.native_environment(), native_materials)
 
 # ---------- full-accuracy terrain from the raw 16-bit heightmap ----------
 # Godot downsamples 16-bit PNGs to 8-bit, so heights ship as a raw uint16 blob
@@ -5456,7 +5601,15 @@ func _build_terrain_from_heightmap(dir: String, meta: Dictionary) -> Node3D:
 	# sharpen 2-4x, dead-flat tiles coarsen 2x, and every tile grows a skirt
 	# so mismatched neighbour steps and LOD transitions physically cannot
 	# open a see-through crack - including at the map rim.
-	var cache := "%s/terrain_ck%d_s%d_v7.res" % [dir, TERRAIN_CHUNKS, step]
+	# Native heights use /65536 with no AABB Y bias. Keep their geometry apart
+	# from existing script caches so a warm opening cannot restore old heights.
+	# v9 = THE SHARED MESH. Native heightfields are meshed by the core
+	# (bf6_terrain_mesh_*), the same error-bounded adaptive grid the Unreal
+	# add-on draws: 4 m cells refined to 0.5 m wherever the ground leaves the
+	# cell's plane by more than 0.50/0.25/0.10 m, stitched without skirts.
+	var core_mesh := bool(meta.get("native", false)) and _core_terrain_available()
+	var revision := "v9_core" if core_mesh else ("v8_native" if bool(meta.get("native", false)) else "v7")
+	var cache := "%s/terrain_ck%d_s%d_%s.res" % [dir, TERRAIN_CHUNKS, step, revision]
 	if ResourceLoader.exists(cache):
 		var cached: Variant = ResourceLoader.load(cache)
 		if cached is PackedScene:
@@ -5465,6 +5618,14 @@ func _build_terrain_from_heightmap(dir: String, meta: Dictionary) -> Node3D:
 	var raw := FileAccess.get_file_as_bytes("%s/%s" % [dir, meta.get("file", "height.r16")])
 	if raw.is_empty(): return null
 	var res: int = int(meta.get("res", 4097))
+	if core_mesh:
+		var built := _build_terrain_core(raw, res, meta)
+		if built != null:
+			var packed_core := PackedScene.new()
+			if packed_core.pack(built) == OK:
+				ResourceSaver.save(packed_core, cache)
+			DirAccess.remove_absolute("%s/terrain_ck%d_s%d_v8_native.res" % [dir, TERRAIN_CHUNKS, step])
+			return built
 	# heightmap px per tile, aligned to 16 so EVERY per-tile step {2..16}
 	# lands shared verts on tile borders
 	var cpx := int(ceil(float(res - 1) / float(TERRAIN_CHUNKS)))
@@ -5549,61 +5710,94 @@ func _build_terrain_from_heightmap(dir: String, meta: Dictionary) -> Node3D:
 		% [step, sharp4] + "%d 2x sharper, %d coarsened (%d ms)"
 		% [sharp2, coarse, Time.get_ticks_msec() - t_scan])
 	var troot := Node3D.new(); troot.name = "Terrain"
+
+	# DETAIL THAT FOLLOWS THE CAMERA, which is what the Terrain quality
+	# dropdown used to stand in for. That dropdown asked for one detail
+	# level for the whole map and then made you live with it: sharp
+	# underfoot was unaffordable across 8 km, affordable was visibly
+	# stepped underfoot. Neither answer is right, because how much detail
+	# the ground needs depends on how far away it is, not on a setting.
+	#
+	# The same LOD ladder the props already use. Godot picks a level by
+	# screen-space error, so the tile under the camera draws every
+	# triangle and one on the horizon draws a fraction of them.
+	#
+	# WHY THIS IS SAFE FOR TERRAIN specifically, which props never had to
+	# care about: tiles share edges, and a simplifier that moves a shared
+	# edge differently on two neighbours opens a crack you can see the sky
+	# through. Measured on a test grid, the smallest level of a 129x129
+	# tile is exactly 512 triangles and of a 257x257 tile exactly 1024 -
+	# in both cases precisely the tile border edge count. The border is
+	# locked and cannot be simplified away, so neighbours keep matching
+	# edges at every level and no crack can open.
+	#
+	# ~23 ms per tile, so about 6 s for a map, paid once into the same
+	# PackedScene cache as the tiles (hence the version in its name).
+	# Memory does not move: LODs are extra index buffers over the same
+	# vertices.
+	#
+	# THE SKIRT GOES ON AFTER THE LODS. generate_lods simplifies every
+	# surface it is given; a simplified skirt can pull away from the
+	# rim it exists to seal. Appended afterwards it never simplifies -
+	# a few hundred triangles per tile - and with skirts sealing every
+	# border, neighbouring tiles no longer need matching vertex steps.
+	# ON EVERY CORE. Each tile's vertex grid, LOD chain and skirt depend on that
+	# tile alone, and together they were ~18 s on the main thread with the
+	# editor locked. They are built on worker threads now; only turning each
+	# finished ImporterMesh into a renderable mesh stays on the main thread.
+	var jobs: Array = []
 	for cz in range(TERRAIN_CHUNKS):
 		for cx in range(TERRAIN_CHUNKS):
-			# DETAIL THAT FOLLOWS THE CAMERA, which is what the Terrain quality
-			# dropdown used to stand in for. That dropdown asked for one detail
-			# level for the whole map and then made you live with it: sharp
-			# underfoot was unaffordable across 8 km, affordable was visibly
-			# stepped underfoot. Neither answer is right, because how much detail
-			# the ground needs depends on how far away it is, not on a setting.
-			#
-			# The same LOD ladder the props already use. Godot picks a level by
-			# screen-space error, so the tile under the camera draws every
-			# triangle and one on the horizon draws a fraction of them.
-			#
-			# WHY THIS IS SAFE FOR TERRAIN specifically, which props never had to
-			# care about: tiles share edges, and a simplifier that moves a shared
-			# edge differently on two neighbours opens a crack you can see the sky
-			# through. Measured on a test grid, the smallest level of a 129x129
-			# tile is exactly 512 triangles and of a 257x257 tile exactly 1024 -
-			# in both cases precisely the tile border edge count. The border is
-			# locked and cannot be simplified away, so neighbours keep matching
-			# edges at every level and no crack can open.
-			#
-			# ~23 ms per tile, so about 6 s for a map, paid once into the same
-			# PackedScene cache as the tiles (hence the version in its name).
-			# Memory does not move: LODs are extra index buffers over the same
-			# vertices.
-			#
-			# THE SKIRT GOES ON AFTER THE LODS. generate_lods simplifies every
-			# surface it is given; a simplified skirt can pull away from the
-			# rim it exists to seal. Appended afterwards it never simplifies -
-			# a few hundred triangles per tile - and with skirts sealing every
-			# border, neighbouring tiles no longer need matching vertex steps.
-			var tstep := int(tsteps[cz * TERRAIN_CHUNKS + cx])
-			var _t1 := Time.get_ticks_usec()
-			var grid := {}
-			var gm := _heightmap_mesh(raw, res, tstep, meta,
-				cx * cpx, cz * cpx, cpx, grid)
-			_us_tile_build += Time.get_ticks_usec() - _t1
-			if gm == null: continue
-			var _t2 := Time.get_ticks_usec()
-			var m := _with_lods(gm)
-			_us_tile_lods += Time.get_ticks_usec() - _t2
-			if m is ArrayMesh:
-				var _t3 := Time.get_ticks_usec()
-				var sk := _skirt_arrays(SKIRT_DEPTH, grid)
-				if not sk.is_empty():
-					(m as ArrayMesh).add_surface_from_arrays(
-						Mesh.PRIMITIVE_TRIANGLES, sk)
-				_us_tile_skirt += Time.get_ticks_usec() - _t3
-			var mi := MeshInstance3D.new()
-			mi.name = "T%d_%d" % [cx, cz]
-			mi.mesh = m
-			mark_never_casts(mi)
-			troot.add_child(mi)
-			mi.owner = troot                  # PackedScene.pack needs the owner chain
+			jobs.append([cx, cz, int(tsteps[cz * TERRAIN_CHUNKS + cx])])
+	var results: Array = []
+	results.resize(jobs.size())
+	var results_mx := Mutex.new()
+	var _t_tiles := Time.get_ticks_usec()
+	var tile_job := func(i: int) -> void:
+		var j: Array = jobs[i]
+		var grid := {}
+		var t1 := Time.get_ticks_usec()
+		var arr := _heightmap_arrays(raw, res, int(j[2]), meta, int(j[0]) * cpx, int(j[1]) * cpx, cpx, grid)
+		var built := Time.get_ticks_usec() - t1
+		var out: Variant = null
+		if not arr.is_empty():
+			var t2 := Time.get_ticks_usec()
+			var im := ImporterMesh.new()
+			im.add_surface(Mesh.PRIMITIVE_TRIANGLES, arr, [], {}, null)
+			im.generate_lods(25.0, 60.0, [])
+			var lods := Time.get_ticks_usec() - t2
+			var t3 := Time.get_ticks_usec()
+			var sk := _skirt_arrays(SKIRT_DEPTH, grid)
+			out = [im, sk, arr, built, lods, Time.get_ticks_usec() - t3]
+		results_mx.lock()
+		results[i] = out
+		results_mx.unlock()
+	var group := WorkerThreadPool.add_group_task(tile_job, jobs.size(), -1, true, "High Poly terrain tiles")
+	WorkerThreadPool.wait_for_group_task_completion(group)
+	var _us_tiles_wall := Time.get_ticks_usec() - _t_tiles
+	for i in range(jobs.size()):
+		var r: Variant = results[i]
+		if r == null: continue
+		var cx: int = jobs[i][0]
+		var cz: int = jobs[i][1]
+		_us_tile_build += int(r[3])
+		_us_tile_lods += int(r[4])
+		_us_tile_skirt += int(r[5])
+		var m: Mesh = (r[0] as ImporterMesh).get_mesh()
+		if m == null or m.get_surface_count() == 0:
+			# The LOD pass produced nothing: the tile as built, like _with_lods.
+			var plain := ArrayMesh.new()
+			plain.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, r[2])
+			m = plain
+		if m is ArrayMesh and not (r[1] as Array).is_empty():
+			(m as ArrayMesh).add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, r[1])
+		var mi := MeshInstance3D.new()
+		mi.name = "T%d_%d" % [cx, cz]
+		mi.mesh = m
+		mark_never_casts(mi)
+		troot.add_child(mi)
+		mi.owner = troot                  # PackedScene.pack needs the owner chain
+	print("MapContext: terrain tiles on %d threads in %.1fs wall" % [OS.get_processor_count(), _us_tiles_wall / 1e6])
 	# WHERE THE TILE LOOP WENT. It is ~20 s on the main thread, which is both
 	# load time and a locked editor, and "build the heightfield mesh" does
 	# three quite different things per tile: read the grid into vertices,
@@ -5636,6 +5830,80 @@ func _build_terrain_from_heightmap(dir: String, meta: Dictionary) -> Node3D:
 	DirAccess.remove_absolute("%s/terrain_ck%d_s%d_v6.res" % [dir, TERRAIN_CHUNKS, step])
 	return troot
 
+static func _core_terrain_available() -> bool:
+	if not ClassDB.class_exists("BF6Core"): return false
+	return ClassDB.class_has_method("BF6Core", "terrain_mesh_open")
+
+
+# The shared terrain mesh, tile by tile on worker threads. Returns null when
+# the core cannot build it, which leaves the caller's own grid in charge.
+func _build_terrain_core(raw: PackedByteArray, res: int, meta: Dictionary) -> Node3D:
+	var core: Object = ClassDB.instantiate("BF6Core")
+	if core == null: return null
+	# The scene builder's scale is the /65535 convention (see gamesource.terrain);
+	# the core takes the header's /65536 scale.
+	var height_scale := float(meta.get("scale", 1.0)) * 65536.0 / 65535.0
+	var wmin := float(meta.get("world_min", -2048))
+	var wmax := float(meta.get("world_max", 2048))
+	var zmin := float(meta.get("world_min_z", wmin))
+	var zmax := float(meta.get("world_max_z", wmax))
+	var t0 := Time.get_ticks_msec()
+	# Godot's front faces are the reverse of the Unreal add-on's index order.
+	var handle: int = core.call("terrain_mesh_open", raw, PackedFloat32Array([
+		res, wmin, 0.0, zmin, wmax, 0.0, zmax, height_scale, 0, 0, 1]))
+	if handle <= 0: return null
+	var info: Variant = JSON.parse_string(str(core.call("terrain_mesh_info", handle)))
+	if not (info is Dictionary) or int((info as Dictionary).get("tiles_per_side", 0)) <= 0:
+		core.call("terrain_mesh_close", handle)
+		return null
+	var side := int(info.tiles_per_side)
+	var count := side * side
+	var results: Array = []
+	results.resize(count)
+	var results_mx := Mutex.new()
+	var tile_job := func(i: int) -> void:
+		var bytes: PackedByteArray = core.call("terrain_mesh_tile", handle, i)
+		if bytes.size() < 16: return
+		var vc := bytes.decode_s32(0)
+		var ic := bytes.decode_s32(4)
+		var o := 16
+		var arr := []
+		arr.resize(Mesh.ARRAY_MAX)
+		arr[Mesh.ARRAY_VERTEX] = bytes.slice(o, o + vc * 12).to_vector3_array(); o += vc * 12
+		arr[Mesh.ARRAY_NORMAL] = bytes.slice(o, o + vc * 12).to_vector3_array(); o += vc * 12
+		arr[Mesh.ARRAY_TEX_UV] = bytes.slice(o, o + vc * 8).to_vector2_array(); o += vc * 8
+		arr[Mesh.ARRAY_INDEX] = bytes.slice(o, o + ic * 4).to_int32_array()
+		results_mx.lock()
+		results[i] = [bytes.decode_s32(8), bytes.decode_s32(12), arr, vc, ic]
+		results_mx.unlock()
+	var group := WorkerThreadPool.add_group_task(tile_job, count, -1, true, "High Poly terrain tiles")
+	WorkerThreadPool.wait_for_group_task_completion(group)
+	core.call("terrain_mesh_close", handle)
+	var t1 := Time.get_ticks_msec()
+	var troot := Node3D.new(); troot.name = "Terrain"
+	var verts := 0
+	var tris := 0
+	for i in range(count):
+		var r: Variant = results[i]
+		if r == null: continue
+		var am := ArrayMesh.new()
+		am.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, r[2])
+		var mi := MeshInstance3D.new()
+		mi.name = "T%d_%d" % [int(r[0]), int(r[1])]
+		mi.mesh = am
+		mark_never_casts(mi)
+		troot.add_child(mi)
+		mi.owner = troot                  # PackedScene.pack needs the owner chain
+		verts += int(r[3])
+		tris += int(r[4])
+	tris = tris / 3 if tris > 0 else 0
+	var levels: Array = info.get("cells_by_level", [])
+	print("MapContext: shared terrain mesh - %d tiles, %d vertices, %d triangles, base %.2f m, finest %.2f m, cells by level %s; built %d ms, committed %d ms"
+		% [troot.get_child_count(), verts, tris, float(info.base_spacing_m), float(info.finest_spacing_m),
+		   str(levels.slice(0, int(info.max_level) + 1)), t1 - t0, Time.get_ticks_msec() - t1])
+	return troot
+
+
 # grid_out RECEIVES the tile's vertex grid, which _skirt_arrays needs.
 #
 # It used to be stashed on the object as `_last_grid` and read back by the very
@@ -5645,8 +5913,21 @@ func _build_terrain_from_heightmap(dir: String, meta: Dictionary) -> Node3D:
 # reference in GDScript.
 func _heightmap_mesh(raw: PackedByteArray, res: int, step: int, meta: Dictionary,
 		px0 := 0, pz0 := 0, npx := 0, grid_out := {}) -> ArrayMesh:
+	var arr := _heightmap_arrays(raw, res, step, meta, px0, pz0, npx, grid_out)
+	if arr.is_empty(): return null
+	var am := ArrayMesh.new()
+	am.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr)
+	return am
+
+
+# The tile's surface arrays, or [] - safe on a worker thread: it reads the
+# heights and writes only its own arrays and grid_out.
+func _heightmap_arrays(raw: PackedByteArray, res: int, step: int, meta: Dictionary,
+		px0 := 0, pz0 := 0, npx := 0, grid_out := {}) -> Array:
 	var wmin: float = float(meta.get("world_min", -2048))
 	var wspan: float = float(meta.get("world_max", 2048)) - wmin
+	var zmin := float(meta.get("world_min_z", wmin))
+	var zspan := float(meta.get("world_max_z", wmin + wspan)) - zmin
 	var base: float = float(meta.get("base", 0.0))
 	var scale: float = float(meta.get("scale", 1.0)) / 65535.0
 	if npx <= 0: npx = res - 1
@@ -5656,12 +5937,13 @@ func _heightmap_mesh(raw: PackedByteArray, res: int, step: int, meta: Dictionary
 	var nx := (pxe - px0) / step + 1
 	@warning_ignore("integer_division")
 	var nz := (pze - pz0) / step + 1
-	if nx < 2 or nz < 2: return null
+	if nx < 2 or nz < 2: return []
 	var inv := 1.0 / float(res - 1)
 	var verts := PackedVector3Array(); verts.resize(nx * nz)
 	var norms := PackedVector3Array(); norms.resize(nx * nz)
 	var uvs := PackedVector2Array(); uvs.resize(nx * nz)
 	var world_step := float(step) * inv * wspan
+	var world_step_z := float(step) * inv * zspan
 	for gz in range(nz):
 		var py := pz0 + gz * step
 		var rowoff := py * res
@@ -5671,13 +5953,13 @@ func _heightmap_mesh(raw: PackedByteArray, res: int, step: int, meta: Dictionary
 			var px := px0 + gx * step
 			var wy := base + float(raw.decode_u16((rowoff + px) * 2)) * scale
 			var i := gz * nx + gx
-			verts[i] = Vector3(wmin + float(px) * inv * wspan, wy, wmin + float(py) * inv * wspan)
+			verts[i] = Vector3(wmin + float(px) * inv * wspan, wy, zmin + float(py) * inv * zspan)
 			uvs[i] = Vector2(float(px) * inv, float(py) * inv)
 			var hxm := float(raw.decode_u16((rowoff + maxi(0, px - step)) * 2)) * scale
 			var hxp := float(raw.decode_u16((rowoff + mini(res - 1, px + step)) * 2)) * scale
 			var hzm := float(raw.decode_u16((pym + px) * 2)) * scale
 			var hzp := float(raw.decode_u16((pyp + px) * 2)) * scale
-			norms[i] = Vector3(-(hxp - hxm), 2.0 * world_step, -(hzp - hzm)).normalized()
+			norms[i] = Vector3(-(hxp - hxm), 2.0 * world_step, -(hzp - hzm) * world_step / maxf(world_step_z, 0.0001)).normalized()
 	# WINDING: these triangles used to be wound the other way round, which made
 	# every face point DOWN (confirmed against SurfaceTool.generate_normals,
 	# which returns (0,-1,0) for the old order and (0,+1,0) for this one) while
@@ -5701,15 +5983,13 @@ func _heightmap_mesh(raw: PackedByteArray, res: int, step: int, meta: Dictionary
 	arr[Mesh.ARRAY_NORMAL] = norms
 	arr[Mesh.ARRAY_TEX_UV] = uvs
 	arr[Mesh.ARRAY_INDEX] = indices
-	# the rim data the skirt builder reads (single-threaded builder)
+	# the rim data the skirt builder reads
 	grid_out["verts"] = verts
 	grid_out["norms"] = norms
 	grid_out["uvs"] = uvs
 	grid_out["nx"] = nx
 	grid_out["nz"] = nz
-	var am := ArrayMesh.new()
-	am.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr)
-	return am
+	return arr
 
 
 # (_last_grid removed: the grid is handed back through grid_out instead, so
@@ -6092,7 +6372,14 @@ func ensure_layer(root: Node, layer: String, tex_mode: int) -> bool:
 			elif bodies_v is Array:
 				nbod = (bodies_v as Array).size()
 			var wn := ctx.get_node_or_null("Water")
-			if wn != null and wn.get_child_count() == nbod and nbod > 0:
+			var built_bodies := 0
+			if wn != null:
+				for child in wn.get_children():
+					if child is MeshInstance3D:
+						built_bodies += 1
+			# The native simulation driver is also a child. It is not another
+			# water body and must not force a rebuild on every visibility toggle.
+			if wn != null and built_bodies == nbod and nbod > 0:
 				return true                # already there AND current: just flip
 			if wn != null:
 				# renamed before the free so _add_water_plane's fresh node does
@@ -6103,6 +6390,9 @@ func ensure_layer(root: Node, layer: String, tex_mode: int) -> bool:
 			_add_water_plane(ctx, textured)
 			_ph("water: build the surface", Time.get_ticks_msec() - _t_w, 1,
 				PH_INSTALL)
+			# Built and shown: the SDK's flat plane would fight it from here on.
+			set_sdk_water_hidden(root, _show_water
+				and ctx.get_node_or_null("Water") != null)
 			log_water_state("the water surface was just built", root)
 			return ctx.get_node_or_null("Water") != null
 		"backdrop":
@@ -6918,30 +7208,113 @@ func _compact_caches(props_root: Node3D) -> void:
 		% [m_gone, k_gone, d_gone])
 
 
+# OFF, AND HERE IS THE MEASUREMENT THAT DECIDED IT.
+#
+# This pass lifts decal vertices onto prop surfaces. Enabling it for the
+# shared-core draws (it had been silently skipping them) cost a user's editor
+# 1 m 57 s of dead air on MP_Aftermath - logged as "the editor was frozen for
+# 1 m 57 s during: projecting the road decals onto the map objects" - and moved
+# 2,036 of 165,030 vertices, 1.2%. In the headless harness the same pass reads
+# as 1.8 to 3.4 s, because there the props are already built and nothing is
+# being drawn; that is why it looked cheap when it was measured.
+#
+# The right fix is the one the Unreal add-on already has: hand the core a
+# receiver sampler so the drape lands on those surfaces as it is generated,
+# instead of correcting it afterwards in script. Until that exists this stays
+# off, because a minute of frozen editor for one vertex in eighty is not a
+# trade worth making silently.
+const REPROJECT_ROAD_DECALS := false
+
+
 func _reproject_roads(props_root: Node3D) -> void:
+	if not REPROJECT_ROAD_DECALS:
+		return
 	if props_root == null or not is_instance_valid(props_root):
 		return
 	var ctx := props_root.get_parent()
 	if ctx == null:
 		return
 	var rd := ctx.get_node_or_null("Roads")
-	if not (rd is MeshInstance3D):
+	# THE SHARED-CORE DRAWS ARE A FOLDER OF MESHES, NOT ONE MESH, and this used
+	# to return here without a word. That path is the one the plugin prefers, so
+	# in practice nothing was ever lifted onto a prop: every marking kept the
+	# height the terrain drape gave it, which is exactly the "decals sit wrong"
+	# report. The Unreal add-on lands the same draws on its receiver surfaces,
+	# so this was the difference between the two tools.
+	var road_meshes: Array[MeshInstance3D] = []
+	if rd is MeshInstance3D and (rd as MeshInstance3D).mesh != null:
+		road_meshes.append(rd as MeshInstance3D)
+	elif rd is Node3D:
+		for child in (rd as Node3D).get_children():
+			if child is MeshInstance3D and (child as MeshInstance3D).mesh != null:
+				road_meshes.append(child as MeshInstance3D)
+	if road_meshes.is_empty():
 		return
 	# NOT ON THE PROJECTOR'S VOLUMES. When the decals are projected rather than
-	# draped, this mesh is the set of volumes each decal may land in - its
+	# draped, the mesh is the set of volumes each decal may land in - its
 	# vertices are the top and bottom of those volumes, not points on the road.
 	# Moving them onto prop surfaces would collapse every volume into a sheet
 	# and the whole network would stop drawing. The projector already lands on
 	# props by construction, so there is nothing here to do.
-	var _rm: Mesh = (rd as MeshInstance3D).mesh
-	if _rm is ArrayMesh and _rm.get_surface_count() > 0 \
-			and ((_rm as ArrayMesh).surface_get_format(0)
-				& Mesh.ARRAY_FORMAT_CUSTOM0) != 0:
+	var volumes := false
+	for mi in road_meshes:
+		var _rm: Mesh = mi.mesh
+		if _rm is ArrayMesh and _rm.get_surface_count() > 0 \
+				and ((_rm as ArrayMesh).surface_get_format(0)
+					& Mesh.ARRAY_FORMAT_CUSTOM0) != 0:
+			volumes = true
+			break
+	if volumes:
 		BJournal.event("audit", "road decals are projected, not draped",
 			"the vertex re-projection was skipped: these are projection "
 			+ "volumes and the decal lands on whatever surface is inside "
 			+ "them, props included, without moving a vertex")
 		return
+	# IS THE PAINT ABOVE THE GROUND WE DRAW, OR UNDER IT?
+	#
+	# The core drapes each decal onto a terrain mesh IT builds from the game's
+	# heights; the plugin draws a terrain it builds separately. If those two
+	# disagree by more than the 6 cm lift, every marking is buried - which looks
+	# exactly like "the decals are invisible from above", because they are under
+	# the ground rather than facing the wrong way.
+	#
+	# Sampled rather than assumed, and cheap: a few thousand vertices spread over
+	# the whole network is enough to see a systematic offset.
+	# ONLY WHILE THE HEIGHTFIELD IS STILL LOADED. The roads build releases it
+	# (512 MB) as soon as the drape is done, and calling the sampler after that
+	# throws once per vertex - 25,573 errors and a build that never finished, the
+	# first time this probe was written.
+	if game_source != null and game_source.has_method("_height_at") \
+			and game_source.get("_hm") is Dictionary \
+			and not (game_source.get("_hm") as Dictionary).is_empty():
+		var checked := 0
+		var below := 0
+		var sum := 0.0
+		var worst := 0.0
+		for mi in road_meshes:
+			var m: Mesh = mi.get_meta("hp_drape_mesh", mi.mesh) as Mesh
+			if not (m is ArrayMesh):
+				continue
+			for si in range((m as ArrayMesh).get_surface_count()):
+				var vs: PackedVector3Array = (m as ArrayMesh).surface_get_arrays(si)[Mesh.ARRAY_VERTEX]
+				var stride := maxi(1, vs.size() / 64)
+				for vi in range(0, vs.size(), stride):
+					var v := vs[vi]
+					var gy: float = game_source._height_at(v.x, v.z)
+					var dy := v.y - gy
+					checked += 1
+					sum += dy
+					if dy < 0.0:
+						below += 1
+					if absf(dy) > absf(worst):
+						worst = dy
+		if checked > 0:
+			Log.info(("Roads: decal height against the terrain we draw - %d "
+				+ "sample(s), %d below it (%.0f%%), mean %+.3f m, worst %+.3f m. "
+				+ "A negative mean means the paint is buried and no amount of "
+				+ "re-projection will show it.")
+				% [checked, below, 100.0 * float(below) / float(checked),
+				   sum / float(checked), worst])
 	var t := Time.get_ticks_msec()
 	# SAY THAT THIS IS HAPPENING. It runs for up to a minute after the objects
 	# are already on screen, and with nothing reported the build looks finished
@@ -6971,8 +7344,7 @@ func _reproject_roads(props_root: Node3D) -> void:
 	# 11.9 s, at the cost of the map objects visibly going dark. The index now
 	# reads MultiMesh.buffer instead, so there is nothing to sync with and
 	# nothing to hide.
-	var st: Dictionary = await pj.run(get_tree(), rd as MeshInstance3D,
-		props_root)
+	var st: Dictionary = await pj.run_many(get_tree(), road_meshes, props_root)
 	HighpolyVitals.crumb("idle, nothing building")
 	decal_progress.emit("", 0, 0)      # an empty phase closes the lane
 	_ph("roads: project the decals onto the props",
@@ -7569,6 +7941,14 @@ func _near_apply(w: Dictionary, mat: ShaderMaterial, c: Vector2) -> void:
 		# and a listener waiting on it needs to know why rather than wait.
 		Log.info("the ground sharpening finished for a material that has since "
 			+ "been replaced, so it was discarded. The next apply asks again.")
+		return
+	if bool(w.get("native_exact", false)):
+		var ok := HighpolyNativeTerrain.apply_page(mat, w)
+		_near_center = c
+		_near_fail = not ok
+		if not _near_said_ready:
+			_near_said_ready = true
+			terrain_ready.emit(ok)
 		return
 	mat.set_shader_parameter("near_idx", ImageTexture.create_from_image(w["idx"]))
 	mat.set_shader_parameter("near_w", ImageTexture.create_from_image(w["w"]))

@@ -14,6 +14,8 @@ class_name HighpolyLib
 # The one place a Light3D is built, shared with the level's own lights so a
 # placed lamp and a level lamp cannot disagree about energy, cone or aim.
 const LightScript = preload("highpoly_lighting.gd")
+# The loot spawner loadout (item and attachments), from the shared core.
+const LoadoutScript := preload("highpoly_loadout.gd")
 
 const HP_ROT := Vector3(-90, 0, 0)   # legacy OBJ assets are Z-up; GLB assets are Y-up
 const HP_NODE := "_HIPOLY_PREVIEW"
@@ -383,9 +385,28 @@ static func _instance_for(key: String, id: String) -> Node3D:
 		var vs := variant_scene(id.trim_prefix("variant://"))
 		return vs.instantiate() as Node3D if vs != null else null
 	if id.begins_with("soldier://"):
-		return HighpolySoldier.build(game_source, id.trim_prefix("soldier://"))
+		var what := id.trim_prefix("soldier://")
+		if what.begins_with("{"):
+			var request: Variant = JSON.parse_string(what)
+			var built: Dictionary = LoadoutScript.build_soldier(game_source,
+				request if request is Dictionary else {})
+			if str(built.get("error", "")) == "":
+				return built.node
+			HighpolyLog.info("%s keeps its SDK model: %s" % [key, built.error])
+			return null
+		return HighpolySoldier.build(game_source, what)
 	if id.begins_with("weapon://"):
 		return HighpolyWeapon.build(game_source, id.trim_prefix("weapon://"))
+	if id.begins_with("loadout://"):
+		var request := id.trim_prefix("loadout://")
+		var values := {"item": request.get_slice("|", 0)}
+		for fit in request.get_slice("|", 1).split(",", false):
+			values["attachment_" + fit.get_slice("=", 0)] = fit.get_slice("=", 1)
+		var built: Dictionary = LoadoutScript.build_weapon(game_source, values)
+		if str(built.get("error", "")) != "":
+			HighpolyLog.info("%s keeps its SDK model: %s" % [key, built.error])
+			return null
+		return built.node
 	if id.begins_with("vehicle://"):
 		return HighpolyVehicle.build(game_source, id.trim_prefix("vehicle://"))
 	if id.begins_with("game://"):
@@ -557,6 +578,18 @@ static func _apply_one_body(node: Node3D, key: String, tier: Tier, textured: boo
 		var vpath := variant_path(key, vname)
 		if vpath != "":
 			id = "variant://%s" % vpath
+	# A LOOT SPAWNER DRAWS ITS OWN CHOICE. The loadout on the node (item and
+	# attachments, see HighpolyLoadout) is part of the asset identity, so
+	# choosing a different weapon or attachment rebuilds the overlay.
+	if id.begins_with("weapon://") and LoadoutScript.core_for(game_source) != null:
+		id = "loadout://" + LoadoutScript.request_key(node)
+	# AND A SOLDIER SPAWNER DRAWS ITS OWN SOLDIER: operator, outfit, side, pose and
+	# weapon from the node's choices, posed and armed by the shared core exactly
+	# as Unreal draws it. A reader without the call keeps the static soldier.
+	if id.begins_with("soldier://"):
+		var core := LoadoutScript.core_for(game_source)
+		if core != null and core.has_method("loadout_soldier"):
+			id = "soldier://" + LoadoutScript.soldier_key(node)
 	var hp := node.get_node_or_null(HP_NODE)
 	# THE FITTER'S ANSWER IS BAKED INTO THE OVERLAY'S TRANSFORM, so an overlay
 	# built under an older fitting rule keeps that older answer forever: the
@@ -592,6 +625,13 @@ static func _apply_one_body(node: Node3D, key: String, tier: Tier, textured: boo
 				and not _nofit_for(key) and not _fit_scale(node, child):
 			node.remove_child(child); child.queue_free()
 			return false                     # wrong-shaped asset: keep the proxy
+		if id.begins_with("loadout://"):
+			# Unreal's alignment: real weapon scale and orientation, the
+			# weapon's bounds centred on the marker's, in the marker's space.
+			var marker := _merged_aabb(node, HP_NODE)
+			var weapon := _merged_aabb(child, "")
+			if marker.size.length() > 0.001 and weapon.size.length() > 0.001:
+				child.position = marker.get_center() - weapon.get_center()
 		hp = child
 	(hp as Node3D).visible = true
 	_set_textured(hp, textured)

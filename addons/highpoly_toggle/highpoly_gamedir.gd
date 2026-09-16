@@ -74,6 +74,11 @@ const EA_REG_KEYS := [
 # silently lost whatever folder the user had chosen, falling through to the
 # hardcoded candidate paths instead.
 static func _settings():
+	# Godot 4.6 reports EditorInterface as a registered singleton even in a
+	# headless runtime, then logs an ERROR when get_singleton tries to retrieve
+	# it. is_editor_hint() is the side-effect-free discriminator.
+	if not Engine.is_editor_hint():
+		return null
 	# Three probes were needed to land this, which is worth recording:
 	#   EditorInterface.has_method(...)   throws — outside the editor the
 	#                                     identifier is a bare class, no instance

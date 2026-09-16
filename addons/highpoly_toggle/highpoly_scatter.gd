@@ -75,6 +75,8 @@ var _tile_b := Vector4()      # xmin, zmin, sizeX, sizeZ
 # says which path it took.
 var _cov := PackedByteArray()      # idx_raw RGBA8 bytes, _cov_res^2 * 4
 var _covw := PackedByteArray()     # w.png RGBA8 bytes, same shape
+var _cov2 := PackedByteArray()     # native evaluator slots 4..7
+var _covw2 := PackedByteArray()
 var _cov_res := 0
 var _cov_b := Vector4()            # xmin, zmin, sizeX, sizeZ (splat world box)
 # layer index -> class: 0 ground, 1 vegetation. 255 (no layer) counts as
@@ -111,6 +113,9 @@ func clear() -> void:
 	_tile = null
 	_cov = PackedByteArray()
 	_covw = PackedByteArray()
+	_cov2 = PackedByteArray()
+	_covw2 = PackedByteArray()
+	_debris_layers = 0
 	_cov_res = 0
 	_cov_cls = PackedByteArray()
 	# (y_lift is NOT reset here: the map context owns it and assigns it around
@@ -203,6 +208,21 @@ func setup(mc: Object, ctx: Node3D, map: String, dir: String, hm: Dictionary, ti
 								break
 				print("MapContext[%s]: scatter uses the game's painted coverage (%d vegetation, %d debris layer(s))"
 					% [map, veg_n, _debris_layers])
+	# Use the same eight native coverage slots as the visible terrain. An old
+	# disk splat must not decide grass/debris placement for a new native build.
+	if mc != null and mc.game_source != null:
+		var env = mc.game_source.native_environment()
+		if env != null and not env.ground.is_empty():
+			var g: Dictionary = env.ground
+			_cov = g.idx0; _covw = g.weight0
+			_cov2 = g.idx1; _covw2 = g.weight1
+			_cov_res = int(g.size)
+			_cov_b = Vector4(float(g.lo[0]), float(g.lo[1]), float(g.hi[0]) - float(g.lo[0]), float(g.hi[1]) - float(g.lo[1]))
+			_cov_cls.resize(256); _cov_cls.fill(0)
+			_debris_layers = 0
+			for i in range(g.materials.size()):
+				_cov_cls[i] = _kit_class(str(g.materials[i].get("albedo_res", "")))
+				if _cov_cls[i] == 2: _debris_layers += 1
 	_root = Node3D.new()
 	_root.name = NODE
 	ctx.add_child(_root)
@@ -679,12 +699,12 @@ func _cov_weight(x: float, z: float, cls: int) -> float:
 	var hit := 0
 	var veg_w := 0
 	var total := 0
-	for s in range(4):
-		var w := int(_covw[o + s])
+	for s in range(8 if not _cov2.is_empty() else 4):
+		var w := int(_covw[o + s]) if s < 4 else int(_covw2[o + s - 4])
 		if w == 0:
 			continue
 		total += w
-		var li := int(_cov[o + s])
+		var li := int(_cov[o + s]) if s < 4 else int(_cov2[o + s - 4])
 		var lc := int(_cov_cls[li]) if li < 255 else 0
 		if lc == 1:
 			veg_w += w

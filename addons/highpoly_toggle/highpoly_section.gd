@@ -70,7 +70,7 @@ func setup(section_title: String, description: String) -> void:
 	title_lbl = Label.new()
 	title_lbl.text = section_title
 	title_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	title_lbl.add_theme_font_size_override("font_size", Pal.fs(16))
+	title_lbl.add_theme_font_size_override("font_size", Pal.fs(int(Pal.SharedMenu.number("section_font", 16))))
 	head.add_child(title_lbl)
 
 	body = Control.new()

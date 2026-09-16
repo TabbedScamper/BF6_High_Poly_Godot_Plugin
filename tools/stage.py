@@ -38,8 +38,11 @@ import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+from workspace_paths import GODOT_PROJECT  # noqa: E402  the main Godot SDK (bf6-dev.json)
+
 REPO_PLUGIN = os.path.join(os.path.dirname(HERE), "addons", "highpoly_toggle")
-LIVE_PLUGIN = r"C:\PortalSDK\GodotProject\addons\highpoly_toggle"
+LIVE_PLUGIN = str(GODOT_PROJECT / "addons" / "highpoly_toggle")
 STAGED = os.path.join(
     os.environ.get("APPDATA", ""), "Godot", "app_userdata",
     "Battlefield\u2122 Portal Project", "highpoly", "staged")

@@ -605,10 +605,12 @@ func build_all(progress := Callable()) -> Dictionary:
 	var cached := 0
 	var skipped := 0
 	var t0 := Time.get_ticks_msec()
+	var yielded_at := Time.get_ticks_msec()
 	for nm in names:
 		if cancel_build:
 			break
 		var key := str(nm)
+		var rendered_now := false
 		var src := _source_for(key)
 		# ALREADY ON DISK IS THE COMMON CASE on a second run, and it must not
 		# cost a render to find that out - that is what the cache is for.
@@ -621,14 +623,19 @@ func build_all(progress := Callable()) -> Dictionary:
 			_pending[key] = true
 			await _render_one(key)
 			made += 1
+			rendered_now = true
 		done += 1
 		if progress.is_valid():
 			progress.call(done, total)
-		# ONE ITEM PER FRAME AT MOST. This is main-thread rendering into a
-		# SubViewport - the very thing that made the timer hitch - so the editor
-		# gets a frame back between every one and stays usable while it runs.
-		if is_inside_tree() and get_tree() != null:
+		# A FRAME BACK AFTER EVERY RENDER, and after 16 ms of anything else. This
+		# is main-thread rendering into a SubViewport, so a real render still
+		# yields every time and the editor stays usable. Entries with nothing to
+		# draw or a picture already on disk cost a file test, and waiting a frame
+		# for each of those capped a whole catalogue at the frame rate.
+		if is_inside_tree() and get_tree() != null \
+				and (rendered_now or Time.get_ticks_msec() - yielded_at >= 16):
 			await get_tree().process_frame
+			yielded_at = Time.get_ticks_msec()
 	building = false
 	return {"total": total, "rendered": made, "already_cached": cached,
 		"no_source": skipped, "cancelled": cancel_build,

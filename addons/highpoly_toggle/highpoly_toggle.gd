@@ -1,5 +1,6 @@
 @tool
 extends EditorPlugin
+
 # Low / High-poly interchange for Portal SDK level building.
 #
 # EVERYTHING COMES FROM THE PLAYER'S OWN BATTLEFIELD 6 INSTALL. The map's
@@ -13,6 +14,12 @@ extends EditorPlugin
 # keeps only the RID: if the last reference dies, the global points at freed
 # memory and the next terrain-blend material to draw takes the editor down.
 var _ground_white: Texture2D
+# The loot spawner Loadout panel in the Inspector.
+const LoadoutInspector := preload("highpoly_loadout_inspector.gd")
+var _loadout_inspector: EditorInspectorPlugin = null
+# The shared BF6 menu (menu bar, and the Extended Workspace radial when enabled).
+const PluginMenu := preload("bf6_plugin_menu.gd")
+var _menu_bindings: Dictionary = {}
 
 var dock: VBoxContainer
 var dock_scroll: ScrollContainer   # panel wrapper: collapses the VBox's huge min height
@@ -20,11 +27,12 @@ var dock_root: Control             # panel root: scroller + the boot overlay
 var win: Window                    # the floating tool panel itself
 var tools_btn: Button              # "High-Poly Tools" in the 3D viewport toolbar
 var _win_rect: Rect2i              # remembered across sessions; zero = never opened
-var video: VideoStreamPlayer       # looping backdrop; paused whenever the panel is shut
+var video: VideoStreamPlayer       # looping backdrop; paused only when its host is hidden
 var tint: ColorRect                # darkens the backdrop behind the controls
 var border: Panel                  # the outline
 var boot: Node                     # the running boot sequence, if one is playing
 var tips: Control                  # hover descriptions, drawn inside the panel
+var _menu_sections: Dictionary = {}
 var sections: Array = []           # collapsible sections, in dock order
 var _vid_size := Vector2(480, 800) # encoded video size, for cover-scaling
 var lbl: Label
@@ -66,6 +74,10 @@ const HighpolyCollision = preload("highpoly_collision.gd")
 const HighpolyDoors = preload("highpoly_doors.gd")
 const FlightPath = preload("highpoly_flightpath.gd")
 const GameDir = preload("highpoly_gamedir.gd")
+const Preparation = preload("highpoly_preparation.gd")
+var _preparation: VBoxContainer
+var _preparation_restore_float := false
+var _preparation_viewports: Array = []
 const HighpolyVariants = preload("highpoly_variants.gd")
 const LightingScript = preload("highpoly_lighting.gd")
 const GameSourceScript = preload("highpoly_gamesource.gd")
@@ -82,6 +94,8 @@ const LIGHTS_JOB := "Placing the level's lights"
 const ShapeViz = preload("highpoly_shapeviz.gd")
 const Log = preload("highpoly_log.gd")
 const SectionScript = preload("highpoly_section.gd")
+const SharedMenu = preload("highpoly_menu.gd")
+const Backdrop = preload("highpoly_backdrop.gd")
 const SplashScript = preload("highpoly_splash.gd")
 const Theme_ = preload("highpoly_theme.gd")
 var previews: Node
@@ -360,6 +374,42 @@ func _build_bf6_gate() -> void:
 		EditorInterface.get_base_control().add_child(fd)
 		fd.popup_centered_ratio(0.6)
 		fd.close_requested.connect(func(): fd.queue_free()))
+	_preparation = Preparation.new()
+	_preparation.foreground_owner = func(): return EditorInterface.get_base_control()
+	_preparation.popup_deferred = func(): return _panel_suppressed()
+	_preparation.previews_missing = _previews_missing_for_cache
+	_preparation.previews_run = _run_previews_for_cache
+	_preparation.previews_cancel = _cancel_previews_for_cache
+	# High Poly stays locked until the up-front cache is complete.
+	_preparation.ready_changed.connect(func(_is_ready: bool): _apply_bf6_gate())
+	_preparation.editing_lock_changed.connect(func(locked: bool):
+		if locked:
+			if _preparation_viewports.is_empty():
+				var viewports: Array = []
+				for index in range(4):
+					var viewport := EditorInterface.get_editor_viewport_3d(index)
+					if viewport != null:
+						viewports.append(viewport)
+				_preparation_viewports = Preparation.Screen.suspend_viewports(viewports)
+			_preparation_restore_float = is_instance_valid(win) and win.visible
+			if _preparation_restore_float:
+				win.hide()
+		else:
+			Preparation.Screen.restore_viewports(_preparation_viewports)
+			if _preparation_restore_float and is_instance_valid(win):
+				_preparation_restore_float = false
+				if _panel_suppressed(): _win_held_for_home = true
+				else: win.show())
+	_preparation.current_level = func():
+		var scene := EditorInterface.get_edited_scene_root()
+		if scene == null:
+			return ""
+		var level := MapContextScript.map_of(scene).to_lower()
+		if level in _preparation._levels:
+			return level
+		var references: Array = preload("highpoly_preparation_order.gd").scene_levels(scene.scene_file_path, _preparation._levels)
+		return str(references[0]) if references.size() == 1 else ""
+	bf6_row.add_child(_preparation)
 
 	# Autodetect covers Steam and EA's usual folders plus every library in
 	# libraryfolders.vdf, so most people never touch this row.
@@ -400,17 +450,21 @@ func _set_game_dir(path: String, remember := true) -> void:
 			% [" at " + path if path != "" else "", str(r["why"])]
 			+ "until an install is located, so its buttons will not respond.")
 	_apply_bf6_gate()
+	if is_instance_valid(_preparation):
+		_preparation.set_install(path if _bf6_ok else "")
 
 
 # Grey out and disable everything except the gate row itself.
 func _apply_bf6_gate() -> void:
 	if dock == null or not is_instance_valid(dock):
 		return
+	# Locked until the install is verified AND the up-front cache has finished.
+	var open: bool = _bf6_ok and is_instance_valid(_preparation) and bool(_preparation.cache_ready)
 	for c in dock.get_children():
 		if c == bf6_row or c.has_meta("bf6_gate_exempt") or not (c is CanvasItem):
 			continue
-		(c as CanvasItem).modulate.a = 1.0 if _bf6_ok else 0.35
-		gate_interactive(c, _bf6_ok, _bf6_disabled_was)
+		(c as CanvasItem).modulate.a = 1.0 if open else 0.35
+		gate_interactive(c, open, _bf6_disabled_was)
 
 
 # Recursively disable (or restore) every control a user can act on.
@@ -574,6 +628,18 @@ func _range_label(v: float) -> String:
 	return "%dm" % int(v)
 
 func _enter_tree() -> void:
+	# Configure before any theme lookup; nested installs must read their own
+	# shipped menu and palette rather than another add-on at the default path.
+	SharedMenu.configure(get_script().resource_path.get_base_dir())
+	# THE LOOT AND SOLDIER SPAWNERS' LOADOUT, in the Inspector
+	# (highpoly_loadout_inspector.gd). The key is the spawner's scene name.
+	_loadout_inspector = LoadoutInspector.new()
+	_loadout_inspector.undo = get_undo_redo()
+	_loadout_inspector.refresh_node = func(node: Node) -> void:
+		if node is Node3D and is_instance_valid(node):
+			HighpolyLib.apply_one(node as Node3D, HighpolyLib.LoadoutScript.type_of(node), _mode(), _textured())
+	add_inspector_plugin(_loadout_inspector)
+	_register_bf6_menu.call_deferred()
 	# The terrain-blend GLOBAL shader parameters, registered before any prop
 	# material can compile against them. Session-only (RenderingServer, not
 	# ProjectSettings), so nothing is written into the user's project; the map
@@ -657,7 +723,7 @@ func _enter_tree() -> void:
 	job_row = VBoxContainer.new()
 	job_row.visible = false
 	job_what = Label.new()
-	job_what.add_theme_font_size_override("font_size", Theme_.fs(11))
+	job_what.add_theme_font_size_override("font_size", Theme_.status_size())
 	job_what.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	job_row.add_child(job_what)
 	job_bar = ProgressBar.new()
@@ -675,7 +741,7 @@ func _enter_tree() -> void:
 	job_pct.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	job_pct.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	job_pct.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	job_pct.add_theme_font_size_override("font_size", Theme_.fs(11))
+	job_pct.add_theme_font_size_override("font_size", Theme_.status_size())
 	job_pct.add_theme_color_override("font_color", Color.WHITE)
 	# outlined, because the text crosses the boundary between the filled part of
 	# the bar and the empty part and has to stay readable over both
@@ -716,12 +782,12 @@ func _enter_tree() -> void:
 	read_title.add_theme_font_size_override("font_size", Theme_.fs(12))
 	read_panel.add_child(read_title)
 	read_list = Label.new()
-	read_list.add_theme_font_size_override("font_size", Theme_.fs(11))
+	read_list.add_theme_font_size_override("font_size", Theme_.status_size())
 	read_list.add_theme_color_override("font_color", Color(1, 1, 1, 0.75))
 	read_panel.add_child(read_list)
 	read_note = Label.new()
 	read_note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	read_note.add_theme_font_size_override("font_size", Theme_.fs(11))
+	read_note.add_theme_font_size_override("font_size", Theme_.status_size())
 	read_note.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
 	read_panel.add_child(read_note)
 	dock.add_child(read_panel)
@@ -786,7 +852,7 @@ func _enter_tree() -> void:
 	# From here down the panel is built into collapsible sections. `host` is
 	# whichever section's content box is currently being filled, so the existing
 	# build order — which several controls depend on — is untouched.
-	var host: Node = _section("Detail Mode",
+	var host: Node = _section("detail", "Detail Mode",
 		"Whether you are looking at the Low-Poly pieces you actually build and export with, or the real High-Poly game models laid over the top of them. Switching to High-Poly changes nothing about your map: the Low-Poly underneath is still what gets saved.")
 
 	mode_btn = OptionButton.new()
@@ -818,26 +884,10 @@ All of it is read from your own Battlefield 6 installation."
 	detail_chips.add_child(ovr_chk)
 	_gate(ovr_chk, "Previewing a selection in High-Poly")
 
-	# BUILD THE OBJECT LIBRARY'S ICONS ON PURPOSE, RATHER THAN BY AMBUSH.
-	#
-	# They USED to be rendered by a 2-second timer, for whatever the library was
-	# showing at the time. Each one assembles the object out of the install and
-	# spends a SubViewport frame on it, so what a user experienced was the editor
-	# hitching every couple of seconds, indefinitely, with nothing on screen to
-	# say what was happening or when it would stop - and adding this button did
-	# not stop it, it just put a second copy of the work somewhere visible.
-	#
-	# The timer now only SERVES icons, from memory or from the on-disk PNG. This
-	# button is the only thing that renders one. Anything never built keeps the
-	# SDK's stock icon, which is the honest answer for a picture that does not
-	# exist yet.
-	previews_btn = Button.new()
-	previews_btn.text = "Build object previews"
-	previews_btn.tooltip_text = "Renders an icon for every object in the library, with a progress bar. This is the only thing that renders them: nothing is drawn in the background while you work, so anything not built yet keeps the SDK's own icon. The icons are cached to disk and survive restarts, so a second press only covers what is new."
-	previews_btn.pressed.connect(_build_previews)
-	host.add_child(previews_btn)
+	# Object library icons are rendered by the up-front cache (highpoly_preparation.gd),
+	# not by a button: see _run_previews_for_cache.
 
-	host = _section("Collision",
+	host = _section("collision", "Collision",
 		"Shows the invisible shapes players bump into. They are often not the shape they look like, which is why something can feel wrong to walk past even when it looks right.")
 
 	var col_chips := _chip_row(host)
@@ -904,7 +954,7 @@ All of it is read from your own Battlefield 6 installation."
 	col_pick.disabled = true
 	col_alpha.editable = false
 
-	host = _section("Map Context",
+	host = _section("map_context", "Map Context",
 		"Build inside the real level instead of an empty grey box: the ground, the skyline, the buildings, the lighting and the effects the real place has. All of it is preview only: none of it is saved into your map or exported.")
 
 	var mc_chips := _chip_row(host)
@@ -1316,7 +1366,7 @@ All of it is read from your own Battlefield 6 installation."
 	# The wording matters beyond tidiness — the reason the plugin reads the game
 	# directly is so that it never ships anyone else's assets, and a panel that
 	# says "downloaded" describes a plugin we deliberately stopped being.
-	host = _section("Storage",
+	host = _section("storage", "Storage",
 		"Work the plugin has already done on your Battlefield 6 install, kept so the next time you open a map takes seconds instead of minutes. None of it is your map, and none of it came from anywhere but your own game, so clearing any of it is always safe: it is simply worked out again.")
 
 	storage_lbl = Label.new()
@@ -1419,11 +1469,11 @@ All of it is read from your own Battlefield 6 installation."
 	reset_btn.pressed.connect(_reset_everything)
 	host.add_child(_centred(reset_btn))
 
-	host = _section("Log",
+	host = _section("log", "Log",
 		"A running account of what the plugin is doing, and anything that went wrong. If something breaks, save this and send it: it records which version, which level and which step, which a screenshot cannot.")
 
 	log_count = Label.new()
-	log_count.add_theme_font_size_override("font_size", Theme_.fs(11))
+	log_count.add_theme_font_size_override("font_size", Theme_.status_size())
 	log_count.add_theme_color_override("font_color", Color(1, 1, 1, 0.55))
 	log_count.text = "Nothing has gone wrong yet."
 	host.add_child(log_count)
@@ -1818,6 +1868,57 @@ All of it is read from your own Battlefield 6 installation."
 		_refresh_log_count())
 	log_row.add_child(clear_log)
 
+	var range_fields := HBoxContainer.new()
+	range_fields.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	mcr_row.add_child(range_fields)
+	mcr_lbl.reparent(range_fields, false)
+	mapctx_range.reparent(range_fields, false)
+	mapctx_range_val.reparent(range_fields, false)
+	var menu_groups := {
+		"range_controls": {"root": mcr_row, "container": mcr_row},
+		"detail_mode": {"root": mode_btn, "container": mode_btn},
+		"detail_toggles": {"root": detail_chips, "container": detail_chips},
+		"collision_toggles": {"root": col_chips, "container": col_chips},
+		"collision_color": {"root": cc_row, "container": cc_row},
+		"collision_alpha": {"root": ca_row, "container": ca_row},
+		"map_layers": {"root": mc_chips, "container": mc_chips},
+		"lighting_options": {"root": mc_sub.get_parent(), "container": mc_sub},
+		"map_variant": {"root": mapctx_variant_row, "container": mapctx_variant_row},
+		"map_actions": {"root": shader_btn, "container": shader_btn},
+		"storage_native": {"root": _menu_sections.storage.content, "container": _menu_sections.storage.content},
+		"log_native": {"root": _menu_sections.log.content, "container": _menu_sections.log.content},
+	}
+	var menu_bindings := {
+		"range": SharedMenu.binding(mapctx_range, range_fields, mcr_lbl),
+		"no_cull": SharedMenu.binding(mapctx_nocull),
+		"detail_mode": SharedMenu.binding(mode_btn),
+		"preview_selected": SharedMenu.binding(ovr_chk),
+		"prop_lighting": SharedMenu.binding(prop_light_on),
+		"collisions": SharedMenu.binding(col_chk),
+		"isolate_selected": SharedMenu.binding(iso_chk),
+		"shape_outlines": SharedMenu.binding(shape_chk),
+		"collision_color": SharedMenu.binding(col_pick, cc_row, cc_lbl),
+		"collision_alpha": SharedMenu.binding(col_alpha, ca_row, ca_lbl),
+		"terrain": SharedMenu.binding(mapctx_on),
+		"backdrops": SharedMenu.binding(mapctx_backdrop),
+		"water": SharedMenu.binding(mapctx_water),
+		"grass": SharedMenu.binding(mapctx_grass),
+		"objects": SharedMenu.binding(mapctx_objects),
+		"fx": SharedMenu.binding(mapctx_fx),
+		"lighting": SharedMenu.binding(mapctx_light),
+		"contact_shading": SharedMenu.binding(mapctx_gi),
+		"shadows": SharedMenu.binding(mapctx_shadows),
+		"interior_light": SharedMenu.binding(mapctx_fill, mapctx_fill_row, fill_lbl),
+		"ground_photo": SharedMenu.binding(mapctx_photo, mapctx_photo_row, ph_lbl),
+		"map_lights": SharedMenu.binding(mapctx_maplights),
+		"variant": SharedMenu.binding(mapctx_variant, mapctx_variant_row, mv_lbl),
+		"configure_shaders": SharedMenu.binding(shader_btn),
+	}
+	_menu_bindings = menu_bindings
+	var menu_gaps := SharedMenu.apply(dock, _menu_sections, menu_groups, menu_bindings)
+	if not menu_gaps.is_empty():
+		push_warning("High-poly menu adapter gaps: " + ", ".join(menu_gaps))
+
 	host = dock          # back to the panel itself: these two belong to no section
 	# THE STATUS LINE LIVES AT THE TOP. It is where every notification lands —
 	# how many models are local, what just downloaded, what a toggle did, what
@@ -1861,10 +1962,10 @@ All of it is read from your own Battlefield 6 installation."
 	# Inset the controls off the panel edge. Only the scroller is inset — the
 	# video, the tint and the outline stay full-bleed, so the border frames the
 	# backdrop rather than the buttons.
-	dock_scroll.offset_left = PANEL_PAD
-	dock_scroll.offset_right = -PANEL_PAD
-	dock_scroll.offset_top = PANEL_PAD_V
-	dock_scroll.offset_bottom = -PANEL_PAD_V
+	dock_scroll.offset_left = SharedMenu.number("padding_x", PANEL_PAD)
+	dock_scroll.offset_right = -SharedMenu.number("padding_x", PANEL_PAD)
+	dock_scroll.offset_top = SharedMenu.number("padding_y", PANEL_PAD_V)
+	dock_scroll.offset_bottom = -SharedMenu.number("padding_y", PANEL_PAD_V)
 	dock.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	dock.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	dock_scroll.add_child(dock)
@@ -1880,6 +1981,7 @@ All of it is read from your own Battlefield 6 installation."
 	dock_root.add_child(dock_scroll)
 	_build_backdrop()
 	_build_tool_window()
+	_join_home_chrome()
 	# the boot sequence is started from the open path, not from visibility_changed:
 	# that signal also fires on close, and every route to opening the panel goes
 	# through the toolbar button's toggle anyway
@@ -2527,6 +2629,13 @@ func _settings_snapshot() -> PackedStringArray:
 
 
 func _exit_tree() -> void:
+	var bf6_menu := PluginMenu.find()
+	if bf6_menu != null:
+		bf6_menu.unregister_plugin("highpoly")
+		bf6_menu.unregister_plugin("highpoly.loadout")
+	if _loadout_inspector != null:
+		remove_inspector_plugin(_loadout_inspector)
+		_loadout_inspector = null
 	# The clean-exit marker. Its ABSENCE next session is what says the editor
 	# died rather than closed, so this has to run on the ordinary path — and it
 	# runs first, before any of the teardown below can throw and skip it.
@@ -3570,8 +3679,8 @@ func _tips_hide(_v: float = 0.0) -> void:
 func _chip_row(into: Node, indent := 0) -> HFlowContainer:
 	var f := HFlowContainer.new()
 	f.alignment = FlowContainer.ALIGNMENT_CENTER
-	f.add_theme_constant_override("h_separation", 6)
-	f.add_theme_constant_override("v_separation", 6)
+	f.add_theme_constant_override("h_separation", int(SharedMenu.number("chip_gap", 6)))
+	f.add_theme_constant_override("v_separation", int(SharedMenu.number("chip_gap", 6)))
 	if indent > 0:
 		var m := MarginContainer.new()
 		# inset both sides: a one-sided indent would push a centred row off centre
@@ -3585,10 +3694,15 @@ func _chip_row(into: Node, indent := 0) -> HFlowContainer:
 
 # One collapsible section, appended to the panel. Returns its content box so the
 # controls that follow can be built straight into it.
-func _section(section_title: String, description: String) -> Node:
+func _section(id: String, section_title: String, description: String) -> Node:
+	var definition := SharedMenu.section(id)
+	section_title = str(definition.get("title", section_title))
+	description = str(definition.get("description", description))
 	var sec = SectionScript.new()
 	dock.add_child(sec)
 	sec.setup(section_title, description)
+	sec.set_meta("menu_id", id)
+	_menu_sections[id] = sec
 	sec.opened_changed.connect(func(open: bool):
 		_tips_hide()                    # the description answered its question
 		_save_section_state()
@@ -3607,16 +3721,20 @@ func _save_section_state() -> void:
 	var open_names: Array = []
 	for sec in sections:
 		if is_instance_valid(sec) and sec.is_open():
-			open_names.append(sec.title_lbl.text)
+			open_names.append(str(sec.get_meta("menu_id", sec.title_lbl.text)))
 	EditorInterface.get_editor_settings().set_project_metadata(
 		"highpoly", "open_sections", open_names)
 
 func _restore_section_state() -> void:
+	var defaults: Array = []
+	for definition in SharedMenu.data().get("sections", []):
+		if bool(definition.get("open", false)):
+			defaults.append(str(definition.id))
 	var want: Variant = EditorInterface.get_editor_settings().get_project_metadata(
-		"highpoly", "open_sections", ["Detail Mode"])
+		"highpoly", "open_sections", defaults)
 	if not (want is Array): return
 	for sec in sections:
-		if is_instance_valid(sec) and (want as Array).has(sec.title_lbl.text):
+		if is_instance_valid(sec) and ((want as Array).has(sec.title_lbl.text) or (want as Array).has(str(sec.get_meta("menu_id", "")))):
 			sec.set_open(true, false)
 
 # The panel is layered back-to-front:
@@ -3634,12 +3752,14 @@ func _build_backdrop() -> void:
 	dock_root.add_child(bg)
 	dock_root.move_child(bg, 0)
 
-	if FileAccess.file_exists(WAVES):
+	var waves_path := SharedMenu.file("waves.ogv")
+	var waves_meta_path := SharedMenu.file("waves.json")
+	if FileAccess.file_exists(waves_path):
 		# built directly instead of load()ed: an editor plugin's assets can be
 		# dropped in or replaced without waiting for a reimport, same as the
 		# logo and the map tiles
 		var vs := VideoStreamTheora.new()
-		vs.file = WAVES
+		vs.file = waves_path
 		video = VideoStreamPlayer.new()
 		video.stream = vs
 		video.expand = true          # fills the node; _fit_video sizes the node
@@ -3647,11 +3767,11 @@ func _build_backdrop() -> void:
 		if "loop" in video:
 			video.loop = true
 		else:
-			video.finished.connect(func(): if video: video.play())
+			video.finished.connect(func(): _sync_backdrop.call_deferred())
 		dock_root.add_child(video)
 		dock_root.move_child(video, 1)
-		var j: Variant = JSON.parse_string(FileAccess.get_file_as_string(WAVES_META)) \
-			if FileAccess.file_exists(WAVES_META) else null
+		var j: Variant = JSON.parse_string(FileAccess.get_file_as_string(waves_meta_path)) \
+			if FileAccess.file_exists(waves_meta_path) else null
 		if j is Dictionary:
 			_vid_size = Vector2(float((j as Dictionary).get("width", 480)),
 				float((j as Dictionary).get("height", 800)))
@@ -3661,7 +3781,7 @@ func _build_backdrop() -> void:
 	tint.set_anchors_preset(Control.PRESET_FULL_RECT)
 	tint.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	dock_root.add_child(tint)
-	dock_root.move_child(tint, 2)
+	dock_root.move_child(tint, 2 if video != null else 1)
 
 	tips = TipsScript.new()
 	dock_root.add_child(tips)
@@ -3674,7 +3794,13 @@ func _build_backdrop() -> void:
 
 	dock_root.clip_contents = true      # the cover-scaled video overhangs
 	dock_root.resized.connect(_fit_video)
+	dock_root.visibility_changed.connect(func(): _sync_backdrop.call_deferred())
+	dock_root.tree_entered.connect(func(): _sync_backdrop.call_deferred())
 	_fit_video()
+	_sync_backdrop.call_deferred()
+
+func _sync_backdrop() -> void:
+	Backdrop.sync(video, dock_root)
 
 # Cover, not contain: scale until the video covers the panel and let the excess
 # spill past the edges. Letterboxing a backdrop would put bars inside the border.
@@ -3700,6 +3826,7 @@ func _build_tool_window() -> void:
 	win.exclusive = false      # never blocks the editor: keep building while it is open
 	win.hide()
 	win.close_requested.connect(_close_tools)
+	win.visibility_changed.connect(func(): _sync_backdrop.call_deferred())
 	EditorInterface.get_base_control().add_child(win)
 	win.add_child(dock_root)
 
@@ -3760,12 +3887,10 @@ func _dock_panel() -> void:
 	dock_root.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	dock_root.custom_minimum_size = Vector2(260, 220)
 	add_control_to_dock(DOCK_SLOT, dock_root)
-	# PAUSED WHILE DOCKED. The video is a backdrop, and a docked panel is on
-	# screen for the whole session - the original reasoning for stopping the
-	# decoder when the panel closes ("this plugin exists to buy back frame time,
-	# not to spend it on its own scenery") applies more here, not less.
-	if video: video.paused = true
+	# Docking is a visible home, not a closed panel. The visibility callback
+	# pauses decoding only while another tab actually hides the dock.
 	_stop_boot()
+	_sync_backdrop.call_deferred()
 
 
 # Take it back out of the dock and float it.
@@ -3785,12 +3910,15 @@ func _set_tools_visible(on: bool) -> void:
 	if not on:
 		# CLOSING DOCKS IT rather than hiding it. Nothing is lost and nothing is
 		# rebuilt; the panel is simply somewhere else.
+		_win_held_for_home = false
 		_dock_panel()
 		return
 	_float_panel()
-	if video:
-		if video.is_playing(): video.paused = false
-		else: video.play()
+	# Opened while BF6 Home owns the editor (the first-run open, or enabling
+	# the plugin from Home itself): stay open, but appear when Home is left.
+	if _panel_suppressed():
+		_win_held_for_home = true
+		return
 	if _win_rect.size.x > 0 and _usable(_win_rect):
 		win.position = _win_rect.position
 		win.size = _win_rect.size
@@ -3802,7 +3930,69 @@ func _set_tools_visible(on: bool) -> void:
 		var pw := EditorInterface.get_base_control().get_window()
 		win.position = pw.position + (pw.size - win.size) / 2
 	win.show()
+	_sync_backdrop.call_deferred()
 	_maybe_play_splash()      # after show(): the sequence needs a visible panel
+
+# ---------------------------------------------------------------------------
+# BF6 HOME OWNS THE EDITOR WHILE ITS MAP MENU IS SHOWN.
+#
+# The floating tools window is always-on-top, so without this it covered the
+# map menu. Home hides every editor dock and asks optional panels to step aside
+# through the shared "bf6_workspace_panels_v1" group (API v1). Home only asks
+# the panels it finds when it opens, and this plugin is usually enabled FROM
+# Home - after that - so the Home main screen is also followed directly.
+const HOME_PANELS_GROUP := "bf6_workspace_panels_v1"
+const HOME_SCREEN := "BF6 Home"
+var _home_suppressors: Dictionary = {}
+var _home_screen_shown := false
+var _win_held_for_home := false
+
+func get_api_version() -> int:
+	return 1
+
+func set_visibility_suppressed(requester: Object, suppressed: bool) -> void:
+	if requester == null: return
+	if suppressed: _home_suppressors[requester.get_instance_id()] = true
+	else: _home_suppressors.erase(requester.get_instance_id())
+	_apply_home_suppression()
+
+func _panel_suppressed() -> bool:
+	return _home_screen_shown or not _home_suppressors.is_empty()
+
+func _join_home_chrome() -> void:
+	add_to_group(HOME_PANELS_GROUP)
+	if not main_screen_changed.is_connected(_on_main_screen_changed):
+		main_screen_changed.connect(_on_main_screen_changed)
+	_home_screen_shown = _home_screen_visible_now()
+
+func _on_main_screen_changed(screen_name: String) -> void:
+	_home_screen_shown = screen_name == HOME_SCREEN
+	_apply_home_suppression()
+
+# No getter exists for the current main screen; Home's panel is the visible
+# main-screen child whose script belongs to the Home add-on.
+func _home_screen_visible_now() -> bool:
+	var main := EditorInterface.get_editor_main_screen()
+	if main == null: return false
+	for child in main.get_children():
+		var script: Script = child.get_script() if child is Control else null
+		if child.visible and script != null and script.resource_path.begins_with("res://addons/bf6_map_selection/"):
+			return true
+	return false
+
+func _apply_home_suppression() -> void:
+	if not _panel_suppressed() and _preparation != null and is_instance_valid(_preparation):
+		_preparation.show_deferred_screen()
+	if win == null or not is_instance_valid(win): return
+	if _panel_suppressed():
+		if win.visible and not _is_docked():
+			_win_rect = Rect2i(win.position, win.size)
+			_win_held_for_home = true
+			win.hide()
+	elif _win_held_for_home:
+		_win_held_for_home = false
+		if tools_btn != null and tools_btn.button_pressed:
+			_set_tools_visible(true)
 
 # Closing mid-sequence drops it. A hidden Window still processes, so left alone
 # the boot would carry on animating a panel nobody can see, and the next open
@@ -3810,8 +4000,10 @@ func _set_tools_visible(on: bool) -> void:
 func _stop_boot() -> void:
 	_tips_hide()
 	if is_instance_valid(boot):
+		boot.set_process(false)
 		boot.queue_free()
 		boot = null
+	Backdrop.settle(tint, dock_scroll, Theme_.num("tint", TINT_DEFAULT))
 
 func _close_tools() -> void:
 	# closing from the window's own X must not re-enter _set_tools_visible
@@ -3844,7 +4036,8 @@ func _get_window_layout(cfg: ConfigFile) -> void:
 	if win == null: return
 	if win.visible: _win_rect = Rect2i(win.position, win.size)
 	cfg.set_value("HighPoly", "win_rect", _win_rect)
-	cfg.set_value("HighPoly", "win_open", win.visible)
+	# Hidden only while BF6 Home is shown still counts as open.
+	cfg.set_value("HighPoly", "win_open", win.visible or _win_held_for_home)
 	cfg.set_value("HighPoly", "docked", _is_docked())
 
 func _set_window_layout(cfg: ConfigFile) -> void:
@@ -3867,9 +4060,7 @@ func _maybe_play_splash() -> void:
 	if win == null or not win.visible or dock_root == null: return
 	# a fast close-and-reopen must not leave two sequences fighting over the
 	# tint and the scroller's alpha
-	if is_instance_valid(boot):
-		boot.queue_free()
-		boot = null
+	_stop_boot()
 	var s = SplashScript.new()
 	s.tint = tint
 	s.ui = dock_scroll
@@ -4162,7 +4353,7 @@ func _do_plugin_update() -> void:
 		Log.info(msg))
 	if _vid_stream != null and video != null and is_instance_valid(video):
 		video.stream = _vid_stream
-		video.play()
+		_sync_backdrop()
 	jobs.release(token, ok, "" if ok else "see the log for what failed")
 	if ok:
 		update_btn.text = "Restart editor to finish update"
@@ -4601,6 +4792,13 @@ func _lighting_changed() -> void:
 		LightingScript.clear(r)
 		lbl.text = "Game lighting off"
 		return
+	# Lighting no longer has a compiled per-map table to fall back to. If this is
+	# the first live layer the user switches on, open the game's reader here so
+	# the checkbox does not depend on Extended Terrain having run first.
+	if map != "" and (LightingScript.game_source == null \
+			or str(LightingScript.game_source.level) != map.to_lower()):
+		lbl.text = "Reading %s lighting from the Battlefield 6 install..." % map
+		await _ensure_game_source(map)
 	if map == "" or not LightingScript.has_data(map):
 		mapctx_light.set_pressed_no_signal(false)
 		_lighting_subs_enabled(false)
@@ -4623,7 +4821,10 @@ func _lighting_guard() -> void:
 	# something they could not see. It is simply always there now.
 	if mapctx_light == null: return
 	var map: String = mapctx.map_of(EditorInterface.get_edited_scene_root())
-	var ok := map != "" and LightingScript.has_data(map)
+	var source_ready := LightingScript.game_source != null \
+		and str(LightingScript.game_source.level) == map.to_lower()
+	var ok := map != "" and (LightingScript.has_data(map) \
+		or (not source_ready and HighpolyGameSource.available()))
 	if mapctx_light.disabled == (not ok): return
 	mapctx_light.disabled = not ok
 	# Say so ON THE CHIP. The status-line message for this lives in the click
@@ -4828,7 +5029,7 @@ func _save_mapctx_state() -> void:
 		"shadows": mapctx_shadows.button_pressed if mapctx_shadows else true,
 		"maplights": mapctx_maplights.button_pressed if mapctx_maplights else false,
 		"proplight": prop_light_on.button_pressed if prop_light_on else false,
-		"fill": mapctx_fill.value if mapctx_fill else 22.0,
+		"fill": mapctx_fill.value if mapctx_fill else 0.0,
 		"photo": mapctx_photo.value if mapctx_photo else 75.0,
 		"optimize": true,      # always on: it is what the Range slider means
 		"fx": mapctx_fx.button_pressed if mapctx_fx else false,
@@ -5746,51 +5947,35 @@ func _reoverride_selection() -> void:
 # win when a prop is both. Only consumed when something was actually hit, so
 # normal click/drag selection and camera behavior stay untouched.
 var prop_light_on: Button = null
-var previews_btn: Button = null      # "Build object previews", with a progress row
 var _said_not_map := ""              # scene we have already explained is not a map
 
 
-# Render every library icon now, through the same progress queue the other long
-# jobs use, instead of letting the 2-second timer do it a hitch at a time.
-func _build_previews() -> void:
-	# the journal's button row: any preview/library work WITHOUT one of these
-	# upstream of it is work nobody pressed for
-	BJournal.event("ui", "button: Build object previews")
+# Object library icons, rendered as the last stage of the up-front cache. The
+# supervisor owns the screen and progress; this supplies the renderer, which needs
+# the install open in the icon's detail mode.
+func _previews_missing_for_cache() -> int:
+	return previews.missing_count() if previews != null else 0
+
+func _run_previews_for_cache(progress: Callable) -> Dictionary:
+	BJournal.event("ui", "cache: object previews")
 	if previews == null:
-		return
+		return {"total": 0, "rendered": 0, "cancelled": false}
 	if previews.building:
-		# A SECOND PRESS IS A CANCEL, not a second build. The button is the only
-		# thing on screen that can stop this, and a run over a large library is
-		# long enough that someone will want to.
-		previews.cancel_build = true
-		previews_btn.text = "Stopping…"
-		return
-	# Icons of what you PLACE, so they follow Detail Mode - and Detail Mode
-	# cannot draw anything without the install open. Asked for first, or the
-	# whole run renders nothing and reports success.
+		return {"error": "a preview build is already running"}
 	await _ensure_source_for_mode(true)
-	if previews == null or not is_instance_valid(previews_btn):
-		return
-	var missing: int = previews.missing_count()
-	if missing == 0:
-		lbl.text = "Object previews are already built for this detail mode"
-		return
-	var was := previews_btn.text
-	previews_btn.text = "Stop building previews"
-	var token: int = await jobs.acquire("Object previews")
-	var res: Dictionary = await previews.build_all(func(done: int, total: int):
-		jobs.report(done, total))
-	jobs.release(token, not res.has("error"), str(res.get("error", "")))
-	if is_instance_valid(previews_btn):
-		previews_btn.text = was
-	if res.has("error"):
-		lbl.text = str(res["error"])
-		return
-	lbl.text = ("Object previews: %d rendered, %d already cached, %d have nothing "
-		+ "to draw them from — %.1f s%s") % [int(res["rendered"]),
-		int(res["already_cached"]), int(res["no_source"]), float(res["seconds"]),
-		"  (stopped early)" if bool(res["cancelled"]) else ""]
-	HighpolyLog.info(lbl.text)
+	if previews == null:
+		return {"error": "the preview renderer closed"}
+	var res: Dictionary = await previews.build_all(progress)
+	if not res.has("error"):
+		HighpolyLog.info(("Object previews: %d rendered, %d already cached, %d have nothing "
+			+ "to draw them from - %.1f s%s") % [int(res["rendered"]),
+			int(res["already_cached"]), int(res["no_source"]), float(res["seconds"]),
+			"  (stopped early)" if bool(res["cancelled"]) else ""])
+	return res
+
+func _cancel_previews_for_cache() -> void:
+	if previews != null and previews.building:
+		previews.cancel_build = true
 
 
 # ONE SWITCH, BOTH HALVES. The fixtures are Light3D children of each overlay and
@@ -6203,3 +6388,112 @@ func _swap_deferred(node: Node) -> void:
 	# the rest of your map content (O(1): only this node's own meshes are touched)
 	if mapctx_optimize != null and mapctx_optimize.button_pressed:
 		PlacedCull.apply(node as Node3D, _cull_radius(), true)
+
+
+# ------------------------------------------------------------------ BF6 menu
+#
+# THE SAME ENTRIES AS THE UNREAL ADD-ON'S WHEEL. HIGH POLY ("the real game
+# assets", order 900) opens this plugin's panel from the radial, as the Unreal
+# pill opens its control panel; in the menu bar it lists the panel's own
+# controls, in the order and under the section titles of menu.json - the file
+# the Unreal panel is built from too. LOADOUT (order 1050) is offered while a
+# spawner is selected and opens its Loadout panel.
+
+func _register_bf6_menu() -> void:
+	var bf6_menu := PluginMenu.ensure()
+	if bf6_menu == null:
+		return
+	bf6_menu.register_plugin("highpoly", "High Poly", 900, _bf6_menu_items,
+		func(_ctx): return "the real game assets", {"pick": func(_center): _bf6_show_panel()})
+	bf6_menu.register_plugin("highpoly.loadout", "Loadout", 1050, _bf6_loadout_items,
+		func(_ctx): return "soldiers, loot and vehicles",
+		{"available": func(ctx): return not _selected_spawners(ctx).is_empty(),
+		 "pick": func(_center): _bf6_open_loadout()})
+
+
+func _bf6_show_panel() -> void:
+	if dock_root == null or not is_instance_valid(dock_root):
+		return
+	if _is_docked():
+		var tabs := dock_root.get_parent() as TabContainer
+		if tabs != null:
+			tabs.current_tab = dock_root.get_index()
+	elif win != null and is_instance_valid(win):
+		win.show()
+		win.grab_focus()
+
+
+func _selected_spawners(ctx: Dictionary) -> Array:
+	var out: Array = []
+	for n in ctx.get("selection", []):
+		var type := HighpolyLib.LoadoutScript.type_of(n) if n is Node else ""
+		if type == "LootSpawner" or HighpolyLib.LoadoutScript.is_soldier_type(type):
+			out.append(n)
+	return out
+
+
+func _bf6_open_loadout() -> void:
+	var spawners := _selected_spawners(PluginMenu.find().context("radial") if PluginMenu.find() != null else {})
+	if not spawners.is_empty():
+		EditorInterface.inspect_object(spawners[0])
+
+
+func _bf6_loadout_items(ctx: Dictionary) -> Array:
+	var spawners := _selected_spawners(ctx)
+	return [{"id": "loadout", "label": "Loadout for the selected spawner",
+		"sub": "select a soldier or loot spawner" if spawners.is_empty() else "",
+		"disabled": spawners.is_empty(), "pick": _bf6_open_loadout}]
+
+
+func _bf6_menu_items(_ctx: Dictionary) -> Array:
+	var items: Array = [{"id": "panel", "label": "Open the High Poly panel", "pick": _bf6_show_panel}]
+	if _preparation != null and is_instance_valid(_preparation) and _preparation.has_method("show_progress"):
+		items.append({"id": "cache", "label": "Show caching progress", "pick": func(): _preparation.show_progress()})
+	for section in SharedMenu.data().get("sections", []):
+		var sec: Dictionary = section
+		var rows: Array = []
+		for group in sec.get("groups", []):
+			for control_id in (group as Dictionary).get("controls", []):
+				var b: Dictionary = _menu_bindings.get(str(control_id), {})
+				var c: Variant = b.get("control")
+				if not (c is Control) or not is_instance_valid(c):
+					continue
+				var root: Variant = b.get("root", c)
+				if root is Control and not (root as Control).is_visible_in_tree() and not (c as Control).visible:
+					continue
+				rows.append_array(_bf6_rows_for(str(control_id), c as Control))
+		if rows.is_empty():
+			continue
+		items.append({"separator": true, "label": str(sec.get("title", ""))})
+		items.append_array(rows)
+	return items
+
+
+# A control as menu rows: a toggle is a check row that stays open, an action a
+# plain row, a choice one check row per option. Sliders stay on the panel.
+func _bf6_rows_for(id: String, c: Control) -> Array:
+	if c is OptionButton:
+		var ob := c as OptionButton
+		var rows: Array = []
+		for i in range(ob.item_count):
+			if ob.is_item_separator(i) or ob.is_item_disabled(i):
+				continue
+			var index := i
+			rows.append({"id": "%s.%d" % [id, i], "label": ob.get_item_text(i), "checked": ob.selected == i,
+				"closes": false, "pick": func():
+					if ob.selected != index:
+						ob.select(index)
+						ob.item_selected.emit(index)})
+		return rows
+	if c is Button:
+		var b := c as Button
+		var label := b.text if b.text != "" else b.tooltip_text.get_slice("\n", 0)
+		if label == "":
+			label = id.capitalize()
+		if b.disabled:
+			return []
+		if b.toggle_mode:
+			return [{"id": id, "label": label, "checked": b.button_pressed, "closes": false,
+				"pick": func(): b.button_pressed = not b.button_pressed}]
+		return [{"id": id, "label": label, "pick": func(): b.pressed.emit()}]
+	return []

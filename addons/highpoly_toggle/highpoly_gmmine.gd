@@ -490,14 +490,15 @@ static func mine_to_disk(gs, level: String, map: String, roots: Array = []) -> i
 
 # The level's partition directory, from a resource the mount already has.
 static func _level_dir(gs, level: String) -> String:
-	var want := "/levels/%s/" % level.to_lower()
+	var want := level.to_lower()
 	# Snapshot: walking the live member races the catalogue republish.
 	var t_ebx: Dictionary = gs.src.snap_ebx()
 	for k in t_ebx.keys():
 		var s := str(k)
-		var at := s.findn(want)
-		if at >= 0:
-			return s.substr(0, at + want.length() - 1)
+		# Also under the 1.4.3.0 group folder (levels/gr/<level>/).
+		var end := BF6Source.level_dir_end(s.to_lower(), want)
+		if end >= 0 and end < s.length() and s[end] == "/":
+			return s.substr(0, end)
 	return ""
 
 

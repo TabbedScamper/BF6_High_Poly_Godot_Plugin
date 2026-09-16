@@ -23,6 +23,10 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ADDON="$REPO/addons/highpoly_toggle"
 SEVENZIP="C:/Program Files/7-Zip/7z.exe"
 
+# Fail before staging if the shipped menu has drifted from the shared source.
+# Set BF6_PYTHON to an installed interpreter when Python is not on PATH.
+"${BF6_PYTHON:-python}" "$REPO/tools/sync_shared_menu.py" --check
+
 # sed, not grep -P: Git Bash here runs a grep whose -P refuses non-UTF-8
 # locales, and the packaging script must not depend on the shell's locale
 CUR="$(sed -n 's/^version="\([^"]*\)".*/\1/p' "$ADDON/plugin.cfg")"

@@ -1,0 +1,425 @@
+{
+  "schema": 1,
+  "style": {
+    "font_scale": 1.5,
+    "control_font": 14,
+    "status_font": 11,
+    "section_font": 16,
+    "chip_gap": 6,
+    "padding_x": 16,
+    "padding_y": 12
+  },
+  "top_groups": [
+    {
+      "id": "range_controls",
+      "layout": "inline",
+      "controls": [
+        "range",
+        "no_cull"
+      ]
+    }
+  ],
+  "sections": [
+    {
+      "id": "detail",
+      "title": "Detail Mode",
+      "description": "Whether you are looking at the Low-Poly pieces you actually build and export with, or the real High-Poly game models laid over the top of them. Switching to High-Poly changes nothing about your map: the Low-Poly underneath is still what gets saved.",
+      "open": true,
+      "groups": [
+        {
+          "id": "detail_mode",
+          "layout": "stack",
+          "controls": [
+            "detail_mode"
+          ]
+        },
+        {
+          "id": "detail_toggles",
+          "layout": "chips",
+          "controls": [
+            "preview_selected",
+            "prop_lighting"
+          ]
+        },
+        {
+          "id": "detail_actions",
+          "layout": "stack",
+          "controls": [
+            "retry_skipped"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "collision",
+      "title": "Collision",
+      "description": "Inspect collision previews for scene objects.",
+      "open": false,
+      "groups": [
+        {
+          "id": "collision_toggles",
+          "layout": "chips",
+          "controls": [
+            "collisions",
+            "isolate_selected",
+            "shape_outlines"
+          ]
+        },
+        {
+          "id": "collision_color",
+          "layout": "inline",
+          "controls": [
+            "collision_color"
+          ]
+        },
+        {
+          "id": "collision_alpha",
+          "layout": "inline",
+          "controls": [
+            "collision_alpha"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "map_context",
+      "title": "Map Context",
+      "description": "Build inside the real level instead of an empty grey box: the ground, the skyline, the buildings, the lighting and the effects the real place has. All of it is preview only: none of it is saved into your map or exported.",
+      "open": false,
+      "groups": [
+        {
+          "id": "map_layers",
+          "layout": "chips",
+          "controls": [
+            "terrain",
+            "backdrops",
+            "water",
+            "grass",
+            "objects",
+            "fx",
+            "lighting",
+            "fixture_lights",
+            "roads"
+          ]
+        },
+        {
+          "id": "lighting_options",
+          "layout": "chips",
+          "controls": [
+            "contact_shading",
+            "shadows",
+            "interior_light",
+            "ground_photo",
+            "map_lights"
+          ]
+        },
+        {
+          "id": "map_variant",
+          "layout": "stack",
+          "controls": [
+            "variant"
+          ]
+        },
+        {
+          "id": "map_actions",
+          "layout": "stack",
+          "controls": [
+            "configure_shaders",
+            "wind",
+            "water_lab",
+            "performance"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "storage",
+      "title": "Storage",
+      "description": "Reusable work prepared from your own Battlefield 6 installation. Clearing it does not delete your map; missing resources are prepared again when needed.",
+      "open": false,
+      "groups": [
+        {
+          "id": "storage_native",
+          "layout": "native",
+          "controls": [],
+          "adapter": true
+        }
+      ]
+    },
+    {
+      "id": "log",
+      "title": "Log",
+      "description": "A running account of what the plugin is doing, and anything that went wrong. If something breaks, save this and send it: it records which version, which level and which step, which a screenshot cannot.",
+      "open": false,
+      "groups": [
+        {
+          "id": "log_native",
+          "layout": "native",
+          "controls": [],
+          "adapter": true
+        }
+      ]
+    }
+  ],
+  "controls": {
+    "detail_mode": {
+      "label": "Detail Mode",
+      "tip": "Choose Low-Poly to see the SDK pieces you export. Choosing a higher detail mode builds the game preview automatically.",
+      "kind": "choice",
+      "engines": [
+        "godot",
+        "unreal"
+      ]
+    },
+    "preview_selected": {
+      "label": "Preview selected",
+      "tip": "Switch the selected pieces between SDK and high-poly previews.",
+      "kind": "toggle",
+      "engines": [
+        "godot",
+        "unreal"
+      ],
+      "dynamic_label": true
+    },
+    "prop_lighting": {
+      "label": "Prop Lighting",
+      "tip": "Preview the lights and illuminated surfaces carried by your placed props.",
+      "kind": "toggle",
+      "engines": [
+        "godot"
+      ]
+    },
+    "retry_skipped": {
+      "label": "Retry skipped",
+      "tip": "Retry objects that could not be built.",
+      "kind": "action",
+      "engines": [
+        "unreal"
+      ]
+    },
+    "collisions": {
+      "label": "Collisions",
+      "tip": "Show projected collision previews for scene objects.",
+      "kind": "toggle",
+      "engines": [
+        "godot",
+        "unreal"
+      ]
+    },
+    "isolate_selected": {
+      "label": "Isolate selected",
+      "tip": "Hide surrounding previews to inspect the selected collision shapes. Requires Collisions.",
+      "kind": "toggle",
+      "engines": [
+        "godot"
+      ]
+    },
+    "shape_outlines": {
+      "label": "Godot shape outlines",
+      "tip": "Show the editor's collision-shape outlines. Disabling them can reduce viewport work on busy maps.",
+      "kind": "toggle",
+      "engines": [
+        "godot"
+      ]
+    },
+    "collision_color": {
+      "label": "Color",
+      "tip": "Choose the collision overlay color and transparency.",
+      "kind": "choice",
+      "engines": [
+        "godot",
+        "unreal"
+      ]
+    },
+    "collision_alpha": {
+      "label": "Alpha",
+      "tip": "Set how transparent the collision overlays are.",
+      "kind": "slider",
+      "engines": [
+        "godot",
+        "unreal"
+      ]
+    },
+    "terrain": {
+      "label": "Extended Terrain",
+      "tip": "Show the real ground surrounding the playable area. Preview only; excluded from your export.",
+      "kind": "toggle",
+      "engines": [
+        "godot",
+        "unreal"
+      ]
+    },
+    "backdrops": {
+      "label": "Backdrops",
+      "tip": "Show the distant skyline and scenery outside the playable area.",
+      "kind": "toggle",
+      "engines": [
+        "godot"
+      ]
+    },
+    "water": {
+      "label": "Water",
+      "tip": "Show the water surfaces read from this level.",
+      "kind": "toggle",
+      "engines": [
+        "godot",
+        "unreal"
+      ]
+    },
+    "grass": {
+      "label": "Grass",
+      "tip": "Show ground clutter near your camera. Adds rendering work.",
+      "kind": "toggle",
+      "engines": [
+        "godot",
+        "unreal"
+      ],
+      "engine_tips": {
+        "unreal": "Show ground clutter from the level. Switching on a missing layer builds the scenery automatically."
+      }
+    },
+    "objects": {
+      "label": "Original map objects",
+      "tip": "Show the level's original buildings, vehicles and clutter using game geometry.",
+      "kind": "toggle",
+      "engines": [
+        "godot",
+        "unreal"
+      ]
+    },
+    "fx": {
+      "label": "FX",
+      "tip": "Show the level effects, including smoke and distant effect cards.",
+      "kind": "toggle",
+      "engines": [
+        "godot"
+      ]
+    },
+    "lighting": {
+      "label": "Lighting",
+      "tip": "Preview the level's game lighting.",
+      "kind": "toggle",
+      "engines": [
+        "godot"
+      ]
+    },
+    "fixture_lights": {
+      "label": "Map and prop lights",
+      "tip": "Preview fixture lights in the original map and placed props.",
+      "kind": "toggle",
+      "engines": [
+        "unreal"
+      ]
+    },
+    "roads": {
+      "label": "Roads",
+      "tip": "Show road and ground decal layers.",
+      "kind": "toggle",
+      "engines": [
+        "unreal"
+      ]
+    },
+    "contact_shading": {
+      "label": "Contact shading",
+      "tip": "Darken the creases where surfaces meet. Costs rendering time.",
+      "kind": "toggle",
+      "engines": [
+        "godot"
+      ]
+    },
+    "shadows": {
+      "label": "Shadows",
+      "tip": "Show shadows cast by the sun. Costs rendering time.",
+      "kind": "toggle",
+      "engines": [
+        "godot"
+      ]
+    },
+    "interior_light": {
+      "label": "Interior light",
+      "tip": "Adjust ambient light in areas sheltered from the sky.",
+      "kind": "slider",
+      "engines": [
+        "godot"
+      ]
+    },
+    "ground_photo": {
+      "label": "Ground photo",
+      "tip": "Adjust the strength of the level's aerial color raster on the terrain.",
+      "kind": "slider",
+      "engines": [
+        "godot"
+      ]
+    },
+    "map_lights": {
+      "label": "Map lights",
+      "tip": "Show nearby street lights, signs and indoor fixtures from the original level.",
+      "kind": "toggle",
+      "engines": [
+        "godot"
+      ]
+    },
+    "variant": {
+      "label": "Variant",
+      "tip": "Preview an available game-mode layout for this map.",
+      "kind": "choice",
+      "engines": [
+        "godot",
+        "unreal"
+      ]
+    },
+    "configure_shaders": {
+      "label": "Configure Shaders…",
+      "tip": "Adjust water, smoke and grass animation settings.",
+      "kind": "action",
+      "engines": [
+        "godot"
+      ]
+    },
+    "wind": {
+      "label": "Wind",
+      "tip": "Adjust preview wind settings.",
+      "kind": "toggle",
+      "engines": [
+        "unreal"
+      ]
+    },
+    "water_lab": {
+      "label": "Water Lab",
+      "tip": "Inspect and adjust water preview settings.",
+      "kind": "action",
+      "engines": [
+        "unreal"
+      ]
+    },
+    "performance": {
+      "label": "Performance",
+      "tip": "Choose high-poly rendering and performance settings.",
+      "kind": "choice",
+      "engines": [
+        "unreal"
+      ]
+    },
+    "range": {
+      "label": "Range",
+      "tip": "Set how far from the camera the preview scenery and placed details draw. Reduce this if flying becomes slow.",
+      "kind": "slider",
+      "engines": [
+        "godot",
+        "unreal"
+      ],
+      "engine_tips": {
+        "unreal": "Set the distance at which placed objects switch between their SDK geometry and high-poly preview. Original scenery uses separate layer settings."
+      }
+    },
+    "no_cull": {
+      "label": "No Cull",
+      "tip": "Draw preview objects at any distance. This can significantly increase rendering cost.",
+      "kind": "toggle",
+      "engines": [
+        "godot",
+        "unreal"
+      ]
+    }
+  }
+}

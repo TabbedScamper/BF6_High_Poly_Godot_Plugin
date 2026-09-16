@@ -17,6 +17,7 @@ class_name HighpolyLighting
 # a DirectionalLight3D / WorldEnvironment).
 #
 const SUN_SKY := preload("res://addons/highpoly_toggle/sky_sun.gdshader")
+const LightingZones = preload("highpoly_lighting_zones.gd")
 
 # The level's own PanoramicRotation, in turns, set by apply() when the sky is read
 # from the install and consumed by _apply_mined(), which is where the Environment
@@ -38,155 +39,48 @@ static var _pano_rot := -1.0
 #   "lux" = the VE's SunIntensity (real illuminance) â€” mapped to a relative
 #   DirectionalLight energy below (the editor has no physical light units).
 #
-# MP_Capstone is absent FROM TABLE ONLY â€” its toc was never EBX-extracted when
-# that table was built. It has since been mined like every other map and its
-# lighting arrives in the map package (54 fields, sun 157.03/31.0, with a sky),
-# so the map is fully supported. It is the only map with no TABLE fallback,
-# which is what made the mined-cache bug grey its Lighting chip out entirely
-# while every other map merely degraded in silence â€” see mined().
+# The installed level's active VisualEnvironment is the only authority. Missing
+# data stays visibly missing; no table or previously exported package fills it.
 
 const NODE := "_GAME_LIGHTING"
 
-# per-map lighting extracted from A:\bf6dump / A:\x\<map> EBX (see
-# _DevTools/photomatch + agent notes; "src" = the VisualEnvironment asset).
-# sun  = SunColor (linear, gamma-lifted for display)
-# top/hor/gnd = sky gradient colours (zenith / horizon / below-horizon)
-const TABLE := {
-	"MP_Abbasid": {"az": 225.00, "el": 44.00, "lux": 120000,
-		"sun": Color(1, 0.878, 0.759), "top": Color(0.5728, 0.737, 1), "hor": Color(0.7936, 0.903, 1), "gnd": Color(0.6265, 0.7848, 1)},
-	# Aftermath: the level's active VE preset is ve_mp_aftermath_sunsetovercast_03
-	# (sun az/el/lux/colour below are ITS values). The sky the game shows is the
-	# preset's PanoramicTexture import t_mp_aftermath_panoramicsky_sunsetovercast_07
-	# (BC6H 8192x2048 equirect, GUID-verified) â€” "pano" swaps the gradient
-	# ProceduralSky for that real panorama. "fog" 0.0 = photo-verified (the 21
-	# PhotoMatch references show no atmospheric fog; the el<16 haze formula below
-	# is a fallback heuristic, not Aftermath data).
-	# "pano_lum" = the panorama's MEASURED mean luminance (BC6H decode, 65k
-	# samples): the game's sky is authored in physical HDR units (~8,900 â€”
-	# real overcast-sky cd/mÂ²) and auto-exposed in-game; the editor renders it
-	# raw, which read as a PURE WHITE screen. Normalizing by the measured mean
-	# puts the sky on the same ~1.0 scale the exp calibration was built on.
-	"MP_Aftermath": {"az": 237.90, "el": 12.90, "lux": 24000, "exp": 0.45,
-		"pano": "mp_aftermath_panoramicsky.dds", "pano_lum": 8923.0, "fog": 0.0,
-		"sun": Color(1, 0.5033, 0.2633), "top": Color(0.9995, 1, 0.9522), "hor": Color(1, 0.8774, 0.8688), "gnd": Color(0.7943, 0.797, 1)},
-	"MP_Aftermath_Portal": {"az": 237.90, "el": 12.90, "lux": 24000, "exp": 0.45,
-		"pano": "mp_aftermath_panoramicsky.dds", "pano_lum": 8923.0, "fog": 0.0,
-		"sun": Color(1, 0.5033, 0.2633), "top": Color(0.9995, 1, 0.9522), "hor": Color(1, 0.8774, 0.8688), "gnd": Color(0.7943, 0.797, 1)},
-	"MP_Badlands": {"az": 354.00, "el": 10.00, "lux": 45860,
-		"sun": Color(1, 0.21, 0), "top": Color(0.6117, 0.6912, 1), "hor": Color(1, 0.7093, 0.5486), "gnd": Color(0.9184, 0.8495, 1)},
-	"MP_Battery": {"az": 315.00, "el": 47.00, "lux": 46000,
-		"sun": Color(1, 0.9665, 0.9238), "top": Color(0.8426, 0.9509, 1), "hor": Color(0.8345, 0.9571, 1), "gnd": Color(0.8322, 0.9527, 1)},
-	"MP_Contaminated": {"az": 14.17, "el": 45.00, "lux": 125000,
-		"sun": Color(1, 0.8336, 0.7054), "top": Color(0.7397, 0.8187, 1), "hor": Color(0.6164, 0.7385, 1), "gnd": Color(0.5678, 0.7365, 1)},
-	"MP_Dumbo": {"az": 124.80, "el": 28.50, "lux": 120000,
-		"sun": Color(1, 0.7759, 0.6167), "top": Color(0.5348, 0.683, 1), "hor": Color(0.9472, 0.9749, 1), "gnd": Color(0.8302, 0.8814, 1)},
-	"MP_Eastwood": {"az": 199.00, "el": 38.00, "lux": 125000,
-		"sun": Color(1, 0.7759, 0.6167), "top": Color(0.4071, 0.6019, 1), "hor": Color(0.6922, 0.8592, 1), "gnd": Color(0.4959, 0.6796, 1)},
-	"MP_FireStorm": {"az": 302.55, "el": 35.00, "lux": 100000,
-		"sun": Color(1, 0.8796, 0.8228), "top": Color(0.6494, 0.7417, 1), "hor": Color(0.7609, 0.8303, 1), "gnd": Color(0.6237, 0.7324, 1)},
-	"MP_GolmudRailway": {"az": 145.00, "el": 35.00, "lux": 100000,
-		"sun": Color(1, 0.971, 0.914), "top": Color(0.8523, 0.9138, 1), "hor": Color(0.3506, 0.6785, 1), "gnd": Color(0.5356, 0.7508, 1)},
-	"MP_Granite_ClubHouse_Portal": {"az": 280.00, "el": 27.50, "lux": 135000,
-		"sun": Color(1, 0.8848, 0.7375), "top": Color(0.3261, 0.5097, 1), "hor": Color(0.3313, 0.5188, 1), "gnd": Color(0.45, 0.42, 0.38)},
-	"MP_Granite_MainStreet_Portal": {"az": 280.00, "el": 27.50, "lux": 135000,
-		"sun": Color(1, 0.8848, 0.7375), "top": Color(0.3261, 0.5097, 1), "hor": Color(0.3313, 0.5188, 1), "gnd": Color(0.45, 0.42, 0.38)},
-	"MP_Granite_Marina_Portal": {"az": 280.00, "el": 27.50, "lux": 135000,
-		"sun": Color(1, 0.8848, 0.7375), "top": Color(0.3261, 0.5097, 1), "hor": Color(0.3313, 0.5188, 1), "gnd": Color(0.45, 0.42, 0.38)},
-	"MP_Granite_MilitaryRnD_Portal": {"az": 280.00, "el": 27.50, "lux": 135000,
-		"sun": Color(1, 0.8848, 0.7375), "top": Color(0.3261, 0.5097, 1), "hor": Color(0.3313, 0.5188, 1), "gnd": Color(0.45, 0.42, 0.38)},
-	"MP_Granite_MilitaryStorage_Portal": {"az": 280.00, "el": 27.50, "lux": 135000,
-		"sun": Color(1, 0.8848, 0.7375), "top": Color(0.3261, 0.5097, 1), "hor": Color(0.3313, 0.5188, 1), "gnd": Color(0.45, 0.42, 0.38)},
-	"MP_Granite_TechCampus_Portal": {"az": 280.00, "el": 27.50, "lux": 135000,
-		"sun": Color(1, 0.8848, 0.7375), "top": Color(0.3261, 0.5097, 1), "hor": Color(0.3313, 0.5188, 1), "gnd": Color(0.45, 0.42, 0.38)},
-	"MP_Granite_Underground_Portal": {"az": 280.00, "el": 27.50, "lux": 135000,
-		"sun": Color(1, 0.8848, 0.7375), "top": Color(0.3261, 0.5097, 1), "hor": Color(0.3313, 0.5188, 1), "gnd": Color(0.45, 0.42, 0.38)},
-	"MP_Limestone": {"az": 245.00, "el": 66.00, "lux": 125000,
-		"sun": Color(1, 0.9527, 0.893), "top": Color(0.4814, 0.7267, 1), "hor": Color(0.7018, 0.8992, 1), "gnd": Color(0.5279, 0.7705, 1)},
-	"MP_Outskirts": {"az": 143.00, "el": 30.00, "lux": 100000,
-		"sun": Color(1, 0.9871, 0.9114), "top": Color(1, 0.8371, 0.6804), "hor": Color(1, 0.8371, 0.6804), "gnd": Color(1, 0.8371, 0.6804)},
-	"MP_Plaza": {"az": 300.00, "el": 26.00, "lux": 145000,
-		"sun": Color(1, 0.5249, 0.1534), "top": Color(1, 0.9368, 0.8488), "hor": Color(1, 0.9454, 0.9101), "gnd": Color(0.42, 0.36, 0.32)},
-	"MP_Portal_Sand": {"az": 280.00, "el": 27.50, "lux": 135000,
-		"sun": Color(1, 0.8848, 0.7375), "top": Color(0.3261, 0.5097, 1), "hor": Color(0.3313, 0.5188, 1), "gnd": Color(0.45, 0.42, 0.38)},
-	"MP_Subsurface": {"az": 200.36, "el": 43.96, "lux": 0.001,
-		"sun": Color(1, 0.8796, 0.8228), "top": Color(0.35, 0.37, 0.4), "hor": Color(0.45, 0.44, 0.42), "gnd": Color(0.3, 0.29, 0.28)},
-	"MP_Tungsten": {"az": 350.00, "el": 20.00, "lux": 50000,
-		"sun": Color(1, 0.8796, 0.8228), "top": Color(0.5771, 0.8458, 1), "hor": Color(0.5532, 0.835, 1), "gnd": Color(0.59, 0.8558, 1)},
-}
+# Lighting values are read from the active VisualEnvironment in the installed
+# game. No compiled per-map table is a runtime fallback.
 
 static func has_data(map: String) -> bool:
-	return TABLE.has(map) or not mined(map).is_empty()
+	return map != "" and not mined(map).is_empty()
 
 # ---------------------------------------------------------------------------
-# THE MINED VisualEnvironment
+# THE LIVE VisualEnvironment
 #
-# TABLE above is 7 hand-maintained values per map. The map package now carries
-# 56, read straight out of the level's VisualEnvironment preset â€” sun, sky, fog,
-# exposure, colour grading, white balance, ambient occlusion, GI and shadow
-# cascades. Where a map has them, they win; TABLE stays as the fallback for
-# anyone whose map data predates this, and for the handful of fields the mine
-# does not cover (the sky gradient colours).
-#
-# Verified before being trusted: mining all 22 maps reproduced every one of the
-# 21 rows TABLE already had, exactly, and supplied MP_Capstone which it lacked.
-# So this is not a new set of numbers, it is the same numbers plus 49 more.
-const CACHE := "user://mapcontext"
-
-static var _mined: Dictionary = {}          # map -> {} (absent) or the fields
-static var _mined_stamp: Dictionary = {}    # map -> mtime the entry was read from
-
-# CACHING THE MISS WAS THE BUG. The dock's half-second timer calls has_data() ->
-# mined() as soon as a level scene opens, which is seconds BEFORE its map package
-# finishes downloading. The empty answer was then cached, and since nothing in
-# the plugin ever called forget(), it stuck for the whole session:
-#   - MP_Capstone is the only map absent from TABLE, so has_data() went false and
-#     the Lighting chip greyed out permanently, even once its data had arrived.
-#   - Everywhere else the chip stayed enabled but apply() silently fell back to
-#     TABLE's 7 values: no sky, no fog, no colour grading, no AO, none of it,
-#     with nothing said about why.
-#
-# Re-reading every call is not the answer either â€” placements.json runs to tens
-# of MB on a big map and this is called twice a second. So key the cache on the
-# file's modification time: one stat instead of a parse, and it also picks up a
-# REPUBLISHED package, which the old code could not do at all.
+# HighpolyGameSource selects the dominant outdoor preset from the level root and
+# decodes its component-qualified fields directly from the installed game.
+# `mined` keeps its old name only to avoid breaking callers; it no longer reads
+# a map package or any exported intermediate.
+# The source owns a map-keyed in-memory cache and drops it on map change. A miss
+# is not cached here, so opening the reader later in the same editor session is
+# observed immediately.
 static func mined(map: String) -> Dictionary:
-	if map == "":
+	if map == "" or game_source == null \
+			or not game_source.has_method("environment_lighting") \
+			or str(game_source.level) != map.to_lower():
 		return {}
-	var p := "%s/%s/placements.json" % [CACHE, map]
-	var stamp: int = FileAccess.get_modified_time(p) if FileAccess.file_exists(p) else 0
-	if _mined.has(map) and int(_mined_stamp.get(map, -1)) == stamp:
-		return _mined[map]
-	var out: Dictionary = {}
-	if stamp != 0:
-		var j: Variant = JSON.parse_string(FileAccess.get_file_as_string(p))
-		if j is Dictionary:
-			var lit: Variant = (j as Dictionary).get("lighting")
-			if lit is Dictionary and (lit as Dictionary).get("fields") is Dictionary:
-				out = (lit as Dictionary)["fields"]
-	_mined[map] = out
-	_mined_stamp[map] = stamp
-	return out
+	return game_source.environment_lighting()
 
 # Local lighting zones (interiors, alleys, dark spots) with a world extent.
 static func zones(map: String) -> Array:
-	if map == "":
-		return []
-	var p := "%s/%s/placements.json" % [CACHE, map]
-	if not FileAccess.file_exists(p):
-		return []
-	var j: Variant = JSON.parse_string(FileAccess.get_file_as_string(p))
-	if not (j is Dictionary):
-		return []
-	var z: Variant = (j as Dictionary).get("light_zones")
-	return z if z is Array else []
+	if map != "" and game_source != null \
+			and game_source.has_method("lighting_zones") \
+			and str(game_source.level) == map.to_lower():
+		var z = game_source.lighting_zones()
+		return z if z is Array else []
+	# Native reader unavailable or not opened. Returning no zones is explicit;
+	# consuming an old placements.json would make a stale answer authoritative.
+	return []
 
 static func forget(map := "") -> void:
-	if map == "":
-		_mined.clear()
-		_mined_stamp.clear()
-	else:
-		_mined.erase(map)
-		_mined_stamp.erase(map)
+	# The live reader owns and invalidates its caches on map change/reload.
+	pass
 
 # A vec4/vec3 field arrives as an Array. Colour without the magnitude.
 static func _col(v: Variant, fallback: Color) -> Color:
@@ -292,7 +186,27 @@ static var shadow_min_size := 1.5
 # floor of light. See the block in apply() for why interiors were black without
 # it. 0.0 restores the strictly sky-driven (PhotoMatch-calibrated) behaviour;
 # raise it if rooms are still too dark to work in.
-static var interior_fill := 0.22
+static var interior_fill := 0.0
+
+
+# Mean hue of one panorama row, sampled at a fixed 128 columns. This replaces
+# the old hand-copied top/horizon/ground table with a deterministic measurement
+# of the decoded game texture. Magnitude remains the panorama luminance scale's
+# job, so the returned colour is hue-normalised.
+static func _pano_row_color(img: Image, v: float) -> Color:
+	if img == null or img.get_width() <= 0 or img.get_height() <= 0:
+		return Color.BLACK
+	var y := clampi(int(round(v * float(img.get_height() - 1))), 0, img.get_height() - 1)
+	var sum := Vector3.ZERO
+	const SAMPLES := 128
+	for i in range(SAMPLES):
+		var x := mini(img.get_width() - 1, int((float(i) + 0.5) * img.get_width() / SAMPLES))
+		var c := img.get_pixel(x, y)
+		sum += Vector3(c.r, c.g, c.b)
+	var peak := maxf(maxf(sum.x, sum.y), sum.z)
+	if peak <= 0.000001:
+		return Color.BLACK
+	return Color(sum.x / peak, sum.y / peak, sum.z / peak)
 
 # Build + inject the lighting rig. Idempotent (clears any previous rig first).
 # gi/shadows: the dock's sub-checkboxes (PhotoMatch renders keep full quality
@@ -302,21 +216,19 @@ static func apply(root: Node, map: String, gi := true, shadows := true) -> Strin
 		return "No scene open"
 	clear(root)
 	var m: Dictionary = mined(map)
-	if not TABLE.has(map) and m.is_empty():
+	if m.is_empty():
 		return "No lighting data for %s" % map
-	# TABLE is the base; every field the map package supplies overrides it. The
-	# gradient colours (top/hor/gnd) are not in the VE mine, so they still come
-	# from TABLE and are what the procedural fallback sky uses when a map has no
-	# panorama yet.
-	var e: Dictionary = (TABLE[map] as Dictionary).duplicate(true) if TABLE.has(map) else {}
-	if not m.is_empty():
-		if m.has("sun_az"): e["az"] = float(m["sun_az"])
-		if m.has("sun_el"): e["el"] = float(m["sun_el"])
-		if m.has("sun_lux"): e["lux"] = float(m["sun_lux"])
-		if m.has("sun_color"): e["sun"] = _col(m["sun_color"], e.get("sun", Color.WHITE))
-		for k in ["top", "hor", "gnd"]:
-			if not e.has(k):
-				e[k] = Color(0.6, 0.75, 1.0)
+	# Sun values are the component-qualified fields of the selected live preset.
+	# Panorama colours below are sampled from its decoded texture, not a map table.
+	var e := {
+		"az": float(m["sun_az"]),
+		"el": float(m["sun_el"]),
+		"lux": float(m["sun_lux"]),
+		"sun": _col(m.get("sun_color"), Color.WHITE),
+		"top": Color.BLACK,
+		"hor": Color.BLACK,
+		"gnd": Color.BLACK,
+	}
 
 	var rig := Node3D.new()
 	rig.name = NODE
@@ -369,6 +281,11 @@ static func apply(root: Node, map: String, gi := true, shadows := true) -> Strin
 			pano_tex = gsky["texture"]
 			pano_scale = float(gsky["luminance_scale"])
 			_pano_rot = float(gsky.get("rotation", 0.0))
+			var pimg: Image = (pano_tex as Texture2D).get_image()
+			if pimg != null:
+				e["top"] = _pano_row_color(pimg, 0.02)
+				e["hor"] = _pano_row_color(pimg, 0.49)
+				e["gnd"] = _pano_row_color(pimg, 0.75)
 	# THE GAME'S SKY OR NO SKY. Two fallbacks used to sit here and both were
 	# things this plugin is not allowed to have: a DOWNLOADED sky.exr conversion
 	# in the cache, and a .dds of Battlefield art bundled inside the addon. The
@@ -410,7 +327,7 @@ static func apply(root: Node, map: String, gi := true, shadows := true) -> Strin
 			const SKY_REF := 7000.0        # median of texture-mean x scale, fleet-wide
 			emul = clampf(pano_scale / SKY_REF, 0.05, 20.0)
 		else:
-			emul = 1.0 / maxf(float(e.get("pano_lum", 1.0)), 0.001)
+			emul = 1.0
 		pmat.set_shader_parameter("energy_multiplier", emul)
 		sky.sky_material = pmat
 	else:
@@ -454,7 +371,7 @@ static func apply(root: Node, map: String, gi := true, shadows := true) -> Strin
 	# "exp" per map = tonemap exposure calibrated against paired in-game
 	# reference photos (median-luminance match, _DevTools/photomatch) â€” game
 	# data, not taste. Maps without a calibrated value keep 1.0.
-	env.tonemap_exposure = float(e.get("exp", 1.0))
+	env.tonemap_exposure = 1.0
 	env.glow_enabled = true
 	env.glow_intensity = 0.45
 	env.glow_bloom = 0.03
@@ -498,18 +415,6 @@ static func apply(root: Node, map: String, gi := true, shadows := true) -> Strin
 	# the exposure a zone blends AWAY from, and the zones themselves
 	_base_exposure = env.tonemap_exposure
 	load_zones(map)
-	# depth fog: per-map "fog" density when photo/VE-verified (0.0 = the map has
-	# none â€” e.g. Aftermath, confirmed against all 21 PhotoMatch references).
-	# Maps without a mined value keep the old horizon-haze heuristic until they
-	# get their own PhotoMatch pass.
-	var fog_density: float = float(e["fog"]) if e.has("fog") \
-		else (0.0009 if float(e["el"]) < 16.0 else 0.0003)
-	env.fog_enabled = fog_density > 0.0
-	if env.fog_enabled:
-		env.fog_light_color = e["hor"]
-		env.fog_density = fog_density
-		env.fog_sky_affect = 0.12
-		env.fog_aerial_perspective = 0.5
 	var wenv := WorldEnvironment.new()
 	wenv.name = "GameEnvironment"
 	wenv.environment = env
@@ -865,14 +770,15 @@ static func clear(root: Node) -> void:
 # that happens to look similar â€” it is kept as a comfort control, but this is the
 # game's own behaviour and it runs off the map's own numbers.
 #
-# A preset carries no volume, so the zone comes from where it was placed: the
-# world bounds of the prefab that imports it (interior_zones_mine.py). Only zones
-# with a real extent ship; presets whose placement could not be recovered are
-# absent rather than guessed at.
+# A preset carries no volume. Its exact region is the OBBData or
+# VolumeVectorShapeData linked from AreaProximityEntityData.Geometry in the
+# owning blueprint, transformed through the placed level graph. The native
+# installed-game reader supplies those shapes and its rotated-source control;
+# channel-routed zones whose preset join is still open remain absent.
 static var zones_enabled := true
 static var _zones: Array = []              # for the open map
 static var _zone_map := ""
-static var _zone_blend := 0.0              # current blend weight, eased per tick
+static var _zone_blend := 1.0              # current exposure multiplier
 static var _base_exposure := 1.0
 
 # The base preset's EV, which a zone's own EV is measured against. 0 when the
@@ -888,26 +794,60 @@ static func base_ev() -> float:
 static func load_zones(map: String) -> int:
 	_zones = []
 	_zone_map = map
-	_zone_blend = 0.0
+	_zone_blend = 1.0
 	for z in zones(map):
 		if not (z is Dictionary):
 			continue
-		var zz: Variant = (z as Dictionary).get("zone")
-		var ov: Variant = (z as Dictionary).get("overrides")
-		if not (zz is Dictionary) or not (ov is Dictionary):
+		var row: Dictionary = z
+		var xf: Variant = row.get("transform")
+		var kind := int(row.get("kind", -1))
+		if not (xf is Transform3D) or (kind != 0 and kind != 1):
 			continue
-		var mn: Variant = (zz as Dictionary).get("min")
-		var mx: Variant = (zz as Dictionary).get("max")
-		if not (mn is Array) or not (mx is Array):
-			continue
-		_zones.append({
-			"aabb": AABB(Vector3(mn[0], mn[1], mn[2]),
-				Vector3(mx[0] - mn[0], mx[1] - mn[1], mx[2] - mn[2])),
-			"ev": float((ov as Dictionary).get("ev", 0.0)),
-			"ev_max": float((ov as Dictionary).get("ev_max", 0.0)),
-			"name": str((z as Dictionary).get("preset", "")),
-		})
+		var cooked := {
+			"kind": kind,
+			"transform": xf,
+			"ev": float(row.get("ev", 0.0)),
+			"ev_max": float(row.get("ev_max", 0.0)),
+			"name": str(row.get("preset", "")),
+			# Preserved for diagnostics. The exact numeric proximity-output law is
+			# still open, so this is not turned into an invented fade curve here.
+			"fade_distance": float(row.get("fade_distance", 0.0)),
+		}
+		if kind == 0:
+			var half: Array = row.get("half_extents", [])
+			if half.size() != 3:
+				continue
+			cooked["half_extents"] = Vector3(
+				float(half[0]), float(half[1]), float(half[2]))
+		else:
+			var raw_points: Array = row.get("points", [])
+			if raw_points.size() < 3:
+				continue
+			var points: Array[Vector3] = []
+			var planar := true
+			var base_y := 0.0
+			for p in raw_points:
+				if not (p is Array) or (p as Array).size() < 3:
+					points.clear()
+					break
+				var q := Vector3(float(p[0]), float(p[1]), float(p[2]))
+				if points.is_empty():
+					base_y = q.y
+				elif not is_equal_approx(q.y, base_y):
+					planar = false
+				points.append(q)
+			if points.size() < 3:
+				continue
+			cooked["points"] = points
+			cooked["height"] = float(row.get("height", 0.0))
+			cooked["base_y"] = base_y
+			cooked["planar"] = planar
+		_zones.append(cooked)
 	return _zones.size()
+
+
+static func _zone_contains(z: Dictionary, world_point: Vector3) -> bool:
+	return LightingZones.contains(z, world_point)
 
 # Exposure difference a zone asks for, as a multiplier. EV is a log2 stop scale,
 # so one stop darker is half the light: 2^(base - zone).
@@ -917,7 +857,7 @@ static func _zone_exposure(z: Dictionary, base_ev: float) -> float:
 		ev = float(z.get("ev", 0.0))
 	if ev <= 0.0 or base_ev <= 0.0:
 		return 1.0
-	return clampf(pow(2.0, base_ev - ev), 0.25, 4.0)
+	return pow(2.0, base_ev - ev)
 
 # Camera-driven blend, called from the dock tick. Returns the zone entered, or "".
 static func tick_zones(root: Node, cam_pos: Vector3, base_ev: float) -> String:
@@ -929,10 +869,7 @@ static func tick_zones(root: Node, cam_pos: Vector3, base_ev: float) -> String:
 	var want := 1.0
 	var inside := ""
 	for z in _zones:
-		var box: AABB = z["aabb"]
-		# grow slightly so the transition starts at the threshold rather than
-		# snapping exactly on the wall
-		if box.grow(2.0).has_point(cam_pos):
+		if _zone_contains(z, cam_pos):
 			want = _zone_exposure(z, base_ev)
 			inside = str(z["name"])
 			break
@@ -951,7 +888,7 @@ static func _env_of(root: Node) -> Environment:
 					return (g as WorldEnvironment).environment
 	return null
 
-# ---------- map lights (mined placements: user://mapcontext/<map>/lights.json) ----------
+# ---------- map lights (live records from the open game reader) -------------
 # 3,716 real light entities on Aftermath (PbrSpot/Sphere/Rect/Tube, positions +
 # colour + intensity + radius + cones decoded from the level EBX). Too many to
 # run at once â€” the dock timer culls to the nearest `lights_range` metres.
@@ -1230,12 +1167,11 @@ static func set_map_lights(root: Node, on: bool, map: String,
 	clear_map_lights(root)
 	if root == null: return "No scene open"
 	if not on: return "Map lights off"
-	var p := "user://mapcontext/%s/lights.json" % map
-	if not FileAccess.file_exists(p):
+	if game_source == null or not game_source.has_method("level_lights"):
 		return "No light data for %s" % map
-	var d: Variant = JSON.parse_string(FileAccess.get_file_as_string(p))
-	if not (d is Dictionary):
-		return "lights.json unreadable"
+	var all: Array = game_source.level_lights()
+	if all.is_empty():
+		return "No light data for %s" % map
 	# BUILT OFF-TREE AND ATTACHED ONCE, which is where the time was going.
 	#
 	# The holder used to be added to the scene BEFORE the loop, so all 11,641
@@ -1260,7 +1196,6 @@ static func set_map_lights(root: Node, on: bool, map: String,
 	# Nothing here is atomic, so hand the editor a frame every ~30 ms.
 	var n := 0
 	var slice := Time.get_ticks_msec()
-	var all: Array = d.get("lights", [])
 	var seen := 0
 	# TIMED, because a recording showed this holding its progress bar for 65.5 s
 	# with not one second of it attributed to anything. It had no spans at all â€”

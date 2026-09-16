@@ -136,6 +136,29 @@ static func run(host: Node, dock: Node, mapctx: Node) -> void:
 	_say("autorun: filesystem scan settled after %.1f s"
 			% (rep["import_scan_ms"] / 1000.0))
 
+	# HOW LONG the editor stays expensive after it boots. The blame pass found
+	# every group cheap once it had been running a while, which says the cost is
+	# a startup window rather than a per-frame worker - so this samples frames
+	# from boot until they settle and writes the curve down.
+	if cfg.has("frame_timeline"):
+		rep["frame_timeline"] = await _frame_timeline(_tree, cfg["frame_timeline"])
+		_finish(_tree, cfg, rep)
+		return
+	# WHICH per-frame worker is eating the frame. Same question as frame_probe,
+	# one level down: it switches off each script's processing in turn and times
+	# the frames without it. Nothing is disabled permanently and no setting is
+	# written - set_process is in-memory, and every group is put back.
+	if cfg.has("frame_blame"):
+		rep["frame_blame"] = await _frame_blame(_tree, cfg["frame_blame"])
+		_finish(_tree, cfg, rep)
+		return
+	# The same probe with NO scene open, so "the map is expensive to draw" and
+	# "this editor's frames are slow whatever is open" can be told apart.
+	if cfg.has("frame_probe") and bool((cfg["frame_probe"] as Dictionary).get("skip_open", false)):
+		rep["frame_probe"] = await _frame_probe(_tree, null, cfg["frame_probe"])
+		_finish(_tree, cfg, rep)
+		return
+
 	var t0 := Time.get_ticks_msec()
 	# ALREADY OPEN IS THE COMMON CASE. The editor restores the last scene, which
 	# on this machine is usually the map being measured, and re-opening it throws
@@ -200,6 +223,172 @@ static func run(host: Node, dock: Node, mapctx: Node) -> void:
 		_finish(_tree, cfg, rep)
 		return
 	_say("autorun: opened %s in %d ms" % [scene.get_file(), rep["open_ms"]])
+	# Only the game reader, placements included, for each map in "source_maps":
+	# does the install still resolve the level (the 1.4.3.0 game update moved the
+	# Portal levels under levels/gr/ and levels/mp/). No build.
+	if cfg.has("source_maps"):
+		var results := {}
+		for m in cfg["source_maps"]:
+			var gs = HighpolyGameSource.new()
+			gs.log_fn = func(s: String) -> void: pass
+			var t_open := Time.get_ticks_msec()
+			var ok: bool = await gs.open_async(host, str(m), str(cfg.get("source_game", "")), {"placements": true})
+			var stats: Dictionary = gs.walk.stats if gs.walk != null else {}
+			# The level's water as the preview draws it (core bf6_level_water*):
+			# every array in the environment's water record, by size.
+			var water_summary := {}
+			if bool(cfg.get("source_water", false)) and ok:
+				var env = gs.native_environment()
+				var water_value: Variant = env.read_water() if env != null else null
+				if water_value is Dictionary:
+					for key in water_value:
+						var v: Variant = water_value[key]
+						water_summary[str(key)] = (v as Array).size() if v is Array else (v if (v is float or v is int or v is bool or v is String) else typeof(v))
+				else:
+					water_summary["water"] = "none"
+			results[str(m)] = {"ok": ok, "error": str(gs.error), "level": str(gs.level), "game": str(gs.src.game) if gs.src != null else "",
+				"root": str(stats.get("root", "")), "rows": int(stats.get("rows", -1)), "ms": Time.get_ticks_msec() - t_open, "water": water_summary}
+			_say("autorun: source %s -> %s" % [str(m), JSON.stringify(results[str(m)])])
+		rep["sources"] = results
+		_finish(_tree, cfg, rep)
+		return
+	# WHY A YIELDED FRAME COSTS SECONDS, asked without the reader in the picture.
+	#
+	# A build slice creates MultiMeshInstance3Ds and then awaits a frame; that
+	# frame was measured at 1.5 s with 40 draw calls and the layer hidden, so it
+	# is not our drawing. This grows the scene with trivial nodes instead of real
+	# props and times the same await, first with the parent IN the edited scene
+	# and then with it OUT of the tree. Same node creation either way, so a gap
+	# between the two halves is the editor reacting to the tree, not the cost of
+	# making nodes.
+	if cfg.has("frame_probe"):
+		rep["frame_probe"] = await _frame_probe(_tree, root, cfg["frame_probe"])
+		_finish(_tree, cfg, rep)
+		return
+	# Only the soldier spawners: the game reader is opened for this map the way
+	# the dock opens it, with no build.
+	if bool(cfg.get("soldier_only", false)):
+		var opened: bool = await host._ensure_game_source(str(cfg["map"]))
+		rep["game_source_opened"] = opened
+		_say("autorun: game reader for %s opened: %s" % [str(cfg["map"]), opened])
+		rep["soldier"] = await _soldier_checks(_tree, root)
+		_finish(_tree, cfg, rep)
+		return
+	# Only the BF6 UI and BF6 Script screens: does each shared page load in its
+	# offline browser.
+	if bool(cfg.get("pages_only", false)):
+		for i in range(120):
+			await _tree.process_frame
+		var pages := {}
+		for spec in [["BF6 UI", "res://addons/bf6_ui_editor/ui_panel.gd"], ["BF6 Script", "res://addons/bf6_typescript_editor/script_panel.gd"]]:
+			EditorInterface.set_main_screen_editor(spec[0])
+			var panel: Node = null
+			var found := {}
+			var page_t0 := Time.get_ticks_msec()
+			var loads: Array = []
+			var errors: Array = []
+			var hooked := false
+			while Time.get_ticks_msec() - page_t0 < 30000:
+				await _tree.process_frame
+				if panel == null:
+					for n in EditorInterface.get_editor_main_screen().find_children("*", "", true, false):
+						if n.get_script() != null and (n.get_script() as Script).resource_path == spec[1]:
+							panel = n
+				if panel != null and not hooked and is_instance_valid(panel.get("web")):
+					var web: Object = panel.get("web")
+					web.connect("page_load_finished", func(url): loads.append(str(url)))
+					web.connect("host_error", func(m): errors.append(str(m)))
+					hooked = true
+				if hooked and not loads.is_empty():
+					break
+			for i in 60:
+				await _tree.process_frame
+			found["panel"] = panel != null
+			if panel != null:
+				var web: Object = panel.get("web")
+				found["web"] = is_instance_valid(web)
+				found["status"] = str((panel.get("status") as Label).text) if panel.get("status") is Label else ""
+				if panel.has_method("_capabilities"): found["enabled"] = (panel.call("_capabilities") as Dictionary).keys().filter(func(k): return (panel.call("_capabilities") as Dictionary)[k] is Dictionary and bool((panel.call("_capabilities") as Dictionary)[k].get("enabled", false)))
+				if is_instance_valid(web):
+					found["diagnostics"] = str(web.call("diagnostics"))
+					found["web_visible"] = (web as Control).is_visible_in_tree()
+					found["web_rect"] = str((web as Control).get_global_rect())
+			found["loads"] = loads
+			found["errors"] = errors
+			pages[spec[0]] = found
+		EditorInterface.set_main_screen_editor("3D")
+		rep["pages"] = pages
+		_finish(_tree, cfg, rep)
+		return
+	# Only the editor's top bar: which main screen buttons are there.
+	if bool(cfg.get("screens_only", false)):
+		for i in range(120):
+			await _tree.process_frame
+		var bar: Node = null
+		for n in EditorInterface.get_base_control().find_children("*", "EditorTitleBar", true, false):
+			bar = n
+		var names: Array = []
+		if bar != null:
+			for b in bar.find_children("*", "Button", true, false):
+				if (b as Button).toggle_mode and str((b as Button).text) != "":
+					names.append("%s%s" % [(b as Button).text, "" if (b as Button).is_visible_in_tree() else " (hidden)"])
+		rep["main_screens"] = names
+		# BF6 PORTAL: a click opens the site once and hands the editor back.
+		var portal: Object = null
+		var pstack: Array = [_tree.root]
+		while not pstack.is_empty() and portal == null:
+			var n: Node = pstack.pop_back()
+			if n.has_method("open_portal"):
+				portal = n
+			pstack.append_array(n.get_children(true))
+		if portal != null and bar != null:
+			var urls: Array = []
+			portal.set("open_url", func(url: String) -> Error:
+				urls.append(url)
+				return OK)
+			var check := {"opened_at_startup": (portal.get("opened") as Array).size()}
+			while Time.get_ticks_msec() < int(portal.get("_ready_at")):
+				await _tree.process_frame
+			EditorInterface.set_main_screen_editor("Script")
+			for i in 10:
+				await _tree.process_frame
+			var button: Button = null
+			for b in bar.find_children("*", "Button", true, false):
+				if (b as Button).toggle_mode and str((b as Button).text) == "BF6 Portal":
+					button = b
+			check["button"] = button != null
+			if button != null:
+				button.pressed.emit()
+			for i in 20:
+				await _tree.process_frame
+			check["urls"] = urls
+			var pressed := ""
+			for b in bar.find_children("*", "Button", true, false):
+				if (b as Button).toggle_mode and (b as Button).button_pressed and str((b as Button).text) in ["2D", "3D", "Script", "Game", "AssetLib"] + names.map(func(x): return str(x).trim_suffix(" (hidden)")):
+					pressed = str((b as Button).text)
+			check["screen_after"] = pressed
+			rep["portal"] = check
+		_finish(_tree, cfg, rep)
+		return
+	# Only the SDK Object Library, patched to show the edited map's collection.
+	if bool(cfg.get("library_only", false)):
+		rep["library"] = await _library_checks(_tree, str(cfg.get("second_map", "MP_Aftermath_Portal")))
+		_finish(_tree, cfg, rep)
+		return
+	# Only the Player Controller's walk, on the level as the SDK draws it.
+	if bool(cfg.get("walk_only", false)):
+		for i in range(60):
+			await _tree.process_frame
+		rep["walk"] = await _walk_checks(_tree, root)
+		_finish(_tree, cfg, rep)
+		return
+	# Only the BF6 menu and radial, with no map build.
+	if bool(cfg.get("radial_only", false)):
+		for i in range(60):
+			await _tree.process_frame
+		rep["parity_shots"] = await _parity_shots(_tree, cfg)
+		_finish(_tree, cfg, rep)
+		return
 
 	# ---- build the map context, through the dock's own call ---------------
 	#
@@ -411,6 +600,16 @@ static func run(host: Node, dock: Node, mapctx: Node) -> void:
 				   rep["props_per_s"],
 				   "  TIMED OUT" if rep["build_timed_out"] else ""])
 
+	# WHAT AN "OPEN IT INSTANTLY" CACHE WOULD HAVE TO HOLD, measured on the
+	# finished scene rather than estimated: every distinct mesh, every distinct
+	# image, and the per-instance transforms. Distinct is the whole point - the
+	# overlay shares one mesh across thousands of placements, so counting per
+	# node would report a number many times the truth.
+	if bool(cfg.get("cache_size", false)):
+		rep["cache_size"] = _cache_size(root)
+		_finish(_tree, cfg, rep)
+		return
+
 	# ---- fly ---------------------------------------------------------------
 	# LIGHTING IS A SEPARATE SWITCH, and leaving it off invalidated a whole
 	# round of measurements. apply() takes backdrop and water but NOT lighting,
@@ -519,6 +718,12 @@ static func run(host: Node, dock: Node, mapctx: Node) -> void:
 	# frame, and it looked like a spectacular improvement.
 	#
 	# So the frame numbers are only published if the camera can see the map.
+	if bool(cfg.get("parity_shots", false)):
+		rep["parity_shots"] = await _parity_shots(_tree, cfg)
+		if bool(cfg.get("parity_only", false)):
+			_finish(_tree, cfg, rep)
+			return
+
 	var probe_vp := EditorInterface.get_editor_viewport_3d(0)
 	var probe_draws := 0
 	if probe_vp != null:
@@ -1494,6 +1699,1214 @@ static func _shoot_foliage(_tree: SceneTree, path: String) -> String:
 		% [best_score, best_size, str(best_at), dist,
 		   str(cam.global_transform.origin)])
 	return out
+
+
+# PICTURES OF THE PARITY LAYERS, framed from what the build produced rather than
+# from recorded coordinates: the sea from its shore, a road marking from above,
+# the terrain's rim, and a loot spawner holding a configured weapon. Each view
+# is written as user://bf6_parity_<map>_<name>.png; the water is shot twice,
+# half a second apart, so its motion can be compared.
+static func _parity_shots(tree: SceneTree, cfg: Dictionary) -> Dictionary:
+	var out := {}
+	# The 3D viewport only draws while it is the main screen; the SDK's Home
+	# screen may be in front after a map opens.
+	EditorInterface.set_main_screen_editor("3D")
+	for i in range(10):
+		await tree.process_frame
+	var root := EditorInterface.get_edited_scene_root()
+	var evp := EditorInterface.get_editor_viewport_3d(0)
+	if root == null or evp == null or evp.get_camera_3d() == null:
+		return {"error": "no scene or editor camera"}
+	var cam: Camera3D = evp.get_camera_3d()
+	var ctx := root.get_node_or_null("_MAP_CONTEXT")
+	var map := str(cfg["map"])
+	var views: Array = []
+	if ctx != null and not bool(cfg.get("radial_only", false)):
+		var water := ctx.get_node_or_null("Water")
+		if water != null:
+			for c in water.get_children():
+				if c is MultiMeshInstance3D and c.has_meta("bf6_water_tiled"):
+					var b: PackedFloat32Array = c.get_meta("bf6_water_tiled")
+					var centre := Vector3((b[0] + b[2]) * 0.5, b[4], (b[1] + b[3]) * 0.5)
+					views.append(["water_near", centre + Vector3(0, 4, 0), centre + Vector3(60, 0, 40)])
+					views.append(["water_far", centre + Vector3(0, 40, 0), centre + Vector3(400, 0, 300)])
+					break
+		var roads := ctx.get_node_or_null("Roads")
+		if roads != null:
+			# The Roads chip may be off in this project; the shots compare them.
+			(roads as Node3D).visible = true
+			out["road_draw_nodes"] = roads.get_child_count()
+			var best: GeometryInstance3D = null
+			for c in roads.get_children():
+				if c is MeshInstance3D and (c as MeshInstance3D).material_override is ShaderMaterial:
+					if ((c as MeshInstance3D).material_override as ShaderMaterial).render_priority == -97:
+						best = c
+						break
+			if best == null and roads.get_child_count() > 0: best = roads.get_child(roads.get_child_count() / 2) as GeometryInstance3D
+			if best != null:
+				var box: AABB = best.global_transform * best.get_aabb()
+				var c := box.get_center()
+				views.append(["roads", c + Vector3(-18, 22, -18), c])
+				views.append(["roads_low", c + Vector3(-30, 3, -30), c])
+		var terrain := ctx.get_node_or_null("Terrain")
+		if terrain != null:
+			var tb := AABB()
+			var first := true
+			for c in terrain.get_children():
+				if c is GeometryInstance3D:
+					var ab: AABB = (c as GeometryInstance3D).global_transform * (c as GeometryInstance3D).get_aabb()
+					if first: tb = ab; first = false
+					else: tb = tb.merge(ab)
+			if not first:
+				var mid := tb.get_center()
+				views.append(["terrain", Vector3(mid.x, tb.end.y + 150, tb.position.z + tb.size.z * 0.25), mid])
+				views.append(["terrain_edge", Vector3(tb.position.x + 40, tb.end.y + 60, mid.z), Vector3(tb.position.x - 200, tb.position.y, mid.z)])
+	# A loot spawner with a scope, placed for the picture and never saved.
+	var loot_scene := load("res://objects/gameplay/common/LootSpawner.tscn") as PackedScene
+	if loot_scene != null and bool(cfg.get("loot", true)) and not bool(cfg.get("radial_only", false)):
+		var spawner := loot_scene.instantiate() as Node3D
+		root.add_child(spawner)
+		spawner.owner = null
+		var anchor := cam.global_position
+		if not views.is_empty(): anchor = (views[0][2] as Vector3)
+		spawner.global_position = Vector3(anchor.x + 3, anchor.y + 1.2, anchor.z + 3)
+		var loadout := {"item": "carbine/m4a1"}
+		var core = HighpolyLib.LoadoutScript.core_for(HighpolyLib.game_source)
+		if core != null:
+			var scopes: Array = HighpolyLib.LoadoutScript.slot_choices(core, "carbine/m4a1", "scp")
+			if not scopes.is_empty(): loadout["attachment_scp"] = str((scopes[0] as Dictionary).id)
+		spawner.set_meta(HighpolyLib.LoadoutScript.LOADOUT_META, loadout)
+		var applied := HighpolyLib.apply_one(spawner, "LootSpawner", HighpolyLib.Tier.HIGH, true)
+		out["loot_applied"] = applied
+		out["loot_loadout"] = loadout
+		var p := spawner.global_position
+		views.append(["loot", p + Vector3(-0.9, 0.35, 0.0), p])
+	for v in views:
+		cam.global_transform = Transform3D(Basis(), v[1]).looking_at(v[2], Vector3.UP)
+		for i in range(45):
+			await tree.process_frame
+			cam.global_transform = Transform3D(Basis(), v[1]).looking_at(v[2], Vector3.UP)
+		out[v[0]] = _shoot("user://bf6_parity_%s_%s.png" % [map, v[0]])
+		out[str(v[0]) + "_view"] = [[v[1].x, v[1].y, v[1].z], [v[2].x, v[2].y, v[2].z]]
+		if str(v[0]) == "water_near":
+			var t0 := Time.get_ticks_msec()
+			while Time.get_ticks_msec() - t0 < 500:
+				await tree.process_frame
+				cam.global_transform = Transform3D(Basis(), v[1]).looking_at(v[2], Vector3.UP)
+			out["water_near_later"] = _shoot("user://bf6_parity_%s_water_near_later.png" % map)
+	# THE BF6 MENU AND THE RADIAL, photographed as the editor draws them.
+	var menu_host: Node = null
+	for n in tree.get_nodes_in_group("bf6_plugin_menu_v1"):
+		menu_host = n
+	if menu_host != null:
+		out["menu_sections"] = menu_host.plugins().map(func(p): return "%s:%d:%s" % [p.id, p.order, p.radial])
+	var radial: Node = EditorInterface.get_base_control().find_child("BF6Radial", true, false)
+	out["radial_present"] = radial != null
+	if radial != null:
+		var spawners: Array = []
+		for c in root.get_children():
+			if c is Node3D and (c as Node3D).scene_file_path.get_file() == "LootSpawner.tscn":
+				spawners.append(c)
+		if not spawners.is_empty():
+			EditorInterface.get_selection().clear()
+			EditorInterface.get_selection().add_node(spawners[spawners.size() - 1])
+			for i in range(5):
+				await tree.process_frame
+		radial.open_front()
+		for i in range(20):
+			await tree.process_frame
+		out["radial_front"] = radial._items.map(func(i): return "%s|%s" % [i.label, i.get("sub", "")])
+		out["radial_describe"] = radial.describe() if radial.has_method("describe") else {}
+		var vp3 := EditorInterface.get_editor_viewport_3d(0)
+		var chain: Array = []
+		var n: Node = vp3
+		while n != null and chain.size() < 8:
+			chain.append("%s:%s:%s" % [n.get_class(), n.name, str((n as Control).get_global_rect()) if n is Control else ""])
+			n = n.get_parent()
+		out["rects"] = {"main": str(EditorInterface.get_editor_main_screen().get_global_rect()),
+			"base": str(EditorInterface.get_base_control().get_global_rect()), "chain": chain,
+			"vp_size": str(vp3.size)}
+		var tall: Array = []
+		var stack: Array = [EditorInterface.get_base_control()]
+		while not stack.is_empty():
+			var node: Node = stack.pop_back()
+			if node is Control and (node as Control).is_visible_in_tree():
+				var ms := (node as Control).get_combined_minimum_size()
+				if ms.y > 1400.0:
+					tall.append("%s:%s:%s:%s" % [node.get_class(), node.name, str(ms), str(node.get_path()).right(120)])
+			for c in node.get_children():
+				stack.append(c)
+		out["tall_controls"] = tall.slice(0, 60)
+		out["radial_shot"] = _shoot_editor("user://bf6_parity_%s_radial.png" % map)
+		for i in range(radial._items.size()):
+			if str(radial._items[i].label) == "COLLISION":
+				radial._highlight = i
+				radial.confirm()
+				break
+		for i in range(20):
+			await tree.process_frame
+		out["radial_sub"] = radial._items.map(func(i): return "%s|%s" % [i.label, i.get("sub", "")])
+		out["radial_sub_shot"] = _shoot_editor("user://bf6_parity_%s_radial_sub.png" % map)
+		radial.close()
+		# MULTIPLY and ATTACH through their own entry points, on a scene node.
+		var seed: Node3D = null
+		for c in root.get_children():
+			if c is Node3D and c.owner == root and c.scene_file_path != "":
+				seed = c
+				break
+		if seed != null:
+			var tools_script: Script = load("res://addons/bf6_extended_workspace/workspace_object_tools.gd")
+			EditorInterface.get_selection().clear()
+			EditorInterface.get_selection().add_node(seed)
+			await tree.process_frame
+			radial.open_front()
+			out["radial_selected"] = radial._items.map(func(i): return str(i.label))
+			radial.close()
+			var before := root.get_child_count()
+			var made: int = tools_script.multiply_grid(3, 2, 1.0)
+			out["multiply_grid"] = {"made": made, "children_added": root.get_child_count() - before}
+			var ring_before := root.get_child_count()
+			EditorInterface.get_selection().clear()
+			EditorInterface.get_selection().add_node(seed)
+			var ringed: int = tools_script.multiply_circle(6, 8.0)
+			out["multiply_circle"] = {"made": ringed, "children_added": root.get_child_count() - ring_before}
+			var popup: Window = tools_script.open_multiply(EditorInterface.get_base_control(), EditorInterface.get_base_control().get_global_rect().get_center(), EditorInterface.get_editor_scale(), Callable())
+			for i in range(10):
+				await tree.process_frame
+			out["multiply_panel_shot"] = _shoot_editor("user://bf6_parity_%s_multiply.png" % map)
+			# Popups are their own OS window when the editor does not embed them.
+			out["multiply_panel_visible"] = popup.visible
+			out["multiply_panel_size"] = str(popup.size)
+			var pimg: Image = popup.get_texture().get_image() if popup.visible else null
+			out["multiply_panel_window_shot"] = pimg != null and pimg.save_png("user://bf6_parity_%s_multiply_panel.png" % map) == OK
+			popup.hide()
+			# Put the scene back: both multiplies are single undo steps.
+			var eur := EditorInterface.get_editor_undo_redo()
+			var history := eur.get_history_undo_redo(eur.get_object_history_id(root))
+			for i in range(2):
+				history.undo()
+			out["undo_restores"] = root.get_child_count() == before
+			# COLORIZE: metadata on the object, one undo step.
+			var view_script: Script = load("res://addons/bf6_extended_workspace/workspace_view_tools.gd")
+			EditorInterface.get_selection().clear()
+			EditorInterface.get_selection().add_node(seed)
+			var painted: int = view_script.recolor_selection(Color(0.9, 0.2, 0.2))
+			var mesh_rid_ok := false
+			for g in view_script._meshes(seed):
+				mesh_rid_ok = mesh_rid_ok or (g as GeometryInstance3D).get_instance().is_valid()
+			out["colorize"] = {"painted": painted, "meta": seed.has_meta(&"bf6_color"), "meshes": view_script._meshes(seed).size(), "rendered": mesh_rid_ok}
+			var cpop: Window = view_script.open_colorize(EditorInterface.get_base_control(), EditorInterface.get_base_control().get_global_rect().get_center(), EditorInterface.get_editor_scale(), Callable())
+			for i in range(10):
+				await tree.process_frame
+			var cimg: Image = cpop.get_texture().get_image()
+			out["colorize_panel_shot"] = cimg != null and cimg.save_png("user://bf6_parity_%s_colorize_panel.png" % map) == OK
+			cpop.hide()
+			history.undo()
+			out["colorize_undo"] = not seed.has_meta(&"bf6_color")
+			# DISPLAY/SUN: turns the sun, draws unlit, pins exposure; reset puts it back.
+			EditorInterface.get_selection().clear()
+			await tree.process_frame
+			radial.open_front()
+			out["radial_front_view_aids"] = radial._items.map(func(i): return str(i.label))
+			radial.close()
+			view_script.set_time(8.0)
+			var sun: DirectionalLight3D = view_script.sun_light(false)
+			out["display_sun"] = {"sun": str(sun.get_path()) if sun != null else "", "owned": sun != null and sun.owner != null,
+				"travel": str(-sun.global_basis.z) if sun != null else ""}
+			view_script.set_view_mode(1)
+			view_script.set_exposure(1.0)
+			var vp0 := EditorInterface.get_editor_viewport_3d(0)
+			out["display_sun"]["unlit"] = vp0.debug_draw == Viewport.DEBUG_DRAW_UNSHADED
+			out["display_sun"]["exposure"] = vp0.get_camera_3d().attributes != null
+			var dpop: Window = view_script.open_display_sun(EditorInterface.get_base_control(), EditorInterface.get_base_control().get_global_rect().get_center(), EditorInterface.get_editor_scale(), Callable())
+			for i in range(10):
+				await tree.process_frame
+			out["display_shot"] = _shoot_editor("user://bf6_parity_%s_display.png" % map)
+			var dimg: Image = dpop.get_texture().get_image()
+			out["display_panel_shot"] = dimg != null and dimg.save_png("user://bf6_parity_%s_display_panel.png" % map) == OK
+			dpop.hide()
+			view_script.reset_display_sun()
+			await tree.process_frame
+			# VALIDATE: the shared core's checks over this scene.
+			var validate_script: Script = load("res://addons/bf6_extended_workspace/workspace_validate.gd")
+			out["validate_available"] = validate_script.available()
+			var scene_desc: Dictionary = validate_script.describe(root)
+			out["validate_objects"] = (scene_desc.objects as Array).size()
+			out["validate_catalogue"] = scene_desc.has("all_types")
+			out["validate_items"] = (validate_script.run(root) as Array).map(func(i): return "%d|%s|%s" % [int(i.severity), str(i.id), str(i.message).left(90)])
+			var vpop: Window = validate_script.open(EditorInterface.get_base_control(), EditorInterface.get_base_control().get_global_rect().get_center(), EditorInterface.get_editor_scale(), Callable())
+			for i in range(10):
+				await tree.process_frame
+			var vimg: Image = vpop.get_texture().get_image()
+			out["validate_panel_shot"] = vimg != null and vimg.save_png("user://bf6_parity_%s_validate_panel.png" % map) == OK
+			vpop.hide()
+			out["display_sun"]["reset"] =vp0.debug_draw == Viewport.DEBUG_DRAW_DISABLED and vp0.get_camera_3d().attributes == null and not view_script.touched
+			out["modes"] = await _mode_checks(tree, root, seed, map, history)
+			out["top_row"] = await _top_row_checks(tree, map)
+			out["blocks_budget"] = await _blocks_budget_checks(tree, root, seed, map, history)
+			out["spatial"] = _spatial_checks(root, seed, history)
+			out["upload"] = _upload_checks(root)
+	_say("autorun: parity shots %s" % JSON.stringify(out))
+	return out
+
+
+# OBJECT LIBRARY: the SDK's Scene Library, patched (Tools/patches) so only the
+# edited map's collection is on show. Read off its tab bar for the open map, then
+# for a second map opened in another tab (never saved).
+static func _library_checks(tree: SceneTree, second_map: String) -> Dictionary:
+	var res := {}
+	var lib: Node = EditorInterface.get_base_control().find_child("ObjectLibrary", true, false)
+	res["found"] = lib != null
+	if lib == null:
+		return res
+	res["patched"] = lib.has_method("_bf6_map_only")
+	if not res["patched"]:
+		return res
+	if bool(lib.get("_library_pending")):
+		lib.load_library(str(lib.get("_curr_lib_path")))
+	for i in 10:
+		await tree.process_frame
+	res["levels_known"] = (lib._bf6_level_names() as Dictionary).size()
+	res["first"] = _library_state(lib)
+	# ON THE WORKSPACE'S BOTTOM EDGE, as the Unreal library slides up.
+	var host: Control = null
+	for n in tree.get_nodes_in_group("bf6_workspace_panels_v1"):
+		if n is Control and n.has_method("register_panel"):
+			host = n
+	var adapter: Node = null
+	var stack: Array = [tree.root]
+	while not stack.is_empty() and adapter == null:
+		var n: Node = stack.pop_back()
+		if n.has_method("set_minimize_docks"):
+			adapter = n
+		stack.append_array(n.get_children(true))
+	if host != null and adapter != null:
+		for i in 40:
+			await tree.process_frame
+		var edge := {"hosted": host.has_panel("native.object_library"), "inside_host": host.is_ancestor_of(lib),
+			"edge": host.get_panel_edge("native.object_library"), "open_at_rest": host.is_edge_open("bottom")}
+		var be: Dictionary = host._edges["bottom"]
+		edge["tab_rect"] = str((be["strip"] as Control).get_global_rect())
+		edge["tab_visible"] = (be["strip"] as Control).is_visible_in_tree()
+		edge["tab_visible_self"] = (be["strip"] as Control).visible
+		edge["host_visible"] = host.visible
+		edge["host_in_tree_visible"] = host.is_visible_in_tree()
+		edge["suppressors"] = (host.get("_visibility_owners") as Dictionary).size()
+		var follow: Control = host.get("_follow")
+		edge["follow_visible"] = follow.is_visible_in_tree() if follow != null else null
+		edge["slide_at_rest"] = float(be["slide"])
+		var holders: Array = []
+		for w in (host.get("_visibility_owners") as Dictionary).values():
+			var o: Object = (w as WeakRef).get_ref()
+			if o != null:
+				holders.append(o)
+		edge["suppressed_by"] = holders.map(func(o): return "%s %s %s" % [o.get_class(), str(o.get("name")), str(o.get_script().resource_path) if o.get_script() != null else ""])
+		# lifted for this check only, and put back after it
+		for o in holders:
+			host.set_visibility_suppressed(o, false)
+		for i in 20:
+			await tree.process_frame
+		edge["tab_visible_unsuppressed"] = (be["strip"] as Control).is_visible_in_tree()
+		edge["tab_rect_unsuppressed"] = str((be["strip"] as Control).get_global_rect())
+		host._peek("bottom")
+		for i in 40:
+			await tree.process_frame
+		var drawer: Control = be["drawer"]
+		edge["after_hover_open"] = host.is_edge_open("bottom")
+		edge["slide_after_hover"] = float(be["slide"])
+		edge["drawer_visible_self"] = drawer.visible
+		edge["drawer_rect"] = str(drawer.get_global_rect())
+		edge["host_rect"] = str(host.get_global_rect())
+		edge["library_visible"] = lib.is_visible_in_tree()
+		var dock: Node = adapter.get("_library_dock")
+		edge["dock_closed_while_hosted"] = dock != null and not dock.is_visible_in_tree()
+		adapter.set_minimize_docks(false)
+		for i in 10:
+			await tree.process_frame
+		edge["off_back_in_dock"] = lib.get_parent() == dock and not host.has_panel("native.object_library")
+		edge["off_dock_parent"] = str(dock.get_parent().name) if dock != null and dock.get_parent() != null else ""
+		adapter.set_minimize_docks(true)
+		for i in 10:
+			await tree.process_frame
+		edge["on_again_hosted"] = host.has_panel("native.object_library") and host.is_ancestor_of(lib)
+		for o in holders:
+			if is_instance_valid(o):
+				host.set_visibility_suppressed(o, true)
+		res["bottom_edge"] = edge
+	var path := ""
+	for candidate in ["res://levels/%s.tscn" % second_map, "res://Levels/%s.tscn" % second_map]:
+		if ResourceLoader.exists(candidate):
+			path = candidate
+	res["second_path"] = path
+	if path != "":
+		EditorInterface.open_scene_from_path(path)
+		var t0 := Time.get_ticks_msec()
+		while Time.get_ticks_msec() - t0 < 120000:
+			await tree.process_frame
+			var root := EditorInterface.get_edited_scene_root()
+			if root != null and str(root.name) == second_map:
+				break
+		for i in 10:
+			await tree.process_frame
+		res["second"] = _library_state(lib)
+	return res
+
+
+static func _library_state(lib: Node) -> Dictionary:
+	lib._bf6_follow_map()
+	var bar: TabBar = lib.get("_collec_tab_bar")
+	var visible: Array = []
+	var hidden := 0
+	for i in bar.get_tab_count():
+		if bar.is_tab_hidden(i):
+			hidden += 1
+		else:
+			visible.append(bar.get_tab_title(i))
+	var popup: PopupMenu = (lib.get("_all_tabs_list") as MenuButton).get_popup()
+	var listed: Array = []
+	for i in popup.item_count:
+		listed.append("%s#%d" % [popup.get_item_text(i), popup.get_item_id(i)])
+	var current := bar.get_current_tab()
+	var collection: Dictionary = lib.get_current_collection()
+	return {"map": str(lib.get("_bf6_map")), "tabs": bar.get_tab_count(), "hidden": hidden, "visible": visible,
+		"current": bar.get_tab_title(current) if current >= 0 else "", "menu": listed,
+		"assets_shown": (collection.get(&"assets", []) as Array).size()}
+
+
+# WALK: the Player Controller's walkthrough on the open level with no collider
+# anywhere, standing on and bumping into the drawn terrain and assets through the
+# shared core. Dropped in above the middle of the terrain, it has to fall, land at
+# eye height on the surface a ray finds below, and walk. A camera of its own is
+# used (never the editor's) and freed after.
+static func _walk_checks(tree: SceneTree, root: Node) -> Dictionary:
+	var res := {}
+	var session_script: Script = load("res://addons/bf6_player_controller/preview_session.gd")
+	if session_script == null:
+		return {"error": "no player controller"}
+	var terrain := AABB()
+	var first := true
+	for n in root.find_children("*", "MeshInstance3D", true, false):
+		if str(n.get_path()).contains("Terrain"):
+			var box: AABB = (n as MeshInstance3D).global_transform * (n as MeshInstance3D).get_aabb()
+			terrain = box if first else terrain.merge(box)
+			first = false
+	res["terrain"] = str(terrain)
+	res["physics_bodies"] = root.find_children("*", "CollisionObject3D", true, false).size()
+	var cam := Camera3D.new()
+	root.add_child(cam)
+	cam.owner = null
+	var mid := terrain.get_center() if not first else Vector3.ZERO
+	cam.global_position = Vector3(mid.x + 7.0, (terrain.end.y if not first else 0.0) + 20.0, mid.z + 11.0)
+	var session = session_script.new()
+	EditorInterface.get_base_control().add_child(session)
+	var t0 := Time.get_ticks_usec()
+	res["started"] = session.start(cam, root, 0.0, false)
+	res["start_ms"] = (Time.get_ticks_usec() - t0) / 1000.0
+	if not res["started"]:
+		res["status"] = str(session.status.text)
+		session.free()
+		cam.free()
+		return res
+	session.set_physics_process(false)
+	res["eye"] = session.model.eye
+	res["meshes_seen"] = session.model.rays._entries.size()
+	res["surfaces_near"] = session.model.rays.instances
+	var below: Dictionary = session.model.rays.trace(cam.global_position, cam.global_position - Vector3(0, 5000, 0))
+	res["ground_below"] = below.position.y if not below.is_empty() else null
+	var t1 := Time.get_ticks_usec()
+	var frames := 0
+	for i in 600:   # a 60 m drop takes about 3.5 s
+		session._physics_process(1.0 / 60.0)
+		frames += 1
+	res["step_ms"] = (Time.get_ticks_usec() - t1) / 1000.0 / frames
+	res["grounded_after_fall"] = session.model.grounded
+	res["eye_above_ground"] = (session.model.position.y - float(below.position.y)) if not below.is_empty() else null
+	var start_xz := Vector2(session.model.position.x, session.model.position.z)
+	session._held = {KEY_W: true}
+	for i in 300:
+		session._physics_process(1.0 / 60.0)
+	res["walked_m"] = Vector2(session.model.position.x, session.model.position.z).distance_to(start_xz)
+	res["grounded_after_walk"] = session.model.grounded
+	res["surfaces_near_after_walk"] = session.model.rays.instances
+	session._held = {}
+	session.stop_session()
+	session.free()
+	root.remove_child(cam)
+	cam.free()
+	return res
+
+
+# WHAT A BUILT MAP WOULD COST ON DISK.
+#
+# The question behind it is whether a second open could be a load instead of a
+# build. So this walks the finished overlay and adds up the three things such a
+# cache would have to keep: the geometry of every DISTINCT mesh, the pixels of
+# every DISTINCT image, and the transforms of every instance.
+#
+# Sizes come from the resources themselves - a surface's format says which
+# attributes exist and how wide they are - rather than from saving files, so it
+# costs seconds instead of gigabytes of writing. A real cache would add its own
+# headers and would compress; treat this as the floor.
+static func _mesh_bytes(mesh: Mesh) -> int:
+	var total := 0
+	for s in range(mesh.get_surface_count()):
+		var format: int = mesh.surface_get_format(s) if mesh is ArrayMesh else Mesh.ARRAY_FORMAT_VERTEX
+		var verts: int = mesh.surface_get_array_len(s)
+		var per_vertex := 12                                  # position
+		if format & Mesh.ARRAY_FORMAT_NORMAL: per_vertex += 12
+		if format & Mesh.ARRAY_FORMAT_TANGENT: per_vertex += 16
+		if format & Mesh.ARRAY_FORMAT_COLOR: per_vertex += 16
+		if format & Mesh.ARRAY_FORMAT_TEX_UV: per_vertex += 8
+		if format & Mesh.ARRAY_FORMAT_TEX_UV2: per_vertex += 8
+		# Godot narrows the index to 16 bits when the surface fits, and a map's
+		# meshes mostly do, so assuming 32 would overstate this by a lot.
+		var index_width := 2 if verts <= 65535 else 4
+		total += verts * per_vertex + mesh.surface_get_array_index_len(s) * index_width
+	return total
+
+
+static func _cache_size(root: Node) -> Dictionary:
+	var meshes := {}
+	var images := {}
+	var instances := 0
+	var nodes := 0
+	var stack: Array = [root]
+	while not stack.is_empty():
+		var n: Node = stack.pop_back()
+		for c in n.get_children():
+			stack.append(c)
+		nodes += 1
+		var mesh: Mesh = null
+		if n is MultiMeshInstance3D and (n as MultiMeshInstance3D).multimesh != null:
+			var mm := (n as MultiMeshInstance3D).multimesh
+			instances += mm.instance_count
+			mesh = mm.mesh
+		elif n is MeshInstance3D:
+			instances += 1
+			mesh = (n as MeshInstance3D).mesh
+		if mesh == null:
+			continue
+		var mesh_id := mesh.get_instance_id()
+		if not meshes.has(mesh_id):
+			meshes[mesh_id] = _mesh_bytes(mesh)
+		for s in range(mesh.get_surface_count()):
+			var mat: Material = mesh.surface_get_material(s)
+			if mat == null:
+				continue
+			for property in mat.get_property_list():
+				var value: Variant = mat.get(str(property.get("name", "")))
+				if value is Texture2D:
+					var texture: Texture2D = value
+					var tid := texture.get_instance_id()
+					if images.has(tid):
+						continue
+					var image: Image = texture.get_image()
+					images[tid] = image.get_data().size() if image != null else 0
+	var mesh_bytes := 0
+	for v in meshes.values():
+		mesh_bytes += int(v)
+	var image_bytes := 0
+	for v in images.values():
+		image_bytes += int(v)
+	# A MultiMesh transform is 12 floats, and a cache has to keep one per
+	# placement or the map comes back with everything at the origin.
+	var instance_bytes := instances * 48
+	var total := mesh_bytes + image_bytes + instance_bytes
+	var out := {"nodes": nodes, "distinct_meshes": meshes.size(), "mesh_mb": mesh_bytes / 1048576.0,
+		"distinct_images": images.size(), "image_mb": image_bytes / 1048576.0,
+		"instances": instances, "instance_mb": instance_bytes / 1048576.0,
+		"total_mb": total / 1048576.0}
+	_say("autorun: an instant-open cache for this map would hold %.0f MB: %.0f MB of geometry (%d mesh(es)), %.0f MB of pixels (%d image(s)), %.1f MB of placements (%d)"
+		% [out["total_mb"], out["mesh_mb"], meshes.size(), out["image_mb"], images.size(),
+		   out["instance_mb"], instances])
+	return out
+
+
+# THE COST OF A FRAME AGAINST TIME SINCE BOOT.
+#
+# Nothing is built and nothing is opened: it just times frames and writes down
+# what the editor was doing. The point is the shape - if the seconds-long frames
+# stop on their own at a certain age, they are startup work and the fix is to
+# stop a build from starting inside that window (or to find what the window is);
+# if they never stop, the blame pass was measuring something else.
+static func _frame_timeline(tree: SceneTree, spec: Variant) -> Dictionary:
+	var cfg: Dictionary = spec if spec is Dictionary else {}
+	var seconds := int(cfg.get("seconds", 240))
+	var efs := EditorInterface.get_resource_filesystem()
+	var rows: Array = []
+	var t0 := Time.get_ticks_msec()
+	var settled_at := -1
+	var cheap_run := 0
+	while Time.get_ticks_msec() - t0 < seconds * 1000:
+		var t := Time.get_ticks_msec()
+		await tree.process_frame
+		var ms := Time.get_ticks_msec() - t
+		rows.append({"at_ms": t - t0, "frame_ms": ms,
+			"process_ms": Performance.get_monitor(Performance.TIME_PROCESS) * 1000.0,
+			"draws": int(Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME)),
+			"scanning": efs != null and efs.is_scanning()})
+		# SETTLED means a run of cheap frames, not one: a single fast frame
+		# happens all through the slow window and would date the settle far too
+		# early.
+		cheap_run = cheap_run + 1 if ms <= 50 else 0
+		if settled_at < 0 and cheap_run >= 30:
+			settled_at = int(Time.get_ticks_msec() - t0)
+			_say("autorun: frames settled under 50 ms at %.1f s after the plugin started"
+				% (settled_at / 1000.0))
+			if bool(cfg.get("stop_when_settled", true)):
+				break
+	var slow := 0
+	for r in rows:
+		if int((r as Dictionary)["frame_ms"]) > 100:
+			slow += 1
+	_say("autorun: frame timeline: %d frames in %.0f s, %d over 100 ms, settled at %s"
+		% [rows.size(), (Time.get_ticks_msec() - t0) / 1000.0, slow,
+		   "%.1f s" % (settled_at / 1000.0) if settled_at >= 0 else "never"])
+	return {"settled_at_ms": settled_at, "frames": rows.size(), "over_100ms": slow,
+		"rows": rows}
+
+
+# WHOSE per-frame work the editor's seconds-long frames are.
+#
+# Every node in the editor that processes is grouped by the script it runs.
+# Each group's processing is switched off, the frames are timed without it, and
+# it is switched back on. A group whose absence makes the frames cheap is the
+# answer; one that changes nothing is cleared, which is just as useful.
+#
+# Frame times here swing by 10x round to round, so each group is timed over
+# several frames and compared by MEDIAN, and the baseline is re-measured
+# between groups rather than taken once at the start: the editor gets slower and
+# faster on its own, and a single baseline would credit that drift to whichever
+# group happened to run next.
+static func _frame_blame(tree: SceneTree, spec: Variant) -> Dictionary:
+	var cfg: Dictionary = spec if spec is Dictionary else {}
+	var frames := int(cfg.get("frames", 10))
+	var groups := {}
+	var stack: Array = [tree.root]
+	while not stack.is_empty():
+		var n: Node = stack.pop_back()
+		for c in n.get_children():
+			stack.append(c)
+		if not (n.is_processing() or n.is_physics_processing()):
+			continue
+		var s: Script = n.get_script() as Script
+		var key := s.resource_path if s != null and s.resource_path != "" else "(no script: %s)" % n.get_class()
+		if not groups.has(key):
+			groups[key] = []
+		(groups[key] as Array).append(n)
+	var measure := func() -> Array:
+		var got: Array = []
+		for i in range(frames):
+			var t := Time.get_ticks_msec()
+			await tree.process_frame
+			got.append(Time.get_ticks_msec() - t)
+		got.sort()
+		return got
+	var median := func(a: Array) -> float:
+		return float(a[a.size() / 2]) if not a.is_empty() else 0.0
+	var rows: Array = []
+	var names: Array = groups.keys()
+	names.sort_custom(func(a, b): return (groups[a] as Array).size() > (groups[b] as Array).size())
+	_say("autorun: frame blame: %d processing group(s)" % names.size())
+	for key in names:
+		var nodes: Array = groups[key]
+		var before: Array = await measure.call()
+		var was: Array = []
+		for n in nodes:
+			var node := n as Node
+			was.append([node.is_processing(), node.is_physics_processing()])
+			node.set_process(false)
+			node.set_physics_process(false)
+		var without: Array = await measure.call()
+		for i in range(nodes.size()):
+			var node := nodes[i] as Node
+			node.set_process(bool((was[i] as Array)[0]))
+			node.set_physics_process(bool((was[i] as Array)[1]))
+		var m_before: float = median.call(before)
+		var m_without: float = median.call(without)
+		rows.append({"script": key, "nodes": nodes.size(),
+			"median_ms_with": m_before, "median_ms_without": m_without,
+			"saved_ms": m_before - m_without})
+		_say("autorun: frame blame  %-64s %3d node(s)  %6.0f -> %6.0f ms"
+			% [key, nodes.size(), m_before, m_without])
+	rows.sort_custom(func(a, b): return float(a["saved_ms"]) > float(b["saved_ms"]))
+	return {"frames_per_measure": frames, "groups": rows}
+
+
+# WHAT A YIELDED FRAME IS ACTUALLY PAYING FOR.
+#
+# Two halves, identical work in each: create `batch` MultiMeshInstance3Ds, await
+# one frame, record what that frame cost, repeat `rounds` times. In the first
+# half the parent is a child of the edited scene; in the second it is held out
+# of the tree and attached only at the end. The nodes, the meshes and the
+# MultiMeshes are the same, so the difference between the halves is what the
+# EDITOR does about a growing scene, not what the engine does about geometry.
+#
+# Deliberately trivial geometry (one box, four instances): a probe that also
+# parsed real props would measure the reader again, which is not the question.
+# Everything created here is freed before returning, and nothing is saved.
+static func _frame_probe(tree: SceneTree, root: Node, spec: Variant) -> Dictionary:
+	var cfg: Dictionary = spec if spec is Dictionary else {}
+	var rounds := int(cfg.get("rounds", 12))
+	var batch := int(cfg.get("batch", 250))
+	var mesh := BoxMesh.new()
+	var out := {"rounds": rounds, "batch": batch, "attached": [], "detached": [],
+		"baseline_ms": 0.0, "node_count_at_start": 0}
+	# WHAT ELSE THE FRAME COULD BE DOING, sampled rather than assumed: the
+	# engine's own view of the frame, and whether the editor is still importing.
+	# A frame that is slow while process time is near zero is waiting on
+	# something outside the main thread's own script work.
+	var efs := EditorInterface.get_resource_filesystem()
+	var sample := func() -> Dictionary:
+		return {"process_ms": Performance.get_monitor(Performance.TIME_PROCESS) * 1000.0,
+			"frame_monitor_ms": Performance.get_monitor(Performance.TIME_FPS),
+			"draws": int(Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME)),
+			"objects_drawn": int(Performance.get_monitor(Performance.RENDER_TOTAL_OBJECTS_IN_FRAME)),
+			"video_mem_mb": Performance.get_monitor(Performance.RENDER_VIDEO_MEM_USED) / 1048576.0,
+			"scanning": efs != null and efs.is_scanning()}
+	# The resting cost of a frame in this editor, before anything is added.
+	for i in 5:
+		await tree.process_frame
+	var base_rows: Array = []
+	var t_base := Time.get_ticks_msec()
+	for i in 10:
+		var t_one := Time.get_ticks_msec()
+		await tree.process_frame
+		var row: Dictionary = sample.call()
+		row["frame_ms"] = Time.get_ticks_msec() - t_one
+		base_rows.append(row)
+	out["baseline_ms"] = float(Time.get_ticks_msec() - t_base) / 10.0
+	out["baseline_rows"] = base_rows
+	out["node_count_at_start"] = int(Performance.get_monitor(Performance.OBJECT_NODE_COUNT))
+	_say("autorun: frame probe baseline: %.0f ms per frame with nothing added"
+		% out["baseline_ms"])
+	if root == null:
+		return out
+	for pass_name in ["attached", "detached"]:
+		var parent := Node3D.new()
+		parent.name = "BF6FrameProbe_" + pass_name
+		parent.visible = false
+		root.add_child(parent)
+		if pass_name == "detached":
+			root.remove_child(parent)
+		var rows: Array = []
+		for r in range(rounds):
+			var t_make := Time.get_ticks_msec()
+			for i in range(batch):
+				var mmi := MultiMeshInstance3D.new()
+				var mm := MultiMesh.new()
+				mm.transform_format = MultiMesh.TRANSFORM_3D
+				mm.mesh = mesh
+				mm.instance_count = 4
+				for k in 4:
+					mm.set_instance_transform(k, Transform3D(Basis(), Vector3(k * 2.0, 0.0, r * 2.0)))
+				mmi.multimesh = mm
+				parent.add_child(mmi)
+			var make_ms := Time.get_ticks_msec() - t_make
+			var t_frame := Time.get_ticks_msec()
+			await tree.process_frame
+			var frame_ms := Time.get_ticks_msec() - t_frame
+			# The frame AFTER, with nothing created in between: the same paired
+			# probe the build uses, so the two can be compared directly.
+			var t_idle := Time.get_ticks_msec()
+			await tree.process_frame
+			var row: Dictionary = sample.call()
+			row.merge({"round": r, "nodes_in_parent": parent.get_child_count(),
+				"make_ms": make_ms, "frame_ms": frame_ms,
+				"idle_frame_ms": Time.get_ticks_msec() - t_idle,
+				"node_count": int(Performance.get_monitor(Performance.OBJECT_NODE_COUNT))})
+			rows.append(row)
+		if pass_name == "detached":
+			var t_attach := Time.get_ticks_msec()
+			root.add_child(parent)
+			await tree.process_frame
+			out["attach_at_end_ms"] = Time.get_ticks_msec() - t_attach
+		out[pass_name] = rows
+		var total := 0.0
+		for row in rows:
+			total += float((row as Dictionary)["frame_ms"])
+		_say("autorun: frame probe %s: %d nodes added in %d rounds, %.0f ms of yielded frames (%.1f ms each)"
+			% [pass_name, rounds * batch, rounds, total, total / maxf(1.0, float(rounds))])
+		if parent.get_parent() != null:
+			parent.get_parent().remove_child(parent)
+		parent.queue_free()
+		for i in 5:
+			await tree.process_frame
+	return out
+
+
+# SOLDIERS: each soldier spawner draws the core's posed, armed soldier from its
+# own choices, placed unsaved. Measured by properties: the mesh and its height,
+# the badge per side, the eye blend, a changed choice rebuilding the overlay, and
+# the Inspector's pickers.
+static func _soldier_checks(tree: SceneTree, root: Node) -> Dictionary:
+	var res := {}
+	var L = HighpolyLib.LoadoutScript
+	var gs = HighpolyLib.game_source
+	var core = L.core_for(gs)
+	res["core"] = core != null
+	res["binding"] = core != null and core.has_method("loadout_soldier")
+	if core == null:
+		return res
+	res["characters"] = L.catalogue_list(core, "characters").size()
+	res["outfits_wisp"] = L.outfits_for(core, "cha0001wisp").size()
+	var paths := {"PlayerSpawner": "res://objects/gameplay/common/PlayerSpawner.tscn",
+		"HQ_PlayerSpawner": "res://objects/gameplay/common/HQ_PlayerSpawner.tscn",
+		"AI_Spawner": "res://objects/gameplay/ai/AI_Spawner.tscn",
+		"SpawnPoint": "res://objects/entities/SpawnPoint.tscn"}
+	var placed: Array = []
+	for type in paths:
+		var ps := load(paths[type]) as PackedScene
+		if ps == null:
+			res[type] = {"error": "no scene"}
+			continue
+		var n := ps.instantiate() as Node3D
+		root.add_child(n)
+		n.owner = null
+		placed.append(n)
+		var t0 := Time.get_ticks_msec()
+		var applied := HighpolyLib.apply_one(n, L.type_of(n), HighpolyLib.Tier.HIGH, true)
+		var r := {"applied": applied, "ms": Time.get_ticks_msec() - t0}
+		r.merge(_soldier_facts(n))
+		res[type] = r
+	# a changed choice rebuilds: PAX recon on the player spawner
+	if not placed.is_empty():
+		var n: Node3D = placed[0]
+		var before_id := str((n.get_node_or_null(HighpolyLib.HP_NODE) as Node).get_meta("hp_asset", "")) if n.get_node_or_null(HighpolyLib.HP_NODE) != null else ""
+		n.set_meta(L.LOADOUT_META, {"faction": "pax", "role": "recon", "character": "cha0002know"})
+		HighpolyLib.apply_one(n, L.type_of(n), HighpolyLib.Tier.HIGH, true)
+		var after := _soldier_facts(n)
+		after["rebuilt"] = str(after.get("asset", "")) != before_id
+		res["changed"] = after
+		# the Inspector's panel for a soldier spawner
+		var insp = load("res://addons/highpoly_toggle/highpoly_loadout_inspector.gd").new()
+		res["inspector_handles"] = insp._can_handle(n)
+		var panel = insp.LoadoutPanel.new()
+		EditorInterface.get_base_control().add_child(panel)
+		panel.setup(n, insp)
+		var w0 := Time.get_ticks_msec()
+		while panel.loading and Time.get_ticks_msec() - w0 < 60000:
+			await tree.process_frame
+		await tree.process_frame
+		var labels: Array = []
+		for c in panel.fields.get_children():
+			if c is Label and not c.is_queued_for_deletion():
+				labels.append(str((c as Label).text))
+		res["inspector_fields"] = labels
+		res["inspector_status"] = str(panel.status.text)
+		panel.queue_free()
+	for n in placed:
+		n.queue_free()
+	return res
+
+
+static func _soldier_facts(n: Node3D) -> Dictionary:
+	var hp := n.get_node_or_null(HighpolyLib.HP_NODE)
+	if hp == null:
+		return {"overlay": false}
+	var out := {"overlay": true, "asset": str(hp.get_meta("hp_asset", "")).left(160)}
+	var mi := hp.get_node_or_null("Soldier") as MeshInstance3D
+	out["core_mesh"] = mi != null
+	if mi == null:
+		return out
+	var ab := mi.get_aabb()
+	out["surfaces"] = mi.mesh.get_surface_count()
+	out["height"] = snappedf(ab.size.y, 0.001)
+	out["min_y"] = snappedf(ab.position.y, 0.001)
+	var badge := ""
+	var eye := false
+	var untextured := 0
+	for i in range(mi.mesh.get_surface_count()):
+		var m := mi.mesh.surface_get_material(i)
+		if m is ShaderMaterial:
+			eye = eye or (m as ShaderMaterial).get_shader_parameter("iris") != null
+		elif m is StandardMaterial3D:
+			var sm := m as StandardMaterial3D
+			if sm.albedo_texture == null:
+				untextured += 1
+			if sm.transparency == BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR and sm.albedo_texture != null:
+				badge = "%dx%d#%d" % [sm.albedo_texture.get_width(), sm.albedo_texture.get_height(), sm.albedo_texture.get_instance_id()]
+	out["badge_texture"] = badge
+	out["eye_blend"] = eye
+	out["untextured_surfaces"] = untextured
+	return out
+
+
+# EXPORT: the upload file written through the core for this level (readable and
+# minified) and for another level read from disk, into the user folder rather
+# than the SDK's export folder; the SDK panel's added button; a scene that is
+# not a level refused. The files are compared with the SDK exporter's outside.
+static func _upload_checks(root: Node) -> Dictionary:
+	var res := {}
+	var upload: Script = load("res://addons/bf6_extended_workspace/workspace_upload.gd")
+	var dir := OS.get_user_data_dir().path_join("bf6_upload")
+	res["why_not"] = upload.why_not(root)
+	res["export_dir"] = upload.export_dir()
+	var readable: Dictionary = upload.export_scene(root, false, dir.path_join("readable"))
+	var small: Dictionary = upload.export_scene(root, true, dir.path_join("minified"))
+	res["readable"] = {"ok": readable.ok, "path": readable.get("path", ""), "bytes": readable.get("bytes", 0), "error": readable.get("error", "")}
+	res["minified"] = {"ok": small.ok, "bytes": small.get("bytes", 0)}
+	var other := load("res://levels/MP_Aftermath_Portal.tscn") as PackedScene
+	if other != null:
+		var inst := other.instantiate(PackedScene.GEN_EDIT_STATE_MAIN)
+		var r: Dictionary = upload.export_scene(inst, false, dir.path_join("readable"))
+		res["aftermath"] = {"ok": r.ok, "bytes": r.get("bytes", 0), "error": r.get("error", "")}
+		inst.free()
+	var loose := Node3D.new()
+	loose.name = "NotALevel"
+	res["not_a_level"] = str(upload.export_scene(loose, false, dir).get("error", ""))
+	loose.free()
+	var button: Node = EditorInterface.get_base_control().find_child("BF6ExportThroughCore", true, false)
+	res["dock_button"] = {"found": button != null, "disabled": (button as Button).disabled if button is Button else true,
+		"next_to_export_level": button != null and button.get_index() > 0 and str(button.get_parent().get_child(button.get_index() - 1).name) == "ExportLevel_Button"}
+	return res
+
+
+# THE UPLOAD FILE: the shared core's writer given this scene, another level read
+# from disk, and this scene with a piece placed (saved beside the request so the
+# SDK's own exporter can be run on the same thing). The comparison runs outside.
+static func _spatial_checks(root: Node, seed: Node3D, history: UndoRedo) -> Dictionary:
+	var res := {}
+	var spatial: Script = load("res://addons/bf6_extended_workspace/workspace_spatial.gd")
+	var mode: Script = load("res://addons/bf6_extended_workspace/workspace_mode_setup.gd")
+	res["available"] = spatial.available()
+	if not spatial.available():
+		return res
+	var dir := OS.get_user_data_dir().path_join("bf6_spatial")
+	DirAccess.make_dir_recursive_absolute(dir)
+	var save := func(name: String, scene: Node) -> Dictionary:
+		var req: Dictionary = spatial.describe(scene)
+		var f := FileAccess.open(dir.path_join(name + ".request.json"), FileAccess.WRITE)
+		f.store_string(JSON.stringify(req))
+		f.close()
+		var t0 := Time.get_ticks_msec()
+		var ex: Dictionary = spatial.export_scene(scene)
+		var small: Dictionary = spatial.export_scene(scene, false, true)
+		return {"objects": (req.objects as Array).size(), "ms": Time.get_ticks_msec() - t0, "bytes": (ex.text as String).length(),
+			"min_bytes": (small.text as String).length(), "report": ex.report}
+	res["open"] = save.call("MP_Isolated", root)
+	var other := load("res://levels/MP_Aftermath_Portal.tscn") as PackedScene
+	if other != null:
+		var inst := other.instantiate(PackedScene.GEN_EDIT_STATE_MAIN)
+		res["aftermath"] = save.call("MP_Aftermath_Portal", inst)
+		inst.free()
+	var flag: Node = mode.place_bundle("FLAG", seed.global_position + Vector3(30, 0, 30))
+	var packed := PackedScene.new()
+	if flag != null and packed.pack(root) == OK:
+		ResourceSaver.save(packed, dir.path_join("MP_Isolated_flag.tscn"))
+		res["flag"] = save.call("MP_Isolated_flag", root)
+	if flag != null:
+		history.undo()
+	res["dir"] = dir
+	return res
+
+
+# PORTAL BUDGET and BLOCKS: the bar in the 3D toolbar counts a placed piece; a
+# block the Unreal SDK saved places here; one saved here places again. The
+# block "_parity_godot" stays in the shared library for the Unreal SDK to place.
+static func _blocks_budget_checks(tree: SceneTree, root: Node, seed: Node3D, map: String, history: UndoRedo) -> Dictionary:
+	var res := {}
+	var base := "res://addons/bf6_extended_workspace/"
+	var place: Script = load(base + "workspace_place.gd")
+	var mode: Script = load(base + "workspace_mode_setup.gd")
+	var blocks: Script = load(base + "workspace_blocks.gd")
+	var at: Vector3 = seed.global_position + Vector3(30, 0, 30)
+	var gy: Variant = place.ground_at(at.x, at.z, at.y + 50.0, false)
+	if gy != null:
+		at.y = float(gy)
+	var before := root.get_child_count()
+	var bar: Node = EditorInterface.get_base_control().find_child("BF6Budget", true, false)
+	res["bar"] = bar != null
+	if bar != null:
+		res["budget_before"] = str((bar.refresh() as Dictionary).get("text", ""))
+		mode.place_bundle("FLAG", at)
+		res["budget_with"] = str((bar.refresh() as Dictionary).get("text", ""))
+		for i in range(4):
+			await tree.process_frame
+		res["budget_shot"] = _shoot_editor("user://bf6_parity_%s_budget.png" % map)
+		history.undo()
+		res["budget_after"] = str((bar.refresh() as Dictionary).get("text", ""))
+		# The upload share, from a dry-run export as in Unreal.
+		var t0 := Time.get_ticks_msec()
+		res["estimate_started"] = bar.start_estimate(root, 0, true)
+		res["estimate_ms"] = Time.get_ticks_msec() - t0
+		res["budget_estimated"] = str((bar.refresh() as Dictionary).get("text", ""))
+	res["available"] = blocks.available()
+	res["library"] = blocks.library()
+	res["listed"] = blocks.list().map(func(b): return "%s|%s|%d|%s" % [b.name, b.level, int(b.count), b.format])
+	# Saved in the Unreal SDK.
+	var g: Node3D = blocks.place("_parity_flag", at)
+	res["unreal_block"] = _describe_block(blocks, g)
+	if g != null:
+		history.undo()
+	res["unreal_block_undo"] = root.get_child_count() == before
+	# Saved here, then placed again 100 m along.
+	var flag: Node = mode.place_bundle("FLAG", at)
+	var sel := EditorInterface.get_selection()
+	sel.clear()
+	sel.add_node(flag)
+	var saved: Dictionary = blocks.save_selection("_parity_godot")
+	res["godot_save"] = saved
+	res["godot_source"] = _describe_block(blocks, flag.get_parent() as Node3D)
+	var copy: Node3D = blocks.place("_parity_godot", at + Vector3(100, 0, 0))
+	res["godot_copy"] = _describe_block(blocks, copy)
+	# Pictures: drawn here for this block; the Unreal one read from the library.
+	var drawn: String = await blocks.render_thumb("_parity_godot")
+	res["thumb_drawn"] = drawn
+	for blk in blocks.list():
+		res["thumb_" + str(blk.name)] = {"fresh": blk.thumb_fresh, "texture": blocks.thumb_texture(blk) != null}
+	if drawn != "":
+		DirAccess.copy_absolute(drawn, ProjectSettings.globalize_path("user://bf6_parity_%s_block_thumb_godot.png" % map))
+	# Dragging out: the drop target covers the 3D view while the drag lasts.
+	blocks.begin_drag("_parity_godot", null)
+	await tree.process_frame
+	var base_control := EditorInterface.get_base_control()
+	res["drag"] = {"dragging": base_control.get_viewport().gui_is_dragging(), "target": base_control.find_child("BF6BlockDrop", false, false) != null}
+	base_control.get_viewport().gui_cancel_drag()
+	for i in range(3):
+		await tree.process_frame
+	res["drag"]["target_gone"] = base_control.find_child("BF6BlockDrop", false, false) == null
+	var pop: Window = blocks.open(EditorInterface.get_base_control(), EditorInterface.get_base_control().get_global_rect().get_center(), EditorInterface.get_editor_scale(), Callable())
+	for i in range(10):
+		await tree.process_frame
+	var img: Image = pop.get_texture().get_image()
+	res["panel_shot"] = img != null and img.save_png("user://bf6_parity_%s_blocks_panel.png" % map) == OK
+	pop.hide()
+	for i in range(3):
+		history.undo()
+	res["godot_undo"] = root.get_child_count() == before
+	return res
+
+
+static func _describe_block(blocks: Script, g: Node3D) -> Dictionary:
+	if g == null:
+		return {}
+	var inv := g.global_transform.affine_inverse()
+	var members: Array = []
+	var cp: Node = null
+	for n in blocks.members_of([g]):
+		var l: Vector3 = inv * (n as Node3D).global_position
+		members.append("%s|%s|%.2f,%.2f,%.2f|%.0f" % [n.name, blocks.type_of(n), l.x, l.y, l.z, rad_to_deg((n as Node3D).global_rotation.y)])
+		if blocks.type_of(n) == "CapturePoint":
+			cp = n
+	var out := {"group": str(g.name), "block": str(g.get_meta(&"bf6_block", "")), "members": members}
+	if cp != null:
+		var area: Node = cp.get("CaptureArea")
+		out["obj_id"] = cp.get("ObjId")
+		out["area"] = str(area.name) if area != null else ""
+		out["area_points"] = (area.get("points") as PackedVector2Array).size() if area != null else 0
+		out["area_world_first"] = str((area as Node3D).global_transform * Vector3((area.get("points") as PackedVector2Array)[0].x, 0, (area.get("points") as PackedVector2Array)[0].y)) if area != null else ""
+		out["area_height"] = area.get("height") if area != null else null
+		out["team1"] = (cp.get("InfantrySpawnPoints_Team1") as Array).map(func(s): return str(s.name))
+		out["team2"] = (cp.get("InfantrySpawnPoints_Team2") as Array).size()
+	return out
+
+
+# LOG, CHANGES and EXPERIENCE: each opens as a main screen, reads through the
+# bundled core runtime, and is photographed. Nothing here writes to the scene.
+static func _top_row_checks(tree: SceneTree, map: String) -> Dictionary:
+	var res := {"runtime": ClassDB.class_exists("BF6CoreRuntime")}
+	var main := EditorInterface.get_editor_main_screen()
+	var place: Script = load("res://addons/bf6_extended_workspace/workspace_place.gd")
+	res["workspace_core"] = place.core().get_class() if place.core() != null else ""
+	for s in [["BF6 Log", "BF6GameLog"], ["BF6 Changes", "BF6Changes"], ["BF6 Experience", "BF6Experience"]]:
+		var panel: Node = main.find_child(s[1], true, false)
+		var key: String = str(s[1]).to_lower()
+		if panel == null:
+			res[key] = "missing"
+			continue
+		EditorInterface.set_main_screen_editor(s[0])
+		for i in range(4):
+			await tree.process_frame
+		var info := {"visible": (panel as Control).is_visible_in_tree()}
+		if s[1] == "BF6GameLog":
+			panel.pull()
+			info["lines"] = panel._lines.size()
+			info["where"] = str(panel._where.text).left(120)
+		elif s[1] == "BF6Changes":
+			panel.scan()
+			panel.scan()
+			info["report"] = str(panel._out.text).left(160).replace("\n", " / ")
+			info["status"] = str(panel._status.text)
+		else:
+			panel.refresh()
+			var fixture := OS.get_user_data_dir().path_join("bf6_exp_fixture/saves/experiences/Night Raid/maps/MP_Test")
+			DirAccess.make_dir_recursive_absolute(fixture)
+			var f := FileAccess.open(fixture.path_join("MP_Test.json"), FileAccess.WRITE)
+			f.store_string(JSON.stringify({"portalExperience": "https://portal.battlefield.com/bf6/experience/rules?playgroundId=0a1b2c3d-1111-2222-3333-444455556666", "portalMapIdx": 1}))
+			f.close()
+			var fake := Node3D.new()
+			fake.scene_file_path = fixture.path_join("MP_Test.tscn")
+			var d: Dictionary = panel.detect(fake)
+			fake.free()
+			info["open_map_why"] = str(panel.detect(EditorInterface.get_edited_scene_root()).why).left(90)
+			info["fixture"] = {"linked": d.linked, "id": d.id, "name": d.name, "level": d.level, "map_idx": d.map_idx}
+		await tree.process_frame
+		info["shot"] = _shoot_editor("user://bf6_parity_%s_%s.png" % [map, key])
+		res[key] = info
+	EditorInterface.set_main_screen_editor("3D")
+	return res
+
+
+# MODE SETUP, SCATTER, PICK PLACE, GROUPING and EDIT POINTS in the real editor.
+# Everything made is undone again.
+static func _mode_checks(tree: SceneTree, root: Node, seed: Node3D, map: String, history: UndoRedo) -> Dictionary:
+	var res := {}
+	var base := "res://addons/bf6_extended_workspace/"
+	var place: Script = load(base + "workspace_place.gd")
+	var mode: Script = load(base + "workspace_mode_setup.gd")
+	var scatter: Script = load(base + "workspace_scatter.gd")
+	var pick: Script = load(base + "workspace_pick_place.gd")
+	var grouping: Script = load(base + "workspace_grouping.gd")
+	var zone: Script = load(base + "workspace_zone_edit.gd")
+	var at: Vector3 = seed.global_position + Vector3(30, 0, 30)
+	var gy: Variant = place.ground_at(at.x, at.z, at.y + 50.0, false)
+	res["ground"] = gy
+	if gy != null:
+		at.y = float(gy)
+	var before := root.get_child_count()
+	# One finished piece.
+	var flag: Node = mode.place_bundle("FLAG", at)
+	res["bundle"] = {"root": str(flag.name) if flag != null else "", "children": flag.get_child_count() if flag != null else 0,
+		"area": str(flag.get("CaptureArea").name) if flag != null and flag.get("CaptureArea") != null else "",
+		"team1": (flag.get("InfantrySpawnPoints_Team1") as Array).size() if flag != null else 0,
+		"obj_id": flag.get("ObjId") if flag != null else null,
+		"area_points": (flag.get("CaptureArea").get("points") as PackedVector2Array).size() if flag != null and flag.get("CaptureArea") != null else 0}
+	history.undo()
+	res["bundle_undo"] = root.get_child_count() == before
+	# The wizard, Conquest with one flag: HQ, HQ, flag, then the sector.
+	var hud: Control = EditorInterface.get_base_control().find_child("BF6ModeHud", false, false)
+	mode.hud = hud
+	mode.start("Conquest", 1)
+	res["wizard_total"] = mode.total
+	await tree.process_frame
+	await tree.process_frame
+	res["wizard_shot"] = _shoot_editor("user://bf6_parity_%s_mode_setup.png" % map)
+	for i in range(3):
+		mode.place_at(at + Vector3(i * 40.0, 0, 0))
+	res["wizard_done"] = not mode.active
+	var sector: Node = root.find_child("Sector_1", false, false)
+	res["wizard_sector_flags"] = (sector.get("CapturePoints") as Array).size() if sector != null else -1
+	res["wizard_hq_spawns"] = (root.find_child("Team1_HQ", false, false).get("InfantrySpawns") as Array).size() if root.find_child("Team1_HQ", false, false) != null else -1
+	for i in range(3):
+		history.undo()
+	res["wizard_undo"] = root.get_child_count() == before
+	# SCATTER from the library, around a spot.
+	var prop := ""
+	for p in ["res://objects/nature", "res://objects/props"]:
+		var stack: Array = [p]
+		while prop == "" and not stack.is_empty():
+			var d: String = stack.pop_back()
+			for f in DirAccess.get_files_at(d):
+				if f.ends_with(".tscn"):
+					prop = d.path_join(f)
+					break
+			for sub in DirAccess.get_directories_at(d):
+				stack.append(d.path_join(sub))
+		if prop != "":
+			break
+	res["scatter_prop"] = prop
+	EditorInterface.get_selection().clear()
+	scatter.hud = hud
+	var vr := func(): return (EditorInterface.get_editor_viewport_3d(0).get_parent() as Control).get_global_rect()
+	scatter.begin_from_library(EditorInterface.get_base_control(), vr, EditorInterface.get_editor_scale())
+	scatter.add_objects([prop])
+	scatter.params.count = 20.0
+	scatter.set_center(at)
+	res["scatter_at"] = [at.x, at.y, at.z]
+	res["scatter_xyz"] = scatter.targets.map(func(t): return [snappedf(t.at[0], 0.01), snappedf(t.at[1], 0.01), snappedf(t.at[2], 0.01)])
+	for i in range(6):
+		await tree.process_frame
+	res["scatter_targets"] = scatter.targets.size()
+	res["scatter_preview"] = scatter._nodes.size()
+	res["scatter_shot"] = _shoot_editor("user://bf6_parity_%s_scatter.png" % map)
+	var made: int = scatter.apply()
+	res["scatter_applied"] = made
+	res["scatter_added"] = root.get_child_count() - before
+	history.undo()
+	res["scatter_undo"] = root.get_child_count() == before
+	# The outline after drawing: corners delete (three stay), undo and redo step
+	# through its history; painting fills new ground while the stroke runs.
+	scatter.begin_from_library(EditorInterface.get_base_control(), vr, EditorInterface.get_editor_scale())
+	scatter.add_objects([prop])
+	scatter.begin_draw()
+	for c in [Vector3(-10, 0, -10), Vector3(10, 0, -10), Vector3(10, 0, 10), Vector3(-10, 0, 10)]:
+		scatter.draw_add(at + c)
+	scatter.finish_draw()
+	var outline := {"corners": scatter.poly.size(), "targets": scatter.targets.size()}
+	scatter.delete_corner(0)
+	outline["after_delete"] = scatter.poly.size()
+	scatter.delete_corner(0)
+	outline["min_three"] = scatter.poly.size()
+	scatter.undo_outline()
+	outline["undo"] = scatter.poly.size()
+	scatter.redo_outline()
+	outline["redo"] = scatter.poly.size()
+	res["scatter_outline"] = outline
+	scatter.set_shape(4)
+	scatter.params.radius = 6.0
+	scatter.params.count = 30.0
+	scatter.begin_paint()
+	var grew: Array = []
+	for i in range(6):
+		scatter.paint_to(at + Vector3(i * 5.0, 0, 0))
+		grew.append(scatter.targets.size())
+	scatter.end_paint()
+	res["scatter_paint"] = {"during_stroke": grew, "after": scatter.targets.size()}
+	scatter.cancel()
+	res["scatter_cancel_clean"] = root.get_child_count() == before
+	# PICK PLACE: pick up, turn, put back.
+	EditorInterface.get_selection().clear()
+	EditorInterface.get_selection().add_node(seed)
+	var start := seed.global_transform
+	pick.hud = hud
+	res["pick_begin"] = pick.begin()
+	pick.rotate(45.0, false)
+	pick.cancel()
+	res["pick_restores"] = seed.global_transform.is_equal_approx(start)
+	# GROUPING: group two, ungroup, undo both.
+	var second: Node3D = null
+	for c in root.get_children():
+		if c is Node3D and c != seed and c.owner == root and c.scene_file_path != "":
+			second = c
+			break
+	EditorInterface.get_selection().clear()
+	EditorInterface.get_selection().add_node(seed)
+	if second != null:
+		EditorInterface.get_selection().add_node(second)
+	var g: Node3D = grouping.group_selection()
+	res["group"] = {"made": g != null, "members": g.get_child_count() if g != null else 0, "seed_kept": seed.global_transform.is_equal_approx(start)}
+	EditorInterface.get_selection().clear()
+	if g != null:
+		EditorInterface.get_selection().add_node(g)
+	var blocks: Script = load(base + "workspace_blocks.gd")
+	var saved: Dictionary = blocks.save_selection("parity check block")
+	res["block"] = {"name": str(saved.get("name", saved.get("error", ""))), "count": int(saved.get("count", 0)), "tagged": g != null and g.has_meta(&"bf6_block")}
+	blocks.delete("parity check block")
+	res["ungroup"] = grouping.ungroup_selection()
+	res["ungroup_parent"] = seed.get_parent() == root
+	history.undo()
+	history.undo()
+	res["group_undo"] = seed.get_parent() == root and root.get_child_count() == before and seed.global_transform.is_equal_approx(start)
+	# EDIT POINTS on the first zone.
+	var vol: Node = null
+	for n in root.find_children("*", "", true, false):
+		if n.get("points") is PackedVector2Array and n.owner == root:
+			vol = n
+			break
+	zone.hud = hud
+	zone.begin(vol)
+	res["zone"] = {"active": zone.active, "banner": hud != null and hud.is_showing()}
+	zone.finish()
+	return res
+
+
+# The whole editor window, UI included.
+static func _shoot_editor(path: String) -> String:
+	var img := EditorInterface.get_base_control().get_viewport().get_texture().get_image()
+	if img == null or img.save_png(path) != OK:
+		return ""
+	return path
 
 
 static func _load_path(p: String) -> Array:

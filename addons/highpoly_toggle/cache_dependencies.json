@@ -1,0 +1,72 @@
+{
+  "schema": 1,
+  "cache_contract": 1,
+  "godot": {
+    "roots": [
+      "."
+    ],
+    "extensions": [
+      "gd",
+      "gdshader",
+      "gdextension",
+      "dll",
+      "exe",
+      "tres"
+    ],
+    "required": [
+      "highpoly_gamesource.gd",
+      "highpoly_install_cache.gd",
+      "bf6_source.gd",
+      "bf6_meshset.gd",
+      "bin/bf6_core.dll",
+      "bin/bf6_oodle.windows.x86_64.dll"
+    ],
+    "exclude": [
+      "highpoly_menu.gd",
+      "highpoly_theme.gd",
+      "highpoly_tips.gd",
+      "highpoly_splash.gd",
+      "highpoly_preparation.gd",
+      "highpoly_preparation_order.gd",
+      "highpoly_preparation_screen.gd",
+      "highpoly_updater.gd",
+      "highpoly_log.gd",
+      "highpoly_journal.gd",
+      "highpoly_backdrop.gd"
+    ]
+  },
+  "unreal": {
+    "roots": [
+      "Source"
+    ],
+    "extensions": [
+      "cpp",
+      "h",
+      "inc",
+      "cs"
+    ],
+    "required": [
+      "Source/BF6HighPoly/BF6HighPoly.Build.cs",
+      "Source/BF6HighPoly/Private/BF6HighPoly.cpp",
+      "Source/BF6HighPoly/Private/BF6HighPolyCore.cpp",
+      "Source/BF6HighPoly/Private/BF6HighPolyDiskCache.cpp"
+    ],
+    "exclude": [
+      "Source/BF6HighPoly/Private/BF6HighPolyMenu.cpp",
+      "Source/BF6HighPoly/Private/BF6HighPolyMenu.h",
+      "Source/BF6HighPoly/Private/BF6HighPolyTheme.cpp",
+      "Source/BF6HighPoly/Private/BF6HighPolyTheme.h",
+      "Source/BF6HighPoly/Private/BF6HighPolySplash.cpp",
+      "Source/BF6HighPoly/Private/BF6HighPolySplash.h",
+      "Source/BF6HighPoly/Private/BF6HighPolyControls.h",
+      "Source/BF6HighPoly/Private/BF6HighPolySection.cpp",
+      "Source/BF6HighPoly/Private/BF6HighPolySection.h",
+      "Source/BF6HighPoly/Private/BF6HighPolyCollisionMenu.cpp",
+      "Source/BF6HighPoly/Private/BF6HighPolyCollisionMenu.h",
+      "Source/BF6HighPoly/Private/BF6HighPolyPreparation.cpp",
+      "Source/BF6HighPoly/Private/BF6HighPolyPreparation.h",
+      "Source/BF6HighPoly/Private/BF6HighPolyCacheTests.cpp",
+      "Source/BF6HighPoly/Private/BF6HighPolyPreparationMenu.inc"
+    ]
+  }
+}

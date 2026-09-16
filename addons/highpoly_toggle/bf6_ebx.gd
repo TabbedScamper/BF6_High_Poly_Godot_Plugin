@@ -267,6 +267,70 @@ func read_instance(idx: int, depth := 0, want: Dictionary = {}) -> Dictionary:
 # that only ever applies at the top would make the common path slower.
 func _read_struct_only(guid: PackedByteArray, base: int, depth: int,
 		want: Dictionary) -> Dictionary:
+	if not use_plans:
+		return _read_struct_only_generic(guid, base, depth, want)
+	if depth > MAX_DEPTH:
+		return {}
+	# THE WANTED FIELDS OF A TYPE, SELECTED ONCE. This ran the whole layout
+	# against `want` for every instance - 178,349 instances on mp_dumbo, each
+	# layout dozens of fields - and resolved each kept field's type again. The
+	# selection depends only on the type and the wanted set, so it is kept in the
+	# layout cache and replayed; values still come from _decode, or from the
+	# same scalar readers _decode uses.
+	if not is_same(want, _want_ref):
+		_want_ref = want
+		_want_key = "w%d_%d:" % [want.hash(), want.size()]
+	var ck: String = _want_key + guid.hex_encode()
+	var sel = _lay_cache.get(ck)
+	if sel == null:
+		var lay := _layout(guid)
+		if lay.is_empty():
+			sel = false
+		else:
+			var picked: Array = []
+			for fld in lay["fields"]:
+				var nh: int = int(fld["nameHash"])
+				if not want.has(nh):
+					continue
+				var rt: Dictionary = _resolve(int(fld["typeVA"]))
+				var te := int(rt["te"]) if not rt.is_empty() else -1
+				picked.append([nh, int(fld["offset"]), int(fld["typeVA"]),
+					te if PLAIN_SCALARS.has(te) else -1])
+			sel = [guid_str(guid), picked]
+		_lay_cache[ck] = sel
+	if not (sel is Array):
+		return {}
+	var out := {"__type": sel[0]}
+	for f in sel[1]:
+		var nh: int = f[0]
+		n_top += 1
+		var pos: int = base + int(f[1])
+		if pos < 0 or pos + 8 > data.size():
+			out[nh] = null
+			continue
+		match int(f[3]):
+			-1: out[nh] = _decode(pos, int(f[2]), depth)
+			0x13: out[nh] = data.decode_float(pos)
+			0x0A: out[nh] = data[pos] != 0
+			0x0B: out[nh] = int(data.decode_s8(pos))
+			0x0C: out[nh] = int(data[pos])
+			0x0D: out[nh] = int(data.decode_s16(pos))
+			0x0E: out[nh] = int(data.decode_u16(pos))
+			0x0F: out[nh] = int(data.decode_s32(pos))
+			0x10, 0x08: out[nh] = int(data.decode_u32(pos))
+			0x11: out[nh] = int(data.decode_s64(pos))
+			0x12: out[nh] = int(data.decode_u64(pos))
+			0x14: out[nh] = data.decode_double(pos)
+	return out
+
+
+var _want_ref = null
+var _want_key := ""
+
+
+# The original filter, the control for the selection above (use_plans = false).
+func _read_struct_only_generic(guid: PackedByteArray, base: int, depth: int,
+		want: Dictionary) -> Dictionary:
 	var lay := _layout(guid)
 	if lay.is_empty() or depth > MAX_DEPTH:
 		return {}
@@ -354,15 +418,19 @@ func _layout(guid: PackedByteArray) -> Dictionary:
 
 
 func _read_struct(guid: PackedByteArray, base: int, depth: int) -> Dictionary:
-	# THE TRANSFORM FAST PATH. Measured: 2,878,067 nested field decodes over
-	# 178,727 instances on this map, 16.1 each - which is this struct and
-	# essentially nothing else. The generic path below rediscovers the layout
-	# and allocates a Dictionary at five levels to recover sixteen floats that
-	# are contiguous at a known offset.
-	#
-	# Emits the identical shape: __type plus four members, each a Vec3
-	# dictionary keyed by the x/y/z hashes, because is_lt() and vec_of() read
-	# exactly that.
+	# THE PLAIN-STRUCT FAST PATH. Measured: 2,878,067 nested field decodes over
+	# 178,727 instances on one map, 16.1 each - LinearTransform (four Vec3) and
+	# little else. The generic path below resolves every field's type and walks
+	# _decode per float. A struct made only of scalars and nested structs of
+	# scalars has a fixed shape, so its decode is planned once per type
+	# (_plan_for) and replayed from offsets. It emits the identical dictionaries:
+	# the same keys in the same order, the same values from the same readers.
+	# It steps aside whenever the generic path could differ - a field near the
+	# end of the data (which the generic path nulls) or the depth limit.
+	var plan = _plan_for(guid) if use_plans else null
+	if plan is Array and depth + int(plan[2]) <= MAX_DEPTH and base >= 0 \
+			and base + int(plan[3]) <= data.size():
+		return _emit_plan(plan, base)
 	var lay := _layout(guid)
 	if lay.is_empty() or depth > MAX_DEPTH:
 		return {}
@@ -385,8 +453,101 @@ func _read_struct(guid: PackedByteArray, base: int, depth: int) -> Dictionary:
 	return out
 
 
+# Plans, per struct type guid: [type string, fields, levels below, bytes needed,
+# field count] where fields are [nameHash, offset, te, sub plan or null], or false
+# for a type that is not plain. Kept in the layout cache under "p:" keys, so a
+# walk that shares one layout cache across partitions shares the plans too.
+const PLAIN_SCALARS := {0x0A: true, 0x0B: true, 0x0C: true, 0x0D: true, 0x0E: true,
+	0x0F: true, 0x10: true, 0x08: true, 0x11: true, 0x12: true, 0x13: true, 0x14: true}
+static var n_planned := 0
+# false decodes every struct generically: the control tools/test_ebx_plans.gd uses.
+static var use_plans := true
+
+
+func _plan_for(guid: PackedByteArray, level := 0):
+	var k := "p:" + guid.hex_encode()
+	if _lay_cache.has(k):
+		return _lay_cache[k]
+	_lay_cache[k] = false              # a self-referencing type is not plain
+	if level > MAX_DEPTH:
+		return false
+	var lay := _layout(guid)
+	if lay.is_empty():
+		return false
+	var fields: Array = []
+	var below := 0
+	var need := 0
+	var count := 0
+	for fld in lay["fields"]:
+		var off: int = int(fld["offset"])
+		var rt: Dictionary = _resolve(int(fld["typeVA"]))
+		if rt.is_empty():
+			return false
+		var te := int(rt["te"])
+		if PLAIN_SCALARS.has(te):
+			fields.append([int(fld["nameHash"]), off, te, null])
+			need = maxi(need, off + 8)          # the generic bound: pos + 8
+			count += 1
+		elif te == 0x02:
+			var sub = _plan_for(rt["guid_raw"], level + 1)
+			if not (sub is Array):
+				return false
+			fields.append([int(fld["nameHash"]), off, te, sub])
+			below = maxi(below, 1 + int(sub[2]))
+			need = maxi(need, maxi(off + 8, off + int(sub[3])))
+			count += 1 + int(sub[4])
+		else:
+			return false
+	var plan := [guid_str(guid), fields, below, need, count]
+	_lay_cache[k] = plan
+	return plan
+
+
+func _emit_plan(plan: Array, base: int) -> Dictionary:
+	# Counted once for the whole tree: the generic path counts every field at
+	# every level, which is exactly plan[4].
+	n_nested += int(plan[4])
+	n_planned += 1
+	return _emit_fields(plan, base)
+
+
+func _emit_fields(plan: Array, base: int) -> Dictionary:
+	var out := {"__type": plan[0]}
+	for f in plan[1]:
+		var pos: int = base + int(f[1])
+		var sub = f[3]
+		if sub != null:
+			out[f[0]] = _emit_fields(sub, pos)
+			continue
+		match int(f[2]):
+			0x13: out[f[0]] = data.decode_float(pos)
+			0x0A: out[f[0]] = data[pos] != 0
+			0x0B: out[f[0]] = int(data.decode_s8(pos))
+			0x0C: out[f[0]] = int(data[pos])
+			0x0D: out[f[0]] = int(data.decode_s16(pos))
+			0x0E: out[f[0]] = int(data.decode_u16(pos))
+			0x0F: out[f[0]] = int(data.decode_s32(pos))
+			0x10, 0x08: out[f[0]] = int(data.decode_u32(pos))
+			0x11: out[f[0]] = int(data.decode_s64(pos))
+			0x12: out[f[0]] = int(data.decode_u64(pos))
+			0x14: out[f[0]] = data.decode_double(pos)
+	return out
+
+
+# A TYPE ADDRESS RESOLVES THE SAME WAY EVERY TIME, and BF6Types.resolve works it
+# out from the executable bytes on each call (or deep-copies it from the type
+# database). It ran for every decoded field. Kept in the layout cache under the
+# integer address, so a walk resolves each type once; callers only read it.
+func _resolve(type_va: int) -> Dictionary:
+	var r = _lay_cache.get(type_va)
+	if r == null:
+		r = _types.resolve(type_va)
+		_lay_cache[type_va] = r
+	return r
+
+
 func _decode(pos: int, type_va: int, depth: int):
-	var rt: Dictionary = _types.resolve(type_va)
+	var rt: Dictionary = _resolve(type_va)
 	if rt.is_empty():
 		return null
 	var te := int(rt["te"])
@@ -481,7 +642,7 @@ func _read_array(pos: int, elem_va: int, depth: int) -> Array:
 	if count < 0 or count > MAX_ARRAY:
 		return []
 	var elem := array_data + 4
-	var rt: Dictionary = _types.resolve(elem_va) if elem_va != 0 else {}
+	var rt: Dictionary = _resolve(elem_va) if elem_va != 0 else {}
 	var te := int(rt["te"]) if not rt.is_empty() else 0x10
 	var items: Array = []
 	n_arr_elem += count

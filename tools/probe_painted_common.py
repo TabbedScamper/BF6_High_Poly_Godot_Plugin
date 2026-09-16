@@ -23,7 +23,7 @@ import sys
 
 # --- locate the research checkout and its pipeline modules -------------------
 _CANDIDATE_RESEARCH = [
-    r"C:\PortalSDK\BF6_Frostbite_Research",
+    os.environ.get("BF6_RESEARCH_ROOT", ""),
     os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
         os.path.abspath(__file__)))), "BF6_Frostbite_Research"),
 ]

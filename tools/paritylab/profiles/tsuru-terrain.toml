@@ -1,0 +1,66 @@
+name = "tsuru-terrain"
+description = "Live Steam-input proof chain for the saved Tsuru Reef terrain camera."
+
+[[steps]]
+name = "coverage-window"
+exe = "{build}/terrainwindow_test.exe"
+args = ["{game}", "mp_isolated", "-778.96216226", "412.78984774", "64", "64"]
+timeout_s = 180
+expect = ["29 active layers|29 layer|material\\(s\\)"]
+forbid = ["access violation", "out-of-bounds"]
+
+[[steps]]
+name = "mask-and-worklists"
+exe = "{build}/terrainmask_test.exe"
+args = ["{game}", "mp_isolated", "-778.96216226", "412.78984774"]
+timeout_s = 180
+expect = ["t9/t13 packing: PASS", "real layer/mask join: PASS", "shuffled-layer control: PASS/rejected"]
+
+[[steps]]
+name = "bindless-and-rows"
+exe = "{build}/terrainbindless_test.exe"
+args = ["{game}", "mp_isolated", "-778.96216226", "412.78984774"]
+timeout_s = 240
+expect = ["active descriptor join: PASS", "46 unique live textures"]
+
+[[steps]]
+name = "exact-dxil-adapter-control"
+exe = "{python}"
+args = ["{paritylab}", "--game", "{game}", "dxil-adapters", "--exe", "{build}/terraindxil_dispatch_test.exe", "--out", "{out}/dxil-adapters"]
+timeout_s = 600
+expect = ["\"both_pass\": true", "\"classification\":"]
+
+[[steps]]
+name = "gpu-page-input-upload"
+exe = "{build}/terraindxil_dispatch_test.exe"
+args = ["{game}", "mp_isolated", "--page-upload", "-778.96216226", "412.78984774"]
+timeout_s = 300
+expect = ["control truncated authored texture: PASS/rejected", "live page GPU input upload: PASS", "68x68 height", "colour bound"]
+
+[[steps]]
+name = "live-dxil-page-dispatch"
+exe = "{build}/terraindxil_dispatch_test.exe"
+args = ["{game}", "mp_isolated", "--page-dispatch", "-778.96216226", "412.78984774", "{out}/live-dxil-basecolor.ppm"]
+timeout_s = 300
+expect = ["empty control: finite 1.000000, magenta 1.000000", "authored page: finite 1.000000, magenta 0.000000", "control reversed per-tile order: MAE", "AOV evidence: U0 height range", 'diagnostic live material\+height page dispatch: PASS']
+
+[[steps]]
+name = "d3d12-debug-layer"
+exe = "{build}/terraindxil_dispatch_test.exe"
+args = ["{game}", "mp_isolated", "--debug-layer", "--page-dispatch", "-778.96216226", "412.78984774", "{out}/debug-layer-basecolor.ppm"]
+timeout_s = 300
+expect = ["D3D12 diagnostics: debug layer enabled", 'D3D12 validation summary: 0 message\(s\), 0 warning\(s\), 0 error/corruption', 'diagnostic live material\+height page dispatch: PASS']
+
+[[steps]]
+name = "in-memory-page-pipe"
+exe = "{python}"
+args = ["{paritylab}", "--game", "{game}", "page-pipe", "--exe", "{build}/terraindxil_dispatch_test.exe", "--level", "mp_isolated", "--x", "-778.96216226", "--z", "412.78984774", "--span", "16", "--out", "{out}/page-pipe"]
+timeout_s = 300
+expect = ['"rgba_bytes": 16384', '"rejected": true', '"pipe_transport_pass": true']
+
+[[steps]]
+name = "complete-page-contract"
+exe = "{build}/terrainpage_test.exe"
+args = ["{game}", "mp_isolated", "-778.96216226", "412.78984774"]
+timeout_s = 240
+expect = ['complete live material\+height page contract: PASS']

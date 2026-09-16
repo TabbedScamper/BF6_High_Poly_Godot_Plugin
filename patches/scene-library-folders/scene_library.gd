@@ -115,6 +115,20 @@ var _thread_sem: Semaphore = null
 var _render_semaphore: Semaphore = null
 var _exit_thread: bool = false
 
+# Library index and thumbnails are demand-loaded, never part of editor startup.
+const LAZY_LIBRARY_VERSION := 1
+const THUMBNAIL_CACHE_LIMIT := 256
+var _library_pending := false
+var _lazy_timer: Timer
+var _placeholder: ImageTexture
+var _thumbnail_lru: Array[int] = []
+var _visible_indices: Array[int] = []
+var _thumbnail_cursor := 0
+var _last_view := Rect2()
+var _view_dirty := true
+var _thumbnail_creations := 0
+var _thumbnail_ready: Dictionary[int, bool] = {}
+
 var _saved: bool = true
 # INFO: Use key-value pairs to store collections.
 var _curr_lib: Array[Dictionary] = NULL_LIBRARY  # Array[Dictionary[StringName, ImageTexture]]
@@ -405,7 +419,15 @@ func _ready() -> void:
 	asset_display_mode_changed.connect(_update_asset_display_mode)
 
 	_curr_lib_path = get_or_create_project_setting(PROJECT_SETTING_CURRENT_LIBRARY_PATH, "res://addons/scene-library/scene_library.json")
-	load_library(_curr_lib_path)
+	_library_pending = true
+	_lazy_timer = Timer.new()
+	_lazy_timer.wait_time = 0.1
+	_lazy_timer.timeout.connect(_lazy_tick)
+	add_child(_lazy_timer)
+	_lazy_timer.start()
+	visibility_changed.connect(func(): _view_dirty = true)
+	_item_list.get_v_scroll_bar().value_changed.connect(func(_value): _view_dirty = true)
+	_item_list.resized.connect(func(): _view_dirty = true)
 
 	collection_changed.connect(_collec_tab_bar.size_flags_changed.emit)
 
@@ -413,6 +435,8 @@ func _ready() -> void:
 
 
 func _exit_tree() -> void:
+	if _mutex == null:
+		return
 	_mutex.lock()
 	_thread_queue.clear()
 	_exit_thread = true
@@ -424,6 +448,7 @@ func _exit_tree() -> void:
 	_thread_sem.post()
 	if _thread.is_started():
 		_thread.wait_to_finish()
+	_viewport.queue_free()
 
 
 func _can_drop_data(at_position: Vector2, data: Variant) -> bool:
@@ -588,6 +613,62 @@ func show_remove_collection_dialog(index: int) -> void:
 	window.popup_centered(Vector2i(300, 0))
 
 
+func _placeholder_thumbnail() -> ImageTexture:
+	if _placeholder == null:
+		var path := ProjectSettings.globalize_path("res://addons/scene-library/icons/thumb_placeholder.svg")
+		_placeholder = ImageTexture.create_from_image(Image.load_from_file(path))
+	return _placeholder
+
+
+func _lazy_tick() -> void:
+	if not is_visible_in_tree():
+		return
+	var base := EditorInterface.get_base_control()
+	if bool(base.get_meta("bf6_home_startup_pending", false)):
+		return
+	if EditorInterface.get_resource_filesystem().is_scanning():
+		return
+	if _library_pending:
+		load_library(_curr_lib_path)
+		return # Let ItemList finish layout before asking for item rectangles.
+	_refresh_visible_thumbnails()
+
+
+func _refresh_visible_thumbnails() -> void:
+	var view := Rect2(Vector2(0, _item_list.get_v_scroll_bar().value), _item_list.size)
+	if _view_dirty or view != _last_view:
+		_view_dirty = false
+		_last_view = view
+		_visible_indices.clear()
+		_thumbnail_cursor = 0
+		# Drop work belonging to the previous collection or scroll position.
+		_mutex.lock()
+		_thread_queue.clear()
+		_mutex.unlock()
+		for i in _item_list.item_count:
+			var asset: Dictionary = _item_list.get_item_metadata(i)
+			if not asset.get("__lazy_thumbnail", false):
+				continue
+			if _item_list.get_item_rect(i).intersects(view):
+				_visible_indices.append(i)
+			else:
+				asset.thumb = _placeholder_thumbnail()
+				_item_list.set_item_icon(i, asset.thumb)
+	var started := Time.get_ticks_usec()
+	var done := 0
+	while _thumbnail_cursor < _visible_indices.size() and done < 8:
+		var i := _visible_indices[_thumbnail_cursor]
+		_thumbnail_cursor += 1
+		var asset: Dictionary = _item_list.get_item_metadata(i)
+		asset.thumb = _get_or_create_thumbnail(int(asset.id), str(asset.path))
+		_item_list.set_item_icon(i, asset.thumb)
+		done += 1
+		if Time.get_ticks_usec() - started >= 4000:
+			break
+	while _thumbnail_lru.size() > THUMBNAIL_CACHE_LIMIT:
+		_thumbnails.erase(_thumbnail_lru.pop_front())
+
+
 func _queue_has_path(path: String) -> bool:
 	_mutex.lock()
 
@@ -615,18 +696,23 @@ func _queue_update_thumbnail(path: String) -> void:
 
 func _get_or_create_thumbnail(id: int, path: String) -> ImageTexture:
 	var thumb: ImageTexture = _thumbnails.get(id, null)
+	_thumbnail_lru.erase(id)
+	_thumbnail_lru.append(id)
 	if is_instance_valid(thumb):
+		if not _thumbnail_ready.get(id, false):
+			_queue_update_thumbnail(path)
 		return thumb
+	_thumbnail_creations += 1
 
 	var cache_path: String = _get_thumb_cache_path(id)
 	if _cache_enabled and FileAccess.file_exists(cache_path):
 		thumb = ImageTexture.create_from_image(Image.load_from_file(cache_path))
 		_thumbnails[id] = thumb
+		_thumbnail_ready[id] = true
 	else:
-		const THUMB_PLACEHOLDER_PATH: String = "res://addons/scene-library/icons/thumb_placeholder.svg"
-
-		var thumb_placeholder_path: String = ProjectSettings.globalize_path(THUMB_PLACEHOLDER_PATH)
-		thumb = ImageTexture.create_from_image(Image.load_from_file(thumb_placeholder_path))
+		# Each queued renderer updates its own texture; the shared placeholder
+		# must never be modified by a completed thumbnail.
+		thumb = ImageTexture.create_from_image(_placeholder_thumbnail().get_image())
 		_thumbnails[id] = thumb
 
 		_queue_update_thumbnail(path)
@@ -642,11 +728,7 @@ static func create_asset_no_thumbnail(id: int, path: String) -> Dictionary[Strin
 
 
 func _create_asset(id: int, path: String) -> Dictionary[StringName, Variant]:
-	return {
-		&"id": id,
-		&"path": path,
-		&"thumb": _get_or_create_thumbnail(id, path),
-	}
+	return create_asset_no_thumbnail(id, path)
 
 
 static func is_valid_scene_file(path: String) -> bool:
@@ -773,6 +855,21 @@ func update_item_list() -> void:
 			if not gsx.is_empty(): sfx_cols.append(gsx)
 			if not sfx_cols.is_empty():
 				folders.append({"__hp_folder": sfx_cols, "__hp_label": "SFX"})
+			# every effect our FX/SFX folders own is HIDDEN from the stock
+			# collection list — one home per asset, no duplicates in the root
+			var _hp_owned := {}
+			for c in fx_cols:
+				for a: Dictionary in c.assets:
+					_hp_owned[a.path] = true
+			for c in sfx_cols:
+				for a: Dictionary in c.assets:
+					_hp_owned[a.path] = true
+			if not _hp_owned.is_empty():
+				var _hp_kept: Array = []
+				for a: Dictionary in assets:
+					if not _hp_owned.has(a.path):
+						_hp_kept.append(a)
+				assets = _hp_kept
 	_item_list.set_item_count(folders.size() + assets.size())
 
 	var queries: PackedStringArray = _asset_filter_line.get_text().split(" ", false)
@@ -785,7 +882,12 @@ func update_item_list() -> void:
 		_item_list.set_item_text(index, flabel)
 		_item_list.set_item_icon(index, _hp_back_icon if fmeta.has("__hp_back") else _hp_fold_icon)
 		_item_list.set_item_tooltip(index, flabel)
-		_item_list.set_item_metadata(index, fmeta)
+		# Folder entries share the stock display-mode consumer with real assets.
+		# Preserve its typed metadata contract and retain the displayed icon.
+		var folder_asset: Dictionary[StringName, Variant] = {&"thumb": _item_list.get_item_icon(index)}
+		for key in fmeta:
+			folder_asset[StringName(key)] = fmeta[key]
+		_item_list.set_item_metadata(index, folder_asset)
 		index += 1
 	for asset: Dictionary in assets:
 		var path: String = asset.path
@@ -797,6 +899,11 @@ func update_item_list() -> void:
 			continue
 
 		_item_list.set_item_text(index, path.get_file().get_basename())
+		# Display metadata owns transient thumbnails; the library index never does.
+		asset = asset.duplicate()
+		if asset.thumb == null:
+			asset[&"__lazy_thumbnail"] = true
+			asset.thumb = _placeholder_thumbnail()
 		_item_list.set_item_icon(index, asset.thumb)
 		# NOTE: This tooltip will be hidden because used the custom tooltip.
 		_item_list.set_item_tooltip(index, path)
@@ -805,6 +912,7 @@ func update_item_list() -> void:
 		index += 1
 
 	_item_list.set_item_count(index)
+	_view_dirty = true
 	_update_thumb_icon_size(_asset_display_mode)
 
 
@@ -973,9 +1081,8 @@ func _deserialize_asset(asset: Dictionary) -> Dictionary[StringName, Variant]:
 	var path: String = asset.get("path", "")
 	var id = get_path_hash(path)
 
-	if not is_valid_scene_file(path):
-		return {}
-
+	# Keep missing assets in the authored index. Validate only when rendered or
+	# opened; an unavailable file must not disappear on the next library save.
 	return _create_asset(id, path)
 
 
@@ -1039,6 +1146,7 @@ func _load_json(path: String) -> Array[Dictionary]:
 
 
 func load_library(path: String) -> void:
+	_library_pending = false
 	var library: Array[Dictionary] = []
 
 	if FileAccess.file_exists(path):
@@ -1129,7 +1237,7 @@ func _save_thumb_to_disk(id: int, image: Image) -> void:
 
 
 func _render_thumb(item: Dictionary[StringName, Variant], callback: Callable) -> void:
-	if not is_valid_scene_file(item.path):
+	if not is_visible_in_tree() or not is_valid_scene_file(item.path):
 		return callback.call()
 
 	var packed_scene := ResourceLoader.load(item.path, "PackedScene", ResourceLoader.CacheMode.CACHE_MODE_IGNORE_DEEP) as PackedScene
@@ -1161,6 +1269,7 @@ func _render_thumb(item: Dictionary[StringName, Variant], callback: Callable) ->
 
 	var thumb: ImageTexture = item.thumb
 	thumb.update(image)
+	_thumbnail_ready[get_path_hash(item.path)] = true
 
 	if _cache_enabled:
 		var id = get_path_hash(item.path)
@@ -1175,7 +1284,12 @@ func _render_thumb(item: Dictionary[StringName, Variant], callback: Callable) ->
 func _thumbnail_thread() -> void:
 	var fs = EditorInterface.get_resource_filesystem()
 	while fs.is_scanning():
-		pass  # need to wait for editor startup to complete before trying to load resources
+		_mutex.lock()
+		var stopping := _exit_thread
+		_mutex.unlock()
+		if stopping:
+			return
+		OS.delay_msec(10)
 
 	while true:
 		_thread_sem.wait()
@@ -1207,8 +1321,8 @@ func handle_scene_saved(path: String) -> void:
 
 
 func handle_file_moved(old_file: String, new_file: String) -> void:
-	if not _thumbnails.has(get_path_hash(new_file)):
-		return
+	if _library_pending:
+		load_library(_curr_lib_path)
 
 	for collection: Dictionary in _curr_lib:
 		for asset: Dictionary in collection.assets:
@@ -1220,6 +1334,8 @@ func handle_file_moved(old_file: String, new_file: String) -> void:
 
 
 func handle_file_removed(file: String) -> void:
+	if _library_pending:
+		load_library(_curr_lib_path)
 	# TODO: Need to add Dictionary for asset path.
 	# Because we can't use UID for deleted files.
 	# And we have to go through all collections and assets.
@@ -1402,6 +1518,7 @@ func _sort_assets_button_toggled(reverse: bool) -> void:
 
 
 func _update_thumb_icon_size(display_mode: DisplayMode) -> void:
+	_view_dirty = true
 	if display_mode == DisplayMode.THUMBNAILS:
 		_item_list.set_fixed_column_width(_thumb_grid_icon_size * 1.5)
 		_item_list.set_fixed_icon_size(Vector2i(_thumb_grid_icon_size, _thumb_grid_icon_size))

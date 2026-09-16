@@ -49,16 +49,17 @@ var _stage := S_WAVES
 var _t := 0.0
 
 static func available() -> bool:
-	return FileAccess.file_exists(LOGO)
+	return FileAccess.file_exists(Pal.SharedMenu.file("logo.png"))
 
 # has_video tells the sequence whether stage 1 has anything to show.
 # Returns false when there is nothing to play at all; caller should discard.
 func setup(has_video: bool) -> bool:
 	_has_video = has_video
-	if FileAccess.file_exists(LOGO):
+	var logo_path := Pal.SharedMenu.file("logo.png")
+	if FileAccess.file_exists(logo_path):
 		# decoded directly rather than through the import system, so artwork can
 		# be dropped in and replaced without a reimport (as with the map tiles)
-		var li := Image.load_from_file(ProjectSettings.globalize_path(LOGO))
+		var li := Image.load_from_file(ProjectSettings.globalize_path(logo_path))
 		if li != null: _logo = ImageTexture.create_from_image(li)
 	if not _has_video and _logo == null: return false
 	if tint: tint.color.a = 0.0

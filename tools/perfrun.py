@@ -192,17 +192,19 @@ def gpu_cooldown(ceiling_mb, max_wait_s, label="launch"):
 import sys
 import time
 
+import workspace_paths as paths
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)                      # bf6-portal-highpoly-preview
 NATIVE = os.path.join(REPO, "native")
-RUNS = os.path.join(NATIVE, "perfrun")
+RUNS = str(paths.OUTPUT_ROOT / "perf")
 HISTORY = os.path.join(NATIVE, "perfrun_history.json")
 BASELINE = os.path.join(NATIVE, "perfrun_baseline.json")
 PLUGIN_DIR = os.path.join(REPO, "addons", "highpoly_toggle")
 TOGGLE = os.path.join(PLUGIN_DIR, "highpoly_toggle.gd")
 
-PROJECT = os.environ.get("BF6_PROJECT", r"C:\PortalSDK\GodotProject")
-GODOT = os.environ.get("GODOT_BIN", r"C:\PortalSDK\Godot_v4.6.3-stable_win64.exe")
+PROJECT = str(paths.GODOT_PROJECT)
+GODOT = str(paths.GODOT_BIN)
 
 # bench.py lives one repo across. Imported rather than copied where the concern
 # is genuinely shared, so the two harnesses cannot drift apart on the things

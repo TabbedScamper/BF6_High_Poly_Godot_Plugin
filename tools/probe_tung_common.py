@@ -28,11 +28,14 @@ import struct
 import sys
 
 # --- locate the research checkout and its pipeline modules -------------------
+_here = os.path.dirname(os.path.abspath(__file__))
+_parents = []
+for _unused in range(8):
+    _parents.append(_here)
+    _here = os.path.dirname(_here)
 _CANDIDATE_RESEARCH = [
-    r"C:\PortalSDK\BF6_Frostbite_Research",
-    os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
-        os.path.abspath(__file__)))), "BF6_Frostbite_Research"),
-]
+    os.environ.get("BF6_RESEARCH_ROOT", ""),
+] + [os.path.join(_p, "BF6_Frostbite_Research") for _p in _parents]
 RESEARCH = None
 for _c in _CANDIDATE_RESEARCH:
     if os.path.isdir(os.path.join(_c, "impl", "pipeline")):

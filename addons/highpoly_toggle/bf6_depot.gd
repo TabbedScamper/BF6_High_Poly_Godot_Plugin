@@ -64,10 +64,10 @@ const SCALAR_SIZE := {
 const SLOT_BASECOLOR := 0x54bbcd30
 const SLOT_BASECOLOR_VEG := 0x54bbcd36   # vegetation *_cu sheet; its opacity
                                          # rides the ALPHA twin, not the _cs
-# THE NORMAL SLOT, CORRECTED 2026-08-22. This was 0xec35a74c, which does not
-# appear in any depot examined: 3,000 depots on MP_Battery bind it zero times.
-# The slot the game actually uses is 0xec35a757, one member along in the same
-# 0xec35 family, with 5,415 bindings of which 93.2% are "_nmt" textures.
+# Normal slots vary by shader family. The Battery census below found
+# 0xec35a757, but did not establish that 0xec35a74c was unused. A live Aftermath
+# sedan census resolves that slot to the vehicles' _nmo sheets. Both are normal
+# inputs, as in the shared reader's slot_for; replacing one loses the other.
 #
 # An unnamed slot is silently skipped, so for as long as this was wrong EVERY
 # prop rendered with a basecolor and no normal map. It reads as flat lighting
@@ -91,8 +91,7 @@ const SLOT_NORMAL_FACE := 0xec35a697     # facerig:          534 uses, 100% _nx
 # subsurface-scattering map on every face in the game, so the family prefix is
 # NOT a safe rule and each member is named on its own evidence.
 const SLOT_SUBSURFACE := 0xec35b353      #                   499 uses, 100% _sssrtm
-# Kept so it is RECOGNISED rather than lost if it ever does turn up.
-const SLOT_NORMAL_UNUSED := 0xec35a74c
+const SLOT_NORMAL_VEHICLE := 0xec35a74c  # vehicle _nmo: RG normal, BA material data
 const SLOT_NORMAL_VT := 0xec35a9e2       # architecture normal paired with the
                                          # tiling basecolor; RG only
 
@@ -148,10 +147,10 @@ const SLOT_NAME := {
 	SLOT_GLASS_VOLUME: "glass_volume", SLOT_CARPAINT_FLAKES: "carpaint_flakes",
 	SLOT_DECAL_CA: "decal_ca", SLOT_DECAL_NRM: "decal_nrm",
 	SLOT_EMISSIVE_LIT: "emissive_lit",
-	SLOT_NORMAL_UNUSED: "normal_unused", SLOT_OCCL_ROUGH: "occl_rough",
+	SLOT_NORMAL_VEHICLE: "normal", SLOT_OCCL_ROUGH: "occl_rough",
 	# Both spell "normal" on purpose: a material belongs to one shader family,
 	# so only one of them appears on it, and the consumers ask for "normal".
-	SLOT_NORMAL_CHA: "normal", SLOT_NORMAL_FACE: "normal_face",
+	SLOT_NORMAL_CHA: "normal", SLOT_NORMAL_FACE: "normal",
 	SLOT_SUBSURFACE: "subsurface",
 	# Global shader inputs: shared weathering and detail layers that nearly
 	# every material binds to the same few textures. Named so they are

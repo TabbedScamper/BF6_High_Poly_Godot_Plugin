@@ -18,7 +18,7 @@ enum Level { DEBUG, INFO, WARN, ERROR }
 
 const MAX_LINES := 800     # ring buffer for the PANEL only; the file keeps all
 const SAVE_DIR := "user://"
-const SESSION_LOG := "user://highpoly-session.log"
+static var SESSION_LOG := "user://highpoly-session.log"
 const VERBOSE_SETTING := "highpoly/verbose_log"
 
 static var _lines: Array = []
@@ -225,10 +225,22 @@ static func _staleness() -> String:
 # The stream is COARSE on purpose: phases, jobs, picks, swaps, failures. Per
 # section decisions are far too many to flush per line and go to the build's
 # own `decisions.jsonl` sidecar instead.
-const EVENTS_DIR := "user://highpoly"
-const EVENTS_PATH := "user://highpoly/events.jsonl"
-const EVENTS_PREV := "user://highpoly/events-prev.jsonl"
-const STATE_PATH := "user://highpoly/state.json"
+static var EVENTS_DIR := "user://highpoly"
+static var EVENTS_PATH := "user://highpoly/events.jsonl"
+static var EVENTS_PREV := "user://highpoly/events-prev.jsonl"
+static var STATE_PATH := "user://highpoly/state.json"
+
+# Call before creating the source reader in a preparation process. Its diagnostics
+# must never rotate or truncate the active editor's session files.
+static func preparation_logs(directory: String) -> void:
+	if _fh != null or _ev_ready:
+		return
+	DirAccess.make_dir_recursive_absolute(directory)
+	EVENTS_DIR = directory
+	SESSION_LOG = directory.path_join("session.log")
+	EVENTS_PATH = directory.path_join("events.jsonl")
+	EVENTS_PREV = directory.path_join("events-prev.jsonl")
+	STATE_PATH = directory.path_join("state.json")
 
 static var _ev_ready := false
 static var _ev_seq := 0

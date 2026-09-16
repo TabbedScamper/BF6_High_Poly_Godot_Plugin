@@ -24,9 +24,10 @@ static var _font_tried := false
 static func ui_font() -> FontFile:
 	if _font_tried: return _font
 	_font_tried = true
-	if not FileAccess.file_exists(FONT_PATH): return null
+	var font_path := SharedMenu.file("ui_font.ttf")
+	if not FileAccess.file_exists(font_path): return null
 	var f := FontFile.new()
-	if f.load_dynamic_font(ProjectSettings.globalize_path(FONT_PATH)) != OK: return null
+	if f.load_dynamic_font(ProjectSettings.globalize_path(font_path)) != OK: return null
 	# A display face is drawn for headlines, not for a settings panel, so it is
 	# missing characters this UI uses — the multiplication sign in "map data x2",
 	# for one. Without a fallback those render as empty boxes.
@@ -63,8 +64,9 @@ static func _load() -> void:
 	if _loaded: return
 	_loaded = true
 	_p = FALLBACK.duplicate()
-	if not FileAccess.file_exists(PALETTE_PATH): return
-	var j: Variant = JSON.parse_string(FileAccess.get_file_as_string(PALETTE_PATH))
+	var palette_path := SharedMenu.file("theme.json")
+	if not FileAccess.file_exists(palette_path): return
+	var j: Variant = JSON.parse_string(FileAccess.get_file_as_string(palette_path))
 	if not (j is Dictionary): return
 	for k in (j as Dictionary):
 		if k != "note" and k != "name":
@@ -80,6 +82,7 @@ static func accent() -> Color: return col("accent")
 # The panel runs larger than the editor's own text. Scaled off the editor's size
 # rather than pinned to a number, so it still tracks a user who has already set
 # their editor font larger or smaller.
+const SharedMenu = preload("highpoly_menu.gd")
 const FONT_SCALE := 1.5
 
 static func base_font_size() -> int:
@@ -92,7 +95,10 @@ static func base_font_size() -> int:
 # Scale a font size that was picked relative to the old default (e.g. the 12px
 # used for the storage readout), so those stay proportionally smaller.
 static func fs(base: int) -> int:
-	return int(round(float(base) * FONT_SCALE))
+	return int(round(float(base) * SharedMenu.number("font_scale", FONT_SCALE)))
+
+static func status_size() -> int:
+	return fs(int(SharedMenu.number("status_font", 11)))
 
 # Numeric palette entries (currently just the backdrop dim). Tunable from
 # theme.json so brighter or darker footage can be balanced without a release.
@@ -176,7 +182,7 @@ static func build_ui_theme() -> Theme:
 	# face lands on labels, buttons, dropdowns and tooltips in one assignment
 	var f := ui_font()
 	if f != null: t.default_font = f
-	t.default_font_size = fs(base_font_size())
+	t.default_font_size = fs(int(round(base_font_size() * SharedMenu.number("control_font", 14) / 14.0)))
 
 	# Buttons wear the mask. Checkboxes deliberately do NOT — a mask behind every
 	# checkbox turns a settings list into a wall of boxes; they just go white.

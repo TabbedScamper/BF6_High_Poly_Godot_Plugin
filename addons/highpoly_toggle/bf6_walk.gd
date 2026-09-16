@@ -951,12 +951,17 @@ func save_cache(level_rel: String) -> void:
 	var p := cache_path(level_rel)
 	if p == "" or rows.is_empty():
 		return
-	var f := FileAccess.open(p, FileAccess.WRITE)
+	var temp := p + ".%d.part" % OS.get_process_id()
+	var f := FileAccess.open(temp, FileAccess.WRITE)
 	if f == null:
 		return                  # a cache that cannot be written is not an error
 	f.store_var({"rows": rows, "ents": ents, "stats": stats,
 		"want": _want_sig()})
+	f.flush()
+	var ok := f.get_error() == OK
 	f.close()
+	if ok:
+		DirAccess.rename_absolute(temp, p)
 
 
 # Cache, or walk and cache. The catalogue still has to be built either way —
@@ -1033,17 +1038,18 @@ func run(level_rel: String) -> bool:
 		# caller should not have to. Anchored on '/levels/<leaf>/<leaf>' rather
 		# than a substring: a loose match would happily pick a neighbouring level
 		# whose name merely CONTAINS this one.
-		var tails: Array = ["/levels/%s/%s" % [leaf.to_lower(), leaf.to_lower()]]
+		var tails: Array = [leaf.to_lower()]
 		# The SDK names a scene by its display name and the game files the
 		# level under an mp_ id: Portal_Sand is game/glacierportal/levels/
 		# mp_portal_sand. Still anchored - the prefixed spelling of THIS
 		# level, not a substring that could pick a neighbour.
 		if not leaf.to_lower().begins_with("mp_"):
-			tails.append("/levels/mp_%s/mp_%s" % [leaf.to_lower(), leaf.to_lower()])
+			tails.append("mp_%s" % leaf.to_lower())
 		for tail in tails:
 			var hits: Array = []
 			for k in by_name.keys():
-				if str(k).ends_with(str(tail)):
+				# Also under the 1.4.3.0 group folder (levels/gr/<leaf>/<leaf>).
+				if BF6Source.level_root_tail(str(k), str(tail)):
 					hits.append(str(k))
 			hits.sort()
 			if not hits.is_empty():

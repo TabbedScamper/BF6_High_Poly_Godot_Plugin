@@ -124,7 +124,21 @@ func _available_levels() -> Array:
 		var here := dir.to_lower().replace("\\", "/")
 		if here.ends_with("/levels"):
 			for sub in da.get_directories():
-				found[str(sub).to_lower()] = true
+				# A GROUP folder (levels/gr/, levels/mp/ since the 1.4.3.0 game
+				# update) holds no archive itself, only level folders that do.
+				var inner := DirAccess.open(dir.path_join(sub))
+				var own_toc := false
+				var children: Array = []
+				if inner != null:
+					for f in inner.get_files():
+						if f.to_lower().ends_with(".toc"): own_toc = true
+					for child in inner.get_directories():
+						if FileAccess.file_exists(dir.path_join(sub).path_join(child).path_join(child + ".toc")):
+							children.append(str(child).to_lower())
+				if not own_toc and not children.is_empty():
+					for child in children: found[child] = true
+				else:
+					found[str(sub).to_lower()] = true
 			continue                     # the level dirs themselves need no descent
 		for sub in da.get_directories():
 			stack.append(dir.path_join(sub))
@@ -133,12 +147,41 @@ func _available_levels() -> Array:
 	return out
 
 
+# The 1.4.3.0 game update also files levels under ONE group folder
+# (levels/gr/mp_portal_sand/, levels/mp/mp_aftermath_portal/), beside the older
+# levels/mp_abbasid/. Same rule as the core's Source::level_dir_end.
 static func _in_level_dir(path: String, dirs: Array) -> bool:
 	var pl := path.to_lower().replace("\\", "/")
 	for d in dirs:
 		if pl.contains(str(d)):
 			return true
+		if level_dir_end(pl, str(d).trim_prefix("/levels/").trim_suffix("/")) >= 0:
+			return true
 	return false
+
+
+## Index just past "/levels/[group/]<level>" in a lowercase, forward-slash
+## name, or -1. Only one group folder is allowed between.
+static func level_dir_end(name: String, level: String) -> int:
+	if level.is_empty(): return -1
+	var want := level + "/"
+	var at := name.find("/levels/")
+	while at >= 0:
+		var first := at + 8
+		if name.substr(first, want.length()) == want:
+			return first + level.length()
+		var slash := name.find("/", first)
+		if slash > first and name.substr(slash + 1, want.length()) == want:
+			return slash + 1 + level.length()
+		at = name.find("/levels/", at + 1)
+	return -1
+
+
+## True when the name ends with "/levels/[group/]<leaf>/<leaf>" (a level root).
+static func level_root_tail(name: String, leaf: String) -> bool:
+	if leaf.is_empty() or not name.ends_with("/" + leaf + "/" + leaf): return false
+	var end := level_dir_end(name, leaf)
+	return end >= 0 and end + 1 + leaf.length() == name.length()
 
 
 func _find_tocs(level: String, all_levels := false) -> Array:
@@ -216,6 +259,10 @@ const CACHE_VERSION := 4
 
 func _signature(paths: Array) -> String:
 	var parts := PackedStringArray()
+	var install_key: String = preload("highpoly_install_cache.gd").reader_key(game)
+	if install_key.is_empty():
+		return "" # Unverified installs may be read live, never served old caches.
+	parts.append(install_key)
 	for p in paths:
 		var f := FileAccess.open(p, FileAccess.READ)
 		if f == null:
@@ -286,13 +333,49 @@ func _adopt_cache(d: Dictionary, st: Dictionary) -> void:
 	_pub_done = true
 
 
+# WRITTEN BY THE CORE, READ BY THIS SCRIPT. BF6Core.write_reader_index mounts
+# the level in C++ (from its memory-mapped mount snapshot when it has one) and
+# writes both this reader's index and its partition index as store_var files.
+# Measured on mp_battery, cold: 11.0 s mount and 7.8 s partition index in this
+# script, against a few hundred milliseconds. The tables are identical
+# (tools/test_native_reader_index.gd). false, or BF6_GODOT_NATIVE_INDEX=0,
+# builds them here instead.
+var native_index := true
+
+
+func _native_index(level: String, sig: String, progress := Callable()) -> bool:
+	if not native_index or OS.get_environment("BF6_GODOT_NATIVE_INDEX") == "0":
+		return false
+	if not ClassDB.class_exists("BF6Core"):
+		return false
+	var core = ClassDB.instantiate("BF6Core")
+	if core == null or not core.has_method("write_reader_index"):
+		return false
+	var index_path := _cache_path_scoped(level, sig, false)
+	var pidx_path := _pidx_cache_path()
+	if progress.is_valid():
+		progress.call(0, 1, 0)        # (tocs done, tocs total, ebx) as the sweep reports
+	var err: String = core.call("write_reader_index", game, level,
+			ProjectSettings.globalize_path(index_path),
+			ProjectSettings.globalize_path(pidx_path) if pidx_path != "" else "")
+	if not err.is_empty():
+		push_warning("BF6Source: the core could not write the index (%s); reading it here" % err)
+		return false
+	return _load_cache(index_path)
+
+
 func _save_cache(p: String) -> void:
-	var f := FileAccess.open(p, FileAccess.WRITE)
+	var temp := p + ".%d.part" % OS.get_process_id()
+	var f := FileAccess.open(temp, FileAccess.WRITE)
 	if f == null:
 		return                      # a cache that cannot be written is not an error
 	f.store_var({"ebx": ebx, "res": res, "chunks": chunks,
 			"chunk_seg": chunk_seg, "res_bundle": res_bundle, "stats": stats})
+	f.flush()
+	var ok := f.get_error() == OK
 	f.close()
+	if ok:
+		DirAccess.rename_absolute(temp, p)
 
 
 # bundle_limit stops the sweep after N bundles and reports the RATE.
@@ -449,6 +532,11 @@ func _sweep(paths: Array, progress := Callable(), bundle_limit := 0,
 # while the map is on screen.
 func mount_rest(progress := Callable(), use_cache := true) -> bool:
 	var t0 := Time.get_ticks_msec()
+	# FROM THE CORE when it can: the same all-levels tables (this level first,
+	# then every other level), written in this reader's cache format and loaded
+	# as fresh dictionaries, then published exactly like a sweep's result.
+	if use_cache and _sig != "" and _level != "" and _native_catalogue(progress, t0):
+		return true
 	var paths := _find_tocs(_level, true)
 	# BUILT PRIVATELY, THEN PUBLISHED IN ONE ASSIGNMENT.
 	#
@@ -485,6 +573,32 @@ func mount_rest(progress := Callable(), use_cache := true) -> bool:
 	if use_cache and _sig != "":
 		_save_cache(_cache_path_scoped(_level, _sig, true))
 	return int(sw["opened"]) > 0
+
+
+func _native_catalogue(progress: Callable, t0: int) -> bool:
+	if not native_index or OS.get_environment("BF6_GODOT_NATIVE_INDEX") == "0" or not ClassDB.class_exists("BF6Core"):
+		return false
+	var core = ClassDB.instantiate("BF6Core")
+	if core == null or not core.has_method("write_catalogue_index"):
+		return false
+	var path := _cache_path_scoped(_level, _sig, true)
+	if progress.is_valid():
+		progress.call(0, 1, ebx.size())
+	var err: String = core.call("write_catalogue_index", game, _level, ProjectSettings.globalize_path(path))
+	if not err.is_empty():
+		push_warning("BF6Source: the core could not write the object catalogue (%s); reading it here" % err)
+		return false
+	var f := FileAccess.open(path, FileAccess.READ)
+	if f == null:
+		return false
+	var d = f.get_var()
+	f.close()
+	if typeof(d) != TYPE_DICTIONARY or not (d as Dictionary).has("ebx"):
+		return false
+	_publish(d["ebx"], d["res"], d.get("res_bundle", {}), d["chunks"], d["chunk_seg"], t0)
+	if progress.is_valid():
+		progress.call(1, 1, (d["ebx"] as Dictionary).size())
+	return true
 
 
 # The five-assignment publish plus the stats rows, run on the main thread even
@@ -649,7 +763,13 @@ func mount(level := "", progress := Callable(), use_cache := true,
 	if use_cache:
 		sig = _signature(paths)
 		_sig = sig
-		if _load_cache(_cache_path_scoped(level, sig, all_levels)):
+		if sig != "" and _load_cache(_cache_path_scoped(level, sig, all_levels)):
+			stats["ms"] = Time.get_ticks_msec() - t0
+			return true
+		# A COLD INDEX COMES FROM THE CORE when it can. The same tables, written in
+		# this reader's own cache format, so the load above is what reads them.
+		if sig != "" and bundle_limit == 0 and not all_levels and level != "" \
+				and _native_index(level, sig, progress):
 			stats["ms"] = Time.get_ticks_msec() - t0
 			return true
 
@@ -715,6 +835,25 @@ func _read_seg(seg: Array, allow_raw := false) -> PackedByteArray:
 	var out := _cas.read(p, int(seg[2]), int(seg[3]), allow_raw)
 	_read_mx.unlock()
 	return out
+
+
+# [archive path, offset, size] of a chunk, without reading it; [] when unknown.
+# For batch readers that fetch many references at once outside this source.
+func chunk_location(guid_hex: String) -> Array:
+	var g := guid_hex.to_lower()
+	var seg = chunks.get(g)
+	if seg == null:
+		seg = chunk_seg.get(g)
+	if seg == null:
+		return []
+	_read_mx.lock()
+	var key := int(seg[0]) * 1000 + int(seg[1])
+	var p = _path_cache.get(key)
+	if p == null:
+		p = _loc.cas_path(int(seg[0]), int(seg[1]))
+		_path_cache[key] = p
+	_read_mx.unlock()
+	return [] if str(p) == "" else [str(p), int(seg[2]), int(seg[3])]
 
 
 func get_ebx(name: String) -> PackedByteArray:
@@ -827,10 +966,15 @@ func partition_index(progress := Callable()) -> Dictionary:
 			progress.call(done, names.size(), out.size())
 	_pidx = out
 	if cp != "":
-		var wf := FileAccess.open(cp, FileAccess.WRITE)
+		var temp := cp + ".%d.part" % OS.get_process_id()
+		var wf := FileAccess.open(temp, FileAccess.WRITE)
 		if wf != null:
 			wf.store_var(out)
+			wf.flush()
+			var ok := wf.get_error() == OK
 			wf.close()
+			if ok:
+				DirAccess.rename_absolute(temp, cp)
 	return _pidx
 
 
