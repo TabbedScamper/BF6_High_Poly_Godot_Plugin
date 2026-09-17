@@ -2075,7 +2075,6 @@ All of it is read from your own Battlefield 6 installation."
 		"interior_light": SharedMenu.binding(mapctx_fill, mapctx_fill_row, fill_lbl),
 		"ground_photo": SharedMenu.binding(mapctx_photo, mapctx_photo_row, ph_lbl),
 		"map_lights": SharedMenu.binding(mapctx_maplights),
-		"reflections": SharedMenu.binding(mapctx_reflections),
 		"variant": SharedMenu.binding(mapctx_variant, mapctx_variant_row, mv_lbl),
 		"configure_shaders": SharedMenu.binding(shader_btn),
 	}
