@@ -49,6 +49,9 @@ const STALL_SECS := 45.0         # no new bytes for this long = dead socket
 const MAX_TRANSFER := 1800.0     # backstop so a trickling socket cannot wedge a session
 const HEAD_TIMEOUT := 30.0       # metadata only
 const Log = preload("highpoly_log.gd")
+# Checks what landed against the manifest the release shipped with, so a
+# half-applied update is reported as one instead of as a success.
+const Integrity = preload("highpoly_integrity.gd")
 
 # GET with retry/backoff. api.github.com rate-limits anonymous callers to 60 an
 # hour per address and objects.githubusercontent.com can refuse a burst, so a
@@ -444,17 +447,38 @@ static func update_plugin(host: Node, status: Callable) -> bool:
 	if f == null:
 		status.call("Cannot write the update file"); return false
 	f.store_buffer(body); f.close()
+	var applied := apply_zip(tmp, plugin_dir(), status)
+	DirAccess.remove_absolute(tmp)
+	if not bool(applied.get("ok", false)):
+		return false
+	return _finish_update(applied, status)
+
+
+## Unpack an update archive over an install, and say honestly what landed.
+##
+## SPLIT OUT OF update_plugin SO IT CAN BE TESTED. The half-applied update that
+## broke a user's install on 2026-09-17 was unreachable by any test, because the
+## only way to run this code was to download a real release from GitHub over the
+## network and write into the live addon folder. A bug that cannot be reproduced
+## in a test is a bug that ships twice.
+##
+## Returns { ok, changed, same, locked, missing } - `missing` being the files
+## the archive carries that are NOT on disk afterwards, which is the condition
+## that leaves an install permanently broken.
+static func apply_zip(zip_path: String, pdir: String, status: Callable) -> Dictionary:
+	var result := {"ok": false, "changed": 0, "same": 0, "locked": [], "missing": []}
 	var zr := ZIPReader.new()
-	var zerr := zr.open(ProjectSettings.globalize_path(tmp))
+	var zerr := zr.open(ProjectSettings.globalize_path(zip_path))
 	if zerr != OK:
 		Log.error("Plugin update downloaded but the archive would not open: %s"
 			% error_string(zerr))
-	if zerr != OK:
-		status.call("Update archive unreadable"); return false
-	var pdir := plugin_dir()
+		status.call("Update archive unreadable")
+		return result
 	var n := 0
 	var same := 0
 	var locked: Array = []
+	# Files the release adds that could not be created at all - see below.
+	var missing_new: Array = []
 	for path in zr.get_files():
 		# the zip is rooted at addons/highpoly_toggle/ — ignore anything else,
 		# and extract into wherever THIS install actually lives
@@ -475,19 +499,77 @@ static func update_plugin(host: Node, status: Callable) -> bool:
 				same += 1
 				continue
 		HighpolyStore.ensure_dir(dest.get_base_dir())
+		# Whether the file existed BEFORE decides how bad a failure to write it
+		# is, so record that before trying.
+		var was_there := FileAccess.file_exists(dest)
 		var out := FileAccess.open(dest, FileAccess.WRITE)
 		if out:
 			out.store_buffer(bytes); out.close(); n += 1
-		else:
+		elif was_there:
 			# A CHANGED file that cannot be written - still held open by
-			# something. Not an update failure: everything else applied, and
-			# the restart the button already asks for releases the lock.
+			# something. The old version is still on disk, so the install is
+			# stale here but complete, and the restart releases the lock.
 			# Named, so the log says which file waits.
 			locked.append(path.get_file())
+		else:
+			# A NEW file that could not be CREATED. THIS IS THE ONE THAT BREAKS
+			# INSTALLS, and it used to be counted as the harmless case above.
+			# Nothing lands on disk at all, so every script that preloads it
+			# fails to compile. That is how a user ended up on 2026-09-17
+			# running 2.8.0's highpoly_toggle.gd against 2.7.0's file set, with
+			# ten preloads pointing at files that were never written: the plugin
+			# disabled itself, and no version they installed afterwards fixed it
+			# because a later update only overwrites, never repairs.
+			missing_new.append(path.get_file())
+	# ---- DID THE UPDATE ACTUALLY LAND? ----
+	#
+	# This used to end by reporting success as long as SOMETHING was written.
+	# A half-applied update is not a success: it is the state that breaks an
+	# install permanently, because the next update overwrites rather than
+	# repairs, and rolling back to an older release leaves the same mix.
+	#
+	# Every file the archive carries must be on disk afterwards. Checking the
+	# ARCHIVE rather than the shipped manifest keeps this answerable for any
+	# destination, which is what lets a test point it at a temporary folder.
+	var absent: Array = missing_new.duplicate()
+	for path in zr.get_files():
+		if path.ends_with("/") or not path.begins_with("addons/highpoly_toggle/"):
+			continue
+		var dest := "%s/%s" % [pdir, path.trim_prefix("addons/highpoly_toggle/")]
+		if FileAccess.file_exists(dest):
+			continue
+		var leaf := path.get_file()
+		if not absent.has(leaf):
+			absent.append(leaf)
 	zr.close()
-	DirAccess.remove_absolute(tmp)
+
+	result["changed"] = n
+	result["same"] = same
+	result["locked"] = locked
+	result["missing"] = absent
 	if n == 0 and same == 0:
-		status.call("Update archive had no plugin files"); return false
+		status.call("Update archive had no plugin files")
+		return result
+	if not absent.is_empty():
+		var shown: Array = absent.slice(0, mini(10, absent.size()))
+		var tail := "" if absent.size() <= 10 else ", and %d more" % (absent.size() - 10)
+		var fail := ("Update did NOT complete: %d file(s) are missing (%s%s). "
+			+ "Close the editor, delete the addons/highpoly_toggle folder, and "
+			+ "install the plugin again - updating over this will not repair it.") \
+			% [absent.size(), ", ".join(PackedStringArray(shown)), tail]
+		Log.error("Plugin update left the install incomplete: %s"
+			% ", ".join(PackedStringArray(absent)))
+		status.call(fail)
+		return result
+	result["ok"] = true
+	return result
+
+
+## The post-apply half: cold swap, or ask for a restart when a file is locked.
+static func _finish_update(applied: Dictionary, status: Callable) -> bool:
+	var n := int(applied.get("changed", 0))
+	var same := int(applied.get("same", 0))
+	var locked: Array = applied.get("locked", [])
 	var msg := "Plugin updated (%d changed, %d already current)." % [n, same]
 	# A DOWNLOADED RELEASE TAKES THE COLD SWAP TOO. The new files are on disk
 	# and the running instances still hold the old code; the swap disables the

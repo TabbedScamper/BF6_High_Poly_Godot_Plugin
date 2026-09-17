@@ -34,9 +34,19 @@ const WEARER := {"alliance": "cha0001wisp", "pax": "cha0002know"}
 # player spawner is gameplay/common/PlayerSpawner, not entities/SpawnPoint.
 # A wrong key here fails silently - the proxy simply keeps its placeholder -
 # which is why it read as "the soldier does not work" rather than as a typo.
+#
+# THE HQ IS NOT A SOLDIER, and it is deliberately absent from this table.
+#
+# HQ_PlayerSpawner is a DEPLOYMENT POST and the SDK draws it as a low-poly flag
+# post. Dressing it with a soldier because its class name happens to end in
+# PlayerSpawner put a man where the flag should be: wrong about what the object
+# is, and it threw away the one thing that made an HQ readable from across the
+# map. With no entry here _asset_id finds no prefab, so _show_proxy_only keeps
+# the SDK's own post - which is what it originally had.
+#
+# The three below genuinely spawn a character and gain from previewing one.
 const SPAWNERS := {
 	"PlayerSpawner": "alliance",
-	"HQ_PlayerSpawner": "alliance",
 	"SpawnPoint": "alliance",
 	"AI_Spawner": "pax",
 }

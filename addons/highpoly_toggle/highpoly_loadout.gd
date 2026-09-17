@@ -26,7 +26,12 @@ const LOOT_KINDS := ["Weapons", "Gadgets", "AmmoTypes", "ArmorTypes"]
 #   faction    alliance | pax  role    assault | engineer | support | recon
 # Unset fields take the core's defaults, except AI_Spawner, whose side is PAX
 # (Unreal's RequestFor), so a placed player/bot pair reads as two forces.
-const SOLDIER_TYPES := ["PlayerSpawner", "HQ_PlayerSpawner", "AI_Spawner", "SpawnPoint"]
+# HQ_PlayerSpawner is deliberately NOT here: it is a deployment post the SDK
+# draws as a low-poly flag post, not something that previews a character.
+# Offering it operator and outfit choices is what invited the soldier that
+# replaced its flag. See the note on HighpolySoldier.SPAWNERS, which drops it
+# for the same reason.
+const SOLDIER_TYPES := ["PlayerSpawner", "AI_Spawner", "SpawnPoint"]
 const DEFAULT_CHARACTER := "cha0001wisp"
 const DEFAULT_OUTFIT := "001"
 const DEFAULT_ROLE := "assault"
@@ -75,12 +80,63 @@ static func type_of(node: Node) -> String:
 
 
 # The request bf6_loadout_soldier takes, from a spawner type and its choices.
-static func soldier_request(type: String, values: Dictionary) -> Dictionary:
+# The id the Pose picker uses for "let the tool choose". It is resolved to a
+# real role at build time, never sent to the core.
+const ROLE_RANDOM := "random"
+
+
+# A STABLE HASH, not randi(). A pose picked freshly each build would change
+# every time the overlay rebuilt and every time the project reopened, so the
+# same spawner would be a different soldier each session and no screenshot
+# would ever match. Seeded from the node's own name, it is arbitrary across
+# spawners and fixed for any one of them.
+static func seed_of(text: String) -> int:
+	var h := 5381
+	for i in range(text.length()):
+		h = ((h << 5) + h + text.unicode_at(i)) & 0x7FFFFFFF
+	return h
+
+
+# Turn ROLE_RANDOM into one of the catalogue's real roles. Anything else is
+# passed through untouched, so an explicit choice always wins.
+static func resolve_role(core: Object, request: Dictionary) -> Dictionary:
+	if str(request.get("role", "")) != ROLE_RANDOM:
+		return request
+	var roles := catalogue_list(core, "roles")
+	var out := request.duplicate()
+	if roles.is_empty():
+		# No catalogue, no invented list: fall back to the documented default
+		# rather than guessing at role names the install may not have.
+		out["role"] = DEFAULT_ROLE
+		return out
+	var pick: Dictionary = roles[seed_of(str(request.get("role_seed", ""))) % roles.size()]
+	out["role"] = str(pick.get("id", DEFAULT_ROLE))
+	return out
+
+
+static func soldier_request(type: String, values: Dictionary, seed_text: String = "") -> Dictionary:
 	return {
 		"character": str(values.get("character", DEFAULT_CHARACTER)),
 		"outfit": str(values.get("outfit", DEFAULT_OUTFIT)),
 		"faction": str(values.get("faction", "pax" if type == "AI_Spawner" else "alliance")),
-		"role": str(values.get("role", DEFAULT_ROLE)),
+		# RANDOM BY DEFAULT. Every spawner used to come back `assault`, so a row
+		# of them stood in one identical pose - reported as "every soldier got
+		# the same stance", and it was precisely what the default said to do.
+		# Random resolves from the spawner's own NAME, so it varies across a map
+		# and never changes for a given spawner. An explicit choice still wins.
+		"role": str(values.get("role", ROLE_RANDOM)),
+		# Carried so the asset id differs per spawner when the pose is random -
+		# without it every random soldier would share one id, and the first one
+		# built would be reused for all of them.
+		"role_seed": seed_text,
+		# A SKELETON INSTEAD OF A FROZEN FRAME, and now on by default.
+		#
+		# It was off because an animated soldier costs a 341-bone skeleton and
+		# eight-weight skinning per spawner and nothing bounded that cost. The
+		# 50 m radius bounds it: past that the clock stops and a soldier costs a
+		# distance check. Charging a whole map for animation nobody can see was
+		# the thing worth avoiding, and it is not what happens any more.
+		"animated": bool(values.get("animated", true)),
 		"item": item_of(values),
 		"fits": fits_of(values),
 	}
@@ -89,7 +145,8 @@ static func soldier_request(type: String, values: Dictionary) -> Dictionary:
 # Stable text for a soldier request: the overlay's asset id, parsed back by the
 # library when it builds.
 static func soldier_key(node: Node) -> String:
-	return JSON.stringify(soldier_request(type_of(node), values_of(node)), "", true)
+	return JSON.stringify(
+		soldier_request(type_of(node), values_of(node), str(node.name)), "", true)
 
 
 # ------------------------------------------------------------- Portal enums
@@ -170,7 +227,13 @@ static func portal_match(item: Dictionary) -> String:
 # --------------------------------------------------------------- the core
 
 static func core_for(gs) -> Object:
-	if gs == null or not gs.has_method("_ensure_native_core") or not gs._ensure_native_core(): return null
+	if gs == null: return null
+	# A BARE CORE IS ENOUGH. The loadout reads the front-end mount, not a level,
+	# so nothing here needs a map opened - and a test that had to open one paid
+	# minutes for geometry it never looked at. A game source is still the normal
+	# caller; this just stops it being the only possible one.
+	if gs.has_method("loadout_soldier"): return gs
+	if not gs.has_method("_ensure_native_core") or not gs._ensure_native_core(): return null
 	var core: Object = gs.get("_native_core")
 	return core if core != null and core.has_method("loadout_weapon") else null
 
@@ -270,6 +333,45 @@ static func build_soldier(gs, request: Dictionary) -> Dictionary:
 	return _from_record(gs, blob, "HP_Soldier_%s" % str(request.get("character", "")), "soldier", true)
 
 
+# WHAT THE PLAYER SEES OF THEMSELVES: this soldier's own arms on the
+# first-person skeleton, holding their configured weapon. The record is already
+# anchored on CameraJoint, so the node attaches to a camera at identity - no
+# offset, no guessing where a rifle sits. {} fields: "node", "error".
+static func build_soldier_1p(gs, request: Dictionary) -> Dictionary:
+	var core := core_for(gs)
+	if core == null or not core.has_method("loadout_soldier"):
+		return {"error": "The game reader has no soldier support; update the add-on."}
+	var req := request.duplicate()
+	req["view"] = "1p"
+	var blob: PackedByteArray = core.call("loadout_soldier", JSON.stringify(req),
+		attachment_enums_text())
+	return _from_record(gs, blob, "HP_Soldier1P_%s" % str(req.get("character", "")),
+		"first-person soldier", true)
+
+
+# HOW TALL THIS SOLDIER'S EYES ARE, measured from the ground they stand on, at
+# the pose they are shown in. 0.0 when the record cannot say, which a caller
+# must read as "use your own default" rather than as "this soldier has no head".
+#
+# Worth reading rather than assuming: it varies by character and by pose (1.686
+# to 1.718 m across four operators and two roles), and a camera parked at a
+# single constant sits visibly wrong for most of them.
+static func soldier_eye(gs, request: Dictionary) -> float:
+	var core := core_for(gs)
+	if core == null or not core.has_method("loadout_soldier"):
+		return 0.0
+	var blob: PackedByteArray = core.call("loadout_soldier", JSON.stringify(request),
+		attachment_enums_text())
+	if blob.size() < 12 or blob.decode_u32(0) != 0x50574C42:
+		return 0.0
+	var json_len := blob.decode_u32(8)
+	var parsed: Variant = JSON.parse_string(
+		blob.slice(12, 12 + json_len).get_string_from_utf8())
+	if not (parsed is Dictionary):
+		return 0.0
+	return float((parsed as Dictionary).get("eye", 0.0))
+
+
 # A BLWP record (see bf6_loadout_weapon in bf6_core.h) as one mesh.
 static func _from_record(gs, blob: PackedByteArray, node_name: String, what: String,
 		record_materials: bool) -> Dictionary:
@@ -299,18 +401,8 @@ static func _from_record(gs, blob: PackedByteArray, node_name: String, what: Str
 		var i := body + int(sec.indices) * 4
 		arr[Mesh.ARRAY_INDEX] = blob.slice(i, i + ic * 4).to_int32_array()
 		am.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr)
-		var mat: Material = _record_material(gs, sec) if record_materials else null
-		var key := _key_from_hex(str(sec.get("state_key", "")))
-		var bundle := str(sec.get("bundle", "")).trim_prefix("win32/")
-		if mat == null and gs != null and gs.has_method("material_for") and key != 0 and bundle != "":
-			mat = gs.material_for(key, bundle, 0, PackedInt32Array())
-		if mat == null:
-			var fallback := StandardMaterial3D.new()
-			var bc: Array = sec.get("base_color", [0.5, 0.5, 0.5])
-			fallback.albedo_color = Color(float(bc[0]), float(bc[1]), float(bc[2]))
-			fallback.roughness = float(sec.get("roughness", 0.6))
-			mat = fallback
-		am.surface_set_material(am.get_surface_count() - 1, mat)
+		am.surface_set_material(am.get_surface_count() - 1,
+			section_material(gs, sec, record_materials))
 	if am.get_surface_count() == 0: return {"error": "The configured %s has no drawable geometry." % what}
 	var root := Node3D.new()
 	root.name = node_name
@@ -329,6 +421,27 @@ static func _from_record(gs, blob: PackedByteArray, node_name: String, what: Str
 
 
 # ------------------------------------------------ materials from the record
+
+# The material for one record section, in the order the record makes available:
+# the section's own texture bindings first (the badge and the face sheet exist
+# nowhere else), then the map's shared material cache, then flat base colour.
+#
+# The static soldier and the skinned one must not make this decision
+# separately - a difference here would read as a skinning bug while actually
+# being two copies of the same code drifting apart - so both call this.
+static func section_material(gs, sec: Dictionary, record_materials: bool = true) -> Material:
+	var mat: Material = _record_material(gs, sec) if record_materials else null
+	var key := _key_from_hex(str(sec.get("state_key", "")))
+	var bundle := str(sec.get("bundle", "")).trim_prefix("win32/")
+	if mat == null and gs != null and gs.has_method("material_for") and key != 0 and bundle != "":
+		mat = gs.material_for(key, bundle, 0, PackedInt32Array())
+	if mat == null:
+		var fallback := StandardMaterial3D.new()
+		var bc: Array = sec.get("base_color", [0.5, 0.5, 0.5])
+		fallback.albedo_color = Color(float(bc[0]), float(bc[1]), float(bc[2]))
+		fallback.roughness = float(sec.get("roughness", 0.6))
+		mat = fallback
+	return mat
 
 # The eye's shader textures, by parameter name hash (the renderer slots Unreal
 # gives them in BF6HighPolyLoadoutDecode.cpp).

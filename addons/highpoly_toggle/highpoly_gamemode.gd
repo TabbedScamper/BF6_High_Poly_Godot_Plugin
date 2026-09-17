@@ -77,7 +77,44 @@ const PRETTY := {
 	"teamdeathmatch": "Team Deathmatch", "kingofthehill": "King of the Hill",
 	"strikepoint": "Strike Point", "battleroyale": "Battle Royale",
 	"squaddeathmatch": "Squad Deathmatch", "frontline": "Frontline",
+	# Without this it reads "Carrierstrike" and gets skipped over in the list.
+	# The mode carries the carrier itself: 878 mined markers on MP_Isolated,
+	# including its spawns, combat volumes and vehicle spawns.
+	"carrierstrike": "Carrier Strike",
+	"customportal": "Custom (Portal)",
 }
+
+# Mined layer names that are not modes anyone can pick.
+#
+# The CORE already skips these when it lists mode roots (telemetry layers) and
+# strips the "mp_" prefix so "mp_koth" and "koth" are one mode. The Godot-side
+# miner does neither, so the dropdown carried "escalation_telemetry",
+# "koth_telemetry", "mp_koth" and "mp_sabotage" beside the real ones. Four junk
+# rows on MP_Isolated alone, which is how a real mode gets lost in a list.
+const NOT_A_MODE := ["_telemetry", "_ai", "_narrative"]
+
+
+# The rows the dropdown should show: real modes, deduplicated, junk dropped.
+static func pickable(map: String) -> Array:
+	var seen := {}
+	var out: Array = []
+	for m in modes(map):
+		var key := str(m)
+		var junk := false
+		for bad in NOT_A_MODE:
+			if key.contains(bad):
+				junk = true
+				break
+		if junk:
+			continue
+		if key.begins_with("mp_") and key.length() > 3:
+			key = key.substr(3)
+		if seen.has(key):
+			continue
+		seen[key] = true
+		out.append(key)
+	out.sort()
+	return out
 
 
 static func data_path(map: String) -> String:

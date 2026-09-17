@@ -98,11 +98,109 @@ const SharedMenu = preload("highpoly_menu.gd")
 const Backdrop = preload("highpoly_backdrop.gd")
 const SplashScript = preload("highpoly_splash.gd")
 const Theme_ = preload("highpoly_theme.gd")
+
+# ---------------------------------------------------------------------------
+# THE GLOBAL CLASS NAMES, BOUND LOCALLY.
+#
+# Each of these is a `class_name` one of our own scripts declares, so the bare
+# identifier already resolves - IF Godot has registered it. That registration
+# lives in .godot/global_script_class_cache.cfg, which the editor builds while
+# it scans, and which is not guaranteed to be populated when an EditorPlugin's
+# script is first compiled.
+#
+# On 2026-09-17 a user's editor compiled this script while 20 of those names
+# did not exist. Every reference became "Identifier not declared in the current
+# scope", the script failed to compile, and the editor disabled the plugin -
+# 291 errors, not one of which was about anything actually being wrong.
+#
+# A const preload resolves from the FILE PATH and never consults the class
+# cache. Binding the name locally shadows the global with an identical value
+# and changes no call site: `HighpolyLib.Tier.LOW` reads exactly as before, it
+# just no longer depends on scan order. Three names (HighpolyCollision,
+# HighpolyDoors, HighpolyVariants) were already bound this way, which is
+# precisely why they kept working while the other twenty did not - the fix is
+# the existing pattern applied to the rest, not a new idea.
+#
+# WHAT THIS DOES NOT FIX: a file that is genuinely absent. preload() of a
+# missing path is also a compile error, so a damaged install still fails to
+# load - see Integrity below, which is what turns that into a sentence a user
+# can act on.
+const BF6Cas = preload("bf6_cas.gd")
+const BF6Container = preload("bf6_container.gd")
+const BF6Source = preload("bf6_source.gd")
+const BF6Splat = preload("bf6_splat.gd")
+const HighpolyAutorun = preload("highpoly_autorun.gd")
+const HighpolyBcTex = preload("highpoly_bctex.gd")
+const HighpolyDiagnose = preload("highpoly_diagnose.gd")
+const HighpolyFlightRun = preload("highpoly_flightrun.gd")
+const HighpolyFx = preload("highpoly_fx.gd")
+const HighpolyGameSource = preload("highpoly_gamesource.gd")
+const HighpolyGamemode = preload("highpoly_gamemode.gd")
+const HighpolyGmMine = preload("highpoly_gmmine.gd")
+const HighpolyIdlePlayer = preload("highpoly_idleplayer.gd")
+const HighpolyJobs = preload("highpoly_jobs.gd")
+const HighpolyLib = preload("highpoly_lib.gd")
+const HighpolyLog = preload("highpoly_log.gd")
+const HighpolyMapContext = preload("highpoly_mapcontext.gd")
+const HighpolyMarkers = preload("highpoly_markers.gd")
+const HighpolyProfile = preload("highpoly_profile.gd")
+const HighpolyProfiler = preload("highpoly_profiler.gd")
+const HighpolyReload = preload("highpoly_reload.gd")
+const HighpolySound = preload("highpoly_sound.gd")
+const HighpolyStore = preload("highpoly_store.gd")
+const HighpolyUpdater = preload("highpoly_updater.gd")
+const HighpolyVitals = preload("highpoly_vitals.gd")
+const HighpolyWalkMode = preload("highpoly_walkmode.gd")
+const HighpolyWaterLab = preload("highpoly_waterlab.gd")
+
+# Reports a damaged install as a sentence instead of a wall of parse errors.
+const Integrity = preload("highpoly_integrity.gd")
+
+
+## Say so, once, if files this install shipped with are gone.
+##
+## An install that has lost files used to present as GDScript parse errors with
+## no mention of the real cause, so the user had no way to know a reinstall was
+## the fix. A manifest with no entries means "installed from source", which is
+## not damage and must stay silent.
+func _report_damaged_install() -> void:
+	if not Integrity.manifest_present():
+		return
+	var missing := Integrity.missing_files()
+	if missing.is_empty():
+		return
+	var msg := Integrity.describe(missing)
+	# The report is written FIRST, so it exists even if the dialog cannot be
+	# shown or the console output is lost in a long log.
+	var report := Integrity.write_report(missing)
+	if report != "":
+		msg += "\n\nA report was saved to:\n  " + report
+		msg += "\nSend that file if you need help."
+	push_warning("BF6 High-Poly: " + msg)
+	print_rich("[color=#ff9d5c]" + msg + "[/color]")
+	# A dialog only when there IS an editor window to parent it to; the gate and
+	# any headless run must not block on something nobody can dismiss.
+	var base := get_editor_interface().get_base_control() if Engine.is_editor_hint() else null
+	if base == null:
+		return
+	var dlg := AcceptDialog.new()
+	dlg.title = "BF6 High-Poly: install incomplete"
+	dlg.dialog_text = msg
+	dlg.exclusive = false
+	base.add_child(dlg)
+	dlg.popup_centered()
+	dlg.confirmed.connect(func() -> void: dlg.queue_free())
+	dlg.canceled.connect(func() -> void: dlg.queue_free())
+
 var previews: Node
 var profiler: Node          # performance recorder (highpoly_profiler.gd)
 var perf_btn: Button       # its start/stop button
 var mapctx: Node
 var diag_pick: Button        # Pick mode: click-select our own overlay geometry
+# WALK MODE: stand in a selected spawner's boots and walk the map, through the
+# core's own walk step (the one Unreal's walk mode uses). Made on demand so an
+# editor that never walks pays nothing for it.
+var walk: HighpolyWalkMode = null
 # The note box. A member rather than a local because two different paths label
 # their reports with it: dropping a marker, and picking an object.
 var mark_note: LineEdit
@@ -146,6 +244,8 @@ var mapctx_light: Button     # game lighting (sun/sky/fog from the real map VE)
 var mapctx_gi: Button        # sub-toggle: SDFGI + SSAO (visible while lighting is on)
 var mapctx_shadows: Button   # sub-toggle: sun shadows + overlay casting
 var mapctx_maplights: Button # sub-toggle: the map's mined light entities
+var mapctx_reflections: Button # sub-toggle: the level's authored reflection volumes
+var mapctx_sound: Button      # sub-toggle: the level's placed ambient sound emitters
 var mapctx_fill_row: HBoxContainer   # "Interior light" slider row (with the shadow controls)
 var mapctx_fill: HSlider             # ambient held back from sky visibility, 0-60%
 var mapctx_fill_val: Label
@@ -585,6 +685,7 @@ func _perf_state() -> Dictionary:
 		"contact_shading": chip.call(mapctx_gi),
 		"shadows": chip.call(mapctx_shadows),
 		"map_lights": chip.call(mapctx_maplights),
+		"reflections": chip.call(mapctx_reflections),
 	}
 
 func _shed_map_context() -> int:
@@ -628,6 +729,12 @@ func _range_label(v: float) -> String:
 	return "%dm" % int(v)
 
 func _enter_tree() -> void:
+	# IS THE INSTALL INTACT? Presence only - no hashing - so this costs a stat
+	# per file and cannot slow down startup noticeably. A lost file is what
+	# breaks an install, and a missing file that happens to be preloaded above
+	# has already stopped this script from compiling, so anything reported here
+	# is damage we can still say something useful about rather than crash on.
+	_report_damaged_install()
 	# Configure before any theme lookup; nested installs must read their own
 	# shipped menu and palette rather than another add-on at the default path.
 	SharedMenu.configure(get_script().resource_path.get_base_dir())
@@ -1309,6 +1416,52 @@ All of it is read from your own Battlefield 6 installation."
 		_save_mapctx_state())
 	mc_sub.add_child(mapctx_maplights)
 
+	# REFLECTIONS: the local IBL boxes the level's artists placed. With only the
+	# sky to reflect, interiors preview grey and metal reads as plastic, which is
+	# one of the plainest ways the preview stops looking like the game. The BOXES
+	# are the game's; Godot captures the reflection from the geometry already
+	# built, so the influence volume is 1:1 while the content is this scene.
+	mapctx_reflections = Theme_.chip("Reflections")
+	mapctx_reflections.button_pressed = false
+	mapctx_reflections.disabled = true
+	mapctx_reflections.tooltip_text = "The reflection volumes the real level places, so interiors and metal reflect their surroundings instead of only the sky. Several levels author none of their own."
+	mapctx_reflections.toggled.connect(func(v: bool):
+		var _r := EditorInterface.get_edited_scene_root()
+		if _r == null or mapctx == null:
+			return
+		if not v:
+			LightingScript.clear_reflection_probes(_r)
+			lbl.text = "Reflections off"
+			_save_mapctx_state()
+			return
+		var gs = mapctx.game_source
+		var env = gs.native_environment() if gs != null and gs.has_method("native_environment") else null
+		lbl.text = LightingScript.build_reflection_probes(_r, env)
+		_save_mapctx_state())
+	mc_sub.add_child(mapctx_reflections)
+
+	# AMBIENT SOUND: the emitters the level places, playing the game's own
+	# audio. Off by default because it makes noise, and because streaming waves
+	# costs memory nobody asked for until they ask.
+	mapctx_sound = Theme_.chip("Ambient sound")
+	mapctx_sound.button_pressed = false
+	mapctx_sound.disabled = true
+	mapctx_sound.tooltip_text = "The spatial sound emitters the real level places, playing the game's own ambience at the game's positions and falloff: sea, wind, fires, machinery. About a hundred on a busy map."
+	mapctx_sound.toggled.connect(func(v: bool):
+		var _r := EditorInterface.get_edited_scene_root()
+		if _r == null or mapctx == null:
+			return
+		if not v:
+			HighpolySound.clear(_r)
+			lbl.text = "Ambient sound off"
+			_save_mapctx_state()
+			return
+		var gs = mapctx.game_source
+		var env = gs.native_environment() if gs != null and gs.has_method("native_environment") else null
+		lbl.text = HighpolySound.build(_r, env, true)
+		_save_mapctx_state())
+	mc_sub.add_child(mapctx_sound)
+
 
 	# Optimize placed objects: distance-cull the props the USER places (their custom
 	# map content — not the backdrop) so a densely-built map stays fast. Near props
@@ -1357,6 +1510,17 @@ All of it is read from your own Battlefield 6 installation."
 	shader_btn.tooltip_text = "Settings for the moving parts: rippling water, drifting smoke and swaying grass."
 	shader_btn.pressed.connect(_open_shader_dialog)
 	host.add_child(_centred(shader_btn))
+
+	# THE WATER LAB. Every dial on the ocean shader, live, so a question about
+	# how the water MOVES can be answered by looking at it instead of by reading
+	# the shader and guessing - which is how three wrong diagnoses of Tsuru
+	# Reef's "boiling" water got shipped before this existed.
+	var waterlab_btn := Button.new()
+	waterlab_btn.text = "Water Lab…"
+	waterlab_btn.tooltip_text = "Live sliders for every water setting: wave sources, choppiness, speed, foam and detail. Nothing here is saved - it is for finding out which setting is responsible for something."
+	waterlab_btn.pressed.connect(func():
+		HighpolyWaterLab.open(EditorInterface.get_edited_scene_root()))
+	host.add_child(_centred(waterlab_btn))
 
 	# STORAGE, described as what it actually is.
 	#
@@ -1911,6 +2075,7 @@ All of it is read from your own Battlefield 6 installation."
 		"interior_light": SharedMenu.binding(mapctx_fill, mapctx_fill_row, fill_lbl),
 		"ground_photo": SharedMenu.binding(mapctx_photo, mapctx_photo_row, ph_lbl),
 		"map_lights": SharedMenu.binding(mapctx_maplights),
+		"reflections": SharedMenu.binding(mapctx_reflections),
 		"variant": SharedMenu.binding(mapctx_variant, mapctx_variant_row, mv_lbl),
 		"configure_shaders": SharedMenu.binding(shader_btn),
 	}
@@ -2994,6 +3159,7 @@ func _ui_chips() -> Array:
 		["backdrop", mapctx_backdrop], ["water", mapctx_water],
 		["fx", mapctx_fx], ["light", mapctx_light], ["gi", mapctx_gi],
 		["shadows", mapctx_shadows], ["maplights", mapctx_maplights],
+		["reflections", mapctx_reflections], ["sound", mapctx_sound],
 		["optimize", mapctx_optimize], ["col", col_chk], ["shape", shape_chk],
 		["iso", iso_chk], ["ovr", ovr_chk], ["pick", diag_pick],
 	]
@@ -4493,6 +4659,8 @@ func _lighting_subs_enabled(on: bool) -> void:
 	if mapctx_gi: mapctx_gi.disabled = not on
 	if mapctx_shadows: mapctx_shadows.disabled = not on
 	if mapctx_maplights: mapctx_maplights.disabled = not on
+	if mapctx_reflections: mapctx_reflections.disabled = not on
+	if mapctx_sound: mapctx_sound.disabled = not on
 	if mapctx_fill: mapctx_fill.editable = on
 
 
@@ -4975,7 +5143,10 @@ func _variant_row_update(objects_on: bool) -> void:
 	# so the map can list its own: winter_event, rush, domination, sabotage and
 	# the rest. When the marker file does come back it wins, because it also
 	# carries the spawns and objectives this cannot.
-	var mds: Array = HighpolyGamemode.modes(mapctx.map_of(r)) if objects_on else []
+	# pickable(), not modes(): the mined file also carries telemetry layers and
+	# an "mp_" duplicate of a mode it already lists, and burying a real mode
+	# like Carrier Strike among junk rows is much the same as not offering it.
+	var mds: Array = HighpolyGamemode.pickable(mapctx.map_of(r)) if objects_on else []
 	var mined := not mds.is_empty()
 	if objects_on and mds.is_empty():
 		mds = mapctx.available_layers()
@@ -6046,7 +6217,35 @@ func _forward_3d_gui_input(camera: Camera3D, event: InputEvent) -> int:
 	return r
 
 
+# SOLDIERS BREATHE FROM HERE.
+#
+# An idle used to advance itself from a @tool _process inside the edited scene.
+# That is supposed to work and it was reported not to ("they dont idle animate
+# when im close"), so the clock moved somewhere not in doubt: an EditorPlugin
+# ticks whatever else is true. It also means ONE camera lookup a frame for every
+# soldier on the map rather than one each, and exactly one thing advancing any
+# given animation.
+func _process(delta: float) -> void:
+	var tree := get_tree()
+	if tree == null:
+		return
+	var players := tree.get_nodes_in_group(HighpolyIdlePlayer.GROUP)
+	if players.is_empty():
+		return
+	# One camera lookup for the whole map, not one per soldier.
+	var vp := EditorInterface.get_editor_viewport_3d(0)
+	var cam: Camera3D = vp.get_camera_3d() if vp != null else null
+	var at: Vector3 = cam.global_position if cam != null else Vector3.ZERO
+	for p in players:
+		(p as HighpolyIdlePlayer).tick_idle(delta, at, cam != null)
+
+
 func _forward_3d_gui_input_body(camera: Camera3D, event: InputEvent) -> int:
+	# WALK MODE TAKES THE VIEWPORT FIRST. While it is on the camera is the
+	# player's eyes, and the editor's own navigation would fight it for the
+	# mouse. Esc hands the viewport back.
+	if walk != null and walk.is_active() and walk.handle_input(event):
+		return EditorPlugin.AFTER_GUI_INPUT_STOP
 	if diag_pick != null and diag_pick.button_pressed:
 		var v := _pick_input(camera, event)
 		if v != EditorPlugin.AFTER_GUI_INPUT_PASS:
@@ -6423,6 +6622,21 @@ func _bf6_show_panel() -> void:
 		win.grab_focus()
 
 
+# The material relation grid needs a level and the native core, both of which
+# the game source already owns. Opened without a map loaded it says so rather
+# than showing an empty window.
+func _bf6_show_materials() -> void:
+	var gs = mapctx.game_source if mapctx != null else null
+	if gs == null or not gs.has_method("native_environment"):
+		push_warning("High Poly: load a map before opening the material interactions")
+		return
+	var env = gs.native_environment()
+	if env == null:
+		push_warning("High Poly: the native core is not available, so the material grid cannot be read")
+		return
+	preload("highpoly_materials.gd").open(EditorInterface.get_base_control(), env, str(gs.level))
+
+
 func _selected_spawners(ctx: Dictionary) -> Array:
 	var out: Array = []
 	for n in ctx.get("selection", []):
@@ -6440,13 +6654,49 @@ func _bf6_open_loadout() -> void:
 
 func _bf6_loadout_items(ctx: Dictionary) -> Array:
 	var spawners := _selected_spawners(ctx)
+	var walking: bool = walk != null and walk.is_active()
 	return [{"id": "loadout", "label": "Loadout for the selected spawner",
 		"sub": "select a soldier or loot spawner" if spawners.is_empty() else "",
-		"disabled": spawners.is_empty(), "pick": _bf6_open_loadout}]
+		"disabled": spawners.is_empty(), "pick": _bf6_open_loadout},
+		{"id": "walk",
+		"label": "Stop walking" if walking else "Walk from the selected spawner",
+		"sub": "Esc returns the camera" if walking
+			else ("select a spawner" if spawners.is_empty() else "WASD, Shift run, Ctrl crouch, Space jump"),
+		"disabled": spawners.is_empty() and not walking, "pick": _bf6_walk_spawner}]
+
+
+# Stand in the selected spawner's boots. The camera is borrowed, not replaced,
+# and Esc puts it back exactly where it was.
+func _bf6_walk_spawner() -> void:
+	if walk != null and walk.is_active():
+		walk.stop()
+		lbl.text = "Walk mode off."
+		return
+	# The selection comes from the menu's own context, the way the loadout item
+	# reads it; an empty dictionary here would always look like "nothing
+	# selected" and the item would refuse every time.
+	var spawners := _selected_spawners(
+		PluginMenu.find().context("radial") if PluginMenu.find() != null else {})
+	if spawners.is_empty():
+		push_warning("High Poly: select a spawner to walk from")
+		return
+	if walk == null:
+		walk = HighpolyWalkMode.new()
+		add_child(walk)
+	var gs = mapctx.game_source if mapctx != null else null
+	var why: String = walk.start(gs, spawners[0] as Node3D,
+		EditorInterface.get_edited_scene_root())
+	if why != "":
+		push_warning("High Poly: %s" % why)
+		lbl.text = why
+		return
+	lbl.text = "Walking. WASD, Shift run, Ctrl crouch, Space jump, Esc to stop."
 
 
 func _bf6_menu_items(_ctx: Dictionary) -> Array:
 	var items: Array = [{"id": "panel", "label": "Open the High Poly panel", "pick": _bf6_show_panel}]
+	items.append({"id": "materials", "label": "Material interactions",
+		"sub": "what the game does when two surfaces meet", "pick": _bf6_show_materials})
 	if _preparation != null and is_instance_valid(_preparation) and _preparation.has_method("show_progress"):
 		items.append({"id": "cache", "label": "Show caching progress", "pick": func(): _preparation.show_progress()})
 	for section in SharedMenu.data().get("sections", []):

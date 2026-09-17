@@ -19,6 +19,9 @@ const SHADER_FILE := "water_native.gdshader"
 const SHARED_META := &"highpoly_native_water_shared"
 const DIAGNOSTICS_META := &"bf6_water_diagnostics"
 const MAX_CASCADES := 4
+# Broad crest sheet scroll rate. 0 = still. See where it is applied for why it
+# is a tuned constant rather than a value read from the level.
+const BROAD_TIME_SCALE := 0.0
 const FRAME_INTERVAL_MSEC := 33
 const TEXTURE_LIMIT := 16384
 const MAX_FAILURES := 8
@@ -235,6 +238,32 @@ static func material(surface: Dictionary, env) -> ShaderMaterial:
 				valid_cascades += 1
 		mat.set_shader_parameter("cascade%d" % i, meta)
 	mat.set_shader_parameter("cascade_texel_m", texel)
+	# The mesh's own subdivision, so the vertex shader can refuse to sample
+	# displacement finer than the geometry can carry. Passed rather than
+	# duplicated as a shader constant: a second copy stops matching the day the
+	# patch changes, and the symptom is water that boils again.
+	mat.set_shader_parameter("patch_quads", float(PATCH_QUADS))
+	# CASCADE BISECTION, driven by an environment variable so it needs no UI and
+	# no rebuild: BF6_WATER_CASCADES=1,1,0,0 turns the two fine cascades off.
+	# Unset means all four on, which is the shipping behaviour. This exists
+	# because three source-reasoned diagnoses of the boiling water were wrong and
+	# the only instrument that has been reliable is looking at it.
+	var mask := Vector4(1.0, 1.0, 1.0, 1.0)
+	var spec := OS.get_environment("BF6_WATER_CASCADES")
+	if not spec.is_empty():
+		var parts := spec.split(",")
+		for i in range(mini(parts.size(), 4)):
+			mask[i] = 1.0 if parts[i].strip_edges() == "1" else 0.0
+		notes.append("cascade mask %s from BF6_WATER_CASCADES" % str(mask))
+	mat.set_shader_parameter("cascade_mask", mask)
+	# A fifth entry, when given, silences the interactive Gerstner sum as well:
+	# BF6_WATER_CASCADES=0,0,0,0,0 is then genuinely "no wave simulation".
+	var inter := 1.0
+	if not spec.is_empty():
+		var p5 := spec.split(",")
+		if p5.size() >= 5:
+			inter = 1.0 if p5[4].strip_edges() == "1" else 0.0
+	mat.set_shader_parameter("interactive_mask", inter)
 	mat.set_shader_parameter("fft_enabled", 1.0 if valid_cascades > 0 else 0.0)
 	if not simulated:
 		notes.append("not a simulated surface (Unreal bSimulatedSurface false): flat")
@@ -342,6 +371,23 @@ static func material(surface: Dictionary, env) -> ShaderMaterial:
 	var graph_version := int(_num(surface, "extended_graph_version", 0.0))
 	var use_broad := broad != null and noise != null and graph_version == 1
 	mat.set_shader_parameter("use_broad", 1.0 if use_broad else 0.0)
+	# THE BROAD PATTERN DOES NOT SCROLL, and this is the value that says so.
+	#
+	# The shader carried a placeholder `broad_time_scale = 1.0` that nothing ever
+	# set, so the broad crest sheet slid across the surface every frame. That is
+	# what "the water is boiling - tiny waves inside the swells moving really
+	# fast" was, and it survived three wrong diagnoses aimed at the FFT cascades
+	# and the mesh because the culprit was a hardcoded constant in an unrelated
+	# part of the shader that no data feeds.
+	#
+	# NOT READ FROM THE GAME, and there is nowhere to read it from: the core's
+	# header says the broad sheet's three motion coefficients "are literals in
+	# the current shipped permutation", i.e. baked into the game's compiled pixel
+	# shader rather than stored as depot constants. So this is tuned by eye and
+	# says so. The pattern is a SPATIAL modulation - where crests form - and
+	# holding it still is what reads correctly; recovering the real coefficient
+	# means decoding that permutation, which has not been done.
+	mat.set_shader_parameter("broad_time_scale", BROAD_TIME_SCALE)
 	mat.set_shader_parameter("graph_version", 1.0 if graph_version == 1 else 0.0)
 	mat.set_shader_parameter("foam_wave_height", UNREAL_FOAM_WAVE_HEIGHT_M if use_broad else 0.0)
 	# Provisional Unreal eWave stand-in: simulated surfaces without the broad field.

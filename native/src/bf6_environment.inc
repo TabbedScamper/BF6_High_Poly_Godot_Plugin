@@ -300,6 +300,322 @@ static void read(BF6CoreBinding& self, const std::string& level,
         f.meta.put("mip_count",t->mip_count); f.meta.put("format",t->format);
         f.meta.put("srgb",t->srgb); f.block("pixels",t->data,t->data_len); return;
     }
+    // FX EMITTER LAYERS, per layer, from the install.
+    //
+    // THE POINT OF THIS PRODUCT. The Godot FX builder drew from ~40 curated
+    // emitter-GRAPH archetypes while the game authors thousands of LAYERS, and
+    // the core's own header says what that costs: merging them "throws away
+    // exactly the variation that makes an explosion read as an explosion and
+    // leaves a generic puff". On mp_subsurface, 665 layers resolve to 378
+    // DISTINCT looks and base size alone spans 0.01 to 30 - a range no
+    // archetype table can carry. Unreal already reads this record; Godot could
+    // not reach it at all, which is why its FX are the ones that look wrong.
+    //
+    // The look is resolved BY THE CORE (bf6_fx_layer_look) so both editors read
+    // the same values for the same layer instead of each naming pids itself.
+    if(kind=="fx_layers") {
+        // bf6_level_fx needs the level WALKED, not merely prepared: a layer is
+        // reached through the placement graph. read() prepares by default
+        // because most products do not need the walk, so this product asks for
+        // it explicitly rather than failing with "call bf6_open_level first".
+        if(bf6_open_level(self.ctx,level.c_str(),nullptr,0,error,sizeof(error))!=0)
+            throw std::runtime_error(error[0]?error:"could not walk the level for FX");
+        bf6_fx_stats fst{};
+        const int total=bf6_level_fx(self.ctx,level.c_str(),nullptr,0,&fst,error,sizeof(error));
+        if(total<0) throw std::runtime_error(error[0]?error:"fx layers unavailable");
+        std::vector<bf6_fx_layer> rows((size_t)(total>0?total:1));
+        const int got=total>0
+            ? bf6_level_fx(self.ctx,level.c_str(),rows.data(),total,&fst,error,sizeof(error))
+            : 0;
+        f.meta.put("count",got);
+        // When a level reports no layers the reason matters: "this level has
+        // none" and "the reader could not reach them" look identical from here
+        // otherwise, and the second is a bug.
+        f.meta.put("reader_note",error[0]?error:"");
+        f.meta.put("stat_effects",fst.distinct_effects);
+        f.meta.put("stat_placements",fst.placements);
+        f.meta.put("stat_layers",fst.layers);
+        // WHICH BIT OF `has` IS WHICH FIELD, asked of the CORE rather than
+        // listed here. This file used to carry its own 31-name array in enum
+        // order; the enum grew to 80 and every bit after the first insertion
+        // silently pointed at the wrong field, so every over-life curve stopped
+        // resolving while all the counts still looked right. The names now come
+        // from bf6_fx_look_field_name, which is generated from the same table
+        // as the enum and cannot disagree with it.
+        {
+            Object bits;
+            for(int b=0;b<BF6_FXLOOK_COUNT;b++) {
+                const char* n=bf6_fx_look_field_name(b);
+                if(n && *n) bits.put(n,b);
+            }
+            f.meta.key("has_bits"); f.meta.text+=bits.done();
+        }
+        f.meta.key("layers"); f.meta.text+='[';
+        for(int i=0;i<got;i++) {
+            if(i) f.meta.text+=',';
+            const bf6_fx_layer& L=rows[(size_t)i];
+            bf6_fx_look k{};
+            bf6_fx_layer_look(&L,&k);
+            Object o;
+            o.put("effect",L.effect?L.effect:"");
+            o.put("graph",L.graph?L.graph:"");
+            o.put("family",L.family?L.family:"");
+            o.put("layer",L.layer);
+            o.put("placements",L.placements);
+            // THE LAYER'S OWN OFFSET inside the effect. An effect is placed
+            // once; its layers sit at different points within it, which is how
+            // a fire keeps its flame at the base and its smoke column above.
+            // Dropping this stacks every layer on the placement origin.
+            o.put("local",L.local);
+            o.put("atlas",L.atlas?L.atlas:"");
+            // The RES the rid resolved to. The partition name above is not what
+            // a texture reader looks a sheet up by, so without this a consumer
+            // has to guess and lands on a similarly named atlas with a
+            // different grid - right texture, wrong frames.
+            o.put("atlas_res",L.atlas_res?L.atlas_res:"");
+            o.put("atlas_from_override",L.atlas_from_override);
+            o.put("mesh",L.mesh?L.mesh:"");
+            o.put("mesh_is_placeholder",L.mesh_is_placeholder);
+            o.put("atlas_cols",L.atlas_cols);
+            o.put("atlas_frames",L.atlas_frames);
+            o.put("atlas_left_right",L.atlas_left_right);
+            // The three that decide how a particle is drawn at all.
+            o.put("lighting_model",L.lighting_model);
+            o.put("alignment",L.alignment);
+            o.put("particle_type",L.particle_type);
+            o.put("sort_mode",L.sort_mode);
+            o.put("draw_layer",L.draw_layer);
+            o.put("spawn_mode",L.spawn_mode?L.spawn_mode:"");
+            o.put("has_spawn_rate",L.has_spawn_rate);
+            o.put("spawn_rate",L.spawn_rate);
+            o.put("particle_max",L.particle_max);
+            o.put("particle_life",L.particle_life);
+            o.put("emitter_life",L.emitter_life);
+            o.put("preroll_time",L.preroll_time);
+            o.put("cull_distance",L.gpu_cull_distance);
+            // THE RESOLVED LOOK, EVERY FIELD, walked rather than listed.
+            //
+            // This used to name about thirty fields by hand while the core
+            // resolved eighty, and the two disagreeing is worse than either
+            // alone: the `has` mask said RandomForce and SpawnScale were
+            // authored while their values were simply absent from the payload,
+            // so the consumer read them as an authored ZERO and every emitter
+            // came out with no turbulence and an identical spawn volume. A
+            // serialiser that names fields can always fall behind a resolver
+            // that fills them; one that walks them cannot.
+            for(int b=0;b<BF6_FXLOOK_COUNT;b++) {
+                const char* nm=bf6_fx_look_field_name(b);
+                if(!nm||!*nm) continue;
+                float v[4]={0,0,0,0};
+                const int arity=bf6_fx_look_field_value(&k,b,v);
+                if(arity<=0) continue;
+                if(arity==1) o.put(nm,v[0]);
+                else if(arity==2) { const float a2[2]={v[0],v[1]}; o.put(nm,a2); }
+                else if(arity==3) { const float a3[3]={v[0],v[1],v[2]}; o.put(nm,a3); }
+                else o.put(nm,v);
+            }
+            // WHICH OF THEM THE LAYER ACTUALLY STATED, as 32-bit words: the
+            // mask is 128 bits and JSON carries only doubles, exact to 2^53, so
+            // one number would silently lose its high bits - and the fields
+            // that vanished would be the ones added most recently.
+            {
+                uint32_t w[4];
+                for(int q=0;q<2;q++){ w[q*2]=(uint32_t)(k.has[q]&0xFFFFFFFFu);
+                                      w[q*2+1]=(uint32_t)(k.has[q]>>32); }
+                o.put("has",w);
+            }
+            f.meta.text+=o.done();
+        }
+        f.meta.text+=']';
+        return;
+    }
+
+    // PLACED SPATIAL SOUND EMITTERS: the level's ambient bed.
+    //
+    // detail selects what comes back: 0 is the emitter list alone (metadata,
+    // cheap), 1+ additionally decodes the PCM for the emitter at index
+    // detail-1, so a caller streams one sound at a time rather than pulling a
+    // level's whole audio bed across in one packet.
+    //
+    // The falloff (radius, loudness) comes from the sound CONFIG and is read by
+    // the core, so Godot and Unreal attenuate identically instead of each
+    // inventing a curve the game does not have.
+    if(kind=="sound_emitters") {
+        const int total=bf6_level_sound_emitters(self.ctx,level.c_str(),nullptr,0,error,sizeof(error));
+        if(total<0) throw std::runtime_error(error[0]?error:"sound emitters unavailable");
+        std::vector<bf6_sound_emitter> rows((size_t)(total>0?total:1));
+        const int got=total>0
+            ? bf6_level_sound_emitters(self.ctx,level.c_str(),rows.data(),total,error,sizeof(error))
+            : 0;
+        f.meta.put("count",got);
+        f.meta.key("emitters"); f.meta.text+='[';
+        for(int i=0;i<got;i++) {
+            if(i) f.meta.text+=',';
+            const bf6_sound_emitter& s=rows[(size_t)i];
+            Object o;
+            o.put("xform",s.xform);
+            o.put("sound",s.sound);
+            o.put("amplitude",s.amplitude);
+            o.put("play",(int)s.play_on_creation);
+            o.put("flags",s.flags);
+            o.put("radius",s.radius);
+            o.put("loudness",s.loudness);
+            f.meta.text+=o.done();
+        }
+        f.meta.text+=']';
+        // ONE sound's PCM, when asked for. Decoded here rather than in GDScript
+        // because the core already owns the config-or-wave decision.
+        if(detail>0 && detail<=got) {
+            const bf6_sound_emitter& s=rows[(size_t)(detail-1)];
+            int ch=0,rate=0;
+            int n=bf6_ui_sound_decode(self.ctx,s.sound,0,nullptr,0,&ch,&rate);
+            // A few configs are graphs referencing other sounds and decode at
+            // no variation; reported as zero samples rather than as an error,
+            // because the emitter is still real and still worth placing.
+            bool gave_pcm=false;
+            if(n>0 && ch>0 && rate>0) {
+                std::vector<int16_t> pcm((size_t)n);
+                n=bf6_ui_sound_decode(self.ctx,s.sound,0,pcm.data(),n,&ch,&rate);
+                if(n>0) {
+                    f.meta.put("pcm_channels",ch); f.meta.put("pcm_rate",rate);
+                    f.meta.put("pcm_samples",n);
+                    f.block("pcm",pcm.data(),(size_t)n*sizeof(int16_t));
+                    gave_pcm=true;
+                }
+            }
+            // Always answer the question that was asked: a caller must be able
+            // to tell "this one has no wave" from "the field is missing".
+            if(!gave_pcm) f.meta.put("pcm_samples",0);
+        }
+        return;
+    }
+
+    // REFLECTION VOLUMES: the authored local IBL boxes.
+    //
+    // Without them an editor has only the sky to reflect, which is why
+    // interiors preview grey and metal reads as plastic. The transform is a
+    // FULL BASIS whose axis lengths ARE the box half-extents, handed over as
+    // authored so the consumer decides how to build its own probe.
+    //
+    // Level-layer volumes only, and that is a measured decision rather than a
+    // limitation nobody looked at: scanning all 220,000 mounted partitions
+    // finds the level's own volumes in its lighting layer in WORLD space
+    // (farthest 1445 m on mp_isolated), while every other carrier is a prefab
+    // holding PREFAB-LOCAL transforms (bounded by the prefab's own size: 190 m,
+    // 33 m, 10 m) and each appears twice, once as pf_X and once as
+    // pf_X_nongroupable_autogen. Placing those without composing their prefab
+    // placements would scatter probes around the origin and double them.
+    if(kind=="reflection_probes") {
+        const int total=bf6_level_reflection_probes(self.ctx,level.c_str(),nullptr,0,error,sizeof(error));
+        if(total<0) throw std::runtime_error(error[0]?error:"reflection volumes unavailable");
+        std::vector<bf6_reflection_probe> probes((size_t)(total>0?total:1));
+        const int got=total>0
+            ? bf6_level_reflection_probes(self.ctx,level.c_str(),probes.data(),total,error,sizeof(error))
+            : 0;
+        f.meta.put("count",got);
+        f.meta.key("probes"); f.meta.text+='[';
+        for(int i=0;i<got;i++) {
+            if(i) f.meta.text+=',';
+            const bf6_reflection_probe& p=probes[(size_t)i];
+            Object o;
+            o.put("right",p.right); o.put("up",p.up); o.put("forward",p.forward);
+            o.put("translation",p.translation);
+            o.put("texture",p.texture); o.put("guid",p.guid);
+            o.put("is_global",(int)p.is_global);
+            f.meta.text+=o.done();
+        }
+        f.meta.text+=']';
+        return;
+    }
+
+    // MATERIAL RELATION GRID: what the game does when two surfaces meet.
+    // Metadata only, no binary blocks - a caller wants one cell, not the
+    // 200,000-cell matrix, so there is nothing large to carry.
+    if(kind=="material_grid" || kind=="material_profile" || kind=="material_pair") {
+        bf6_material_grid_stats st{};
+        if(bf6_material_grid_info(self.ctx,level.c_str(),&st,error,sizeof(error))!=0)
+            throw std::runtime_error(error[0]?error:"material grid unavailable");
+        f.meta.put("side",st.side); f.meta.put("declared_dim",st.declared_dim);
+        f.meta.put("id_map_len",st.id_map_len); f.meta.put("occupied_cells",st.occupied_cells);
+        f.meta.put("relations",st.relations); f.meta.put("relation_types",st.relation_types);
+        f.meta.put("fallback_ids",st.fallback_ids); f.meta.put("partition",st.partition);
+        if(kind=="material_grid") {
+            // The level's surfaces, busiest first, ordered by the core so this
+            // panel and the Unreal one show the same list. detail caps the rows.
+            const int cap = detail>0 ? detail : 24;
+            const int total=bf6_material_busiest(self.ctx,level.c_str(),nullptr,0,error,sizeof(error));
+            if(total<0) throw std::runtime_error(error[0]?error:"material ranking unavailable");
+            std::vector<bf6_material_rank> rank((size_t)(total>0?total:1));
+            const int got=total>0
+                ? bf6_material_busiest(self.ctx,level.c_str(),rank.data(),total,error,sizeof(error))
+                : 0;
+            f.meta.put("shipped_materials",got);
+            f.meta.key("busiest"); f.meta.text+='[';
+            for(int i=0;i<got && i<cap;i++) {
+                if(i) f.meta.text+=',';
+                Object o;
+                o.put("material",rank[(size_t)i].material);
+                o.put("row",rank[(size_t)i].row);
+                o.put("partners",rank[(size_t)i].partners);
+                o.put("relations",rank[(size_t)i].relations);
+                f.meta.text+=o.done();
+            }
+            f.meta.text+=']';
+            return;
+        }
+
+        if(kind=="material_profile") {
+            const int row=bf6_material_row(self.ctx,level.c_str(),detail,error,sizeof(error));
+            if(row==-1) throw std::runtime_error(error[0]?error:"material row unavailable");
+            f.meta.put("material",detail); f.meta.put("row",row);
+            // -2 means the level does not ship it and the game falls back to
+            // the default material. Reported as its own state so the panel
+            // never shows the default's relations as though they were this
+            // material's own.
+            f.meta.put("shipped",row>=0?1:0);
+            bf6_material_profile pr{};
+            if(bf6_material_profile_get(self.ctx,level.c_str(),detail,&pr,error,sizeof(error))<0)
+                throw std::runtime_error(error[0]?error:"material profile unavailable");
+            f.meta.put("partners",pr.partners); f.meta.put("row_relations",pr.relations);
+            f.meta.key("categories"); f.meta.text+='{';
+            bool first=true;
+            for(int i=0;i<BF6_MATERIAL_CATEGORIES;i++) {
+                const char* nm=bf6_material_category_name(i);
+                if(!nm||!pr.by_category[i]) continue;
+                if(!first) f.meta.text+=','; first=false;
+                append_json_string(f.meta.text,nm); f.meta.text+=':';
+                char b[32]; std::snprintf(b,sizeof(b),"%d",pr.by_category[i]); f.meta.text+=b;
+            }
+            f.meta.text+='}';
+            return;
+        }
+
+        // material_pair: detail packs the ORDERED pair as (a << 10) | b, which
+        // fits because a material id is 10 bits. Not symmetrised: four pairs
+        // per level are authored one way.
+        const int a=(detail>>10)&0x3FF, b=detail&0x3FF;
+        f.meta.put("material_a",a); f.meta.put("material_b",b);
+        const int n=bf6_material_relations(self.ctx,level.c_str(),a,b,nullptr,0,error,sizeof(error));
+        if(n<0) throw std::runtime_error(error[0]?error:"material pair unavailable");
+        std::vector<bf6_material_relation> rel((size_t)(n>0?n:1));
+        const int got=n>0
+            ? bf6_material_relations(self.ctx,level.c_str(),a,b,rel.data(),n,error,sizeof(error))
+            : 0;
+        f.meta.put("count",got);
+        f.meta.key("relations"); f.meta.text+='[';
+        for(int i=0;i<got;i++) {
+            if(i) f.meta.text+=',';
+            Object o;
+            o.put("kind",rel[(size_t)i].kind);
+            o.put("category",rel[(size_t)i].category);
+            o.put("name",rel[(size_t)i].name);
+            o.put("type",rel[(size_t)i].type);
+            o.put("guid",rel[(size_t)i].guid);
+            f.meta.text+=o.done();
+        }
+        f.meta.text+=']';
+        return;
+    }
     throw std::runtime_error("unknown environment product");
 }
 }

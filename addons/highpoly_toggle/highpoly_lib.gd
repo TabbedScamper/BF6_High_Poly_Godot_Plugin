@@ -388,8 +388,27 @@ static func _instance_for(key: String, id: String) -> Node3D:
 		var what := id.trim_prefix("soldier://")
 		if what.begins_with("{"):
 			var request: Variant = JSON.parse_string(what)
-			var built: Dictionary = LoadoutScript.build_soldier(game_source,
-				request if request is Dictionary else {})
+			var req: Dictionary = request if request is Dictionary else {}
+			# A random pose becomes a real one HERE, where the catalogue is
+			# readable, and stays in the asset id as "random" plus its seed - so
+			# the id is stable, the choice is stable, and no two spawners share
+			# either.
+			req = LoadoutScript.resolve_role(LoadoutScript.core_for(game_source), req)
+			# AN ANIMATED SOLDIER IS THE SAME SOLDIER, built the other way: a
+			# Skeleton3D driven by the role's idle rather than a mesh frozen at
+			# one frame of it. It costs a 341-bone skeleton and eight-weight
+			# skinning per spawner, so it is asked for rather than assumed, and
+			# a failure falls back to the static build instead of leaving the
+			# spawner with nothing.
+			if bool(req.get("animated", false)):
+				var rig: Dictionary = HighpolySoldierRig.build(game_source, req)
+				if str(rig.get("error", "")) == "":
+					var idle: Dictionary = HighpolySoldierRig.add_idle(game_source, rig)
+					if str(idle.get("error", "")) != "":
+						HighpolyLog.info("%s stands still: %s" % [key, idle.error])
+					return rig.node
+				HighpolyLog.info("%s falls back to the static soldier: %s" % [key, rig.error])
+			var built: Dictionary = LoadoutScript.build_soldier(game_source, req)
 			if str(built.get("error", "")) == "":
 				return built.node
 			HighpolyLog.info("%s keeps its SDK model: %s" % [key, built.error])
@@ -598,13 +617,28 @@ static func _apply_one_body(node: Node3D, key: String, tier: Tier, textured: boo
 	# group-AABB fix - tower1's overlay was still carrying its 4.951 scale.
 	# Bumping FIT_EPOCH retires every overlay fitted under the old rule, the same
 	# way GEOM_EPOCH retires a geometry cache whose rule changed.
-	if hp != null and (hp.get_meta("hp_asset", "") != id
+	# BUILD THE REPLACEMENT BEFORE DROPPING WHAT IS THERE.
+	#
+	# This used to free the existing overlay the moment the asset id changed and
+	# only then try to make its replacement. When the replacement could not be
+	# built the function bailed with the old one already gone, so the object
+	# showed NOTHING - reported as "when i change the pose of the spawners they
+	# disappear". At the time three of the four poses could not be built at all,
+	# and this ordering turned that limitation into a vanishing spawner instead
+	# of a refusal. All four build now, but the ordering is the reason a future
+	# failure stays recoverable rather than destructive.
+	#
+	# Now a failed rebuild is a no-op: the object keeps the overlay it had, which
+	# is both the truthful outcome and the recoverable one.
+	var stale: bool = hp != null and (hp.get_meta("hp_asset", "") != id
 			or int(hp.get_meta("hp_fit", -1)) != FIT_EPOCH
-			or int(hp.get_meta("hp_build", -1)) != build_epoch):
-		node.remove_child(hp); hp.queue_free(); hp = null   # tier/model/fit/code changed -> rebuild
-	if hp == null:
+			or int(hp.get_meta("hp_build", -1)) != build_epoch)
+	if hp == null or stale:
 		var child := _instance_for(key, id)
-		if child == null: return false
+		if child == null:
+			return false                     # keep whatever is already shown
+		if stale:
+			node.remove_child(hp); hp.queue_free(); hp = null
 		child.name = HP_NODE
 		child.scene_file_path = ""           # anonymize: SDK level validator ignores us
 		child.set_meta("hp_asset", id)

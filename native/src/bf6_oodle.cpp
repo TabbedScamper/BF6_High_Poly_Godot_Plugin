@@ -1454,7 +1454,48 @@ static void return_blob(GDExtensionVariantPtr ret, uint8_t *blob, int64_t len) {
 	pba_dtor(&out);
 }
 
+
+// Same packing, for bytes this side owns. return_blob frees what it is given,
+// which is right for a core allocation and wrong for a local buffer.
+static void return_bytes(GDExtensionVariantPtr ret, const uint8_t *data, int64_t len) {
+	alignas(8) uint8_t out[16] = {};
+	pba_ctor(&out, nullptr);
+	if (len > 0 && data) {
+		int64_t size = len;
+		GDExtensionInt rc = 0;
+		const void *rargs[1] = { &size };
+		pba_resize(&out, rargs, &rc, 1);
+		uint8_t *dp = pba_index(&out, 0);
+		if (dp) std::memcpy(dp, data, (size_t)len);
+	}
+	get_variant_from(GDEXTENSION_VARIANT_TYPE_PACKED_BYTE_ARRAY)(ret, &out);
+	pba_dtor(&out);
+}
+
+
+// THE EMITTER BUDGET, asked once instead of once per candidate.
+//
+// fx_budget(total, budget) -> one byte per candidate, 1 to draw it. The
+// decision itself is bf6_fx_budget_keep in the core, so the Unreal add-on trims
+// to the same set; what is local here is only that GDScript would rather have
+// the whole answer than make 23,000 calls for it. A budget of 0 or less means
+// the core's own default.
+static void call_core_fx_budget(void *, GDExtensionClassInstancePtr,
+		const GDExtensionConstVariantPtr *args, GDExtensionInt argc,
+		GDExtensionVariantPtr ret, GDExtensionCallError *) {
+	if (argc != 2) { return_bytes(ret, nullptr, 0); return; }
+	int64_t total = 0, budget = 0;
+	get_variant_to(GDEXTENSION_VARIANT_TYPE_INT)(&total, const_cast<GDExtensionVariantPtr>(args[0]));
+	get_variant_to(GDEXTENSION_VARIANT_TYPE_INT)(&budget, const_cast<GDExtensionVariantPtr>(args[1]));
+	if (total <= 0 || total > 4000000) { return_bytes(ret, nullptr, 0); return; }
+	std::vector<uint8_t> keep((size_t)total, 0);
+	for (int64_t i = 0; i < total; ++i)
+		keep[(size_t)i] = (uint8_t)bf6_fx_budget_keep((int)i, (int)total, (int)budget);
+	return_bytes(ret, keep.data(), total);
+}
+
 #include "bf6_loadout.inc"
+#include "bf6_walkmode.inc"
 
 // precache_mesh_surfaces(level: String, mesh_names: String (newline separated), lod: int, threads: int)
 // -> PackedByteArray (bf6_precache_mesh_surfaces record), empty when no cache is open.
@@ -1695,6 +1736,10 @@ static void initialize(void *, GDExtensionInitializationLevel level) {
 	static const GDExtensionVariantType a_pid[1] = { GDEXTENSION_VARIANT_TYPE_INT };
 	bind_method("BF6Core", "process_status", call_core_process_status,
 			GDEXTENSION_VARIANT_TYPE_INT, 1, a_pid);
+	static const GDExtensionVariantType a_budget[2] = {
+		GDEXTENSION_VARIANT_TYPE_INT, GDEXTENSION_VARIANT_TYPE_INT };
+	bind_method("BF6Core", "fx_budget", call_core_fx_budget,
+			GDEXTENSION_VARIANT_TYPE_PACKED_BYTE_ARRAY, 2, a_budget);
 	bind_method("BF6Core", "scatter", call_core_scatter,
 			GDEXTENSION_VARIANT_TYPE_STRING, 1, a_string);
 	bind_method("BF6Core", "lighting_zones", call_core_lighting_zones,
@@ -1741,7 +1786,22 @@ static void initialize(void *, GDExtensionInitializationLevel level) {
         GDEXTENSION_VARIANT_TYPE_PACKED_BYTE_ARRAY, 3, a_loadout_weapon);
     bind_method("BF6Core", "loadout_soldier", call_core_loadout_soldier,
         GDEXTENSION_VARIANT_TYPE_PACKED_BYTE_ARRAY, 2, a_loadout_att);
+    // Walking the map through the shared core (bf6_walk_step_scene).
+    static const GDExtensionVariantType a_floats1[1] = { GDEXTENSION_VARIANT_TYPE_PACKED_FLOAT32_ARRAY };
+    static const GDExtensionVariantType a_walk_step[2] = {
+        GDEXTENSION_VARIANT_TYPE_INT, GDEXTENSION_VARIANT_TYPE_PACKED_FLOAT32_ARRAY };
+    static const GDExtensionVariantType a_walk_int[1] = { GDEXTENSION_VARIANT_TYPE_INT };
+    bind_method("BF6Core", "walk_open", call_core_walk_open,
+        GDEXTENSION_VARIANT_TYPE_INT, 1, a_floats1);
+    bind_method("BF6Core", "walk_step", call_core_walk_step,
+        GDEXTENSION_VARIANT_TYPE_PACKED_FLOAT32_ARRAY, 2, a_walk_step);
+    bind_method("BF6Core", "walk_tuning", call_core_walk_tuning,
+        GDEXTENSION_VARIANT_TYPE_PACKED_FLOAT32_ARRAY, 1, a_walk_int);
+    bind_method("BF6Core", "walk_close", call_core_walk_close,
+        GDEXTENSION_VARIANT_TYPE_BOOL, 1, a_walk_int);
     static const GDExtensionVariantType a_map_validate[1] = { GDEXTENSION_VARIANT_TYPE_STRING };
+    bind_method("BF6Core", "loadout_soldier_clip", call_core_loadout_soldier_clip,
+        GDEXTENSION_VARIANT_TYPE_PACKED_BYTE_ARRAY, 1, a_map_validate);
     bind_method("BF6Core", "map_validate", call_core_map_validate,
         GDEXTENSION_VARIANT_TYPE_STRING, 1, a_map_validate);
     bind_method("BF6Core", "mode_plan", call_core_mode_plan,

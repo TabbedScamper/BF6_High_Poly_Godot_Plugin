@@ -18,6 +18,36 @@ class_name HighpolyMapContext
 
 const BcTex = preload("highpoly_bctex.gd")        # textures beside a local mesh
 const NODE := "_MAP_CONTEXT"
+
+# THE PORTAL-FACING PLACEMENT LAYERS.
+#
+# A level can ship content a Portal experience stands on under its own layer
+# name. mp_isolated files both aircraft carriers that way:
+# "portal_aircraftcarriers_carrierstrike" (15,164 placements) and
+# "portal_aircraftcarriers_conquest" (1,313). The first is the same pair of
+# ships the "carrierstrike" MODE layer also carries, so exactly one of the two
+# may ever be visible or the decks double up.
+#
+# PORTAL_CONTEXT is a pseudo-layer standing for "a Portal experience is what we
+# are previewing", which is the Variant being Off or set to Custom Portal.
+# PORTAL_DEFAULT_SUFFIX picks which portal_ variant that context shows, and it
+# is "_conquest" on MEASURED EVIDENCE rather than on size.
+#
+# The obvious guess was the carrierstrike variant, because it is far bigger
+# (15,164 placements against 1,313). That guess was WRONG, and the user spotted
+# it from the viewport: the ship it draws sits PERPENDICULAR to the deck Custom
+# Portal outlines. Matching Custom Portal's 372 authored markers against every
+# carrier layer, by position AND heading, settles it:
+#
+#   portal_aircraftcarriers_conquest      371 of 372 markers, 1.0 m, 0.0 deg
+#   portal_aircraftcarriers_carrierstrike   9 of 372 markers, 1.0 m, 18.9 deg
+#   carrierstrike                           9 of 372 markers, 1.0 m, 18.9 deg
+#
+# So a Portal experience stands on the CONQUEST deck. Bigger was not better:
+# the carrierstrike layer is a different ship at a different heading.
+const PORTAL_LAYER_PREFIX := "portal_"
+const PORTAL_CONTEXT := "__portal__"
+const PORTAL_DEFAULT_SUFFIX := "_conquest"
 const CACHE := "user://mapcontext"
 const POLL_SECS := 0.5          # progress sampling interval
 # A local mesh store left over from before the reader. Nothing writes to it now;
@@ -2034,6 +2064,8 @@ func _active_variant_layers(mode: String) -> Dictionary:
 		act = {}
 		for l in mm.get("show_layers", ["default_event"]):
 			act[str(l)] = true
+		if is_portal_context(mode):
+			act[PORTAL_CONTEXT] = true
 		return act
 	# NO MODE MAP: the selection IS a layer name.
 	#
@@ -2049,7 +2081,33 @@ func _active_variant_layers(mode: String) -> Dictionary:
 	# prop swaps".
 	if mode != "" and mode != "Off":
 		act[mode] = true
+	# THE PORTAL CONTEXT, which is the one this tool exists for. Added LAST so
+	# the mode-map branch above cannot drop it by rebuilding `act` from scratch.
+	if is_portal_context(mode):
+		act[PORTAL_CONTEXT] = true
 	return act
+
+
+# Is the preview showing a PORTAL experience rather than a shipped game mode?
+#
+# Static and free of any state so the visibility rule can be tested on its own:
+# getting it wrong shows two overlapping carriers, and that is worth a test that
+# does not need a map, an install or an instance of this class.
+static func is_portal_context(mode: String) -> bool:
+	return mode.is_empty() or mode == "Off" or mode == "customportal"
+
+
+# Should this ONE layer name be visible, given whether we are in Portal context
+# and which plain layer names are active? The portal_ rule lives here, apart
+# from the dictionary walk, for the same reason.
+static func layer_visible(part: String, portal_context: bool, act: Dictionary) -> bool:
+	if part.begins_with(PORTAL_LAYER_PREFIX):
+		# A portal_ layer is never reached through a mode name. mp_isolated
+		# ships its carriers under BOTH "carrierstrike" and
+		# "portal_aircraftcarriers_carrierstrike"; letting a mode light the
+		# portal twin as well would draw both decks on top of each other.
+		return portal_context and part.ends_with(PORTAL_DEFAULT_SUFFIX)
+	return act.has(part)
 
 
 # The switchable layers this map actually has, from the placements themselves.
@@ -2067,8 +2125,16 @@ func available_layers() -> Array:
 	return a
 
 func _variant_key_visible(key: String, act: Dictionary) -> bool:
+	# PORTAL LAYERS BELONG TO PORTAL, NOT TO THE MODE THEY ARE NAMED AFTER.
+	#
+	# mp_isolated ships its carriers TWICE: once as the "carrierstrike" mode
+	# layer (15,166 placements) and once as "portal_aircraftcarriers_
+	# carrierstrike" (15,164) - the same ships at the same centre. The Portal
+	# copy is what a Portal experience stands on, and it is the copy that was
+	# invisible, because no mode name ever equals that layer name.
+	var portal: bool = act.has(PORTAL_CONTEXT)
 	for part in key.split(","):
-		if act.has(part):
+		if layer_visible(part, portal, act):
 			return true
 	return false
 
@@ -5460,6 +5526,9 @@ func _add_water_plane(ctx: Node3D, textured: bool) -> void:
 	wroot.owner = null
 	ctx = wroot
 	var native_materials: Array = []
+	# Any tiled draw-tree surface built, with or without a native material: the
+	# driver is what fills its instances, so it has to be attached either way.
+	var _native_tiled := false
 	for wcfg in planes:
 		if not (wcfg is Dictionary): continue
 		# THE RIVER/LAKE SURFACE: terrain block 2, meshed per texel by the game
@@ -5509,17 +5578,41 @@ func _add_water_plane(ctx: Node3D, textured: bool) -> void:
 		# around the camera by the simulation driver. A uniform plane put a
 		# vertex every ~10 m everywhere, so the 12 m and 43 m cascades aliased
 		# into the fast boiling look instead of the broad swell Unreal draws.
-		if textured and bool(wcfg.get("native", false)):
-			var nmat := HighpolyNativeWater.material(wcfg, game_source.native_environment())
-			if nmat != null:
-				native_materials.append(nmat)
-				var tiled := HighpolyNativeWater.tiled_surface(
-					Vector2(float(wc[0]), float(wc[1])), Vector2(float(wsz[0]), float(wsz[1])),
-					float(wcfg.get("yaw", 0.0)), float(wcfg["height"]), nmat)
-				tiled.name = WATER_NODE
-				tiled.layers = EXT_TERRAIN_LAYER
-				ctx.add_child(tiled); tiled.owner = null
-				continue
+		# THE DRAW TREE IS THE MESH IN EVERY DETAIL MODE, not only the textured one.
+		#
+		# The fallback below is a flat PlaneMesh whose subdivision is capped at
+		# 512. Portal Ocean's sea is 8192 x 8192 m, so that cap puts a vertex
+		# every 16 m - and the level's own cascades are 192 m, 61.3 m and
+		# 10.7 m. A 16 m grid cannot represent the 10.7 m cascade at all, so its
+		# energy aliases into the fast boiling look instead of the broad swell
+		# the game draws. The tiled patch refines toward a screen pixel near the
+		# camera, which is what Unreal uses and what the core's water_draw_tree
+		# exists to drive.
+		#
+		# The MATERIAL still follows the Detail Mode: the study modes get the
+		# plain translucent look on purpose. What they no longer get is the
+		# wrong geometry underneath it.
+		if bool(wcfg.get("native", false)):
+			var nmat: Material = null
+			if textured:
+				nmat = HighpolyNativeWater.material(wcfg, game_source.native_environment())
+				if nmat != null: native_materials.append(nmat)
+			if nmat == null:
+				var flat := StandardMaterial3D.new()
+				flat.albedo_color = WATER_COLOR
+				flat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+				flat.metallic = 0.3
+				flat.roughness = 0.1
+				flat.cull_mode = BaseMaterial3D.CULL_DISABLED
+				nmat = flat
+			var tiled := HighpolyNativeWater.tiled_surface(
+				Vector2(float(wc[0]), float(wc[1])), Vector2(float(wsz[0]), float(wsz[1])),
+				float(wcfg.get("yaw", 0.0)), float(wcfg["height"]), nmat)
+			tiled.name = WATER_NODE
+			tiled.layers = EXT_TERRAIN_LAYER
+			ctx.add_child(tiled); tiled.owner = null
+			_native_tiled = true
+			continue
 		var wp := MeshInstance3D.new()
 		wp.name = WATER_NODE
 		var pm := PlaneMesh.new()
@@ -5568,7 +5661,13 @@ func _add_water_plane(ctx: Node3D, textured: bool) -> void:
 		wp.rotation.y = float(wcfg.get("yaw", 0.0))   # rotated river/lake quads keep their bearing
 		wp.layers = EXT_TERRAIN_LAYER    # tag: already carries its ground look
 		ctx.add_child(wp); wp.owner = null
-	if not native_materials.is_empty():
+	# THE DRIVER PLACES THE TILES, so it is attached whenever a tiled surface
+	# exists and not only when a native material does. _update_tree runs before
+	# the driver checks for materials, so a study-mode sea still gets its tiles
+	# laid out; with no ShaderMaterial to feed it simply never simulates, which
+	# is the intended flat look at no FFT cost. Without this the tiled mesh
+	# would sit at instance_count 0 and there would be no water at all.
+	if _native_tiled or not native_materials.is_empty():
 		HighpolyNativeWater.attach(wroot, game_source.native_environment(), native_materials)
 
 # ---------- full-accuracy terrain from the raw 16-bit heightmap ----------

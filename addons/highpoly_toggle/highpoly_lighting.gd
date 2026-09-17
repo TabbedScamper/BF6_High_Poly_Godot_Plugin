@@ -1323,3 +1323,99 @@ static func tick_lights(root: Node, cam_pos: Vector3) -> void:
 				l2.visible = prop_lighting \
 					and l2.global_position.distance_squared_to(cam_pos) <= r2
 	HighpolyProfile.end("lights: prop fixture distance loop (global_position)")
+
+
+# ---------------------------------------------------------------------------
+# REFLECTION VOLUMES: the local IBL boxes the level's artists placed.
+#
+# Without these the scene has only the sky to reflect, so interiors preview grey
+# and metal reads as plastic. The game authors boxes with a baked cubemap each;
+# what is consumed here is the BOX - its placement, orientation and extent - and
+# Godot captures the reflection from the geometry we already build. That makes
+# the influence volume 1:1 with the game while the content comes from the same
+# scene the user is looking at.
+#
+# The transform arrives as a FULL BASIS whose axis LENGTHS are the box
+# half-extents, so there is no separate size field: normalise the axes for the
+# orientation and take twice the lengths for Godot's `size`. Reading the basis as
+# already-normalised would give every probe a 1 m box.
+#
+# The core hands over the level's own world-space volumes only. Prefab-carried
+# volumes are prefab-local and duplicated (pf_X and pf_X_nongroupable_autogen),
+# so placing them would need their prefab placements composed first; see the
+# note in bf6_environment.inc.
+const REFLECTION_NODE := "_MAP_REFLECTIONS"
+
+
+static func clear_reflection_probes(root: Node) -> void:
+	for c in root.get_children():
+		if String(c.name).contains(REFLECTION_NODE):
+			root.remove_child(c)
+			c.queue_free()
+
+
+# Returns a short status line, the same shape the light builders return.
+static func build_reflection_probes(root: Node, env) -> String:
+	clear_reflection_probes(root)
+	if env == null:
+		return "Reflection volumes: no native environment"
+	var data: Dictionary = env.request("reflection_probes")
+	if data.is_empty():
+		return "Reflection volumes: %s" % str(env.error)
+	var probes: Array = data.get("probes", [])
+	if probes.is_empty():
+		# A real answer: several levels author none of their own. Saying so
+		# beats an empty node that looks like a failure.
+		return "Reflection volumes: this level authors none"
+
+	var holder := Node3D.new()
+	var degenerate := 0
+	var skipped_global := 0
+	for entry in probes:
+		var p: Dictionary = entry
+		# THE LEVEL-WIDE FALLBACK IS NOT PLACED. One volume per level covers the
+		# whole map (10 x 8 x 10 km on mp_isolated against 2 to 230 m for all the
+		# rest). As a probe it would be a single huge low-quality capture
+		# overriding the sky everywhere, and the sky is what it stands in for:
+		# ambient already comes from the level's own panorama. The CORE decides
+		# which volume this is, so Unreal skips the same one.
+		if int(p.get("is_global", 0)) == 1:
+			skipped_global += 1
+			continue
+		var r := _vec3(p.get("right"))
+		var u := _vec3(p.get("up"))
+		var fwd := _vec3(p.get("forward"))
+		var half := Vector3(r.length(), u.length(), fwd.length())
+		# A zero axis has no interior: it would accept or reject every point.
+		# Dropped with a count rather than clamped into a box that is not there.
+		if half.x <= 0.001 or half.y <= 0.001 or half.z <= 0.001:
+			degenerate += 1
+			continue
+		var probe := ReflectionProbe.new()
+		probe.size = half * 2.0
+		# Interiors are the whole point, so the probe must not also gather the
+		# sky: the game's boxes are local capture volumes.
+		probe.interior = true
+		probe.enable_shadows = false
+		probe.update_mode = ReflectionProbe.UPDATE_ONCE
+		holder.add_child(probe)
+		probe.owner = null
+		probe.transform = Transform3D(
+			Basis(r.normalized(), u.normalized(), fwd.normalized()),
+			_vec3(p.get("translation")))
+	root.add_child(holder)
+	holder.name = REFLECTION_NODE
+	holder.owner = null
+	var note := ""
+	if skipped_global > 0:
+		note += ", %d level-wide (the sky covers it)" % skipped_global
+	if degenerate > 0:
+		note += ", %d degenerate skipped" % degenerate
+	return "Reflection volumes: %d placed%s" % [holder.get_child_count(), note]
+
+
+static func _vec3(v) -> Vector3:
+	if v is Array and (v as Array).size() >= 3:
+		var a: Array = v
+		return Vector3(float(a[0]), float(a[1]), float(a[2]))
+	return Vector3.ZERO

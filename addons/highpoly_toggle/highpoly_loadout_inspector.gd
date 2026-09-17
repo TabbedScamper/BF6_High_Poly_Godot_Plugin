@@ -143,8 +143,20 @@ class LoadoutPanel extends VBoxContainer:
 				_apply({"faction": str(chosen.id)}))
 			_add_picker("Outfit", Loadout.outfits_for(core, str(request.character)), str(request.outfit), func(chosen: Dictionary):
 				_apply({"outfit": str(chosen.id)}))
-			_add_picker("Pose", Loadout.catalogue_list(core, "roles"), str(request.role), func(chosen: Dictionary):
+			# "Random" is resolved from this spawner's own name, so it is a
+			# different soldier per spawner and the SAME one every time this
+			# project is opened.
+			var poses: Array = [{"id": Loadout.ROLE_RANDOM, "label": "Random"}]
+			poses.append_array(Loadout.catalogue_list(core, "roles"))
+			_add_picker("Pose", poses, str(request.role), func(chosen: Dictionary):
 				_apply({"role": str(chosen.id)}))
+			# STILL or MOVING. "Still" is the soldier frozen at the first frame
+			# of the pose above; "Idle animation" is the same soldier built as a
+			# skeleton and played through the whole clip that frame came from.
+			_add_picker("Motion", [{"id": "", "label": "Still"},
+					{"id": "1", "label": "Idle animation"}],
+				"1" if bool(request.animated) else "", func(chosen: Dictionary):
+					_apply({"animated": str(chosen.id) != ""}))
 		for kind in ([["Weapon", "Weapon"]] if soldier else [["Weapon", "Weapon"], ["Gadget", "Gadget"], ["Throwable", "Throwable"]]):
 			var options: Array = []
 			for it in items:

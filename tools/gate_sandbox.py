@@ -75,6 +75,37 @@ def find_godot() -> str:
         "an SDK under %s" % root)
 
 
+def find_extra_engines() -> list:
+    """Every OTHER engine to gate against, newest-first.
+
+    THE HOLE THIS FILLS. The gate ran on whatever Godot the SDK ships, so "SET
+    OK" only ever meant "OK on that one build". On 2026-08-09 a user's crash log
+    reported Godot 4.7.1 against an SDK that ships 4.6.3, and a second addon in
+    the same log died on a 4.7 typed-container tightening - a whole class of
+    breakage the gate was structurally unable to see.
+
+    Engines here are ADDITIONAL, not a replacement: a release has to pass on the
+    version the SDK ships AND on the versions users actually run. Drop an
+    editor build in the directory and it joins the gate; there is no list to
+    keep in sync.
+    """
+    root = Path(os.environ.get("BF6_GODOT_ENGINES", r"C:\BF6_Dev\_godot_engines"))
+    if not root.is_dir():
+        return []
+    out = []
+    for p in sorted(root.glob("Godot_v*_win64.exe"), reverse=True):
+        # The console wrapper is the same engine; gating it twice proves nothing.
+        if "_console" in p.name:
+            continue
+        out.append(str(p))
+    return out
+
+
+def engine_label(path: str) -> str:
+    name = Path(path).name
+    return name[len("Godot_v"):] if name.startswith("Godot_v") else name
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--godot", default="")
@@ -82,13 +113,39 @@ def main() -> int:
     ap.add_argument("--keep", action="store_true",
                     help="leave the sandbox project on disk for inspection")
     ap.add_argument("--timeout", type=float, default=900.0)
+    ap.add_argument("--all-engines", action="store_true",
+                    help="also gate against every editor in BF6_GODOT_ENGINES "
+                         "(default C:\\BF6_Dev\\_godot_engines). A release must "
+                         "pass on all of them, not just the SDK's own build.")
     a = ap.parse_args()
-    godot = a.godot or find_godot()
     if not a.addon.is_dir():
         raise SystemExit("No addon at %s" % a.addon)
     if not GATE.is_file():
         raise SystemExit("Missing gate payload: %s" % GATE)
 
+    if a.godot:
+        engines = [a.godot]
+    else:
+        engines = [find_godot()]
+        if a.all_engines:
+            for e in find_extra_engines():
+                if e not in engines:
+                    engines.append(e)
+
+    results = []
+    for godot in engines:
+        if len(engines) > 1:
+            print("\n=== %s ===" % engine_label(godot))
+        results.append((godot, run_one(godot, a)))
+
+    if len(engines) > 1:
+        print("\n---- gate summary ----")
+        for godot, ok in results:
+            print("  %-34s %s" % (engine_label(godot), "PASS" if ok else "FAIL"))
+    return 0 if all(ok for _, ok in results) else 1
+
+
+def run_one(godot: str, a) -> bool:
     work = Path(tempfile.mkdtemp(prefix="bf6-gate-"))
     proj = work / "gateproj"
     dst = proj / "addons" / "highpoly_toggle"
@@ -117,7 +174,7 @@ def main() -> int:
                            capture_output=True, text=True, timeout=a.timeout)
     except subprocess.TimeoutExpired:
         print("GATE TIMED OUT after %.0f s" % a.timeout)
-        return 1
+        return False
     finally:
         if a.keep:
             print("  sandbox kept at %s" % proj)
@@ -132,9 +189,9 @@ def main() -> int:
             print("  " + line)
     if "SET OK" in out:
         print("\nGATE PASSED on the repo copy")
-        return 0
+        return True
     print("\nGATE FAILED")
-    return 1
+    return False
 
 
 if __name__ == "__main__":

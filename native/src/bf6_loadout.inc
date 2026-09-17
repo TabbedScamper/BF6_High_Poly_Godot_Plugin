@@ -75,6 +75,25 @@ static void call_core_loadout_soldier(void *, GDExtensionClassInstancePtr instan
     return_blob(ret, blob, n);
 }
 
+//   loadout_soldier_clip(request_json: String) -> PackedByteArray
+//       the whole front-end idle behind that soldier's pose, as one BLWA record
+//       of parent-relative bone tracks over the same rig; the request is
+//       {"role"}, see bf6_loadout_soldier_clip in bf6_core.h
+
+static void call_core_loadout_soldier_clip(void *, GDExtensionClassInstancePtr instance,
+        const GDExtensionConstVariantPtr *args, GDExtensionInt argc,
+        GDExtensionVariantPtr ret, GDExtensionCallError *) {
+    auto *self = static_cast<BF6CoreBinding *>(instance);
+    uint8_t *blob = nullptr;
+    int64_t n = -1;
+    if (self && argc == 1) {
+        const std::string req = variant_utf8(args[0]);
+        std::lock_guard<std::recursive_mutex> guard(self->mutex);
+        if (self->ctx) n = bf6_loadout_soldier_clip(self->ctx, req.c_str(), &blob);
+    }
+    return_blob(ret, blob, n);
+}
+
 // The VALIDATE map checks (bf6_map_validate), shared with the Unreal SDK. Needs
 // no open context.
 //

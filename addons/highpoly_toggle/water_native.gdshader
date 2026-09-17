@@ -5,6 +5,21 @@ shader_type spatial;
 render_mode blend_mix, depth_draw_opaque, cull_back, diffuse_burley, specular_schlick_ggx;
 
 // ---- cascades: (Dx, height, Dz, 0) and (foam, nx*0.5+0.5, nz*0.5+0.5, 1)
+// Quads per draw-tree tile edge, from HighpolyNativeWater.PATCH_QUADS. A
+// constant here instead would be a second copy of the mesh's own subdivision
+// and would silently stop matching the day the patch changes.
+// A BISECTION SWITCH, not a feature. One per cascade, multiplying everything
+// that cascade contributes - displacement, choppiness and normals alike. Three
+// diagnoses of the boiling have now been wrong, each one reasoned from the
+// shader source rather than from seeing which cascade actually misbehaves.
+// Turning them off one at a time answers that in a single look, and the default
+// (1,1,1,1) is exactly the current behaviour so it costs nothing to leave in.
+uniform vec4 cascade_mask = vec4(1.0, 1.0, 1.0, 1.0);
+// The interactive Gerstner sum is NOT one of the four FFT cascades, so masking
+// them all still leaves it running. Bisecting needs to be able to silence it
+// too, or "everything off and still moving" is unreachable as an observation.
+uniform float interactive_mask = 1.0;
+uniform float patch_quads = 16.0;
 uniform sampler2D disp0 : hint_default_black, filter_linear_mipmap, repeat_enable;
 uniform sampler2D disp1 : hint_default_black, filter_linear_mipmap, repeat_enable;
 uniform sampler2D disp2 : hint_default_black, filter_linear_mipmap, repeat_enable;
@@ -89,7 +104,10 @@ uniform float graph_version = 0.0;
 uniform vec4 graph_cb[22];
 // Unreal preview controls GWaterBroadCarrierSize / GWaterBroadTimeScale defaults.
 uniform float broad_wave_size = 1.0;
-uniform float broad_time_scale = 1.0;
+// 0 = the broad crest sheet holds still, which is what it should do. The
+// driver sets this explicitly; the default here matches so a material built
+// without the driver does not start sliding. See highpoly_native_water.gd.
+uniform float broad_time_scale = 0.0;
 uniform float foam_depth_ramp = 0.5;
 uniform float foam_wave_height = 0.0;
 uniform float interactive_enabled = 0.0;
@@ -245,15 +263,38 @@ void vertex() {
 	float lift = level_valid * max(level_surface - surface_height, 0.0);
 	float shore = shore_term(world.y, xz);
 	float coarse = mix(shore, coarse_mask(xz), mask_available);
-	// Continuous footprint mip (Unreal stand-in for the unread game VS ramp).
+	// THE DISPLACEMENT MIP, floored by what the MESH can actually carry.
+	//
+	// The screen footprint below is a stand-in for the game's unread vertex LOD
+	// ramp, and on its own it is the wrong metric here: this is the VERTEX
+	// stage moving geometry, so the limit is the distance between vertices, not
+	// the size of a pixel. Close to the camera the footprint goes to mip 0 and
+	// pulls in waves shorter than one quad, which no mesh can represent - each
+	// vertex then samples an unrelated phase, and as the camera or the clock
+	// moves that spatial aliasing becomes temporal churn. That is what "the
+	// water is boiling" is.
+	//
+	// Measured on mp_isolated (Tsuru Reef), which authors FOUR cascades:
+	//   #0 tile 300 m, texel 2.34 m   #1 67.6 m, 1.06 m
+	//   #2 tile  43 m, texel 1.34 m   #3 12.0 m, texel 0.094 m
+	// At the finest draw-tree tile the mesh has one metre between vertices, so
+	// cascades 0-2 are already coarser than the mesh and the floor changes
+	// nothing for them. Cascade 3 is TEN TIMES finer, and it is the one that
+	// boils. The floor costs nothing where it is not needed and is exactly the
+	// Nyquist limit where it is.
 	float dcam = max(length(CAMERA_POSITION_WORLD - world), 1.0);
 	float pixel_angle = 2.0 / max(PROJECTION_MATRIX[0][0] * VIEWPORT_SIZE.x, 1e-4);
-	vec4 mips = log2(max(vec4(dcam * pixel_angle) / max(cascade_texel_m, vec4(1e-4)), vec4(1.0)));
-	vec4 d0 = textureLod(disp0, pm / max(cascade0.x, 1e-4), mips.x) * cascade0.z;
-	vec4 d1 = textureLod(disp1, pm / max(cascade1.x, 1e-4), mips.y) * cascade1.z;
-	vec4 d2 = textureLod(disp2, pm / max(cascade2.x, 1e-4), mips.z) * cascade2.z;
-	vec4 d3 = textureLod(disp3, pm / max(cascade3.x, 1e-4), mips.w) * cascade3.z;
-	vec4 od = textureLod(disp0, overlap_uv(pm), mips.x) * cascade0.z;
+	vec4 screen_mip = log2(max(vec4(dcam * pixel_angle) / max(cascade_texel_m, vec4(1e-4)), vec4(1.0)));
+	// The instance's own width is the tile width, so this needs no uniform that
+	// could disagree with the tree the core handed us.
+	float vertex_spacing_m = length(MODEL_MATRIX[0].xyz) / max(patch_quads, 1.0);
+	vec4 mesh_mip = log2(max(vec4(vertex_spacing_m) / max(cascade_texel_m, vec4(1e-4)), vec4(1.0)));
+	vec4 mips = max(screen_mip, mesh_mip);
+	vec4 d0 = textureLod(disp0, pm / max(cascade0.x, 1e-4), mips.x) * cascade0.z * cascade_mask.x;
+	vec4 d1 = textureLod(disp1, pm / max(cascade1.x, 1e-4), mips.y) * cascade1.z * cascade_mask.y;
+	vec4 d2 = textureLod(disp2, pm / max(cascade2.x, 1e-4), mips.z) * cascade2.z * cascade_mask.z;
+	vec4 d3 = textureLod(disp3, pm / max(cascade3.x, 1e-4), mips.w) * cascade3.z * cascade_mask.w;
+	vec4 od = textureLod(disp0, overlap_uv(pm), mips.x) * cascade0.z * cascade_mask.x;
 	float ox = overlap_params2.z * (-cascade0.y * od.x);
 	float oz = overlap_params2.w * (-cascade0.y * od.z);
 	float tx = ox + overlap_params.z * oz;
@@ -265,7 +306,7 @@ void vertex() {
 	v += coarse * overlap_enabled * amplitude * overlap_height * od.y;
 	// broadZ and interactiveZ sit outside BF6FFTEnabled, as in Unreal.
 	float broad_z = coarse * clamp(use_broad * graph_version, 0.0, 1.0) * foam_wave_height * mix(-0.10, 1.0, broad_body(xz));
-	float interactive_z = interactive_enabled * coarse * interactive_wave(xz).x;
+	float interactive_z = interactive_mask * interactive_enabled * coarse * interactive_wave(xz).x;
 	vec3 offset = vec3(fft_enabled * h.x, fft_enabled * v + lift + broad_z + interactive_z, fft_enabled * h.y);
 	VERTEX += inverse(mat3(MODEL_MATRIX)) * offset;
 }
@@ -292,11 +333,24 @@ void fragment() {
 	float df = clamp((dist - detail_fade_end) / min(detail_fade_start - detail_fade_end, -1e-4), 0.0, 1.0);
 
 	// Derivative samples for cascades 0/1, explicit mip 0 for 2/3; never fract().
-	vec4 n0 = texture(nf0, pm / max(cascade0.x, 1e-4));
-	vec4 n1 = texture(nf1, pm / max(cascade1.x, 1e-4));
-	vec4 n2 = textureLod(nf2, pm / max(cascade2.x, 1e-4), 0.0);
-	vec4 n3 = textureLod(nf3, pm / max(cascade3.x, 1e-4), 0.0);
-	vec4 on = texture(nf0, overlap_uv(pm));
+	vec4 n0 = texture(nf0, pm / max(cascade0.x, 1e-4)) * cascade_mask.x;
+	vec4 n1 = texture(nf1, pm / max(cascade1.x, 1e-4)) * cascade_mask.y;
+	// CASCADES 2 AND 3 WERE PINNED AT MIP 0, and that is what made the water
+	// bubble. textureLod(..., 0.0) forces the finest level at EVERY distance,
+	// so cascade 3 - a 12 m tile at 128 texels, 9.4 cm per texel, carrying waves
+	// down to about 0.19 m - was drawn at full detail from any range. Waves that
+	// short oscillate at roughly 3 Hz under the dispersion relation, so the
+	// whole surface fizzed with detail that should have filtered away with
+	// distance. Cascades 0 and 1 below always used plain texture() and always
+	// looked right; the asymmetry WAS the bug.
+	//
+	// texture() takes its mip from the screen-space derivatives, which is the
+	// correct metric here because this is the fragment stage shading a surface.
+	// Close up the fine waves are still there, as they should be; further out
+	// they blend away instead of flickering.
+	vec4 n2 = texture(nf2, pm / max(cascade2.x, 1e-4)) * cascade_mask.z;
+	vec4 n3 = texture(nf3, pm / max(cascade3.x, 1e-4)) * cascade_mask.w;
+	vec4 on = texture(nf0, overlap_uv(pm)) * cascade_mask.x;
 	// Gate SIGNED normals: gating a packed value first makes the camera circle.
 	vec2 s0 = slope_of((n0.yz * 2.0 - 1.0) * cascade0.z, amplitude);
 	vec2 s1 = slope_of((n1.yz * 2.0 - 1.0) * cascade1.z, amplitude);

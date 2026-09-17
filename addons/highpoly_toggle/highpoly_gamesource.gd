@@ -624,6 +624,9 @@ func build_report() -> PackedStringArray:
 			+ "%d placeholder sheet(s) refused, %d panel(s) without one"
 			% [int(tex_stats.get("carpaint_wrap_placeholder", 0)),
 			   int(tex_stats.get("carpaint_wrap_skipped", 0))])
+		out.append("  vehicle unwrap: %d section(s) moved to their authored livery channel, %d had none to move to"
+			% [int(tex_stats.get("uv_wrap_applied", 0)),
+			   int(tex_stats.get("uv_wrap_missing", 0))])
 	out.append("  cache hits: %d of %d mesh asks served from disk (%.0f%%), "
 		% [n_geom_hit, maxi(1, asks), 100.0 * n_geom_hit / maxf(1.0, float(asks))]
 		+ "%d shared in memory, %d read from the install" % [n_mesh_shared, n_geom_miss])
@@ -1883,7 +1886,9 @@ func _md_fill(cache_dir: String, need: Dictionary, out: Dictionary) -> void:
 # name here is all it needs: art and the level's own bundle return "" and stay
 # visible, default_event matches the default set, and everything else is hidden
 # until its layer is picked.
-func layer_of_scope(scope: String) -> String:
+# STATIC, with the level passed in: the rule is pure and a test should not have
+# to construct a game source (which starts workers) to check a string.
+static func layer_of_scope_for(scope: String, level: String) -> String:
 	if scope == "":
 		return ""
 	var leaf := scope.get_file()
@@ -1921,6 +1926,37 @@ func layer_of_scope(scope: String) -> String:
 		return ""
 	if dir.ends_with("_layers_content"):
 		return ""
+	# SHARED DRESSING IS ALWAYS ON.
+	#
+	# Abbasid files "sharedassets_koth_sdm_tdm_dom" (182 placements) and
+	# "sharedassets_tdm_dom" (213) - props several modes share. Their names are
+	# abbreviations that match no mode key, so they could never be shown, and
+	# mapping "sdm" onto "squaddeathmatch" by hand would be guesswork. The core
+	# already refuses to treat a "shared" layer as a mode. Showing them in every
+	# mode is the lesser error, which is this file's own stated rule: wrongly
+	# HIDING map content is the worse failure.
+	if leaf.begins_with("sharedassets") or leaf.begins_with("shared_"):
+		return ""
+	# A LAYER FILED UNDER A MODE FOLDER ALSO BELONGS TO THAT FOLDER'S MODE.
+	#
+	# mp_isolated files Gauntlet's extraction zone as
+	# _layers_gameplay/gauntlet/dallasgauntlet_extraction (150 placements) and
+	# Abbasid files "teamdeathmatch/teamdm" - leaf names that match no mode
+	# anyone can pick, so they stayed hidden in every mode including their own.
+	#
+	# BOTH names are emitted, comma-joined, because the FOLDER is not always the
+	# better answer either: Abbasid's "portalnext/customportal" has the mode in
+	# the LEAF. _variant_key_visible already splits on commas and matches any
+	# part, so offering both is exact where either one alone would regress the
+	# other case.
+	if dir.get_base_dir().ends_with("_layers_gameplay") and dir.get_file() != leaf:
+		return "%s,%s" % [dir.get_file(), leaf]
+	# "mp_sabotage" and "sabotage" are the same mode. The core strips that
+	# prefix when it names modes and the dropdown shows what the core named, so
+	# a layer that keeps the prefix can never match its own mode. Both spellings
+	# are offered for the same reason as above.
+	if leaf.begins_with("mp_") and leaf.length() > 3:
+		return "%s,%s" % [leaf, leaf.substr(3)]
 	return leaf
 
 
@@ -2011,7 +2047,7 @@ func _build_map_data(cache_dir: String, need := {}) -> Dictionary:
 	var props: Array = []
 	for k in by_mesh:
 		props.append({"mesh": k, "xf": Array(by_mesh[k] as PackedFloat32Array),
-			"layer": layer_of_scope(str((_group_meta[k] as Array)[1]))})
+			"layer": layer_of_scope_for(str((_group_meta[k] as Array)[1]), level)})
 	var backdrop: Array = []
 	for k in by_bd:
 		backdrop.append({"mesh": k, "xf": Array(by_bd[k] as PackedFloat32Array)})
@@ -7393,10 +7429,15 @@ func _surface_metadata(b: PackedByteArray) -> Array:
 		at += 24
 		var declared := b.slice(at, at + sets * 4).to_int32_array()
 		at += sets * 4
+		# EVERY SECTION OFFERS ITS DECLARED SETS, not only ones whose material
+		# name says "carpaint" - a name that does not occur in this content, so
+		# the marker list was always empty and the wrap channel could never be
+		# applied. Which sections are car paint is decided from the depot
+		# bindings in _wrap_channel_fix; this is only the menu it chooses from,
+		# and a marker costs one Vector2 per declared set.
 		var uv_all: Array = []
-		if str(ms[0]).to_lower().contains("carpaint"):
-			for u in declared:
-				uv_all.append([int(u), PackedVector2Array([Vector2(float(u), 0.0)])])
+		for u in declared:
+			uv_all.append([int(u), PackedVector2Array([Vector2(float(u), 0.0)])])
 		light.append({"material": ms[0], "state_key": state_key, "uv_rule": BF6MeshSet._UV_RULES[uv_rule],
 			"uv_usage": uv_usage, "uv_declared": declared, "uv_all": uv_all,
 			"verts": PackedVector3Array([Vector3.ZERO]), "uvs": null})
@@ -10205,6 +10246,32 @@ func decision_count() -> int:
 # material_for) and swap the section's uvs to the texcoord the record names.
 # uv_all rides along on carpaint sections precisely for this. A section whose
 # record or texcoord is missing keeps TC0, which is what it shipped before.
+# Is this section car paint? The core's rule, on the section's own bindings.
+#
+# bf6_core.cpp (primary_uv_channel): flakes bound, AND no base colour of its
+# own, AND not tile paint. Same conjunction `_carpaint_of` applies on the
+# material path, so a section cannot be car paint for the UV decision and not
+# for the colour decision - which is how the two used to disagree.
+func _section_is_carpaint(sec: Dictionary, var_hash: int, pair) -> bool:
+	if pair == null:
+		return false
+	var dep: BF6Depot = pair[0]
+	var key := int(sec.get("state_key", 0))
+	if key == 0:
+		return false
+	if var_hash != 0 and dep.key_to_record.has(key + var_hash):
+		key += var_hash
+	if not dep.key_to_record.has(key):
+		return false
+	var t: Dictionary = dep.textures_for(key, pair[1])
+	if not t.has("carpaint_flakes"):
+		return false
+	if t.has("basecolor") or t.has("basecolor_veg"):
+		return false
+	var consts: Dictionary = t.get("constants", {})
+	return not (consts.has(C_TILEPAINT_A) or consts.has(C_TILEPAINT_B))
+
+
 func _wrap_channel_fix(secs: Array, scope: String, var_hash: int,
 		mesh_name := "") -> void:
 	var pair = null
@@ -10222,7 +10289,30 @@ func _wrap_channel_fix(secs: Array, scope: String, var_hash: int,
 			"out": _tc_name(int(sec.get("uv_usage", -1))),
 			"why": "reader rule %s" % str(sec.get("uv_rule", "none")),
 		}]
-		if not mat.to_lower().contains("carpaint"):
+		# THE NAME TEST IS GONE, because it never matched anything.
+		#
+		# This used to require the material name to contain "carpaint". The core
+		# says outright why that is wrong (bf6_core.cpp, primary_uv_channel):
+		# "The material names in this content do not contain "carpaint" at all,
+		# so a name test quietly matches nothing and reports a clean zero -
+		# which reads as agreement rather than as a detector that never fired."
+		# Every vehicle on every map was therefore drawn through TC0 while the
+		# livery was authored for another channel, which is what made liveries
+		# look wrong here and right in the Unreal tool.
+		#
+		# The replacement is the core's own conjunction, on data: the flakes
+		# sheet is bound, there is no base colour of its own, and it is not tile
+		# paint. `_carpaint_of` already encodes exactly that test for the
+		# material path, so the decision is made in one place rather than two.
+		var depot_now = _depot_for(scope) if not pair_tried else pair
+		if not pair_tried:
+			pair_tried = true
+			pair = depot_now
+		if pair == null:
+			decide(mesh_name, int(sec.get("state_key", 0)), var_hash, si, mat,
+				rules)
+			continue
+		if not _section_is_carpaint(sec, var_hash, pair):
 			decide(mesh_name, int(sec.get("state_key", 0)), var_hash, si, mat,
 				rules)
 			continue
@@ -10266,6 +10356,14 @@ func _wrap_channel_fix(secs: Array, scope: String, var_hash: int,
 					secs[si] = sec
 					applied = true
 				break
+		# COUNTED, because this changes how every vehicle is drawn and "it looks
+		# better" is not a check. applied is the livery finding its authored
+		# channel; missing is a car paint section whose channel is not in the
+		# mesh, which keeps TC0 exactly as before.
+		if applied:
+			tex_stats["uv_wrap_applied"] = int(tex_stats.get("uv_wrap_applied", 0)) + 1
+		else:
+			tex_stats["uv_wrap_missing"] = int(tex_stats.get("uv_wrap_missing", 0)) + 1
 		rules.append({
 			"r": "uv.wrap",
 			"in": {"const": "0x%08x" % C_WRAP_TEXCOORD,
